@@ -1,0 +1,12 @@
+# 本地快速实验配置（阶段3）
+num_tasks: 8
+total_util: 0.7
+min_period: 10
+max_period: 200
+time_scale: 10
+cf: 2.0
+cp: 0.5
+deadline_mode: implicit
+deadline_ratio_min: 0.5
+criticality_assignment: fixed_count
+lo_hi_budget_policy: scaled_by_cf

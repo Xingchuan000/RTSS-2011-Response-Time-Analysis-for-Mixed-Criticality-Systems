@@ -1,0 +1,67 @@
+paper:
+  fig1:
+    x_axis: util
+    y_axis_metric: schedulable_ratio
+    deadline_mode: implicit
+    num_tasks: 20
+    util_values: [0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.175, 0.2, 0.225, 0.25, 0.275, 0.3, 0.325, 0.35, 0.375, 0.4, 0.425, 0.45, 0.475, 0.5, 0.525, 0.55, 0.575, 0.6, 0.625, 0.65, 0.675, 0.7, 0.725, 0.75, 0.775, 0.8, 0.825, 0.85, 0.875, 0.9, 0.925, 0.95, 0.975]
+  fig2:
+    x_axis: cf
+    y_axis_metric: weighted_schedulability
+    deadline_mode: implicit
+    num_tasks: 20
+    util_values: [0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.175, 0.2, 0.225, 0.25, 0.275, 0.3, 0.325, 0.35, 0.375, 0.4, 0.425, 0.45, 0.475, 0.5, 0.525, 0.55, 0.575, 0.6, 0.625, 0.65, 0.675, 0.7, 0.725, 0.75, 0.775, 0.8, 0.825, 0.85, 0.875, 0.9, 0.925, 0.95, 0.975]
+    cf_values: [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
+  fig3:
+    x_axis: cp
+    y_axis_metric: weighted_schedulability
+    deadline_mode: implicit
+    num_tasks: 20
+    util_values: [0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.175, 0.2, 0.225, 0.25, 0.275, 0.3, 0.325, 0.35, 0.375, 0.4, 0.425, 0.45, 0.475, 0.5, 0.525, 0.55, 0.575, 0.6, 0.625, 0.65, 0.675, 0.7, 0.725, 0.75, 0.775, 0.8, 0.825, 0.85, 0.875, 0.9, 0.925, 0.95, 0.975]
+    cp_values: [0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95]
+  fig4:
+    x_axis: num_tasks
+    y_axis_metric: weighted_schedulability
+    deadline_mode: implicit
+    util_values: [0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.175, 0.2, 0.225, 0.25, 0.275, 0.3, 0.325, 0.35, 0.375, 0.4, 0.425, 0.45, 0.475, 0.5, 0.525, 0.55, 0.575, 0.6, 0.625, 0.65, 0.675, 0.7, 0.725, 0.75, 0.775, 0.8, 0.825, 0.85, 0.875, 0.9, 0.925, 0.95, 0.975]
+    n_values: [8, 24, 40, 56, 72, 88]
+  fig5:
+    x_axis: util
+    y_axis_metric: schedulable_ratio
+    deadline_mode: arbitrary_paper
+    num_tasks: 20
+    util_values: [0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.175, 0.2, 0.225, 0.25, 0.275, 0.3, 0.325, 0.35, 0.375, 0.4, 0.425, 0.45, 0.475, 0.5, 0.525, 0.55, 0.575, 0.6, 0.625, 0.65, 0.675, 0.7, 0.725, 0.75, 0.775, 0.8, 0.825, 0.85, 0.875, 0.9, 0.925, 0.95, 0.975]
+
+fast:
+  fig1:
+    x_axis: util
+    y_axis_metric: schedulable_ratio
+    deadline_mode: implicit
+    num_tasks: 12
+    util_values: [0.2, 0.4, 0.6, 0.8]
+  fig2:
+    x_axis: cf
+    y_axis_metric: weighted_schedulability
+    deadline_mode: implicit
+    num_tasks: 12
+    util_values: [0.2, 0.4, 0.6, 0.8]
+    cf_values: [1.0, 2.0, 3.0, 4.0]
+  fig3:
+    x_axis: cp
+    y_axis_metric: weighted_schedulability
+    deadline_mode: implicit
+    num_tasks: 12
+    util_values: [0.2, 0.4, 0.6, 0.8]
+    cp_values: [0.2, 0.4, 0.6, 0.8]
+  fig4:
+    x_axis: num_tasks
+    y_axis_metric: weighted_schedulability
+    deadline_mode: implicit
+    util_values: [0.2, 0.4, 0.6, 0.8]
+    n_values: [4, 8, 12, 16]
+  fig5:
+    x_axis: util
+    y_axis_metric: schedulable_ratio
+    deadline_mode: arbitrary_paper
+    num_tasks: 12
+    util_values: [0.2, 0.4, 0.6, 0.8]

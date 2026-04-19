@@ -1,0 +1,26 @@
+{
+  "generated_at": "2026-04-16T17:32:06",
+  "figure_name": "fig4",
+  "mode": "paper",
+  "x_axis": "num_tasks",
+  "y_axis_metric": "weighted_schedulability",
+  "deadline_mode": "implicit",
+  "generator_profile": "mode:paper",
+  "criticality_assignment": "bernoulli",
+  "num_tasksets": 200,
+  "seed": 2026,
+  "num_tasks_runtime": 20,
+  "default_config": {
+    "num_tasks": 20,
+    "total_util": 0.8,
+    "min_period": 10,
+    "max_period": 1000,
+    "time_scale": 100,
+    "cf": 2.0,
+    "cp": 0.5,
+    "deadline_mode": "implicit",
+    "deadline_ratio_min": 0.5,
+    "criticality_assignment": "bernoulli",
+    "lo_hi_budget_policy": "scaled_by_cf"
+  }
+}
