@@ -1,0 +1,12 @@
+# 论文高保真复现配置（阶段3）
+num_tasks: 20
+total_util: 0.8
+min_period: 10
+max_period: 1000
+time_scale: 100
+cf: 2.0
+cp: 0.5
+deadline_mode: implicit
+deadline_ratio_min: 0.5
+criticality_assignment: bernoulli
+lo_hi_budget_policy: scaled_by_cf

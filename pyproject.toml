@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "amc-py"
+version = "0.1.0"
+description = "Python reproduction scaffold for AMC mixed-criticality analysis"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "pandas",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "black",
+    "mypy",
+]
+
+[tool.setuptools]
+packages = ["amc_py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
