@@ -94,6 +94,21 @@ conda run -n amc-repro python scripts/run_amc_plus_runtime_example.py
 - `mode_changes / lo_cancellations / recoveries / deadline_misses / final_mode`
 - dynamic budget 更新前后的结果差异
 
+## 4.2 如何运行事件驱动 Runtime 示例
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/run_event_runtime_example.py
+```
+
+输出会包含事件驱动 runtime 的四个对照案例：
+- `case1_lo_overrun_event`（AMC+）
+- `case2_lo_overrun_event`（AMC）
+- `case3_dynamic_budget_no_update_event`（AMC+）
+- `case3_dynamic_budget_updated_event`（AMC+）
+
+更多语义说明见 `docs/event_runtime.md`。
+
 ## 5. 如何运行小规模实验
 
 ```bash
@@ -123,8 +138,12 @@ conda run -n amc-repro python scripts/run_small_experiment.py
 ├── scripts/
 │   ├── run_single_example.py   # 单任务集示例
 │   ├── run_amc_plus_runtime_example.py # AMC+/AMC runtime 对比示例
+│   ├── run_event_runtime_example.py # 事件驱动 runtime 对比示例
 │   ├── run_small_experiment.py # 小规模 sweep + CSV + 图
 │   └── run_experiments.py      # 兼容入口（调用小实验）
+├── docs/
+│   ├── event_runtime.md        # 事件驱动 runtime 使用与语义说明
+│   └── ...
 ├── tests/                      # pytest 测试集合
 ├── outputs/                    # 实验产物目录
 ├── environment.yml

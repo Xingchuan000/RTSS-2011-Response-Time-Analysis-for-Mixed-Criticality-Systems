@@ -18,6 +18,10 @@ from .runtime import (
     simulate_ordered_taskset,
     simulate_taskset_with_policy,
 )
+from .event_runtime import (
+    simulate_ordered_taskset_event_driven,
+    simulate_taskset_with_policy_event_driven,
+)
 from .runtime_models import Job, RuntimeConfig, RuntimeSemantics, SimulationResult, SystemMode
 from .runtime_scenarios import (
     ExecutionScenario,
@@ -54,4 +58,7 @@ __all__ = [
     "simulate_ordered_taskset",
     "simulate_taskset_with_policy",
     "compare_static_and_runtime",
+    # --- event runtime 仿真与集成入口 ---
+    "simulate_ordered_taskset_event_driven",
+    "simulate_taskset_with_policy_event_driven",
 ]
