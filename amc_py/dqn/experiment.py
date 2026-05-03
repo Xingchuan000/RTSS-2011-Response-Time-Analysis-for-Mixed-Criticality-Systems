@@ -6,7 +6,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import random
 
-from amc_py.experiments import evaluate_taskset
+from amc_py.experiments import evaluate_taskset, resolve_ordering
 from amc_py.generator import generate_taskset
 from amc_py.models import Criticality, SchedulabilityResult, Task
 from amc_py.rl.env import AmcBudgetEnv
@@ -302,8 +302,10 @@ def build_rtss11_experiment_config(
                         cp=cp,
                     )
                 )
-            taskset_cache[seed] = tasks
-            taskset_signature_cache[_task_signature(tasks)] = tasks
+            # 运行时环境要求“有序任务集”语义，这里统一按 AMC-rtb+OPA 解析顺序。
+            ordered_tasks = tuple(resolve_ordering(list(tasks), priority_policy="opa", method="amc_rtb"))
+            taskset_cache[seed] = ordered_tasks
+            taskset_signature_cache[_task_signature(ordered_tasks)] = ordered_tasks
         return list(taskset_cache[seed])
 
     def scenario_factory(seed: int, tasks: Sequence[Task]) -> ExecutionScenario:
