@@ -30,12 +30,17 @@ from functools import reduce
 from math import lcm
 
 from .models import Criticality, Task
+from .budget_runtime import BudgetState, BudgetUpdate
 from .runtime_models import (
+    BudgetUpdateEvent,
     DeadlineMiss,
     Job,
+    JobCancellationEvent,
+    ModeRecoveryEvent,
     ModeSwitchEvent,
     RuntimeComparisonResult,
     RuntimeConfig,
+    RuntimeSemantics,
     ScheduleTick,
     SimulationResult,
     SystemMode,
@@ -165,7 +170,8 @@ def _release_jobs_at_time(
 
     参数 `suppress_lo_releases` 用于表达“当前系统已经在 HI 模式，后续不再释放 LO 任务”：
     - 为 False：按常规周期释放 HI/LO 全部任务；
-    - 为 True：仅允许 HI 任务继续释放，LO 任务 release_index 保持不推进。
+    - 为 True：仅允许 HI 任务继续释放，LO 任务在到达时刻会被抑制，但
+      release_index 仍推进，避免恢复 LO 模式后补发 HI 期间错过的历史 LO jobs。
 
     这里特意采用“在释放器层过滤”的方式，而不是在外层先过滤任务列表，目的是：
     1. 保持 release_index 的推进规则集中在一处；
@@ -176,11 +182,13 @@ def _release_jobs_at_time(
     released: list[Job] = []
     for task in ordered_tasks:
         # HI 模式下（suppress 打开）禁止 LO 任务继续释放未来 job。
-        if suppress_lo_releases and task.criticality is Criticality.LO:
-            continue
-
         idx = next_release_index[task.name]
         release_time = idx * task.period
+        if suppress_lo_releases and task.criticality is Criticality.LO:
+            if release_time == current_time:
+                next_release_index[task.name] = idx + 1
+            continue
+
         if release_time == current_time:
             job = _build_job(task, idx, scenario)
             released.append(job)
@@ -247,24 +255,45 @@ def _check_deadline_misses(
     return misses
 
 
-def _should_switch_to_hi(job: Job, mode: SystemMode) -> bool:
-    """判断“刚执行一 tick 的 job 是否应触发 LO -> HI 模式切换”。
-
-    语义（AMC 标准）：
-    - 若当前已经是 HI 模式，则无需再切换；
-    - 若 job 归属的任务不是 HI 任务，不会触发切换（LO 任务不会越界升模式）；
-    - 只有 HI 任务 `executed_time > c_lo` 才意味着它“正试图越过 LO 预算”，
-      进而要求系统进入 HI 模式以兑现 C(HI) 的预算承诺。
-
-    本轮（第 3 轮）仅作为 **独立 predicate** 存在并被单测；主循环暂未调用它，
-    真正连线到 mode switch 留给第 4 轮。
-    """
+def _should_switch_to_hi(job: Job, mode: SystemMode, budget: int) -> bool:
+    """判断 HI job 是否在 LO 模式下超过其运行时预算并触发模式切换。"""
 
     if mode is not SystemMode.LO:
         return False
     if job.task.criticality is not Criticality.HI:
         return False
-    return job.executed_time > job.task.c_lo
+    return job.executed_time > budget
+
+
+def _should_cancel_lo_job(job: Job, mode: SystemMode, budget: int) -> bool:
+    """判断 LO job 是否在 LO 模式下超过其运行时预算并应被局部取消。"""
+
+    if mode is not SystemMode.LO:
+        return False
+    if job.task.criticality is not Criticality.LO:
+        return False
+    return job.executed_time > budget
+
+
+def _cancel_lo_job(
+    active_jobs: list[Job],
+    job: Job,
+    current_time: int,
+    budget: int,
+) -> JobCancellationEvent:
+    """取消一个超预算 LO job，并返回对应取消事件。"""
+
+    job.dropped = True
+    job.drop_time = current_time
+    if job in active_jobs:
+        active_jobs.remove(job)
+    return JobCancellationEvent(
+        cancel_time=current_time,
+        task=job.task.name,
+        release_index=job.release_index,
+        executed_at_cancel=job.executed_time,
+        budget_at_cancel=budget,
+    )
 
 
 def _drop_active_lo_jobs(active_jobs: list[Job], current_time: int) -> list[Job]:
@@ -304,6 +333,8 @@ def simulate_ordered_taskset(
     ordered_tasks: Sequence[Task],
     scenario: ExecutionScenario,
     config: RuntimeConfig | None = None,
+    budget_state: BudgetState | None = None,
+    budget_updates: Sequence[BudgetUpdate] | None = None,
 ) -> SimulationResult:
     """按 tick 推进的固定优先级抢占式仿真器（第 4 轮：含 HI 切换语义）。
 
@@ -314,7 +345,7 @@ def simulate_ordered_taskset(
 
     返回：
     - `SimulationResult`：包含 job 历史、trace、deadline miss 等信息；
-      当出现 HI 任务越过 `c_lo` 时会记录 `mode_switch`，并把 `final_mode`
+      当出现 HI 任务越过 `c_lo` 时会记录 `mode_switches`，并把 `final_mode`
       更新为 `SystemMode.HI`。
 
     边界校验：
@@ -332,6 +363,11 @@ def simulate_ordered_taskset(
 
     # -------- 配置装配 --------
     cfg = config if config is not None else RuntimeConfig()
+    runtime_budgets = (
+        budget_state.copy()
+        if budget_state is not None
+        else BudgetState.from_tasks(ordered_tasks)
+    )
     end_time = (
         cfg.end_time
         if cfg.end_time is not None
@@ -358,13 +394,27 @@ def simulate_ordered_taskset(
 
     # 系统初始模式总是 LO；若发生切换会更新为 HI。
     mode = SystemMode.LO
-    mode_switch: ModeSwitchEvent | None = None
+    mode_switches: list[ModeSwitchEvent] = []
+    mode_recoveries: list[ModeRecoveryEvent] = []
+    budget_update_events: list[BudgetUpdateEvent] = []
+    job_cancellations: list[JobCancellationEvent] = []
 
     # 仿真实际终止时刻：默认等于配置 end_time，若 stop_at_first_miss 命中则提前。
     actual_end_time = end_time
     stopped_early = False
+    updates_by_time: dict[int, list[BudgetUpdate]] = {}
+    if budget_updates is not None:
+        for update in budget_updates:
+            if update.time < 0:
+                raise ValueError("budget update time 必须 >= 0")
+            updates_by_time.setdefault(update.time, []).append(update)
 
     for t in range(end_time):
+        # ---- 0. 在 tick 起点应用预算更新（先于 release 生效） ----
+        for update in updates_by_time.get(t, []):
+            runtime_budgets.apply_updates(update.updates)
+            budget_update_events.append(BudgetUpdateEvent(time=t, updates=dict(update.updates)))
+
         # ---- 1. 在 tick 起点释放到期的 job ----
         newly_released = _release_jobs_at_time(
             current_time=t,
@@ -414,22 +464,61 @@ def simulate_ordered_taskset(
                 active_jobs.remove(running)
 
         # ---- 6. 检查是否触发 LO -> HI 切换，并执行切换后动作 ----
-        if running is not None and mode_switch is None and _should_switch_to_hi(running, mode):
-            # 切换时刻定义为“触发 tick 结束边界”，即 t + 1。
-            switch_time = t + 1
-            mode = SystemMode.HI
-            mode_switch = ModeSwitchEvent(
-                switch_time=switch_time,
-                triggering_task=running.task.name,
-                triggering_release_index=running.release_index,
-                executed_at_switch=running.executed_time,
-            )
+        if running is not None:
+            current_budget = runtime_budgets.budget_of(running.task)
 
-            # 可配置是否在切换瞬间丢弃所有活动 LO jobs。
-            if cfg.drop_lo_jobs_on_hi_switch:
-                _drop_active_lo_jobs(active_jobs, current_time=switch_time)
+            if _should_cancel_lo_job(running, mode, current_budget):
+                if cfg.semantics is RuntimeSemantics.AMC_PLUS:
+                    cancel_time = t + 1
+                    event = _cancel_lo_job(
+                        active_jobs=active_jobs,
+                        job=running,
+                        current_time=cancel_time,
+                        budget=current_budget,
+                    )
+                    job_cancellations.append(event)
+                    running = None
+                else:
+                    switch_time = t + 1
+                    mode = SystemMode.HI
+                    mode_switches.append(
+                        ModeSwitchEvent(
+                            switch_time=switch_time,
+                            triggering_task=running.task.name,
+                            triggering_release_index=running.release_index,
+                            executed_at_switch=running.executed_time,
+                            budget_at_switch=current_budget,
+                            reason="lo_budget_overrun_standard_amc",
+                        )
+                    )
+                    if cfg.drop_lo_jobs_on_hi_switch:
+                        _drop_active_lo_jobs(active_jobs, current_time=switch_time)
 
-    # ---- 7. 主循环外的“终点 miss 扫描” ----
+            elif _should_switch_to_hi(running, mode, current_budget):
+                # 切换时刻定义为“触发 tick 结束边界”，即 t + 1。
+                switch_time = t + 1
+                mode = SystemMode.HI
+                mode_switches.append(
+                    ModeSwitchEvent(
+                        switch_time=switch_time,
+                        triggering_task=running.task.name,
+                        triggering_release_index=running.release_index,
+                        executed_at_switch=running.executed_time,
+                        budget_at_switch=current_budget,
+                    )
+                )
+
+                # 可配置是否在切换瞬间丢弃所有活动 LO jobs。
+                if cfg.drop_lo_jobs_on_hi_switch:
+                    _drop_active_lo_jobs(active_jobs, current_time=switch_time)
+
+        # ---- 7. HI 模式在 tick 边界若无活动 job，则恢复到 LO 模式 ----
+        if mode is SystemMode.HI and not active_jobs:
+            recovery_time = t + 1
+            mode = SystemMode.LO
+            mode_recoveries.append(ModeRecoveryEvent(recovery_time=recovery_time))
+
+    # ---- 8. 主循环外的“终点 miss 扫描” ----
     # 主循环 range(end_time) 只迭代到 t = end_time - 1，这里补一次检查，
     # 确保 absolute_deadline 恰好等于 end_time 的 job 也会被标记为 miss。
     if not stopped_early:
@@ -439,7 +528,10 @@ def simulate_ordered_taskset(
     return SimulationResult(
         jobs=all_jobs,
         trace=trace,
-        mode_switch=mode_switch,
+        mode_switches=mode_switches,
+        mode_recoveries=mode_recoveries,
+        budget_update_events=budget_update_events,
+        job_cancellations=job_cancellations,
         deadline_misses=deadline_misses,
         end_time=actual_end_time,
         final_mode=mode,
@@ -452,6 +544,8 @@ def simulate_taskset_with_policy(
     priority_policy: str,
     scenario: ExecutionScenario,
     config: RuntimeConfig | None = None,
+    budget_state: BudgetState | None = None,
+    budget_updates: Sequence[BudgetUpdate] | None = None,
 ) -> SimulationResult:
     """AMC runtime bridge：按 `method + priority_policy` 自动解析顺序并执行仿真。
 
@@ -491,6 +585,8 @@ def simulate_taskset_with_policy(
         ordered_tasks=ordered_tasks,
         scenario=scenario,
         config=config,
+        budget_state=budget_state,
+        budget_updates=budget_updates,
     )
 
 
@@ -500,6 +596,8 @@ def compare_static_and_runtime(
     priority_policy: str,
     scenario: ExecutionScenario,
     config: RuntimeConfig | None = None,
+    budget_state: BudgetState | None = None,
+    budget_updates: Sequence[BudgetUpdate] | None = None,
 ) -> RuntimeComparisonResult:
     """AMC runtime bridge：执行“静态分析 vs 运行时仿真”的统一对照。
 
@@ -543,6 +641,8 @@ def compare_static_and_runtime(
         ordered_tasks=ordered_tasks,
         scenario=scenario,
         config=config,
+        budget_state=budget_state,
+        budget_updates=budget_updates,
     )
 
     return RuntimeComparisonResult(
@@ -566,5 +666,7 @@ __all__ = [
     "_select_highest_priority_ready_job",
     "_check_deadline_misses",
     "_should_switch_to_hi",
+    "_should_cancel_lo_job",
+    "_cancel_lo_job",
     "_drop_active_lo_jobs",
 ]

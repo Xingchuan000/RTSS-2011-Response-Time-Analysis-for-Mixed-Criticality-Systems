@@ -82,6 +82,18 @@ conda run -n amc-repro python scripts/run_single_example.py
 - 随机生成的任务参数
 - `ub_hl / smc / smc_no / amc_rtb / amc_max` 在同一任务集上的判定与响应时间
 
+## 4.1 如何运行 AMC+ Runtime 示例
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/run_amc_plus_runtime_example.py
+```
+
+输出会包含：
+- `AMC_PLUS` 与 `AMC` 在 LO overrun 场景下的行为差异
+- `mode_changes / lo_cancellations / recoveries / deadline_misses / final_mode`
+- dynamic budget 更新前后的结果差异
+
 ## 5. 如何运行小规模实验
 
 ```bash
@@ -110,6 +122,7 @@ conda run -n amc-repro python scripts/run_small_experiment.py
 │   └── experiments.py          # 统一评估、sweep、统计、绘图
 ├── scripts/
 │   ├── run_single_example.py   # 单任务集示例
+│   ├── run_amc_plus_runtime_example.py # AMC+/AMC runtime 对比示例
 │   ├── run_small_experiment.py # 小规模 sweep + CSV + 图
 │   └── run_experiments.py      # 兼容入口（调用小实验）
 ├── tests/                      # pytest 测试集合
