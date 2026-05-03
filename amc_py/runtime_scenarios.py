@@ -2,7 +2,7 @@
 
 本模块描述“每个 job 的实际执行时间如何被决定”这件事，它是 runtime
 仿真器与具体实验假设之间的接口层。AMC 语义中，任务的 `c_lo`/`c_hi`
-只是“预算上界”，而 job 真正会跑多久取决于实验设定：
+只是“设计时参数与分析上界”，而 job 真正会跑多久取决于实验设定：
 
 - **nominal**：所有 job 都跑 `c_lo`，不会触发 HI 切换；
 - **single HI overrun**：只有某个 HI 任务的指定 release 跑到 `c_hi`
@@ -14,10 +14,10 @@
 
 统一入口是 `ExecutionScenario`，runtime 仿真器在释放 job 时调用
 `scenario.actual_cost_for(task, release_index)` 取实际执行时间，并由
-本模块的 `_validate_actual_cost` 强制保证结果满足关键级约束：
+本模块的 `_validate_actual_cost` 保证基础合法性约束：
 
 - HI 任务：`1 <= actual_cost <= task.c_hi`
-- LO 任务：`1 <= actual_cost <= task.c_lo`
+- LO 任务：`actual_cost >= 1`（允许超过 `c_lo`，由 runtime 在预算层决定是否取消）
 """
 
 from __future__ import annotations
@@ -57,8 +57,8 @@ def _validate_actual_cost(task: Task, actual_cost: int) -> None:
     约束：
     - 必须是正整数（至少 1 个 tick），否则仿真器无法排程；
     - HI 任务：`actual_cost` 不得超过 `task.c_hi`；
-    - LO 任务：`actual_cost` 不得超过 `task.c_lo`；否则 AMC 语义下
-      LO 任务会在未经 HI 切换的情况下“越界”，属于实验设定错误。
+    - LO 任务：允许超过 `task.c_lo`，因为 AMC+ 运行时会在预算检查时
+      对超预算 LO job 进行局部取消。
 
     该函数在 scenario 层集中执行，这样无论是内置工厂还是用户自定义
     resolver，只要经过 `ExecutionScenario.actual_cost_for` 都能被拦下。
@@ -80,12 +80,8 @@ def _validate_actual_cost(task: Task, actual_cost: int) -> None:
                 f"HI 任务 {task.name} 的 actual_cost={actual_cost} 超过 c_hi={task.c_hi}"
             )
     else:
-        # LO 任务严禁超过 c_lo —— 超过意味着 LO 任务没有被及时熔断，
-        # 这在 AMC 模型中是不合法的运行时状态。
-        if actual_cost > task.c_lo:
-            raise ValueError(
-                f"LO 任务 {task.name} 的 actual_cost={actual_cost} 超过 c_lo={task.c_lo}"
-            )
+        # AMC+ 下 LO job 允许超过 c_lo，是否继续执行由 runtime budget 机制决定。
+        pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +210,33 @@ def make_single_hi_overrun_scenario(
     return ExecutionScenario(name=scenario_name, resolver=resolver)
 
 
+def make_single_lo_overrun_scenario(
+    task_name: str,
+    release_index: int = 0,
+    actual_cost: int | None = None,
+) -> ExecutionScenario:
+    """构造“单次 LO overrun”的场景。
+
+    语义：
+    - 命中指定任务和 release 时，返回 `actual_cost`（默认 `task.c_lo + 1`）；
+    - 命中的任务必须为 LO 任务；
+    - 其它所有 job 返回 `task.c_lo`。
+    """
+
+    if release_index < 0:
+        raise ValueError(f"release_index={release_index} 非法，必须 >= 0")
+
+    def resolver(task: Task, current_release_index: int) -> int:
+        if task.name == task_name and current_release_index == release_index:
+            if task.criticality is not Criticality.LO:
+                raise ValueError("single LO overrun scenario only supports LO tasks")
+            return actual_cost if actual_cost is not None else task.c_lo + 1
+        return task.c_lo
+
+    scenario_name = f"single_lo_overrun[{task_name}@{release_index}]"
+    return ExecutionScenario(name=scenario_name, resolver=resolver)
+
+
 def make_all_hi_jobs_hi_budget_scenario(
     task_names: Iterable[str] | None = None,
 ) -> ExecutionScenario:
@@ -329,6 +352,7 @@ __all__ = [
     "ExecutionScenario",
     "make_nominal_scenario",
     "make_single_hi_overrun_scenario",
+    "make_single_lo_overrun_scenario",
     "make_all_hi_jobs_hi_budget_scenario",
     "make_table_scenario",
 ]

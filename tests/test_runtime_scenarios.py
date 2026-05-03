@@ -20,6 +20,7 @@ from amc_py.runtime_models import (
     DeadlineMiss,
     Job,
     ModeSwitchEvent,
+    RuntimeSemantics,
     RuntimeComparisonResult,
     RuntimeConfig,
     ScheduleTick,
@@ -32,6 +33,7 @@ from amc_py.runtime_scenarios import (
     make_all_hi_jobs_hi_budget_scenario,
     make_nominal_scenario,
     make_single_hi_overrun_scenario,
+    make_single_lo_overrun_scenario,
     make_table_scenario,
 )
 
@@ -91,13 +93,11 @@ def test_validate_actual_cost_rejects_hi_task_above_c_hi() -> None:
         _validate_actual_cost(tasks["tau_hi"], actual_cost=6)
 
 
-def test_validate_actual_cost_rejects_lo_task_above_c_lo() -> None:
-    """LO 任务 actual_cost 超过 c_lo 时必须报错（AMC 约束）。"""
+def test_validate_actual_cost_allows_lo_task_above_c_lo() -> None:
+    """AMC+ 语义下 LO 任务允许超过 c_lo，取消逻辑由 runtime 层处理。"""
 
     tasks = _by_name(_reference_tasks())
-
-    with pytest.raises(ValueError, match="LO 任务 tau_lo .* 超过 c_lo=2"):
-        _validate_actual_cost(tasks["tau_lo"], actual_cost=3)
+    _validate_actual_cost(tasks["tau_lo"], actual_cost=3)
 
 
 def test_validate_actual_cost_rejects_nonpositive_values() -> None:
@@ -200,6 +200,25 @@ def test_single_hi_overrun_rejects_negative_release_index() -> None:
         make_single_hi_overrun_scenario("tau_hi", release_index=-1)
 
 
+def test_single_lo_overrun_returns_c_lo_plus_one_for_target_release() -> None:
+    """single LO overrun 场景应仅对命中 job 返回 c_lo+1。"""
+
+    tasks = _by_name(_reference_tasks())
+    scenario = make_single_lo_overrun_scenario("tau_lo", release_index=0)
+    assert scenario.actual_cost_for(tasks["tau_lo"], 0) == tasks["tau_lo"].c_lo + 1
+    assert scenario.actual_cost_for(tasks["tau_lo"], 1) == tasks["tau_lo"].c_lo
+    assert scenario.actual_cost_for(tasks["tau_hi"], 0) == tasks["tau_hi"].c_lo
+
+
+def test_single_lo_overrun_rejects_hi_task_target() -> None:
+    """single LO overrun 命中 HI 任务时应抛错。"""
+
+    tasks = _by_name(_reference_tasks())
+    scenario = make_single_lo_overrun_scenario("tau_hi", release_index=0)
+    with pytest.raises(ValueError, match="single LO overrun scenario only supports LO tasks"):
+        scenario.actual_cost_for(tasks["tau_hi"], 0)
+
+
 # ---------------------------------------------------------------------------
 # all HI jobs HI budget scenario
 # ---------------------------------------------------------------------------
@@ -300,15 +319,14 @@ def test_make_table_scenario_rejects_malformed_keys() -> None:
 
 
 def test_make_table_scenario_raises_when_lo_task_assigned_above_c_lo() -> None:
-    """对 LO 任务显式指定了大于 c_lo 的值时，调用 actual_cost_for 必须报错。"""
+    """AMC+ 语义下，对 LO 任务显式指定大于 c_lo 的值应允许通过。"""
 
     tasks = _by_name(_reference_tasks())
     scenario = make_table_scenario(
         actual_costs={("tau_lo", 0): tasks["tau_lo"].c_lo + 1},
     )
 
-    with pytest.raises(ValueError, match="LO 任务 tau_lo"):
-        scenario.actual_cost_for(tasks["tau_lo"], 0)
+    assert scenario.actual_cost_for(tasks["tau_lo"], 0) == tasks["tau_lo"].c_lo + 1
 
 
 def test_make_table_scenario_raises_when_hi_task_assigned_above_c_hi() -> None:
@@ -339,25 +357,23 @@ def test_execution_scenario_rejects_negative_release_index() -> None:
 
 
 def test_custom_resolver_can_be_wrapped_in_execution_scenario() -> None:
-    """用户自定义 resolver 也必须经过关键级校验：LO 超 c_lo 会被拦下。"""
+    """用户自定义 resolver 仍需经过关键级校验：HI 超 c_hi 会被拦下。"""
 
     tasks = _by_name(_reference_tasks())
 
     def custom_resolver(task: Task, release_index: int) -> int:
-        # 故意给 LO 任务返回非法的大值，以证明 ExecutionScenario.actual_cost_for
-        # 会在返回前执行统一校验。
-        if task.criticality is Criticality.LO:
-            return task.c_lo + 5
-        return task.c_lo
+        if task.criticality is Criticality.HI:
+            return task.c_hi + 1
+        return task.c_lo + 5
 
     scenario = ExecutionScenario(name="custom", resolver=custom_resolver)
 
-    # LO 任务触发校验失败。
-    with pytest.raises(ValueError, match="LO 任务 tau_lo"):
-        scenario.actual_cost_for(tasks["tau_lo"], 0)
+    # HI 任务触发校验失败。
+    with pytest.raises(ValueError, match="HI 任务 tau_hi"):
+        scenario.actual_cost_for(tasks["tau_hi"], 0)
 
-    # HI 任务仍能正常工作。
-    assert scenario.actual_cost_for(tasks["tau_hi"], 0) == tasks["tau_hi"].c_lo
+    # LO 任务超过 c_lo 在 AMC+ 场景层允许通过。
+    assert scenario.actual_cost_for(tasks["tau_lo"], 0) == tasks["tau_lo"].c_lo + 5
 
 
 def test_execution_scenario_rejects_float_actual_cost() -> None:
@@ -432,6 +448,7 @@ def test_runtime_config_defaults_and_validation() -> None:
     assert default_cfg.capture_trace is True
     assert default_cfg.stop_at_first_miss is False
     assert default_cfg.drop_lo_jobs_on_hi_switch is True
+    assert default_cfg.semantics is RuntimeSemantics.AMC_PLUS
 
     # end_time 允许为 None 或正整数。
     RuntimeConfig(end_time=100)
@@ -510,12 +527,14 @@ def test_simulation_result_helpers_group_jobs_and_modes() -> None:
     result = SimulationResult(
         jobs=[completed, running, dropped],
         trace=[ScheduleTick(time=0, executing_task="tau_hi", executing_release_index=0, mode=SystemMode.LO)],
-        mode_switch=ModeSwitchEvent(
-            switch_time=6,
-            triggering_task="tau_hi",
-            triggering_release_index=0,
-            executed_at_switch=3,
-        ),
+        mode_switches=[
+            ModeSwitchEvent(
+                switch_time=6,
+                triggering_task="tau_hi",
+                triggering_release_index=0,
+                executed_at_switch=3,
+            )
+        ],
         deadline_misses=[miss],
         end_time=20,
         final_mode=SystemMode.HI,

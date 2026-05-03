@@ -37,6 +37,13 @@ class SystemMode(str, Enum):
     HI = "HI"
 
 
+class RuntimeSemantics(str, Enum):
+    """运行时语义开关。"""
+
+    AMC = "AMC"
+    AMC_PLUS = "AMC_PLUS"
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     """运行时仿真器的配置参数集合。
@@ -50,8 +57,10 @@ class RuntimeConfig:
     - `capture_trace`: 是否记录每个 tick 的执行快照（便于调试/可视化，
       但会增加内存开销）。
     - `stop_at_first_miss`: 是否在首次出现 deadline miss 时立即停止仿真。
-    - `drop_lo_jobs_on_hi_switch`: 进入 HI 模式时是否丢弃所有未完成的
-      LO job。这是 AMC 的标准语义，但保留开关方便对比实验。
+    - `drop_lo_jobs_on_hi_switch`: 进入 HI 模式时是否丢弃所有未完成的 LO job。
+    - `semantics`: 运行时语义开关：
+      `AMC_PLUS` 表示 LO 超预算仅局部取消，HI 超预算触发模式切换；
+      `AMC` 表示任意任务超 LO 预算都触发模式切换。
 
     设计上使用 frozen dataclass，是为了强调“配置对象一经创建不再可变”，
     避免仿真器内部无意篡改用户传入的配置。
@@ -63,6 +72,7 @@ class RuntimeConfig:
     capture_trace: bool = True
     stop_at_first_miss: bool = False
     drop_lo_jobs_on_hi_switch: bool = True
+    semantics: RuntimeSemantics = RuntimeSemantics.AMC_PLUS
 
     def __post_init__(self) -> None:
         # 基本的范围校验：避免在仿真过程中才报错，尽量把问题前置。
@@ -148,6 +158,36 @@ class ModeSwitchEvent:
     triggering_task: str
     triggering_release_index: int
     executed_at_switch: int
+    budget_at_switch: int | None = None
+    reason: str = "hi_budget_overrun"
+
+
+@dataclass(frozen=True, slots=True)
+class JobCancellationEvent:
+    """记录一次 LO job 因运行时预算超限而被局部取消的事件。"""
+
+    cancel_time: int
+    task: str
+    release_index: int
+    executed_at_cancel: int
+    budget_at_cancel: int
+    reason: str = "lo_budget_overrun"
+
+
+@dataclass(frozen=True, slots=True)
+class ModeRecoveryEvent:
+    """记录一次 HI 模式在空闲后恢复到 LO 模式的事件。"""
+
+    recovery_time: int
+    reason: str = "idle"
+
+
+@dataclass(frozen=True, slots=True)
+class BudgetUpdateEvent:
+    """记录一次运行时预算更新事件。"""
+
+    time: int
+    updates: dict[str, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,7 +237,10 @@ class SimulationResult:
     字段含义：
     - `jobs`: 仿真过程中曾被释放出来的所有 job（含已完成/已丢弃/未完成）；
     - `trace`: 逐 tick 的调度快照，可能为空（当 `capture_trace=False`）；
-    - `mode_switch`: 本次仿真发生过的 `LO -> HI` 切换事件；None 表示未切换；
+    - `mode_switches`: 本次仿真发生过的 `LO -> HI` 切换事件列表；
+    - `mode_recoveries`: 本次仿真发生过的 `HI -> LO` 恢复事件列表；
+    - `budget_update_events`: 仿真期间应用的预算更新事件列表；
+    - `job_cancellations`: 记录 LO job 因预算超限被局部取消的事件列表；
     - `deadline_misses`: 本次仿真观察到的所有 deadline miss 记录；
     - `end_time`: 仿真实际终止时刻（不一定等于配置里的 end_time，
       例如 `stop_at_first_miss=True` 时可能提前结束）；
@@ -209,17 +252,40 @@ class SimulationResult:
 
     jobs: list[Job] = field(default_factory=list)
     trace: list[ScheduleTick] = field(default_factory=list)
-    mode_switch: ModeSwitchEvent | None = None
+    mode_switches: list[ModeSwitchEvent] = field(default_factory=list)
+    mode_recoveries: list[ModeRecoveryEvent] = field(default_factory=list)
+    budget_update_events: list[BudgetUpdateEvent] = field(default_factory=list)
+    job_cancellations: list[JobCancellationEvent] = field(default_factory=list)
     deadline_misses: list[DeadlineMiss] = field(default_factory=list)
     end_time: int = 0
     final_mode: SystemMode = SystemMode.LO
 
     # ---- 便捷视图（只做简单过滤，避免调用方重复写列表推导） ----
+    @property
+    def mode_switch(self) -> ModeSwitchEvent | None:
+        """兼容旧接口：返回第一条模式切换事件，不存在时返回 None。"""
+
+        return self.mode_switches[0] if self.mode_switches else None
 
     def mode_switched(self) -> bool:
         """本次仿真是否触发过 LO -> HI 切换。"""
 
-        return self.mode_switch is not None
+        return bool(self.mode_switches)
+
+    def mode_change_count(self) -> int:
+        """返回模式切换事件总次数。"""
+
+        return len(self.mode_switches)
+
+    def lo_job_cancellation_count(self) -> int:
+        """返回 LO job 局部取消事件总次数。"""
+
+        return len(self.job_cancellations)
+
+    def mode_recovery_count(self) -> int:
+        """返回 HI->LO 模式恢复事件总次数。"""
+
+        return len(self.mode_recoveries)
 
     def deadline_missed(self) -> bool:
         """本次仿真是否发生过任何 deadline miss。"""
@@ -289,9 +355,13 @@ class RuntimeComparisonResult:
 
 __all__ = [
     "SystemMode",
+    "RuntimeSemantics",
     "RuntimeConfig",
     "Job",
     "ModeSwitchEvent",
+    "ModeRecoveryEvent",
+    "BudgetUpdateEvent",
+    "JobCancellationEvent",
     "DeadlineMiss",
     "ScheduleTick",
     "SimulationResult",
