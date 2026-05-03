@@ -154,6 +154,9 @@ def main() -> None:
 
     rows: list[dict[str, int | float | str | bool]] = []
     global_step = 0
+    total_accepted_actions = 0
+    total_rejected_actions = 0
+    total_noop_actions = 0
     for episode in range(args.episodes):
         obs = env.reset(seed=args.seed + episode)
         done = False
@@ -184,6 +187,17 @@ def main() -> None:
             info = result.info
             accepted = bool(info.get("accepted"))
             rejected = action_id is not None and not accepted
+            noop = action_id is None
+            if accepted:
+                total_accepted_actions += 1
+            if rejected:
+                total_rejected_actions += 1
+            if noop:
+                total_noop_actions += 1
+            action_total = total_accepted_actions + total_rejected_actions + total_noop_actions
+            rejection_rate = (
+                (total_rejected_actions / action_total) if action_total > 0 else 0.0
+            )
             episode_reward += result.reward
             rows.append(
                 {
@@ -198,6 +212,7 @@ def main() -> None:
                     "action_id": "" if action_id is None else action_id,
                     "accepted": accepted,
                     "rejected": rejected,
+                    "rejection_rate": rejection_rate,
                     "reject_reason": "no_valid_action" if action_id is None else info.get("reject_reason", ""),
                     "valid_action_count": valid_action_count,
                     "masked_action_count": masked_action_count,
@@ -239,6 +254,7 @@ def main() -> None:
         "action_id",
         "accepted",
         "rejected",
+        "rejection_rate",
         "reject_reason",
         "valid_action_count",
         "masked_action_count",
