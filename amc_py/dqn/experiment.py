@@ -6,6 +6,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import random
 
+from amc_py.generator import generate_taskset
 from amc_py.models import Criticality, Task
 from amc_py.rl.env import AmcBudgetEnv
 from amc_py.rl.observation import NormalizationBounds, build_default_normalization_bounds
@@ -144,3 +145,32 @@ def build_seeded_taskset(seed: int) -> list[Task]:
         Task("L1", period=15, deadline=15, c_lo=lo_budget, c_hi=lo_budget, criticality=Criticality.LO),
         Task("L2", period=20, deadline=20, c_lo=3, c_hi=3, criticality=Criticality.LO),
     ]
+
+
+def build_rtss11_taskset(
+    seed: int,
+    total_util: float = 0.65,
+    num_tasks: int = 20,
+    cf: float = 2.0,
+    cp: float = 0.5,
+) -> list[Task]:
+    """构造 RTSS2011 风格任务集（仅生成，不做可调度筛选）。
+
+    说明：
+    - 该工厂只负责按照 RTSS2011 常见参数口径生成任务集；
+    - 不在本函数内执行 AMC-rtb 分析或筛选，便于后续阶段单独复用；
+    - 通过固定 seed 传入到底层 generator，保证同参可复现。
+    """
+
+    return generate_taskset(
+        num_tasks=num_tasks,
+        total_util=total_util,
+        min_period=10,
+        max_period=1000,
+        time_scale=100,
+        cf=cf,
+        cp=cp,
+        seed=seed,
+        deadline_mode="implicit",
+        criticality_assignment="bernoulli",
+    )
