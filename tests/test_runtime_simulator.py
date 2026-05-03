@@ -18,13 +18,16 @@ from __future__ import annotations
 
 import pytest
 
+from amc_py.budget_runtime import BudgetState
 from amc_py.models import Criticality, Task
 from amc_py.runtime import (
     _build_job,
+    _cancel_lo_job,
     _check_deadline_misses,
     _drop_active_lo_jobs,
     _release_jobs_at_time,
     _select_highest_priority_ready_job,
+    _should_cancel_lo_job,
     _should_switch_to_hi,
     compute_default_end_time,
     compute_hyperperiod,
@@ -40,6 +43,7 @@ from amc_py.runtime_scenarios import (
     make_all_hi_jobs_hi_budget_scenario,
     make_nominal_scenario,
     make_single_hi_overrun_scenario,
+    make_single_lo_overrun_scenario,
 )
 
 
@@ -348,7 +352,7 @@ def test_should_switch_to_hi_true_when_hi_task_exceeds_c_lo_in_lo_mode() -> None
         actual_cost=5,
         executed_time=3,  # > c_lo=2
     )
-    assert _should_switch_to_hi(job, SystemMode.LO) is True
+    assert _should_switch_to_hi(job, SystemMode.LO, budget=2) is True
 
 
 def test_should_switch_to_hi_false_at_or_below_c_lo() -> None:
@@ -363,7 +367,7 @@ def test_should_switch_to_hi_false_at_or_below_c_lo() -> None:
         actual_cost=5,
         executed_time=2,  # == c_lo
     )
-    assert _should_switch_to_hi(job, SystemMode.LO) is False
+    assert _should_switch_to_hi(job, SystemMode.LO, budget=2) is False
 
 
 def test_should_switch_to_hi_false_for_lo_tasks() -> None:
@@ -378,7 +382,7 @@ def test_should_switch_to_hi_false_for_lo_tasks() -> None:
         actual_cost=2,
         executed_time=10,  # 蓄意给个很大的值，仍不该触发
     )
-    assert _should_switch_to_hi(job, SystemMode.LO) is False
+    assert _should_switch_to_hi(job, SystemMode.LO, budget=2) is False
 
 
 def test_should_switch_to_hi_false_when_mode_already_hi() -> None:
@@ -393,7 +397,43 @@ def test_should_switch_to_hi_false_when_mode_already_hi() -> None:
         actual_cost=5,
         executed_time=4,
     )
-    assert _should_switch_to_hi(job, SystemMode.HI) is False
+    assert _should_switch_to_hi(job, SystemMode.HI, budget=2) is False
+
+
+def test_should_cancel_lo_job_true_when_lo_task_exceeds_runtime_budget() -> None:
+    """LO 任务在 LO 模式下超过运行时 budget 时应被取消。"""
+
+    task = _lo("l", period=10, c_lo=2)
+    job = Job(
+        task=task,
+        release_index=0,
+        release_time=0,
+        absolute_deadline=10,
+        actual_cost=4,
+        executed_time=3,
+    )
+    assert _should_cancel_lo_job(job, SystemMode.LO, budget=2) is True
+
+
+def test_cancel_lo_job_marks_drop_and_returns_event() -> None:
+    """取消 LO job 后应从活动队列移除并记录事件信息。"""
+
+    task = _lo("l", period=10, c_lo=2)
+    job = Job(
+        task=task,
+        release_index=0,
+        release_time=0,
+        absolute_deadline=10,
+        actual_cost=4,
+        executed_time=3,
+    )
+    active = [job]
+    event = _cancel_lo_job(active, job, current_time=4, budget=2)
+    assert job.dropped is True
+    assert job.drop_time == 4
+    assert active == []
+    assert event.task == "l"
+    assert event.budget_at_cancel == 2
 
 
 # ---------------------------------------------------------------------------
@@ -681,7 +721,8 @@ def test_single_hi_overrun_triggers_mode_switch_and_records_event() -> None:
     result = simulate_ordered_taskset(tasks, scenario, cfg)
 
     assert result.mode_switched() is True
-    assert result.final_mode is SystemMode.HI
+    assert result.mode_recovery_count() >= 1
+    assert result.final_mode is SystemMode.LO
     assert result.mode_switch is not None
     # h_0 在 t=0 与 t=1 连续执行，第二次执行后越过 c_lo=1，故切换时刻是 2。
     assert result.mode_switch.switch_time == 2
@@ -701,8 +742,9 @@ def test_hi_switch_drops_active_lo_jobs_when_drop_enabled() -> None:
     result = simulate_ordered_taskset(tasks, scenario, RuntimeConfig(end_time=12))
 
     lo_jobs = result.jobs_of("l")
-    assert len(lo_jobs) == 1
+    assert len(lo_jobs) >= 1
     # l_0 在 t=0 已释放，切换发生时仍未完成，因此应被 drop。
+    assert lo_jobs[0].release_index == 0
     assert lo_jobs[0].dropped is True
     assert lo_jobs[0].drop_time == 2
     assert lo_jobs[0].completion_time is None
@@ -727,7 +769,7 @@ def test_hi_switch_keeps_active_lo_jobs_when_drop_disabled() -> None:
 
 
 def test_hi_mode_suppresses_future_lo_releases_after_switch() -> None:
-    """HI 模式下应抑制未来 LO release：切换后不再生成新的 LO jobs。"""
+    """HI 模式下应抑制 LO release，恢复 LO 后只继续新周期 release，不补发历史周期。"""
 
     tasks = [
         _hi("h", period=6, c_lo=1, c_hi=3),
@@ -736,11 +778,13 @@ def test_hi_mode_suppresses_future_lo_releases_after_switch() -> None:
     scenario = make_single_hi_overrun_scenario("h", release_index=0, overrun_to="c_hi")
     result = simulate_ordered_taskset(tasks, scenario, RuntimeConfig(end_time=10))
 
-    # l 的理论释放时刻是 0,2,4,6,8；切换时刻为 2，因此只有 t=0 那次会被释放。
+    # l 的理论释放时刻是 0,2,4,6,8；切换时刻为 2，HI 期间（2,3）抑制 release，
+    # 恢复 LO 后从新周期继续，不补发 2 和 3 期间错过的 release。
     lo_jobs = result.jobs_of("l")
-    assert len(lo_jobs) == 1
-    assert lo_jobs[0].release_index == 0
-    assert lo_jobs[0].release_time == 0
+    release_indexes = [job.release_index for job in lo_jobs]
+    assert 0 in release_indexes
+    assert 1 not in release_indexes
+    assert 2 in release_indexes
 
 
 def test_mode_switch_happens_only_once_even_when_multiple_hi_jobs_overrun() -> None:
@@ -766,12 +810,80 @@ def test_mode_switch_happens_only_once_even_when_multiple_hi_jobs_overrun() -> N
 def test_custom_scenario_errors_propagate_out_of_simulator() -> None:
     """自定义 scenario 若返回非法 actual_cost，异常应直接透传给调用方。"""
 
-    # 故意构造一个会让 LO 任务“越过 c_lo”的 resolver，触发 _validate_actual_cost。
+    # 故意构造一个会让 HI 任务“越过 c_hi”的 resolver，触发 _validate_actual_cost。
     def bad_resolver(task: Task, release_index: int) -> int:  # noqa: ARG001
-        return task.c_lo + 5
+        return task.c_hi + 5
 
     bad_scenario = ExecutionScenario(name="bad", resolver=bad_resolver)
-    tasks = [_lo("a", period=5, c_lo=2)]
+    tasks = [_hi("a", period=5, c_lo=2, c_hi=3)]
 
-    with pytest.raises(ValueError, match="LO 任务"):
+    with pytest.raises(ValueError, match="HI 任务"):
         simulate_ordered_taskset(tasks, bad_scenario, RuntimeConfig(end_time=10))
+
+
+def test_lo_overrun_cancels_only_that_job_and_stays_lo_mode() -> None:
+    """LO overrun 只取消该 LO job，不触发 HI 切换。"""
+
+    tasks = [_hi("h", period=8, c_lo=2, c_hi=4), _lo("l", period=8, c_lo=2)]
+    scenario = make_single_lo_overrun_scenario("l", release_index=0, actual_cost=3)
+    result = simulate_ordered_taskset(tasks, scenario, RuntimeConfig(end_time=10))
+
+    assert result.lo_job_cancellation_count() == 1
+    assert result.mode_change_count() == 0
+    assert result.final_mode is SystemMode.LO
+
+
+def test_hi_overrun_uses_runtime_budget_not_task_c_lo() -> None:
+    """HI overrun 判定应使用 runtime budget，而不是 task.c_lo。"""
+
+    task = _hi("h", period=10, c_lo=3, c_hi=5)
+    tasks = [task]
+
+    no_switch = simulate_ordered_taskset(
+        tasks,
+        make_single_hi_overrun_scenario("h", release_index=0, overrun_to="c_hi"),
+        RuntimeConfig(end_time=6),
+        budget_state=BudgetState(budgets={"h": 5}, initial_budgets={"h": 5}),
+    )
+    assert no_switch.mode_change_count() == 0
+
+    switch = simulate_ordered_taskset(
+        tasks,
+        make_single_hi_overrun_scenario("h", release_index=0, overrun_to="c_hi"),
+        RuntimeConfig(end_time=6),
+        budget_state=BudgetState(budgets={"h": 4}, initial_budgets={"h": 4}),
+    )
+    assert switch.mode_change_count() == 1
+    assert switch.mode_switch is not None
+    assert switch.mode_switch.executed_at_switch == 5
+    assert switch.mode_switch.budget_at_switch == 4
+
+
+def test_default_budget_state_matches_old_c_lo_behavior() -> None:
+    """不传 budget_state 时应退回旧行为（budget=c_lo）。"""
+
+    tasks = [_hi("h", period=10, c_lo=3, c_hi=5)]
+    result = simulate_ordered_taskset(
+        tasks,
+        make_single_hi_overrun_scenario("h", release_index=0, overrun_to="c_hi"),
+        RuntimeConfig(end_time=6),
+    )
+    assert result.mode_change_count() == 1
+    assert result.mode_switch is not None
+    assert result.mode_switch.budget_at_switch == 3
+
+
+def test_runtime_budget_state_is_copied() -> None:
+    """仿真器应复制传入 budget_state，避免污染调用方对象。"""
+
+    tasks = [_hi("h", period=10, c_lo=3, c_hi=5)]
+    state = BudgetState.from_tasks(tasks)
+    before = state.copy()
+    simulate_ordered_taskset(
+        tasks,
+        make_nominal_scenario(),
+        RuntimeConfig(end_time=4),
+        budget_state=state,
+    )
+    assert state.budgets == before.budgets
+    assert state.initial_budgets == before.initial_budgets

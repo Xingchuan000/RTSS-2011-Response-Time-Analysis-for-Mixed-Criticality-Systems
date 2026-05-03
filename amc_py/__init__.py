@@ -12,17 +12,19 @@ from .models import (
     Task,
     TaskSet,
 )
+from .budget_runtime import BudgetState, BudgetUpdate
 from .runtime import (
     compare_static_and_runtime,
     simulate_ordered_taskset,
     simulate_taskset_with_policy,
 )
-from .runtime_models import Job, RuntimeConfig, SimulationResult, SystemMode
+from .runtime_models import Job, RuntimeConfig, RuntimeSemantics, SimulationResult, SystemMode
 from .runtime_scenarios import (
     ExecutionScenario,
     make_all_hi_jobs_hi_budget_scenario,
     make_nominal_scenario,
     make_single_hi_overrun_scenario,
+    make_single_lo_overrun_scenario,
     make_table_scenario,
 )
 
@@ -33,8 +35,11 @@ __all__ = [
     "TaskSet",
     "SchedulabilityResult",
     "PriorityAssignmentResult",
+    "BudgetState",
+    "BudgetUpdate",
     # --- runtime 数据模型 ---
     "RuntimeConfig",
+    "RuntimeSemantics",
     "SystemMode",
     "Job",
     "SimulationResult",
@@ -42,6 +47,7 @@ __all__ = [
     "ExecutionScenario",
     "make_nominal_scenario",
     "make_single_hi_overrun_scenario",
+    "make_single_lo_overrun_scenario",
     "make_all_hi_jobs_hi_budget_scenario",
     "make_table_scenario",
     # --- runtime 仿真与集成入口 ---
