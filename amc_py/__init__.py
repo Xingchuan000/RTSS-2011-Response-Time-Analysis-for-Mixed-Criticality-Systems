@@ -27,6 +27,7 @@ from .runtime_scenarios import (
     ExecutionScenario,
     make_all_hi_jobs_hi_budget_scenario,
     make_nominal_scenario,
+    make_rtss11_random_scenario,
     make_single_hi_overrun_scenario,
     make_single_lo_overrun_scenario,
     make_table_scenario,
@@ -50,6 +51,7 @@ __all__ = [
     # --- runtime scenario ---
     "ExecutionScenario",
     "make_nominal_scenario",
+    "make_rtss11_random_scenario",
     "make_single_hi_overrun_scenario",
     "make_single_lo_overrun_scenario",
     "make_all_hi_jobs_hi_budget_scenario",
