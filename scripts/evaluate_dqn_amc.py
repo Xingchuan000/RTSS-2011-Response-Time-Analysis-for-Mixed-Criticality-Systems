@@ -144,6 +144,8 @@ def _evaluate_dqn_once(
     budget_overruns = 0
     if hasattr(env, "_engine") and env._engine is not None:
         budget_overruns = _budget_overruns_from_result(env._engine.finish())
+    action_total = accepted_actions + rejected_actions + noop_actions
+    rejection_rate = (rejected_actions / action_total) if action_total > 0 else 0.0
 
     return {
         **row_base,
@@ -155,6 +157,7 @@ def _evaluate_dqn_once(
         "accepted_actions": accepted_actions,
         "rejected_actions": rejected_actions,
         "noop_actions": noop_actions,
+        "rejection_rate": rejection_rate,
         "total_reward": total_reward,
     }
 
@@ -281,6 +284,7 @@ def main() -> None:
         }
 
         if "amc_plus_baseline" in enabled_methods:
+            baseline_rejection_rate = 0.0
             rows.append(
                 {
                     **row_base,
@@ -292,11 +296,18 @@ def main() -> None:
                     "accepted_actions": 0,
                     "rejected_actions": 0,
                     "noop_actions": 0,
+                    "rejection_rate": baseline_rejection_rate,
                     "total_reward": 0.0,
                 }
             )
 
         if "noop_agent" in enabled_methods:
+            noop_total_actions = (
+                noop_result.accepted_actions + noop_result.rejected_actions + noop_result.noop_actions
+            )
+            noop_rejection_rate = (
+                (noop_result.rejected_actions / noop_total_actions) if noop_total_actions > 0 else 0.0
+            )
             rows.append(
                 {
                     **row_base,
@@ -308,11 +319,18 @@ def main() -> None:
                     "accepted_actions": noop_result.accepted_actions,
                     "rejected_actions": noop_result.rejected_actions,
                     "noop_actions": noop_result.noop_actions,
+                    "rejection_rate": noop_rejection_rate,
                     "total_reward": noop_result.total_reward,
                 }
             )
 
         if "random_agent" in enabled_methods:
+            random_total_actions = (
+                random_result.accepted_actions + random_result.rejected_actions + random_result.noop_actions
+            )
+            random_rejection_rate = (
+                (random_result.rejected_actions / random_total_actions) if random_total_actions > 0 else 0.0
+            )
             rows.append(
                 {
                     **row_base,
@@ -324,11 +342,22 @@ def main() -> None:
                     "accepted_actions": random_result.accepted_actions,
                     "rejected_actions": random_result.rejected_actions,
                     "noop_actions": random_result.noop_actions,
+                    "rejection_rate": random_rejection_rate,
                     "total_reward": random_result.total_reward,
                 }
             )
 
         if "heuristic_agent" in enabled_methods:
+            heuristic_total_actions = (
+                heuristic_result.accepted_actions
+                + heuristic_result.rejected_actions
+                + heuristic_result.noop_actions
+            )
+            heuristic_rejection_rate = (
+                (heuristic_result.rejected_actions / heuristic_total_actions)
+                if heuristic_total_actions > 0
+                else 0.0
+            )
             rows.append(
                 {
                     **row_base,
@@ -340,6 +369,7 @@ def main() -> None:
                     "accepted_actions": heuristic_result.accepted_actions,
                     "rejected_actions": heuristic_result.rejected_actions,
                     "noop_actions": heuristic_result.noop_actions,
+                    "rejection_rate": heuristic_rejection_rate,
                     "total_reward": heuristic_result.total_reward,
                 }
             )
@@ -376,6 +406,7 @@ def main() -> None:
         "accepted_actions",
         "rejected_actions",
         "noop_actions",
+        "rejection_rate",
         "total_reward",
         "end_time",
         "agent_period",
