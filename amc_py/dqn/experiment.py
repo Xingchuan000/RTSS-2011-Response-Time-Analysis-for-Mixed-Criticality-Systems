@@ -6,8 +6,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import random
 
+from amc_py.experiments import evaluate_taskset
 from amc_py.generator import generate_taskset
-from amc_py.models import Criticality, Task
+from amc_py.models import Criticality, SchedulabilityResult, Task
 from amc_py.rl.env import AmcBudgetEnv
 from amc_py.rl.observation import NormalizationBounds, build_default_normalization_bounds
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics
@@ -36,6 +37,16 @@ class ExperimentBundle:
     ordered_tasks: tuple[Task, ...]
     scenario: ExecutionScenario
     normalization_bounds: NormalizationBounds
+
+
+@dataclass(frozen=True, slots=True)
+class Rtss11TasksetBundle:
+    """保存可调度 RTSS2011 任务集筛选结果。"""
+
+    tasks: tuple[Task, ...]
+    analysis: SchedulabilityResult
+    seed: int
+    attempts: int
 
 
 def build_small_taskset(seed: int = 0) -> list[Task]:  # noqa: ARG001
@@ -173,4 +184,56 @@ def build_rtss11_taskset(
         seed=seed,
         deadline_mode="implicit",
         criticality_assignment="bernoulli",
+    )
+
+
+def build_schedulable_rtss11_taskset(
+    seed: int,
+    total_util: float = 0.65,
+    num_tasks: int = 20,
+    cf: float = 2.0,
+    cp: float = 0.5,
+    max_attempts: int = 100,
+) -> Rtss11TasksetBundle:
+    """构造 AMC-rtb 可调度的 RTSS2011 任务集。
+
+    实现约束：
+    - 每次尝试使用 `seed + offset` 生成任务集；
+    - 固定使用 AMC-rtb + OPA 进行筛选；
+    - 找到可调度任务集后立刻返回；
+    - 超过 `max_attempts` 仍失败时抛出包含末次分析信息的异常。
+    """
+
+    if max_attempts <= 0:
+        raise ValueError("max_attempts 必须为正整数")
+
+    last_analysis: SchedulabilityResult | None = None
+    last_seed: int | None = None
+
+    for offset in range(max_attempts):
+        candidate_seed = seed + offset
+        tasks = build_rtss11_taskset(
+            seed=candidate_seed,
+            total_util=total_util,
+            num_tasks=num_tasks,
+            cf=cf,
+            cp=cp,
+        )
+        analysis = evaluate_taskset(tasks, method="amc_rtb", priority_policy="opa")
+        if analysis.schedulable:
+            return Rtss11TasksetBundle(
+                tasks=tuple(tasks),
+                analysis=analysis,
+                seed=candidate_seed,
+                attempts=offset + 1,
+            )
+        last_analysis = analysis
+        last_seed = candidate_seed
+
+    assert last_analysis is not None
+    assert last_seed is not None
+    raise RuntimeError(
+        "未能在限定尝试次数内生成 AMC-rtb 可调度 RTSS2011 任务集："
+        f"max_attempts={max_attempts}, last_seed={last_seed}, "
+        f"last_details={last_analysis.details}"
     )

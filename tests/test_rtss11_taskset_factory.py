@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from amc_py.dqn import build_rtss11_taskset
+import pytest
+
+from amc_py.dqn import build_rtss11_taskset, build_schedulable_rtss11_taskset
 from amc_py.generator import taskset_total_util
-from amc_py.models import Criticality, Task
+from amc_py.models import Criticality, SchedulabilityResult, Task
 
 
 def _serialize_taskset(tasks: list[Task]) -> list[tuple[str, int, int, int, int, str]]:
@@ -51,3 +53,38 @@ def test_rtss11_taskset_total_util_matches_target_approximately() -> None:
     tasks = build_rtss11_taskset(seed=3, total_util=target, num_tasks=20)
     actual = taskset_total_util(tasks, mode=Criticality.LO)
     assert abs(actual - target) <= 0.01
+
+
+def test_build_schedulable_rtss11_taskset_returns_schedulable_set() -> None:
+    """可调度工厂应返回 AMC-rtb 可调度任务集。"""
+
+    bundle = build_schedulable_rtss11_taskset(seed=1, total_util=0.55, max_attempts=100)
+    assert bundle.analysis.schedulable is True
+    assert bundle.attempts >= 1
+    assert len(bundle.tasks) == 20
+
+
+def test_build_schedulable_rtss11_taskset_raises_clear_error_when_all_attempts_fail(monkeypatch) -> None:
+    """当所有尝试都不可调度时，应抛出清晰异常。"""
+
+    def _always_unschedulable(tasks, method, priority_policy):
+        return SchedulabilityResult(
+            schedulable=False,
+            method="amc_rtb",
+            response_times={},
+            details=f"forced_failure method={method} policy={priority_policy}",
+        )
+
+    monkeypatch.setattr("amc_py.dqn.experiment.evaluate_taskset", _always_unschedulable)
+
+    with pytest.raises(RuntimeError, match="max_attempts=3"):
+        build_schedulable_rtss11_taskset(seed=7, total_util=0.55, max_attempts=3)
+
+
+def test_build_schedulable_rtss11_taskset_returns_actual_used_seed() -> None:
+    """返回结果中的 seed 应是实际命中的 `seed + offset`。"""
+
+    base_seed = 9
+    bundle = build_schedulable_rtss11_taskset(seed=base_seed, total_util=0.55, max_attempts=100)
+    assert bundle.seed >= base_seed
+    assert bundle.attempts == bundle.seed - base_seed + 1
