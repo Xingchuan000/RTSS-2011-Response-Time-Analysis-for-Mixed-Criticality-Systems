@@ -215,3 +215,15 @@ conda run -n amc-repro python scripts/run_small_experiment.py
 2. 若要做行为逐行对齐，建议补齐：
    - `UUniFastDiscard` 的完整过滤规则
    - 与 `mceval` 相同的随机种子/任务筛选流程
+
+## 11. Pre-DQN runtime interface
+
+在接入 DQN 之前，当前仓库已经提供可直接用于训练循环的运行时环境封装：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python -m pytest -q tests/test_rl_env.py
+conda run -n amc-repro python scripts/run_pre_dqn_runtime_baselines.py --end-time 100 --seed 0
+```
+
+相关文档：`docs/pre_dqn_runtime_interface.md`。

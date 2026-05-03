@@ -1,0 +1,147 @@
+"""阶段 6：agent-driven runtime wrapper。"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+
+from amc_py.budget_runtime import BudgetState
+from amc_py.amc import build_design_r_lo_map
+from amc_py.event_runtime import EventRuntimeEngine
+from amc_py.models import Task
+from amc_py.rl.actions import apply_budget_action_candidate
+from amc_py.rl.agents import BudgetAgent
+from amc_py.rl.monitor import RuntimeMonitor
+from amc_py.rl.observation import NormalizationBounds, build_observation
+from amc_py.rl.safety import RuntimeBudgetSafetyChecker, merge_budget_candidate
+from amc_py.runtime_models import RuntimeConfig, SimulationResult
+from amc_py.runtime_scenarios import ExecutionScenario
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRuntimeConfig:
+    """agent 驱动仿真的配置。"""
+
+    agent_period: int = 10
+    end_time: int = 1000
+    check_safety: bool = True
+
+
+@dataclass(slots=True)
+class AgentRuntimeResult:
+    """agent 驱动仿真结果。"""
+
+    runtime_result: SimulationResult
+    accepted_actions: int
+    rejected_actions: int
+    noop_actions: int
+    total_reward: float
+    action_log: list[dict] = field(default_factory=list)
+
+
+def _default_safety_checker(ordered_tasks: Sequence[Task]) -> RuntimeBudgetSafetyChecker:
+    """构造默认安全检查器：必须使用 AMC-rtb 设计时 `R_LO`。"""
+
+    design_r_lo = build_design_r_lo_map(ordered_tasks)
+    return RuntimeBudgetSafetyChecker(ordered_tasks=ordered_tasks, design_r_lo=design_r_lo)
+
+
+def simulate_ordered_taskset_with_agent(
+    *,
+    ordered_tasks: Sequence[Task],
+    scenario: ExecutionScenario,
+    agent: BudgetAgent,
+    runtime_config: RuntimeConfig,
+    agent_config: AgentRuntimeConfig,
+    safety_checker: RuntimeBudgetSafetyChecker | None = None,
+    bounds: NormalizationBounds | None = None,
+) -> AgentRuntimeResult:
+    """以固定 agent 周期驱动 runtime，并记录动作接受/拒绝统计。"""
+
+    monitor = RuntimeMonitor()
+    runtime_cfg = RuntimeConfig(
+        end_time=agent_config.end_time,
+        jobs_per_task=runtime_config.jobs_per_task,
+        hyperperiod_limit=runtime_config.hyperperiod_limit,
+        capture_trace=runtime_config.capture_trace,
+        stop_at_first_miss=runtime_config.stop_at_first_miss,
+        drop_lo_jobs_on_hi_switch=runtime_config.drop_lo_jobs_on_hi_switch,
+        semantics=runtime_config.semantics,
+    )
+    engine = EventRuntimeEngine.build(
+        ordered_tasks=ordered_tasks,
+        scenario=scenario,
+        config=runtime_cfg,
+        budget_state=BudgetState.from_tasks(ordered_tasks),
+        monitor=monitor,
+    )
+
+    checker = safety_checker or _default_safety_checker(ordered_tasks)
+    accepted_actions = 0
+    rejected_actions = 0
+    noop_actions = 0
+    total_reward = 0.0
+    action_log: list[dict] = []
+
+    current_tick = 0
+    while current_tick < agent_config.end_time:
+        # 决策点前先处理同一时刻边界事件，保证观测语义稳定。
+        engine.run_until(current_tick, include_boundary=True)
+        total_reward += monitor.consume_reward()
+
+        observation = build_observation(
+            time=engine.current_time,
+            ordered_tasks=ordered_tasks,
+            budget_state=engine.runtime_budgets,
+            monitor=monitor,
+            bounds=bounds,
+        )
+        action = agent.select_action(observation)
+
+        if action is None:
+            noop_actions += 1
+            action_log.append({"time": current_tick, "accepted": False, "noop": True, "action_id": None})
+        else:
+            updates = apply_budget_action_candidate(
+                action=action,
+                budget_state=engine.runtime_budgets,
+                ordered_tasks=ordered_tasks,
+            )
+            merged = merge_budget_candidate(engine.runtime_budgets, updates)
+
+            accepted = True
+            reject_reason: str | None = None
+            if agent_config.check_safety:
+                report = checker.validate_candidate(merged)
+                accepted = report.accepted
+                reject_reason = None if accepted else report.reason
+
+            if accepted:
+                engine.apply_budget_updates(updates)
+                accepted_actions += 1
+            else:
+                rejected_actions += 1
+            action_log.append(
+                {
+                    "time": current_tick,
+                    "accepted": accepted,
+                    "noop": False,
+                    "action_id": action.action_id,
+                    "reject_reason": reject_reason,
+                    "updates": dict(updates),
+                }
+            )
+
+        current_tick += agent_config.agent_period
+
+    engine.run_until(agent_config.end_time)
+    total_reward += monitor.consume_reward()
+
+    return AgentRuntimeResult(
+        runtime_result=engine.finish(),
+        accepted_actions=accepted_actions,
+        rejected_actions=rejected_actions,
+        noop_actions=noop_actions,
+        total_reward=total_reward,
+        action_log=action_log,
+    )

@@ -1,21 +1,20 @@
 """事件驱动运行时（阶段三、四、五实现）。
 
-本版本新增能力：
-1. 固定优先级抢占；
-2. completion/overrun 事件 token 失效机制；
-3. BudgetOverrunEvent 的 AMC / AMC+ 语义；
-4. HI 模式下 LO release 抑制；
-5. 系统空闲时 HI -> LO 恢复。
+本版本在原有函数式仿真入口基础上新增 `EventRuntimeEngine`，用于：
+1. 支持分段推进（run_until）；
+2. 支持运行中应用预算更新（apply_budget_updates）；
+3. 保持原 `simulate_ordered_taskset_event_driven` API 兼容。
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from .budget_runtime import BudgetState, BudgetUpdate
 from .event_models import Event, EventQueue, EventType
 from .models import Criticality, Task
+from .rl.monitor import RuntimeMonitor
 from .runtime import compute_default_end_time
 from .runtime_models import (
     BudgetUpdateEvent,
@@ -32,7 +31,6 @@ from .runtime_models import (
 from .runtime_scenarios import ExecutionScenario
 
 
-# 事件驱动 runtime bridge 当前只支持 AMC family methods，口径与 tick runtime 保持一致。
 _EVENT_RUNTIME_BRIDGE_SUPPORTED_METHODS = {"amc_rtb", "amc_max"}
 
 
@@ -97,6 +95,7 @@ class _RuntimeState:
     event_token_counter: int
     valid_completion_tokens: dict[tuple[str, int], int]
     valid_overrun_tokens: dict[tuple[str, int], int]
+    started_jobs: set[tuple[str, int]]
 
     def next_token(self) -> int:
         """生成新 token。"""
@@ -167,7 +166,6 @@ def _schedule_running_job_events(
     remaining_to_completion = job.actual_cost - job.executed_time
     remaining_to_overrun = budget + 1 - job.executed_time
     if remaining_to_overrun <= 0 and remaining_to_completion > 0:
-        # 已执行量在预算更新后立刻越界：同一时刻触发 overrun 事件。
         overrun_token = state.next_token()
         state.valid_overrun_tokens[key] = overrun_token
         queue.push(
@@ -197,6 +195,17 @@ def _schedule_running_job_events(
         state.valid_overrun_tokens.pop(key, None)
 
 
+def _drop_active_lo_jobs(active_jobs: list[Job], now: int) -> None:
+    """切入 HI 模式时，丢弃所有未完成 LO job。"""
+
+    for job in list(active_jobs):
+        if job.task.criticality is not Criticality.LO or job.finished():
+            continue
+        job.dropped = True
+        job.drop_time = now
+        active_jobs.remove(job)
+
+
 def _reschedule(
     state: _RuntimeState,
     queue: EventQueue,
@@ -204,6 +213,7 @@ def _reschedule(
     priority_map: dict[str, int],
     now: int,
     cfg: RuntimeConfig,
+    monitor: RuntimeMonitor | None = None,
     force: bool = False,
 ) -> None:
     """按固定优先级重调度，必要时触发抢占并重排事件。"""
@@ -220,118 +230,190 @@ def _reschedule(
         state.run_started_at = None
         return
 
+    selected_key = _job_key(selected.task.name, selected.release_index)
+    if selected_key not in state.started_jobs:
+        state.started_jobs.add(selected_key)
+        if monitor is not None:
+            monitor.record_job_start(selected.task.name)
+
     state.run_started_at = now
     _schedule_running_job_events(state, queue, runtime_budgets, now, cfg)
 
 
-def _drop_active_lo_jobs(active_jobs: list[Job], now: int) -> None:
-    """切入 HI 模式时，丢弃所有未完成 LO job。"""
+@dataclass(slots=True)
+class EventRuntimeEngine:
+    """可分段推进的事件驱动 runtime 引擎。"""
 
-    for job in list(active_jobs):
-        if job.task.criticality is not Criticality.LO or job.finished():
-            continue
-        job.dropped = True
-        job.drop_time = now
-        active_jobs.remove(job)
+    ordered_tasks: Sequence[Task]
+    scenario: ExecutionScenario
+    config: RuntimeConfig
+    budget_state: BudgetState
+    end_time: int
+    monitor: RuntimeMonitor | None = None
+    task_names: list[str] = None  # type: ignore[assignment]
+    priority_map: dict[str, int] = None  # type: ignore[assignment]
+    task_map: dict[str, Task] = None  # type: ignore[assignment]
+    queue: EventQueue = None  # type: ignore[assignment]
+    result: SimulationResult = None  # type: ignore[assignment]
+    state: _RuntimeState = None  # type: ignore[assignment]
+    all_jobs: list[Job] = None  # type: ignore[assignment]
+    jobs_by_key: dict[tuple[str, int], Job] = None  # type: ignore[assignment]
+    halted: bool = False
 
+    def __post_init__(self) -> None:
+        """初始化事件队列与内部状态。"""
 
-def simulate_ordered_taskset_event_driven(
-    ordered_tasks: Sequence[Task],
-    scenario: ExecutionScenario,
-    config: RuntimeConfig | None = None,
-    budget_state: BudgetState | None = None,
-    budget_updates: Sequence[BudgetUpdate] | None = None,
-) -> SimulationResult:
-    """事件驱动仿真入口（阶段三、四、五）。"""
-
-    if not ordered_tasks:
-        raise ValueError("ordered_tasks 不能为空")
-
-    task_names = [task.name for task in ordered_tasks]
-    if len(task_names) != len(set(task_names)):
-        raise ValueError("ordered_tasks 中存在重复任务名")
-
-    cfg = config or RuntimeConfig()
-    runtime_budgets = (
-        budget_state.copy() if budget_state is not None else BudgetState.from_tasks(ordered_tasks)
-    )
-    updates = budget_updates or []
-
-    end_time = (
-        cfg.end_time
-        if cfg.end_time is not None
-        else compute_default_end_time(
-            ordered_tasks,
-            jobs_per_task=cfg.jobs_per_task,
-            hyperperiod_limit=cfg.hyperperiod_limit,
+        self.task_names = [task.name for task in self.ordered_tasks]
+        self.priority_map = {task.name: idx for idx, task in enumerate(self.ordered_tasks)}
+        self.task_map = {task.name: task for task in self.ordered_tasks}
+        self.queue = EventQueue()
+        self.result = SimulationResult()
+        self.state = _RuntimeState(
+            current_time=0,
+            mode=SystemMode.LO,
+            active_jobs=[],
+            running_job=None,
+            run_started_at=None,
+            event_token_counter=0,
+            valid_completion_tokens={},
+            valid_overrun_tokens={},
+            started_jobs=set(),
         )
-    )
-    priority_map = {task.name: idx for idx, task in enumerate(ordered_tasks)}
-    task_map = {task.name: task for task in ordered_tasks}
+        self.all_jobs: list[Job] = []
+        self.jobs_by_key: dict[tuple[str, int], Job] = {}
 
-    queue = EventQueue()
-    for task in ordered_tasks:
-        queue.push(
-            Event(
-                time=0,
-                event_type=EventType.JOB_ARRIVAL,
-                task_name=task.name,
-                release_index=0,
+        if self.monitor is not None:
+            self.monitor.ensure_tasks(self.task_names)
+
+        for task in self.ordered_tasks:
+            self.queue.push(
+                Event(
+                    time=0,
+                    event_type=EventType.JOB_ARRIVAL,
+                    task_name=task.name,
+                    release_index=0,
+                )
+            )
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        ordered_tasks: Sequence[Task],
+        scenario: ExecutionScenario,
+        config: RuntimeConfig | None = None,
+        budget_state: BudgetState | None = None,
+        budget_updates: Sequence[BudgetUpdate] | None = None,
+        monitor: RuntimeMonitor | None = None,
+    ) -> "EventRuntimeEngine":
+        """按旧入口参数构建可运行引擎。"""
+
+        if not ordered_tasks:
+            raise ValueError("ordered_tasks 不能为空")
+
+        task_names = [task.name for task in ordered_tasks]
+        if len(task_names) != len(set(task_names)):
+            raise ValueError("ordered_tasks 中存在重复任务名")
+
+        cfg = config or RuntimeConfig()
+        runtime_budgets = (
+            budget_state.copy() if budget_state is not None else BudgetState.from_tasks(ordered_tasks)
+        )
+        end_time = (
+            cfg.end_time
+            if cfg.end_time is not None
+            else compute_default_end_time(
+                ordered_tasks,
+                jobs_per_task=cfg.jobs_per_task,
+                hyperperiod_limit=cfg.hyperperiod_limit,
             )
         )
-    for update in updates:
-        if update.time < 0:
-            raise ValueError("budget update time 必须为非负整数")
-        queue.push(
-            Event(
-                time=update.time,
-                event_type=EventType.BUDGET_UPDATE,
-                payload={"updates": dict(update.updates)},
+
+        engine = cls(
+            ordered_tasks=ordered_tasks,
+            scenario=scenario,
+            config=cfg,
+            budget_state=runtime_budgets,
+            end_time=end_time,
+            monitor=monitor,
+        )
+        for update in budget_updates or []:
+            if update.time < 0:
+                raise ValueError("budget update time 必须为非负整数")
+            engine.queue.push(
+                Event(
+                    time=update.time,
+                    event_type=EventType.BUDGET_UPDATE,
+                    payload={"updates": dict(update.updates)},
+                )
             )
+        return engine
+
+    @property
+    def current_time(self) -> int:
+        """返回当前引擎时间。"""
+
+        return self.state.current_time
+
+    @property
+    def runtime_budgets(self) -> BudgetState:
+        """返回当前运行时预算状态。"""
+
+        return self.budget_state
+
+    def apply_budget_updates(self, updates: Mapping[str, int]) -> None:
+        """在当前时刻应用预算更新，并强制触发重调度。"""
+
+        update_payload = dict(updates)
+        self.budget_state.apply_updates(update_payload)
+        self.result.budget_update_events.append(
+            BudgetUpdateEvent(time=self.state.current_time, updates=update_payload)
+        )
+        _reschedule(
+            self.state,
+            self.queue,
+            self.budget_state,
+            self.priority_map,
+            self.state.current_time,
+            self.config,
+            monitor=self.monitor,
+            force=True,
         )
 
-    result = SimulationResult()
-    state = _RuntimeState(
-        current_time=0,
-        mode=SystemMode.LO,
-        active_jobs=[],
-        running_job=None,
-        run_started_at=None,
-        event_token_counter=0,
-        valid_completion_tokens={},
-        valid_overrun_tokens={},
-    )
-    all_jobs: list[Job] = []
-    jobs_by_key: dict[tuple[str, int], Job] = {}
+    def _process_event(self, event: Event) -> bool:
+        """处理单个事件。返回 False 表示应终止运行。"""
 
-    while not queue.empty():
-        event = queue.pop()
-        if event.time >= end_time:
-            break
-        state.current_time = event.time
-        _update_running_progress(state, event.time)
+        self.state.current_time = event.time
+        _update_running_progress(self.state, event.time)
 
         if event.event_type is EventType.BUDGET_UPDATE:
             update_payload = dict(event.payload.get("updates", {}))
-            runtime_budgets.apply_updates(update_payload)
-            result.budget_update_events.append(
+            self.budget_state.apply_updates(update_payload)
+            self.result.budget_update_events.append(
                 BudgetUpdateEvent(time=event.time, updates=dict(update_payload))
             )
             _reschedule(
-                state, queue, runtime_budgets, priority_map, event.time, cfg, force=True
+                self.state,
+                self.queue,
+                self.budget_state,
+                self.priority_map,
+                event.time,
+                self.config,
+                monitor=self.monitor,
+                force=True,
             )
-            continue
+            return True
 
         if event.event_type is EventType.JOB_ARRIVAL:
             assert event.task_name is not None
             assert event.release_index is not None
-            task = task_map[event.task_name]
+            task = self.task_map[event.task_name]
 
-            if state.mode is SystemMode.HI and task.criticality is Criticality.LO:
+            if self.state.mode is SystemMode.HI and task.criticality is Criticality.LO:
                 next_release_index = event.release_index + 1
                 next_release_time = next_release_index * task.period
-                if next_release_time < end_time:
-                    queue.push(
+                if next_release_time < self.end_time:
+                    self.queue.push(
                         Event(
                             time=next_release_time,
                             event_type=EventType.JOB_ARRIVAL,
@@ -339,14 +421,22 @@ def simulate_ordered_taskset_event_driven(
                             release_index=next_release_index,
                         )
                     )
-                _reschedule(state, queue, runtime_budgets, priority_map, event.time, cfg)
-                continue
+                _reschedule(
+                    self.state,
+                    self.queue,
+                    self.budget_state,
+                    self.priority_map,
+                    event.time,
+                    self.config,
+                    monitor=self.monitor,
+                )
+                return True
 
-            job = _build_job(task, event.release_index, scenario)
-            state.active_jobs.append(job)
-            all_jobs.append(job)
-            jobs_by_key[_job_key(task.name, event.release_index)] = job
-            queue.push(
+            job = _build_job(task, event.release_index, self.scenario)
+            self.state.active_jobs.append(job)
+            self.all_jobs.append(job)
+            self.jobs_by_key[_job_key(task.name, event.release_index)] = job
+            self.queue.push(
                 Event(
                     time=job.absolute_deadline,
                     event_type=EventType.DEADLINE_CHECK,
@@ -357,8 +447,8 @@ def simulate_ordered_taskset_event_driven(
 
             next_release_index = event.release_index + 1
             next_release_time = next_release_index * task.period
-            if next_release_time < end_time:
-                queue.push(
+            if next_release_time < self.end_time:
+                self.queue.push(
                     Event(
                         time=next_release_time,
                         event_type=EventType.JOB_ARRIVAL,
@@ -367,77 +457,99 @@ def simulate_ordered_taskset_event_driven(
                     )
                 )
 
-            _reschedule(state, queue, runtime_budgets, priority_map, event.time, cfg)
-            continue
+            _reschedule(
+                self.state,
+                self.queue,
+                self.budget_state,
+                self.priority_map,
+                event.time,
+                self.config,
+                monitor=self.monitor,
+            )
+            return True
 
         if event.event_type is EventType.DEADLINE_CHECK:
             assert event.task_name is not None
             assert event.release_index is not None
             key = _job_key(event.task_name, event.release_index)
-            job = jobs_by_key.get(key)
+            job = self.jobs_by_key.get(key)
             if job is None:
-                continue
+                return True
             if not job.finished():
-                result.deadline_misses.append(
+                self.result.deadline_misses.append(
                     DeadlineMiss(
                         task=job.task.name,
                         release_index=job.release_index,
                         release_time=job.release_time,
                         absolute_deadline=job.absolute_deadline,
-                        mode_at_miss=state.mode,
+                        mode_at_miss=self.state.mode,
                         executed_at_miss=job.executed_time,
                     )
                 )
-                if cfg.stop_at_first_miss:
-                    break
-            continue
+                if self.config.stop_at_first_miss:
+                    return False
+            return True
 
         if event.event_type is EventType.JOB_COMPLETION:
             assert event.task_name is not None
             assert event.release_index is not None
             assert event.token is not None
             key = _job_key(event.task_name, event.release_index)
-            if state.valid_completion_tokens.get(key) != event.token:
-                continue
+            if self.state.valid_completion_tokens.get(key) != event.token:
+                return True
 
-            job = jobs_by_key.get(key)
-            if job is None or state.running_job is not job:
-                continue
+            job = self.jobs_by_key.get(key)
+            if job is None or self.state.running_job is not job:
+                return True
 
             job.executed_time = job.actual_cost
             job.completion_time = event.time
-            if job in state.active_jobs:
-                state.active_jobs.remove(job)
-            _invalidate_job_events(state, job)
-            state.running_job = None
-            state.run_started_at = None
-            _maybe_recover_to_lo(state, result, event.time)
-            _reschedule(state, queue, runtime_budgets, priority_map, event.time, cfg)
-            continue
+            if self.monitor is not None:
+                self.monitor.record_job_completion(job.task.name, job.executed_time)
+            if job in self.state.active_jobs:
+                self.state.active_jobs.remove(job)
+            _invalidate_job_events(self.state, job)
+            self.state.running_job = None
+            self.state.run_started_at = None
+            _maybe_recover_to_lo(self.state, self.result, event.time)
+            _reschedule(
+                self.state,
+                self.queue,
+                self.budget_state,
+                self.priority_map,
+                event.time,
+                self.config,
+                monitor=self.monitor,
+            )
+            return True
 
         if event.event_type is EventType.BUDGET_OVERRUN:
             assert event.task_name is not None
             assert event.release_index is not None
             assert event.token is not None
             key = _job_key(event.task_name, event.release_index)
-            if state.valid_overrun_tokens.get(key) != event.token:
-                continue
+            if self.state.valid_overrun_tokens.get(key) != event.token:
+                return True
 
-            job = jobs_by_key.get(key)
-            if job is None or state.running_job is not job:
-                continue
+            job = self.jobs_by_key.get(key)
+            if job is None or self.state.running_job is not job:
+                return True
 
-            budget = runtime_budgets.budget_of(job.task)
+            budget = self.budget_state.budget_of(job.task)
             if job.executed_time <= budget:
-                # 理论上不应命中；若因重排导致事件边界变化，直接忽略旧事件。
-                continue
+                return True
 
-            if cfg.semantics is RuntimeSemantics.AMC_PLUS and job.task.criticality is Criticality.LO:
+            if (
+                self.config.semantics is RuntimeSemantics.AMC_PLUS
+                and job.task.criticality is Criticality.LO
+            ):
+                if self.monitor is not None:
+                    self.monitor.record_lo_budget_overrun(job.task.name, job.executed_time)
                 job.dropped = True
                 job.drop_time = event.time
-                if job in state.active_jobs:
-                    state.active_jobs.remove(job)
-                result.job_cancellations.append(
+                if job in self.state.active_jobs:
+                    self.state.active_jobs.remove(job)
+                self.result.job_cancellations.append(
                     JobCancellationEvent(
                         cancel_time=event.time,
                         task=job.task.name,
@@ -446,20 +558,34 @@ def simulate_ordered_taskset_event_driven(
                         budget_at_cancel=budget,
                     )
                 )
-                _invalidate_job_events(state, job)
-                state.running_job = None
-                state.run_started_at = None
-                _maybe_recover_to_lo(state, result, event.time)
-                _reschedule(state, queue, runtime_budgets, priority_map, event.time, cfg)
-                continue
+                _invalidate_job_events(self.state, job)
+                self.state.running_job = None
+                self.state.run_started_at = None
+                _maybe_recover_to_lo(self.state, self.result, event.time)
+                _reschedule(
+                    self.state,
+                    self.queue,
+                    self.budget_state,
+                    self.priority_map,
+                    event.time,
+                    self.config,
+                    monitor=self.monitor,
+                )
+                return True
+
+            if self.monitor is not None:
+                if job.task.criticality is Criticality.HI:
+                    self.monitor.record_hi_budget_overrun(job.task.name, job.executed_time)
+                else:
+                    self.monitor.record_lo_budget_overrun(job.task.name, job.executed_time)
 
             reason = (
                 "hi_budget_overrun"
                 if job.task.criticality is Criticality.HI
                 else "lo_budget_overrun_standard_amc"
             )
-            state.mode = SystemMode.HI
-            result.mode_switches.append(
+            self.state.mode = SystemMode.HI
+            self.result.mode_switches.append(
                 ModeSwitchEvent(
                     switch_time=event.time,
                     triggering_task=job.task.name,
@@ -470,24 +596,86 @@ def simulate_ordered_taskset_event_driven(
                 )
             )
 
-            if cfg.drop_lo_jobs_on_hi_switch:
-                _drop_active_lo_jobs(state.active_jobs, event.time)
+            if self.config.drop_lo_jobs_on_hi_switch:
+                _drop_active_lo_jobs(self.state.active_jobs, event.time)
 
-            if state.running_job is not None and (
-                state.running_job.dropped or state.running_job.finished()
+            if self.state.running_job is not None and (
+                self.state.running_job.dropped or self.state.running_job.finished()
             ):
-                _invalidate_job_events(state, state.running_job)
-                state.running_job = None
-                state.run_started_at = None
+                _invalidate_job_events(self.state, self.state.running_job)
+                self.state.running_job = None
+                self.state.run_started_at = None
 
-            _maybe_recover_to_lo(state, result, event.time)
-            _reschedule(state, queue, runtime_budgets, priority_map, event.time, cfg)
-            continue
+            _maybe_recover_to_lo(self.state, self.result, event.time)
+            _reschedule(
+                self.state,
+                self.queue,
+                self.budget_state,
+                self.priority_map,
+                event.time,
+                self.config,
+                monitor=self.monitor,
+            )
+            return True
 
-    result.jobs = all_jobs
-    result.end_time = min(state.current_time, end_time)
-    result.final_mode = state.mode
-    return result
+        return True
+
+    def run_until(self, stop_time: int, include_boundary: bool = False) -> None:
+        """推进仿真直到 stop_time。
+
+        - `include_boundary=False`：不处理 `time == stop_time` 的事件；
+        - `include_boundary=True`：处理到并包含 `time == stop_time` 的事件。
+        """
+
+        target_time = min(stop_time, self.end_time)
+        halted_now = False
+        while not self.queue.empty():
+            event = self.queue.pop()
+            if include_boundary:
+                boundary_hit = event.time > target_time
+            else:
+                boundary_hit = event.time >= target_time
+            if boundary_hit:
+                self.queue.push(event)
+                break
+            if event.time >= self.end_time:
+                break
+            if not self._process_event(event):
+                self.halted = True
+                halted_now = True
+                break
+        if self.state.current_time < target_time and not halted_now and not self.halted:
+            self.state.current_time = target_time
+
+    def finish(self) -> SimulationResult:
+        """收敛并输出最终仿真结果。"""
+
+        self.result.jobs = self.all_jobs
+        self.result.end_time = min(self.state.current_time, self.end_time)
+        self.result.final_mode = self.state.mode
+        return self.result
+
+
+def simulate_ordered_taskset_event_driven(
+    ordered_tasks: Sequence[Task],
+    scenario: ExecutionScenario,
+    config: RuntimeConfig | None = None,
+    budget_state: BudgetState | None = None,
+    budget_updates: Sequence[BudgetUpdate] | None = None,
+    monitor: RuntimeMonitor | None = None,
+) -> SimulationResult:
+    """事件驱动仿真入口（保持原 API，内部转发到 EventRuntimeEngine）。"""
+
+    engine = EventRuntimeEngine.build(
+        ordered_tasks=ordered_tasks,
+        scenario=scenario,
+        config=config,
+        budget_state=budget_state,
+        budget_updates=budget_updates,
+        monitor=monitor,
+    )
+    engine.run_until(engine.end_time)
+    return engine.finish()
 
 
 def simulate_taskset_with_policy_event_driven(
@@ -498,12 +686,12 @@ def simulate_taskset_with_policy_event_driven(
     config: RuntimeConfig | None = None,
     budget_state: BudgetState | None = None,
     budget_updates: Sequence[BudgetUpdate] | None = None,
+    monitor: RuntimeMonitor | None = None,
 ) -> SimulationResult:
     """事件驱动 runtime 的策略桥接入口。"""
 
     _validate_event_runtime_bridge_method(method)
 
-    # 局部导入，避免模块初始化时把 experiments 的较大依赖链提前拉起。
     from .experiments import resolve_ordering
 
     ordered_tasks = resolve_ordering(tasks, priority_policy, method)
@@ -513,10 +701,12 @@ def simulate_taskset_with_policy_event_driven(
         config=config,
         budget_state=budget_state,
         budget_updates=budget_updates,
+        monitor=monitor,
     )
 
 
 __all__ = [
+    "EventRuntimeEngine",
     "simulate_ordered_taskset_event_driven",
     "simulate_taskset_with_policy_event_driven",
 ]
