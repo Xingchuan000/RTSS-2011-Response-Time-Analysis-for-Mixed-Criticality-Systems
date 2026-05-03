@@ -12,6 +12,7 @@ dependencies = [
     "numpy",
     "pandas",
     "matplotlib",
+    "torch",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +24,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["amc_py"]
+packages = ["amc_py", "amc_py.rl", "amc_py.dqn"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
