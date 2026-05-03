@@ -9,6 +9,25 @@ from .models import Criticality, SchedulabilityResult, Task
 from .rta import compute_r_hi, compute_r_lo, solve_fixed_point
 
 
+def build_design_r_lo_map(ordered_tasks: Sequence[Task]) -> dict[str, int]:
+    """按优先级顺序计算并返回设计时 `R_LO` 映射。
+
+    说明：
+    - 该函数用于运行时 safety checker 的前置输入；
+    - 只返回 HI 任务的 `R_LO`，与运行时检查公式需求一致；
+    - 若任意任务 `R_LO` 不可解，则立即抛出异常，避免静默退化。
+    """
+
+    r_lo_map: dict[str, int] = {}
+    for idx, task in enumerate(ordered_tasks):
+        r_lo = compute_r_lo(task, ordered_tasks[:idx])
+        if r_lo is None:
+            raise ValueError(f"任务 {task.name} 的设计时 R_LO 不可解，无法构造运行时安全检查器")
+        if task.criticality is Criticality.HI:
+            r_lo_map[task.name] = r_lo
+    return r_lo_map
+
+
 def compute_amc_rtb_response_time(
     task: Task,
     higher_priority_tasks: Sequence[Task],
