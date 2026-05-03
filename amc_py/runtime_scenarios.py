@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+import math
+import random
 from numbers import Integral
 
 from .models import Criticality, Task
@@ -347,6 +349,96 @@ def make_table_scenario(
     return ExecutionScenario(name=scenario_name, resolver=resolver)
 
 
+def make_rtss11_random_scenario(
+    tasks: Iterable[Task],
+    seed: int,
+    hi_overrun_prob: float = 0.05,
+    lo_overrun_prob: float = 0.10,
+    lo_overrun_factor: float = 1.5,
+) -> ExecutionScenario:
+    """构造 RTSS2011 风格随机执行场景。
+
+    采样规则：
+    - HI 任务：
+      1. 以 `1 - hi_overrun_prob` 的概率采样 `[0.5*C_LO, C_LO]`；
+      2. 以 `hi_overrun_prob` 的概率采样 `(C_LO, C_HI]`。
+    - LO 任务：
+      1. 以 `1 - lo_overrun_prob` 的概率采样 `[0.5*C_LO, C_LO]`；
+      2. 以 `lo_overrun_prob` 的概率采样 `(C_LO, lo_overrun_factor*C_LO]`。
+
+    设计说明：
+    - 使用 `(seed, task_name, release_index)` 构造局部 RNG，确保同一 taskset + seed
+      在任意调用顺序下都可复现同样的样本；
+    - HI 任务采样上界严格受 `C_HI` 约束，永不超过设计时 HI 预算。
+    """
+
+    if not (0.0 <= hi_overrun_prob <= 1.0):
+        raise ValueError("hi_overrun_prob 必须在 [0,1] 区间内")
+    if not (0.0 <= lo_overrun_prob <= 1.0):
+        raise ValueError("lo_overrun_prob 必须在 [0,1] 区间内")
+    if lo_overrun_factor <= 1.0:
+        raise ValueError("lo_overrun_factor 必须 > 1")
+
+    task_list = list(tasks)
+    if not task_list:
+        raise ValueError("tasks 不能为空")
+
+    # 预先做参数可实现性校验，避免运行到中途才暴露“区间为空”的配置问题。
+    if hi_overrun_prob > 0.0:
+        for task in task_list:
+            if task.criticality is Criticality.HI and task.c_hi <= task.c_lo:
+                raise ValueError(
+                    f"HI 任务 {task.name} 的 c_hi={task.c_hi} 不大于 c_lo={task.c_lo}，"
+                    "在 hi_overrun_prob>0 时无法采样 (C_LO, C_HI] 区间"
+                )
+    if lo_overrun_prob > 0.0:
+        for task in task_list:
+            if task.criticality is Criticality.LO and math.floor(lo_overrun_factor * task.c_lo) <= task.c_lo:
+                raise ValueError(
+                    f"LO 任务 {task.name} 的 c_lo={task.c_lo} 与 lo_overrun_factor={lo_overrun_factor} "
+                    "无法形成 (C_LO, lo_overrun_factor*C_LO] 区间"
+                )
+
+    def _task_name_code(name: str) -> int:
+        """把任务名编码为稳定整数，避免依赖 Python 随机哈希。"""
+
+        acc = 0
+        for idx, ch in enumerate(name):
+            acc += (idx + 1) * ord(ch)
+        return acc
+
+    def _job_rng(task: Task, release_index: int) -> random.Random:
+        """为每个 job 构造独立 RNG，保证采样与调用顺序无关。"""
+
+        mixed_seed = (
+            seed * 1_000_003
+            + _task_name_code(task.name) * 97
+            + release_index * 9_973
+        )
+        return random.Random(mixed_seed)
+
+    def resolver(task: Task, release_index: int) -> int:
+        rng = _job_rng(task, release_index)
+        nominal_low = max(1, math.ceil(0.5 * task.c_lo))
+        nominal_high = task.c_lo
+
+        if task.criticality is Criticality.HI:
+            if rng.random() < hi_overrun_prob:
+                return rng.randint(task.c_lo + 1, task.c_hi)
+            return rng.randint(nominal_low, nominal_high)
+
+        if rng.random() < lo_overrun_prob:
+            lo_overrun_upper = math.floor(lo_overrun_factor * task.c_lo)
+            return rng.randint(task.c_lo + 1, lo_overrun_upper)
+        return rng.randint(nominal_low, nominal_high)
+
+    scenario_name = (
+        "rtss11_random"
+        f"[seed={seed},hi_p={hi_overrun_prob},lo_p={lo_overrun_prob},lo_f={lo_overrun_factor}]"
+    )
+    return ExecutionScenario(name=scenario_name, resolver=resolver)
+
+
 __all__ = [
     "ActualCostResolver",
     "ExecutionScenario",
@@ -355,4 +447,5 @@ __all__ = [
     "make_single_lo_overrun_scenario",
     "make_all_hi_jobs_hi_budget_scenario",
     "make_table_scenario",
+    "make_rtss11_random_scenario",
 ]
