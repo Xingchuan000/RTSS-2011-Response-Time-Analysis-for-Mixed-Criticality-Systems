@@ -221,7 +221,20 @@ def _resolve_ordering(
     priority_policy: str,
     method: str,
 ) -> tuple[list[Task], PriorityAssignmentResult | None]:
-    """根据优先级策略生成有序任务列表。"""
+    """内部实现：根据优先级策略生成有序任务列表，并附带 OPA 分配结果。
+
+    说明：
+    - 该函数是 `resolve_ordering()` 公共接口的底层实现，继续保留私有版本的原因是
+      `evaluate_taskset()` 在 OPA 失败时需要拿到完整的 `PriorityAssignmentResult`，
+      以便把失败原因回填进 `SchedulabilityResult.details`。
+    - 公共调用路径应通过 `resolve_ordering()` 访问；runtime 等外部模块也应统一使用
+      公共接口，避免与此处 tuple 返回值耦合。
+
+    返回：
+    - 一个二元组 `(ordered_tasks, opa_result)`：
+      * `ordered_tasks`: 按最终优先级从高到低排列的任务列表。OPA 失败时为空列表。
+      * `opa_result`:     仅在 `priority_policy == "opa"` 时有意义，其余策略为 None。
+    """
 
     # DM：按截止期升序排序。
     if priority_policy == "dm":
@@ -236,6 +249,7 @@ def _resolve_ordering(
         lowest_priority_test_fn = _resolve_opa_lowest_priority_test(method)
         opa_result = audsley_opa(tasks, lowest_priority_test_fn)
         if not opa_result.success:
+            # OPA 失败时仍把 opa_result 返回，便于上层拼装详细错误信息。
             return [], opa_result
 
         priority_map = opa_result.priorities
@@ -243,6 +257,45 @@ def _resolve_ordering(
         return ordered, opa_result
 
     raise ValueError("不支持的 priority_policy，可选值：dm, crmpo, opa")
+
+
+def resolve_ordering(
+    tasks: Sequence[Task],
+    priority_policy: str,
+    method: str,
+) -> list[Task]:
+    """公共接口：根据优先级策略返回有序任务列表。
+
+    设计目的：
+    - 为 runtime 仿真器、外部实验脚本等下游模块提供统一的优先级解析入口，
+      让它们无需自己重复实现 DM / CrMPO / OPA 的分派逻辑。
+    - 与 `evaluate_taskset()` 共用同一套底层实现（`_resolve_ordering`），
+      保证静态分析与运行时仿真看到的优先级顺序一致。
+
+    参数：
+    - tasks: 原始任务列表（未排序）；函数内部不会修改此列表。
+    - priority_policy: `dm | crmpo | opa` 中之一。
+    - method: 分析方法名；仅当 `priority_policy == "opa"` 时被使用，
+      用于选择 Audsley 搜索所需的“候选最低优先级任务可行性测试”。
+
+    返回：
+    - `list[Task]`：按最终优先级从高到低排列的任务列表。
+
+    异常：
+    - `ValueError`:   `priority_policy` 不在支持集合内，或 OPA 组合下 `method` 不支持 OPA。
+    - `RuntimeError`: `priority_policy == "opa"` 且 Audsley 未能成功分配优先级；
+      异常 message 形如 `"OPA 分配失败：{opa_result.details}"`，
+      调用方可直接用 `str(exc)` 拿到可读错误描述。
+    """
+
+    ordered, opa_result = _resolve_ordering(tasks, priority_policy, method)
+
+    # OPA 失败时，公共接口选择以异常显式通知调用方，避免出现“返回空列表但不报错”的歧义。
+    # `evaluate_taskset()` 会捕获这个异常并转成不可调度的 SchedulabilityResult。
+    if priority_policy == "opa" and opa_result is not None and not opa_result.success:
+        raise RuntimeError(f"OPA 分配失败：{opa_result.details}")
+
+    return ordered
 
 
 
@@ -259,19 +312,26 @@ def evaluate_taskset(tasks: Sequence[Task], method: str, priority_policy: str) -
       便于后续汇总和调试。
     """
 
+    # 先做参数合法性与方法/策略组合校验，拦截明显非法的调用。
     _validate_evaluation_inputs(tasks, method, priority_policy)
 
+    # 选择具体分析函数（UB-H&L / SMC / AMC-rtb 等）。
     method_fn = _resolve_method(method)
-    ordered_tasks, opa_result = _resolve_ordering(tasks, priority_policy, method)
 
-    if priority_policy == "opa" and opa_result is not None and not opa_result.success:
+    # 通过公共 API `resolve_ordering()` 得到已排序任务列表；
+    # OPA 失败会以 RuntimeError 形式抛出，这里捕获后转成 SchedulabilityResult 的失败路径，
+    # 保证对外可见的 `evaluate_taskset()` 行为与重构前完全一致。
+    try:
+        ordered_tasks = resolve_ordering(tasks, priority_policy, method)
+    except RuntimeError as exc:
         return SchedulabilityResult(
             schedulable=False,
             method=method,
             response_times={},
-            details=f"OPA 分配失败：{opa_result.details}",
+            details=str(exc),
         )
 
+    # 真正执行可调度性测试，并把 method/policy 元信息前置到 details 里。
     result = method_fn(ordered_tasks)
     details = f"method={method}, priority_policy={priority_policy}, {result.details}"
     return SchedulabilityResult(
