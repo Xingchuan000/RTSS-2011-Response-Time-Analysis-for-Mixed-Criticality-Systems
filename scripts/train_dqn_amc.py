@@ -8,11 +8,13 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+from amc_py.automotive_workload import build_automotive_experiment_config
 from amc_py.dqn import (
     DqnBudgetAgent,
     DqnConfig,
     Transition,
     build_env_from_experiment_config,
+    build_rtss11_experiment_config,
     build_small_nominal_experiment_config,
     build_small_stress_experiment_config,
     resolve_experiment_bundle,
@@ -51,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--end-time", type=int, default=100)
-    parser.add_argument("--agent-period", type=int, default=10)
+    parser.add_argument("--agent-period", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=6)
     parser.add_argument("--hidden-layers", type=str, default=None)
@@ -61,9 +63,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epsilon-start", type=float, default=1.0)
     parser.add_argument("--epsilon-end", type=float, default=0.05)
     parser.add_argument("--epsilon-decay-steps", type=int, default=1000)
-    parser.add_argument("--output-dir", type=Path, default=Path("outputs/dqn_amc"))
+    parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--checkpoint", type=int, default=0)
+    parser.add_argument("--workload", choices=["small", "rtss11", "automotive"], default="small")
     parser.add_argument("--scenario", choices=["nominal", "stress"], default="stress")
+    parser.add_argument("--total-util", type=float, default=0.65)
+    parser.add_argument("--num-tasks", type=int, default=20)
+    parser.add_argument("--cf", type=float, default=2.0)
+    parser.add_argument("--cp", type=float, default=0.5)
+    parser.add_argument("--require-schedulable", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--hi-overrun-prob", type=float, default=0.05)
+    parser.add_argument("--lo-overrun-prob", type=float, default=0.10)
+    parser.add_argument("--lo-overrun-factor", type=float, default=1.5)
     return parser
 
 
@@ -71,11 +82,30 @@ def main() -> None:
     """运行正式 DQN 训练并产出完整目录结构。"""
 
     args = build_parser().parse_args()
-    experiment_config = (
-        build_small_nominal_experiment_config()
-        if args.scenario == "nominal"
-        else build_small_stress_experiment_config()
-    )
+
+    if args.workload == "small":
+        experiment_config = (
+            build_small_nominal_experiment_config()
+            if args.scenario == "nominal"
+            else build_small_stress_experiment_config()
+        )
+    elif args.workload == "rtss11":
+        experiment_config = build_rtss11_experiment_config(
+            total_util=args.total_util,
+            num_tasks=args.num_tasks,
+            cf=args.cf,
+            cp=args.cp,
+            require_schedulable=args.require_schedulable,
+            hi_overrun_prob=args.hi_overrun_prob,
+            lo_overrun_prob=args.lo_overrun_prob,
+            lo_overrun_factor=args.lo_overrun_factor,
+        )
+    else:
+        experiment_config = build_automotive_experiment_config(
+            num_runnables=150,
+            require_schedulable=args.require_schedulable,
+        )
+
     bundle = resolve_experiment_bundle(experiment_config, args.seed)
     env = build_env_from_experiment_config(
         experiment_config,
@@ -107,8 +137,18 @@ def main() -> None:
         hidden_layers=hidden_layers,
     )
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_dir = args.output_dir / "checkpoints"
+    if args.output_dir is None:
+        default_output_dir = (
+            Path(f"outputs/dqn_rtss11/u{int(round(args.total_util * 1000)):03d}_seed{args.seed}")
+            if args.workload == "rtss11"
+            else Path("outputs/dqn_amc")
+        )
+        output_dir = default_output_dir
+    else:
+        output_dir = args.output_dir
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir = output_dir / "checkpoints"
     if args.checkpoint > 0:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -152,6 +192,7 @@ def main() -> None:
                     "sim_time": info.get("time"),
                     "reward": result.reward,
                     "episode_reward": episode_reward,
+                    "total_reward": episode_reward,
                     "loss": "" if loss is None else loss,
                     "epsilon": agent.current_epsilon,
                     "action_id": "" if action_id is None else action_id,
@@ -164,6 +205,14 @@ def main() -> None:
                     "mode_changes": info.get("mode_changes"),
                     "lo_cancellations": info.get("lo_cancellations"),
                     "deadline_misses": info.get("deadline_misses"),
+                    "workload": args.workload,
+                    "total_util": args.total_util,
+                    "num_tasks": args.num_tasks,
+                    "cf": args.cf,
+                    "cp": args.cp,
+                    "taskset_seed": args.seed * 2,
+                    "scenario_seed": args.seed * 2 + 1,
+                    "require_schedulable": args.require_schedulable,
                 }
             )
 
@@ -174,9 +223,9 @@ def main() -> None:
         if args.checkpoint > 0 and (episode + 1) % args.checkpoint == 0:
             agent.save(checkpoint_dir / f"model_episode_{episode + 1:04d}.pt")
 
-    train_log_path = args.output_dir / "train_log.csv"
-    model_path = args.output_dir / "model_final.pt"
-    config_path = args.output_dir / "config.json"
+    train_log_path = output_dir / "train_log.csv"
+    model_path = output_dir / "model_final.pt"
+    config_path = output_dir / "config.json"
 
     fieldnames = [
         "episode",
@@ -184,6 +233,7 @@ def main() -> None:
         "sim_time",
         "reward",
         "episode_reward",
+        "total_reward",
         "loss",
         "epsilon",
         "action_id",
@@ -196,6 +246,14 @@ def main() -> None:
         "mode_changes",
         "lo_cancellations",
         "deadline_misses",
+        "workload",
+        "total_util",
+        "num_tasks",
+        "cf",
+        "cp",
+        "taskset_seed",
+        "scenario_seed",
+        "require_schedulable",
     ]
     with train_log_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -205,9 +263,19 @@ def main() -> None:
     agent.save(model_path)
     config_payload = {
         "dqn_config": asdict(config),
-        "taskset_seed": args.seed,
+        "workload": args.workload,
+        "taskset_seed": args.seed * 2,
+        "scenario_seed": args.seed * 2 + 1,
         "scenario": args.scenario,
         "scenario_name": bundle.scenario.name,
+        "total_util": args.total_util,
+        "num_tasks": args.num_tasks,
+        "cf": args.cf,
+        "cp": args.cp,
+        "require_schedulable": args.require_schedulable,
+        "hi_overrun_prob": args.hi_overrun_prob,
+        "lo_overrun_prob": args.lo_overrun_prob,
+        "lo_overrun_factor": args.lo_overrun_factor,
         "normalization_bounds": {
             task_name: {"min_cost": bound.min_cost, "max_cost": bound.max_cost}
             for task_name, bound in bundle.normalization_bounds.items()
