@@ -227,3 +227,243 @@ conda run -n amc-repro python scripts/run_pre_dqn_runtime_baselines.py --end-tim
 ```
 
 相关文档：`docs/pre_dqn_runtime_interface.md`。
+
+## 12. DQN 训练、评估与绘图
+
+当前仓库已经包含最小 DQN 接入、正式 DQN CLI、训练诊断绘图脚本，以及可接入的 automotive workload 生成器。
+
+### 12.1 运行前说明
+
+所有 DQN 命令都应在 `amc-repro` 环境中运行：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python -c "import torch; import amc_py; print('ok')"
+```
+
+如果在 macOS 上导入 `torch` 时遇到 `libomp` / OpenMP 重复加载问题，可在命令前追加：
+
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE
+```
+
+例如：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python -m pytest -q
+```
+
+### 12.2 Smoke 训练
+
+最小 smoke 训练入口：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_smoke.py
+```
+
+可选参数：
+
+- `--episodes`
+- `--end-time`
+- `--agent-period`
+- `--seed`
+- `--output-dir`
+- `--batch-size`
+- `--learning-rate`
+- `--gamma`
+
+默认输出目录：`outputs/dqn_smoke`
+
+输出文件：
+
+- `outputs/dqn_smoke/train_log.csv`
+- `outputs/dqn_smoke/model.pt`
+
+### 12.3 Smoke 评估
+
+训练完成后，可加载 smoke 模型并与 baseline 统一比较：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/evaluate_dqn_smoke.py \
+  --model outputs/dqn_smoke/model.pt
+```
+
+输出文件：
+
+- `outputs/dqn_smoke/eval_summary.csv`
+
+比较对象包括：
+
+- `amc_plus_baseline`
+- `noop_agent`
+- `random_agent`
+- `heuristic_agent`
+- `dqn_agent`
+
+### 12.4 正式训练 CLI
+
+正式训练入口：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py \
+  --episodes 10 \
+  --end-time 100 \
+  --agent-period 10 \
+  --seed 0 \
+  --batch-size 6 \
+  --learning-rate 5e-5 \
+  --gamma 0.99 \
+  --target-update-freq 5 \
+  --epsilon-start 1.0 \
+  --epsilon-end 0.05 \
+  --epsilon-decay-steps 1000 \
+  --checkpoint 5 \
+  --scenario stress \
+  --output-dir outputs/dqn_amc
+```
+
+支持参数：
+
+- `--episodes`
+- `--end-time`
+- `--agent-period`
+- `--seed`
+- `--batch-size`
+- `--hidden-layers`
+- `--learning-rate`
+- `--gamma`
+- `--target-update-freq`
+- `--epsilon-start`
+- `--epsilon-end`
+- `--epsilon-decay-steps`
+- `--output-dir`
+- `--checkpoint`
+- `--scenario`
+
+输出文件：
+
+- `outputs/dqn_amc/train_log.csv`
+- `outputs/dqn_amc/model_final.pt`
+- `outputs/dqn_amc/config.json`
+- `outputs/dqn_amc/checkpoints/model_episode_XXXX.pt`（当 `--checkpoint > 0` 时）
+
+配置参考文件：
+
+- `configs/dqn_smoke.yaml`
+- `configs/dqn_default.yaml`
+
+### 12.5 正式评估 CLI
+
+正式评估入口：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/evaluate_dqn_amc.py \
+  --model outputs/dqn_amc/model_final.pt \
+  --seeds 0,1,2 \
+  --end-time 100 \
+  --agent-period 10 \
+  --scenario stress \
+  --output outputs/dqn_amc/eval_summary.csv
+```
+
+输出文件：
+
+- `outputs/dqn_amc/eval_summary.csv`
+
+### 12.6 训练诊断绘图
+
+可以把正式训练日志直接绘制为诊断图：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/plot_dqn_training.py \
+  --train-log outputs/dqn_amc/train_log.csv \
+  --output-dir outputs/dqn_amc/plots
+```
+
+默认会生成：
+
+- `episode_reward.png`
+- `loss.png`
+- `epsilon.png`
+- `action_counts.png`
+
+### 12.7 train_log.csv 关键字段
+
+正式训练日志至少包含以下字段：
+
+- `episode`
+- `step`
+- `sim_time`
+- `reward`
+- `episode_reward`
+- `loss`
+- `epsilon`
+- `action_id`
+- `accepted`
+- `rejected`
+- `reject_reason`
+- `valid_action_count`
+- `masked_action_count`
+- `noop_due_to_no_valid_action`
+- `mode_changes`
+- `lo_cancellations`
+- `deadline_misses`
+
+这些字段可用于判断：
+
+- reward 是否逐步改善
+- loss 是否出现 `NaN`
+- epsilon 是否按预期衰减
+- agent 是否频繁选择被屏蔽动作或只能 NoOp
+
+### 12.8 automotive workload 用法
+
+当前仓库已经提供 automotive workload 生成器：
+
+- `amc_py/automotive_workload.py`
+
+支持能力：
+
+- runnable period distribution
+- ACET / BCET / WCET sampling
+- Weibull execution-time sampling
+- runnables -> tasks 聚合
+- 每个 period、每个 criticality 最多一个 task
+- `150 / 250` runnables 配置
+- LO budget quantile 选择
+- normalization bounds 输出
+- AMC-rtb 可调度任务集筛选
+
+最小 Python 用法示例：
+
+```python
+from amc_py.automotive_workload import build_automotive_experiment_config
+from amc_py.dqn import build_env_from_experiment_config
+from amc_py.runtime_models import RuntimeSemantics
+
+experiment_config = build_automotive_experiment_config(
+    num_runnables=150,
+    require_schedulable=True,
+    max_attempts=20,
+)
+
+env = build_env_from_experiment_config(
+    experiment_config,
+    seed=0,
+    end_time=100,
+    agent_period=10,
+    semantics=RuntimeSemantics.AMC_PLUS,
+)
+
+obs = env.reset(seed=0)
+step_result = env.step(None)
+print(len(obs.state_vector), step_result.reward, step_result.done)
+```
+
+如果后续要把正式 DQN 训练入口切到 automotive workload，只需要把当前 small stress experiment config 替换为 `build_automotive_experiment_config(...)` 返回的配置对象，不需要重写 DQN agent。

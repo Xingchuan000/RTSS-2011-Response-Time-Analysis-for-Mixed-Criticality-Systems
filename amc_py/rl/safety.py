@@ -80,3 +80,15 @@ def merge_budget_candidate(current: BudgetState, updates: Mapping[str, int]) -> 
     merged = dict(current.budgets)
     merged.update(updates)
     return merged
+
+
+def has_effective_budget_updates(current: BudgetState, updates: Mapping[str, int]) -> bool:
+    """判断候选更新是否真的改变了所有被选中的任务预算。"""
+
+    for task_name, updated_budget in updates.items():
+        if task_name not in current.budgets:
+            return False
+        # 若预算被上下界裁剪后没有发生变化，则该动作在当前状态下视为无效。
+        if current.budgets[task_name] == updated_budget:
+            return False
+    return True

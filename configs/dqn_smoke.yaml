@@ -1,0 +1,16 @@
+# DQN smoke 训练参考配置。
+episodes: 5
+end_time: 100
+agent_period: 10
+seed: 0
+batch_size: 6
+hidden_layers: [3, 4]
+learning_rate: 5.0e-5
+gamma: 0.99
+target_update_freq: 5
+epsilon_start: 1.0
+epsilon_end: 0.05
+epsilon_decay_steps: 1000
+scenario: stress
+output_dir: outputs/dqn_smoke
+checkpoint: 0

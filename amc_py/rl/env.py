@@ -12,7 +12,11 @@ from amc_py.models import Task
 from amc_py.rl.actions import BudgetAction, apply_budget_action_candidate, build_budget_action_space
 from amc_py.rl.monitor import RuntimeMonitor
 from amc_py.rl.observation import NormalizationBounds, build_observation
-from amc_py.rl.safety import RuntimeBudgetSafetyChecker, merge_budget_candidate
+from amc_py.rl.safety import (
+    RuntimeBudgetSafetyChecker,
+    has_effective_budget_updates,
+    merge_budget_candidate,
+)
 from amc_py.rl.types import AgentObservation, AgentStepResult
 from amc_py.runtime_models import RuntimeConfig
 from amc_py.runtime_scenarios import ExecutionScenario
@@ -44,6 +48,30 @@ class AmcBudgetEnv:
         """返回离散动作空间大小。"""
 
         return len(self._actions)
+
+    def valid_action_mask(self) -> tuple[bool, ...]:
+        """返回当前时刻每个离散动作是否可通过安全检查。"""
+
+        if self._engine is None:
+            raise RuntimeError("环境尚未 reset")
+        if not self.check_safety:
+            return tuple(True for _ in self._actions)
+
+        checker = self._ensure_checker()
+        mask: list[bool] = []
+        for action in self._actions:
+            # 仅复用环境现有动作到候选预算的映射，不引入额外决策语义。
+            updates = apply_budget_action_candidate(
+                action=action,
+                budget_state=self._engine.runtime_budgets,
+                ordered_tasks=self.ordered_tasks,
+            )
+            if not has_effective_budget_updates(self._engine.runtime_budgets, updates):
+                mask.append(False)
+                continue
+            merged = merge_budget_candidate(self._engine.runtime_budgets, updates)
+            mask.append(checker.validate_candidate(merged).accepted)
+        return tuple(mask)
 
     def _ensure_checker(self) -> RuntimeBudgetSafetyChecker:
         """获取环境使用的安全检查器。"""
