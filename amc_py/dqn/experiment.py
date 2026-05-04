@@ -288,6 +288,7 @@ def build_rtss11_experiment_config(
     lo_overrun_factor: float = 1.5,
     max_attempts: int = 100,
     scenario_seed_offset: int = 100000,
+    fixed_taskset_seed: int | None = None,
 ) -> ExperimentConfig:
     """构造可直接接入训练/评估流程的 RTSS2011 实验配置。"""
 
@@ -300,6 +301,11 @@ def build_rtss11_experiment_config(
     # 约定稳定的 seed 派生规则，显式区分 taskset 与 scenario 随机源。
     # 场景 seed 使用固定 offset，确保两条随机链路独立且可复现。
     def _derive_taskset_seed(seed: int) -> int:
+        # 文档要求的“固定 taskset、变化 scenario seed”模式：
+        # - 传入 fixed_taskset_seed 时，taskset 随机源固定；
+        # - 未传入时，保持原有按外部 seed 派生 taskset 的行为。
+        if fixed_taskset_seed is not None:
+            return fixed_taskset_seed
         return seed
 
     def _derive_scenario_seed(seed: int) -> int:

@@ -153,6 +153,7 @@ def _build_experiment_config(args: argparse.Namespace) -> ExperimentConfig:
             lo_overrun_prob=args.lo_overrun_prob,
             lo_overrun_factor=args.lo_overrun_factor,
             scenario_seed_offset=args.scenario_seed_offset,
+            fixed_taskset_seed=args.fixed_taskset_seed,
         )
     return build_automotive_experiment_config(
         num_runnables=150,
@@ -324,6 +325,8 @@ def _is_better_validation_row(
     candidate_row: dict[str, int | float],
     best_row: dict[str, int | float] | None,
     save_best_by: str,
+    relative_score_alpha: float = 1.0,
+    require_better_than_baseline_for_best: bool = False,
 ) -> bool:
     """判断候选验证结果是否优于当前 best。"""
 
@@ -336,6 +339,14 @@ def _is_better_validation_row(
     if save_best_by == "reward":
         # 阶段 3：reward 指标方向应为“越大越好”，与 cancellation/mode-change 相反。
         return float(candidate_row["reward_mean"]) > float(best_row["reward_mean"])
+    if save_best_by == "relative_score":
+        # relative_score 越小越好，<0 表示综合优于 baseline。
+        candidate_score = float(candidate_row["relative_score"])
+        if require_better_than_baseline_for_best and candidate_score >= 0.0:
+            return False
+        if best_row is None:
+            return True
+        return candidate_score < float(best_row["relative_score"])
     metric_field = {
         "lo_cancellations": "lo_cancellations_mean",
         "mode_changes": "mode_changes_mean",
@@ -373,6 +384,10 @@ def _build_validation_unified_summary_rows(
                 "baseline_lo_cancellations_mean": baseline_lo_cancellations_mean,
                 "dqn_mode_changes_mean": dqn_mode_changes_mean,
                 "dqn_lo_cancellations_mean": dqn_lo_cancellations_mean,
+                # 这三列用于与文档要求一致地直观看到“相对 baseline 的差值与综合得分”。
+                "relative_score": float(row["relative_score"]),
+                "mode_changes_delta_vs_baseline": float(row["dqn_mode_changes_delta_mean"]),
+                "lo_cancellations_delta_vs_baseline": float(row["dqn_lo_cancellations_delta_mean"]),
                 "mode_change_ratio": mode_change_ratio,
                 "lo_cancellation_ratio": lo_cancellation_ratio,
                 "accepted_action_count_mean": float(row["accepted_actions_mean"]),
@@ -427,16 +442,40 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trace-every", type=int, default=0)
     parser.add_argument("--trace-dir", type=Path, default=None)
     parser.add_argument("--train-seed-mode", choices=["fixed", "per-episode", "cycle"], default="fixed")
+    parser.add_argument(
+        "--fixed-taskset-seed",
+        type=int,
+        default=None,
+        help=(
+            "如果设置该参数，RTSS11 任务集生成固定使用该 seed；"
+            "每个 episode 变化的 seed 仅用于 scenario 生成。"
+        ),
+    )
     parser.add_argument("--train-seeds", type=str, default="")
     parser.add_argument("--scenario-seed-offset", type=int, default=100000)
     parser.add_argument("--validation-seeds", type=str, default="100:129")
     parser.add_argument("--validate-every", type=int, default=50)
     parser.add_argument("--validation-end-time", type=int, default=10000)
-    parser.add_argument("--save-best-by", choices=["lo_cancellations", "mode_changes", "reward"], default="lo_cancellations")
+    parser.add_argument(
+        "--save-best-by",
+        choices=["lo_cancellations", "mode_changes", "reward", "relative_score"],
+        default="lo_cancellations",
+    )
     parser.add_argument(
         "--reward-mode",
-        choices=["mendes", "event_delta", "event_delta_no_job_start"],
+        choices=["mendes"],
         default="mendes",
+    )
+    parser.add_argument(
+        "--relative-score-alpha",
+        type=float,
+        default=1.0,
+        help="relative_score 中 mode_changes 差值的权重 alpha。",
+    )
+    parser.add_argument(
+        "--require-better-than-baseline-for-best",
+        action="store_true",
+        help="仅当 relative_score < 0 时才允许刷新 model_best.pt。",
     )
     parser.add_argument("--action-space", choices=["triple", "pair", "single"], default="triple")
     parser.add_argument("--budget-increase-ratio", type=float, default=0.10)
@@ -537,6 +576,8 @@ def main() -> None:
     validation_rows: list[dict[str, int | float]] = []
     best_validation_row: dict[str, int | float] | None = None
     model_best_path = output_dir / "model_best.pt"
+    best_model_metadata_path = output_dir / "best_model_metadata.json"
+    best_model_saved = False
 
     global_step = 0
     for episode in range(args.episodes):
@@ -802,14 +843,27 @@ def main() -> None:
                 include_explicit_noop=args.include_explicit_noop,
             )
             validation_row["episode"] = episode + 1
+            # 文档要求的 relative_score 定义：越小越好，<0 表示优于 baseline。
+            validation_row["relative_score"] = (
+                float(validation_row["lo_cancellations_mean"])
+                - float(validation_row["baseline_lo_cancellations_mean"])
+                + args.relative_score_alpha
+                * (
+                    float(validation_row["mode_changes_mean"])
+                    - float(validation_row["baseline_mode_changes_mean"])
+                )
+            )
             validation_rows.append(validation_row)
             if _is_better_validation_row(
                 candidate_row=validation_row,
                 best_row=best_validation_row,
                 save_best_by=args.save_best_by,
+                relative_score_alpha=args.relative_score_alpha,
+                require_better_than_baseline_for_best=args.require_better_than_baseline_for_best,
             ):
                 best_validation_row = validation_row
                 agent.save(model_best_path)
+                best_model_saved = True
 
     train_log_path = output_dir / "train_log.csv"
     train_metrics_path = output_dir / "train_metrics.csv"
@@ -948,6 +1002,7 @@ def main() -> None:
             "masked_action_count_mean",
             "no_safe_action_steps_mean",
             "reward_mean",
+            "relative_score",
         ]
         with validation_metrics_path.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=validation_fieldnames)
@@ -962,6 +1017,9 @@ def main() -> None:
             "baseline_lo_cancellations_mean",
             "dqn_mode_changes_mean",
             "dqn_lo_cancellations_mean",
+            "relative_score",
+            "mode_changes_delta_vs_baseline",
+            "lo_cancellations_delta_vs_baseline",
             "mode_change_ratio",
             "lo_cancellation_ratio",
             "accepted_action_count_mean",
@@ -980,6 +1038,33 @@ def main() -> None:
             writer.writerows(validation_unified_summary_rows)
 
     agent.save(model_path)
+    if validation_rows:
+        if best_validation_row is None:
+            best_validation_row = validation_rows[-1]
+        best_relative_score = float(best_validation_row.get("relative_score", 0.0))
+        best_model_metadata = {
+            "save_best_by": args.save_best_by,
+            "relative_score_alpha": args.relative_score_alpha,
+            "require_better_than_baseline_for_best": args.require_better_than_baseline_for_best,
+            "best_validation_episode": int(best_validation_row["episode"]),
+            "best_relative_score": best_relative_score,
+            "best_lo_cancellations_mean": float(best_validation_row["lo_cancellations_mean"]),
+            "baseline_lo_cancellations_mean": float(best_validation_row["baseline_lo_cancellations_mean"]),
+            "best_mode_changes_mean": float(best_validation_row["mode_changes_mean"]),
+            "baseline_mode_changes_mean": float(best_validation_row["baseline_mode_changes_mean"]),
+            "best_model_is_better_than_baseline": best_relative_score < 0.0,
+            "reward_mode": args.reward_mode,
+            "reward_definition": "paper: +0.1 job_start, -1.0 LO_budget_overrun, -2.0 HI_budget_overrun",
+            # 当开启 require-better-than-baseline 且没有任何 checkpoint 满足条件时，
+            # model_best.pt 将按文档要求允许缺失；此处用元数据显式说明。
+            "selection_reason": (
+                "No validation checkpoint achieved relative_score < 0."
+                if args.require_better_than_baseline_for_best and not best_model_saved
+                else "Best checkpoint selected by configured criterion."
+            ),
+        }
+        with best_model_metadata_path.open("w", encoding="utf-8") as f:
+            json.dump(best_model_metadata, f, ensure_ascii=False, indent=2)
     config_payload = {
         "dqn_config": asdict(config),
         "workload": args.workload,
@@ -996,11 +1081,15 @@ def main() -> None:
         "train_seed_mode": args.train_seed_mode,
         "train_seeds": episode_seed_schedule,
         "scenario_seed_offset": args.scenario_seed_offset,
+        "fixed_taskset_seed": args.fixed_taskset_seed,
         "validation_seeds": validation_seeds,
         "validate_every": args.validate_every,
         "validation_end_time": args.validation_end_time,
         "save_best_by": args.save_best_by,
+        "relative_score_alpha": args.relative_score_alpha,
+        "require_better_than_baseline_for_best": args.require_better_than_baseline_for_best,
         "reward_mode": args.reward_mode,
+        "reward_definition": "paper: +0.1 job_start, -1.0 LO_budget_overrun, -2.0 HI_budget_overrun",
         "action_space": args.action_space,
         "budget_increase_ratio": args.budget_increase_ratio,
         "budget_decrease_ratio": args.budget_decrease_ratio,

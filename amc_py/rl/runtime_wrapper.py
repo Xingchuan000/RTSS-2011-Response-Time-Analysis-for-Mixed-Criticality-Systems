@@ -110,29 +110,17 @@ def simulate_ordered_taskset_with_agent(
         delta_mode_changes = mode_changes - prev_mode_changes
         delta_lo_cancellations = lo_cancellations - prev_lo_cancellations
         delta_deadline_misses = deadline_misses - prev_deadline_misses
-        if agent_config.reward_mode == "mendes":
-            step_reward = (
-                0.1 * delta_job_start
-                - 1.0 * delta_lo_overrun
-                - 2.0 * delta_hi_overrun
-            )
-        elif agent_config.reward_mode == "event_delta":
-            step_reward = (
-                -5.0 * delta_mode_changes
-                - 2.0 * delta_lo_cancellations
-                - 20.0 * delta_deadline_misses
-                + 0.05 * delta_job_start
-            )
-        elif agent_config.reward_mode == "event_delta_no_job_start":
-            step_reward = (
-                -5.0 * delta_mode_changes
-                - 2.0 * delta_lo_cancellations
-                - 20.0 * delta_deadline_misses
-            )
-        else:
-            raise ValueError(f"不支持的 reward_mode: {agent_config.reward_mode}")
-        total_reward += step_reward
-        _ = monitor.consume_reward()
+        # 与训练环境保持一致：runtime wrapper 也只使用论文/Mendes reward。
+        # monitor 内部已按 +0.1/-1.0/-2.0 逐事件累计，这里直接消费累计值。
+        _ = (
+            delta_job_start,
+            delta_lo_overrun,
+            delta_hi_overrun,
+            delta_mode_changes,
+            delta_lo_cancellations,
+            delta_deadline_misses,
+        )
+        total_reward += monitor.consume_reward()
         prev_job_start_count = monitor.job_start_count
         prev_lo_overrun_count = monitor.lo_overrun_count
         prev_hi_overrun_count = monitor.hi_overrun_count
@@ -244,26 +232,15 @@ def simulate_ordered_taskset_with_agent(
     final_delta_mode_changes = final_mode_changes - prev_mode_changes
     final_delta_lo_cancellations = final_lo_cancellations - prev_lo_cancellations
     final_delta_deadline_misses = final_deadline_misses - prev_deadline_misses
-    if agent_config.reward_mode == "mendes":
-        total_reward += (
-            0.1 * final_delta_job_start
-            - 1.0 * final_delta_lo_overrun
-            - 2.0 * final_delta_hi_overrun
-        )
-    elif agent_config.reward_mode == "event_delta":
-        total_reward += (
-            -5.0 * final_delta_mode_changes
-            - 2.0 * final_delta_lo_cancellations
-            - 20.0 * final_delta_deadline_misses
-            + 0.05 * final_delta_job_start
-        )
-    else:
-        total_reward += (
-            -5.0 * final_delta_mode_changes
-            - 2.0 * final_delta_lo_cancellations
-            - 20.0 * final_delta_deadline_misses
-        )
-    _ = monitor.consume_reward()
+    _ = (
+        final_delta_job_start,
+        final_delta_lo_overrun,
+        final_delta_hi_overrun,
+        final_delta_mode_changes,
+        final_delta_lo_cancellations,
+        final_delta_deadline_misses,
+    )
+    total_reward += monitor.consume_reward()
 
     return AgentRuntimeResult(
         runtime_result=engine.finish(),

@@ -75,3 +75,28 @@ def test_train_dqn_amc_cli_is_reasonably_reproducible_for_fixed_seed(tmp_path: P
     text_a = (output_a / "train_log.csv").read_text(encoding="utf-8")
     text_b = (output_b / "train_log.csv").read_text(encoding="utf-8")
     assert text_a == text_b
+
+
+def test_train_cli_rejects_legacy_reward_mode(tmp_path: Path) -> None:
+    """训练 CLI 不应再接受旧 reward mode。"""
+
+    output_dir = tmp_path / "legacy_reward_mode"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--episodes",
+            "1",
+            "--end-time",
+            "20",
+            "--output-dir",
+            str(output_dir),
+            "--reward-mode",
+            "event_delta_no_job_start",
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        check=False,
+    )
+    assert result.returncode != 0

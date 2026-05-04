@@ -50,37 +50,6 @@ def test_mendes_reward_mode_keeps_original_component_semantics() -> None:
     assert total == comp
 
 
-def test_event_delta_mode_penalizes_mode_changes() -> None:
-    """event_delta 模式下发生 mode change 时应产生负向奖励。"""
-
-    env = AmcBudgetEnv(
-        ordered_tasks=_tasks(),
-        scenario=make_single_hi_overrun_scenario("h", release_index=0, overrun_to="c_hi"),
-        runtime_config=RuntimeConfig(end_time=20, semantics=RuntimeSemantics.AMC_PLUS),
-        agent_period=10,
-        reward_mode="event_delta",
-    )
-    env.reset(seed=0)
-    step = env.step(None)
-    if int(step.info["mode_changes"]) > 0:
-        assert float(step.info["step_reward_mode_change"]) < 0.0
-
-
-def test_event_delta_no_job_start_excludes_job_start_positive_reward() -> None:
-    """event_delta_no_job_start 不应包含 job_start 正奖励。"""
-
-    env = AmcBudgetEnv(
-        ordered_tasks=_tasks(),
-        scenario=make_single_hi_overrun_scenario("h", release_index=0, overrun_to="c_hi"),
-        runtime_config=RuntimeConfig(end_time=20, semantics=RuntimeSemantics.AMC_PLUS),
-        agent_period=10,
-        reward_mode="event_delta_no_job_start",
-    )
-    env.reset(seed=0)
-    step = env.step(None)
-    assert float(step.info["step_reward_job_start"]) == 0.0
-
-
 def test_train_metrics_contains_reward_component_columns(tmp_path: Path) -> None:
     """训练输出的 train_metrics.csv 应包含 reward 组件汇总字段。"""
 
@@ -109,7 +78,7 @@ def test_train_metrics_contains_reward_component_columns(tmp_path: Path) -> None
             "--seed",
             "0",
             "--reward-mode",
-            "event_delta_no_job_start",
+            "mendes",
             "--output-dir",
             str(output_dir),
         ],
