@@ -79,6 +79,9 @@ def main() -> None:
         # smoke 脚本需要在很少的 episode 内验证优化闭环，因此最小回放门槛与 batch 对齐。
         min_replay_size=args.batch_size,
         seed=args.seed,
+        network_seed=args.seed,
+        exploration_seed=args.seed,
+        replay_seed=args.seed,
     )
 
     initial_obs = env.reset(seed=args.seed)

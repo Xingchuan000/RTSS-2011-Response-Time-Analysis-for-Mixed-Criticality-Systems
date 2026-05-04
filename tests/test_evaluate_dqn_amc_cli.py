@@ -17,6 +17,7 @@ def test_evaluate_dqn_amc_cli_runs_after_training(tmp_path: Path) -> None:
     output_dir = tmp_path / "dqn_amc"
     model_path = output_dir / "model_final.pt"
     eval_path = output_dir / "eval_summary.csv"
+    unified_summary_path = output_dir / "eval_summary_unified_summary.csv"
     env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
 
     subprocess.run(
@@ -55,11 +56,30 @@ def test_evaluate_dqn_amc_cli_runs_after_training(tmp_path: Path) -> None:
     )
 
     assert eval_path.exists()
+    assert unified_summary_path.exists()
     with eval_path.open("r", encoding="utf-8", newline="") as f:
         rows = list(csv.DictReader(f))
+    with unified_summary_path.open("r", encoding="utf-8", newline="") as f:
+        unified_rows = list(csv.DictReader(f))
 
     assert rows
+    assert unified_rows
     methods = {row["method"] for row in rows}
     assert "dqn_agent" in methods
     assert "amc_plus_baseline" in methods
     assert "noop_agent" in methods
+    expected_summary_fields = {
+        "baseline_mode_changes_mean",
+        "baseline_lo_cancellations_mean",
+        "dqn_mode_changes_mean",
+        "dqn_lo_cancellations_mean",
+        "mode_change_ratio",
+        "lo_cancellation_ratio",
+        "accepted_action_count_mean",
+        "rejected_action_count_mean",
+        "noop_action_count_mean",
+        "noop_action_rate_mean",
+        "masked_action_count_mean",
+        "valid_action_count_mean",
+    }
+    assert expected_summary_fields.issubset(set(unified_rows[0].keys()))
