@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Literal
 
 from amc_py.amc import build_design_r_lo_map
 from amc_py.budget_runtime import BudgetState
@@ -34,6 +35,11 @@ class AmcBudgetEnv:
     check_safety: bool = True
     safety_checker: RuntimeBudgetSafetyChecker | None = None
     normalization_bounds: NormalizationBounds | None = None
+    reward_mode: Literal["mendes", "event_delta", "event_delta_no_job_start"] = "mendes"
+    action_space: Literal["triple", "pair", "single"] = "triple"
+    budget_increase_ratio: float = 0.10
+    budget_decrease_ratio: float = 0.05
+    include_explicit_noop: bool = False
     _actions: tuple[BudgetAction, ...] = field(init=False, repr=False)
     _monitor: RuntimeMonitor = field(init=False, repr=False)
     _engine: EventRuntimeEngine | None = field(init=False, default=None, repr=False)
@@ -46,11 +52,24 @@ class AmcBudgetEnv:
     _safety_accepted_actions: int = field(init=False, default=0, repr=False)
     _safety_rejected_actions: int = field(init=False, default=0, repr=False)
     _selected_invalid_mask_actions: int = field(init=False, default=0, repr=False)
+    _no_safe_action_steps: int = field(init=False, default=0, repr=False)
+    _prev_job_start_count: int = field(init=False, default=0, repr=False)
+    _prev_lo_overrun_count: int = field(init=False, default=0, repr=False)
+    _prev_hi_overrun_count: int = field(init=False, default=0, repr=False)
+    _prev_mode_changes: int = field(init=False, default=0, repr=False)
+    _prev_lo_cancellations: int = field(init=False, default=0, repr=False)
+    _prev_deadline_misses: int = field(init=False, default=0, repr=False)
 
     def __post_init__(self) -> None:
         """初始化固定动作空间。"""
 
-        self._actions = build_budget_action_space(self.ordered_tasks)
+        self._actions = build_budget_action_space(
+            self.ordered_tasks,
+            action_space=self.action_space,
+            budget_increase_ratio=self.budget_increase_ratio,
+            budget_decrease_ratio=self.budget_decrease_ratio,
+            include_explicit_noop=self.include_explicit_noop,
+        )
         self._action_log = []
         self._mask_log = []
         self._mask_reject_reasons = Counter()
@@ -83,6 +102,10 @@ class AmcBudgetEnv:
             "safety_checked_actions": self._safety_checked_actions,
             "safety_accepted_actions": self._safety_accepted_actions,
             "safety_rejected_actions": self._safety_rejected_actions,
+            "action_space_type": self.action_space,
+            "action_count": len(self._actions),
+            "budget_increase_ratio": self.budget_increase_ratio,
+            "budget_decrease_ratio": self.budget_decrease_ratio,
             "valid_action_count_mean": (sum(valid_counts) / mask_checks) if mask_checks > 0 else 0.0,
             "masked_action_count_mean": (sum(invalid_counts) / mask_checks) if mask_checks > 0 else 0.0,
             "masked_action_count_max": max(invalid_counts) if invalid_counts else 0,
@@ -90,6 +113,7 @@ class AmcBudgetEnv:
                 (sum(invalid_counts) / (mask_checks * len(self._actions))) if mask_checks > 0 else 0.0
             ),
             "selected_invalid_mask_actions": self._selected_invalid_mask_actions,
+            "no_safe_action_steps": self._no_safe_action_steps,
         }
 
     @property
@@ -170,6 +194,8 @@ class AmcBudgetEnv:
             )
         valid_action_count = sum(mask)
         masked_action_count = len(mask) - valid_action_count
+        if valid_action_count == 0:
+            self._no_safe_action_steps += 1
         self._last_mask_details = mask_details
         self._mask_reject_reasons.update(reject_reason_counts)
         self._mask_log.append(
@@ -213,6 +239,13 @@ class AmcBudgetEnv:
         self._safety_accepted_actions = 0
         self._safety_rejected_actions = 0
         self._selected_invalid_mask_actions = 0
+        self._no_safe_action_steps = 0
+        self._prev_job_start_count = 0
+        self._prev_lo_overrun_count = 0
+        self._prev_hi_overrun_count = 0
+        self._prev_mode_changes = 0
+        self._prev_lo_cancellations = 0
+        self._prev_deadline_misses = 0
         return build_observation(
             time=self._engine.current_time,
             ordered_tasks=self.ordered_tasks,
@@ -280,8 +313,6 @@ class AmcBudgetEnv:
         target_time = min(self._engine.current_time + self.agent_period, self.runtime_config.end_time or 0)
         # step 返回的 next observation 必须包含目标决策时刻的普通事件处理结果。
         self._engine.run_until(target_time, include_boundary=True)
-        reward = self._monitor.consume_reward()
-
         current_time = self._engine.current_time
         if self.runtime_config.end_time is None:
             done = False
@@ -290,6 +321,55 @@ class AmcBudgetEnv:
         self._done = done
 
         runtime_result = self._engine.finish()
+        mode_changes = runtime_result.mode_change_count()
+        lo_cancellations = runtime_result.lo_job_cancellation_count()
+        deadline_misses = len(runtime_result.deadline_misses)
+        delta_job_start = self._monitor.job_start_count - self._prev_job_start_count
+        delta_lo_overrun = self._monitor.lo_overrun_count - self._prev_lo_overrun_count
+        delta_hi_overrun = self._monitor.hi_overrun_count - self._prev_hi_overrun_count
+        delta_mode_changes = mode_changes - self._prev_mode_changes
+        delta_lo_cancellations = lo_cancellations - self._prev_lo_cancellations
+        delta_deadline_misses = deadline_misses - self._prev_deadline_misses
+
+        step_reward_job_start = 0.0
+        step_reward_lo_overrun = 0.0
+        step_reward_hi_overrun = 0.0
+        step_reward_mode_change = 0.0
+        step_reward_lo_cancellation = 0.0
+        step_reward_deadline_miss = 0.0
+        if self.reward_mode == "mendes":
+            # mendes 奖励与 runtime monitor 口径保持一致。
+            step_reward_job_start = 0.1 * delta_job_start
+            step_reward_lo_overrun = -1.0 * delta_lo_overrun
+            step_reward_hi_overrun = -2.0 * delta_hi_overrun
+        elif self.reward_mode == "event_delta":
+            step_reward_mode_change = -5.0 * delta_mode_changes
+            step_reward_lo_cancellation = -2.0 * delta_lo_cancellations
+            step_reward_deadline_miss = -20.0 * delta_deadline_misses
+            step_reward_job_start = 0.05 * delta_job_start
+        elif self.reward_mode == "event_delta_no_job_start":
+            step_reward_mode_change = -5.0 * delta_mode_changes
+            step_reward_lo_cancellation = -2.0 * delta_lo_cancellations
+            step_reward_deadline_miss = -20.0 * delta_deadline_misses
+        else:
+            raise ValueError(f"不支持的 reward_mode: {self.reward_mode}")
+        reward = (
+            step_reward_job_start
+            + step_reward_lo_overrun
+            + step_reward_hi_overrun
+            + step_reward_mode_change
+            + step_reward_lo_cancellation
+            + step_reward_deadline_miss
+        )
+        # 与 monitor 现有消费语义保持一致，避免历史累计跨步泄漏。
+        _ = self._monitor.consume_reward()
+        self._prev_job_start_count = self._monitor.job_start_count
+        self._prev_lo_overrun_count = self._monitor.lo_overrun_count
+        self._prev_hi_overrun_count = self._monitor.hi_overrun_count
+        self._prev_mode_changes = mode_changes
+        self._prev_lo_cancellations = lo_cancellations
+        self._prev_deadline_misses = deadline_misses
+
         budget_after = dict(self._engine.runtime_budgets.budgets)
         observation = build_observation(
             time=current_time,
@@ -314,9 +394,16 @@ class AmcBudgetEnv:
             "selected_action_was_mask_valid": selected_action_was_mask_valid,
             "reject_reason": reject_reason,
             "reject_diagnostics": list(reject_diagnostics),
-            "mode_changes": runtime_result.mode_change_count(),
-            "lo_cancellations": runtime_result.lo_job_cancellation_count(),
-            "deadline_misses": len(runtime_result.deadline_misses),
+            "mode_changes": mode_changes,
+            "lo_cancellations": lo_cancellations,
+            "deadline_misses": deadline_misses,
+            "step_reward_total": reward,
+            "step_reward_job_start": step_reward_job_start,
+            "step_reward_lo_overrun": step_reward_lo_overrun,
+            "step_reward_hi_overrun": step_reward_hi_overrun,
+            "step_reward_mode_change": step_reward_mode_change,
+            "step_reward_lo_cancellation": step_reward_lo_cancellation,
+            "step_reward_deadline_miss": step_reward_deadline_miss,
         }
         action_log_entry = dict(info)
         action_log_entry["time"] = action_time

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+import hashlib
 import random
 
 from amc_py.experiments import evaluate_taskset, resolve_ordering
@@ -42,6 +43,10 @@ class ExperimentBundle:
     ordered_tasks: tuple[Task, ...]
     scenario: ExecutionScenario
     normalization_bounds: NormalizationBounds
+    taskset_seed: int | None = None
+    scenario_seed: int | None = None
+    taskset_attempts: int = 1
+    taskset_fingerprint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,10 +127,28 @@ def resolve_experiment_bundle(config: ExperimentConfig, seed: int) -> Experiment
         if config.normalization_bounds_factory is not None
         else build_default_normalization_bounds(ordered_tasks)
     )
+    # 优先读取工厂暴露的“真实使用 seed/attempts 元数据”，否则回退为输入 seed。
+    resolve_taskset_seed = getattr(config.taskset_factory, "_resolve_effective_seed", None)
+    resolve_scenario_seed = getattr(config.scenario_factory, "_resolve_effective_seed", None)
+    resolve_taskset_attempts = getattr(config.taskset_factory, "_resolve_attempts", None)
+    taskset_seed = int(resolve_taskset_seed(seed)) if callable(resolve_taskset_seed) else seed
+    scenario_seed = int(resolve_scenario_seed(seed)) if callable(resolve_scenario_seed) else seed
+    taskset_attempts = int(resolve_taskset_attempts(seed)) if callable(resolve_taskset_attempts) else 1
+    fingerprint_source = str(
+        [
+            (task.name, task.period, task.deadline, task.c_lo, task.c_hi, task.criticality.value)
+            for task in ordered_tasks
+        ]
+    ).encode("utf-8")
+    taskset_fingerprint = hashlib.sha256(fingerprint_source).hexdigest()[:12]
     return ExperimentBundle(
         ordered_tasks=ordered_tasks,
         scenario=scenario,
         normalization_bounds=normalization_bounds,
+        taskset_seed=taskset_seed,
+        scenario_seed=scenario_seed,
+        taskset_attempts=taskset_attempts,
+        taskset_fingerprint=taskset_fingerprint,
     )
 
 
@@ -136,6 +159,11 @@ def build_env_from_experiment_config(
     end_time: int,
     agent_period: int,
     semantics: RuntimeSemantics = RuntimeSemantics.AMC_PLUS,
+    reward_mode: str = "mendes",
+    action_space: str = "triple",
+    budget_increase_ratio: float = 0.10,
+    budget_decrease_ratio: float = 0.05,
+    include_explicit_noop: bool = False,
 ) -> AmcBudgetEnv:
     """根据实验配置构造 `AmcBudgetEnv`，供训练与评估入口复用。"""
 
@@ -147,6 +175,11 @@ def build_env_from_experiment_config(
         agent_period=agent_period,
         check_safety=config.check_safety,
         normalization_bounds=bundle.normalization_bounds,
+        reward_mode=reward_mode,
+        action_space=action_space,
+        budget_increase_ratio=budget_increase_ratio,
+        budget_decrease_ratio=budget_decrease_ratio,
+        include_explicit_noop=include_explicit_noop,
     )
 
 
@@ -254,20 +287,23 @@ def build_rtss11_experiment_config(
     lo_overrun_prob: float = 0.10,
     lo_overrun_factor: float = 1.5,
     max_attempts: int = 100,
+    scenario_seed_offset: int = 100000,
 ) -> ExperimentConfig:
     """构造可直接接入训练/评估流程的 RTSS2011 实验配置。"""
 
     # 使用缓存保证同一外部 seed 下 taskset/scenario/bounds 三者一致。
     taskset_cache: dict[int, tuple[Task, ...]] = {}
+    taskset_seed_cache: dict[int, int] = {}
+    taskset_attempts_cache: dict[int, int] = {}
     taskset_signature_cache: dict[tuple[tuple[str, int, int, int, int, str], ...], tuple[Task, ...]] = {}
 
-    # 约定一个稳定的 seed 派生规则，显式区分 taskset 与 scenario 随机源。
-    # 这样同一实验可复现，同时 taskset_seed 与 scenario_seed 互不干扰。
+    # 约定稳定的 seed 派生规则，显式区分 taskset 与 scenario 随机源。
+    # 场景 seed 使用固定 offset，确保两条随机链路独立且可复现。
     def _derive_taskset_seed(seed: int) -> int:
-        return seed * 2
+        return seed
 
     def _derive_scenario_seed(seed: int) -> int:
-        return seed * 2 + 1
+        return seed + scenario_seed_offset
 
     def _task_signature(tasks: Sequence[Task]) -> tuple[tuple[str, int, int, int, int, str], ...]:
         """将任务集编码为稳定签名，便于跨工厂回查缓存。"""
@@ -292,6 +328,8 @@ def build_rtss11_experiment_config(
                     max_attempts=max_attempts,
                 )
                 tasks = bundle.tasks
+                taskset_seed_cache[seed] = bundle.seed
+                taskset_attempts_cache[seed] = bundle.attempts
             else:
                 tasks = tuple(
                     build_rtss11_taskset(
@@ -302,6 +340,8 @@ def build_rtss11_experiment_config(
                         cp=cp,
                     )
                 )
+                taskset_seed_cache[seed] = taskset_seed
+                taskset_attempts_cache[seed] = 1
             # 运行时环境要求“有序任务集”语义，这里统一按 AMC-rtb+OPA 解析顺序。
             ordered_tasks = tuple(resolve_ordering(list(tasks), priority_policy="opa", method="amc_rtb"))
             taskset_cache[seed] = ordered_tasks
@@ -323,6 +363,24 @@ def build_rtss11_experiment_config(
             lo_overrun_prob=lo_overrun_prob,
             lo_overrun_factor=lo_overrun_factor,
         )
+
+    def _resolve_effective_taskset_seed(seed: int) -> int:
+        if seed not in taskset_cache:
+            taskset_factory(seed)
+        return taskset_seed_cache[seed]
+
+    def _resolve_effective_taskset_attempts(seed: int) -> int:
+        if seed not in taskset_cache:
+            taskset_factory(seed)
+        return taskset_attempts_cache[seed]
+
+    def _resolve_effective_scenario_seed(seed: int) -> int:
+        return _derive_scenario_seed(seed)
+
+    # 在工厂函数对象上暴露元数据读取接口，供 resolve_experiment_bundle 统一提取。
+    taskset_factory._resolve_effective_seed = _resolve_effective_taskset_seed  # type: ignore[attr-defined]
+    taskset_factory._resolve_attempts = _resolve_effective_taskset_attempts  # type: ignore[attr-defined]
+    scenario_factory._resolve_effective_seed = _resolve_effective_scenario_seed  # type: ignore[attr-defined]
 
     util_tag = int(round(total_util * 1000))
     cf_tag = int(round(cf * 10))

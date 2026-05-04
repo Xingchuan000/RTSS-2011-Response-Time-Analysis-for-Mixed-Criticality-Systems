@@ -104,6 +104,7 @@ def main() -> None:
                 training=True,
             )
             result = env.step(action_id)
+            next_mask = env.valid_action_mask() if not result.done else tuple(False for _ in range(env.action_space_size))
 
             loss: float | None = None
             if action_id is not None:
@@ -114,6 +115,8 @@ def main() -> None:
                     reward=result.reward,
                     next_state=result.observation.state_vector,
                     done=result.done,
+                    valid_action_mask=tuple(mask) if mask is not None else tuple(True for _ in range(env.action_space_size)),
+                    next_valid_action_mask=next_mask,
                 )
                 agent.remember(transition)
                 loss = agent.optimize_one_step()

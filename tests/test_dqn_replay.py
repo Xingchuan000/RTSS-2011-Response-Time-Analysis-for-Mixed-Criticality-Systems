@@ -15,6 +15,8 @@ def _transition(idx: int) -> Transition:
         reward=float(idx),
         next_state=(float(idx + 2), float(idx + 3)),
         done=False,
+        valid_action_mask=(True, True, True),
+        next_valid_action_mask=(True, True, True),
     )
 
 

@@ -57,12 +57,12 @@ class HeuristicBudgetAgent(BudgetAgent):
     eps: float = 1e-6
 
     def select_action(self, observation: AgentObservation) -> BudgetAction | None:
-        """选择“增压最高任务 + 降压最低两任务”的动作。"""
+        """选择“增压最高任务 + 降压最低任务集合”的动作。"""
 
         if not self.actions:
             return None
         task_names = list(observation.raw_budgets.keys())
-        if len(task_names) < 3:
+        if len(task_names) < 1:
             return None
 
         pressure: dict[str, float] = {}
@@ -71,14 +71,25 @@ class HeuristicBudgetAgent(BudgetAgent):
             recent_cost = float(observation.raw_recent_costs.get(task_name, 0))
             pressure[task_name] = recent_cost / max(budget, self.eps)
 
-        increase_task = max(task_names, key=lambda name: pressure[name])
-        decrease_candidates = [name for name in task_names if name != increase_task]
-        decrease_tasks = tuple(sorted(decrease_candidates, key=lambda name: pressure[name])[:2])
-        decrease_task_set = set(decrease_tasks)
-
         for action in self.actions:
-            if action.increase_task != increase_task:
+            if action.is_noop:
                 continue
-            if set(action.decrease_tasks) == decrease_task_set:
+            if action.increase_task is None and not action.decrease_tasks:
+                continue
+
+            if action.increase_task is not None:
+                increase_task = max(task_names, key=lambda name: pressure[name])
+                if action.increase_task != increase_task:
+                    continue
+                decrease_candidates = [name for name in task_names if name != increase_task]
+            else:
+                decrease_candidates = list(task_names)
+
+            if len(decrease_candidates) < len(action.decrease_tasks):
+                continue
+            decrease_tasks = tuple(
+                sorted(decrease_candidates, key=lambda name: pressure[name])[: len(action.decrease_tasks)]
+            )
+            if tuple(action.decrease_tasks) == decrease_tasks:
                 return action
         return None

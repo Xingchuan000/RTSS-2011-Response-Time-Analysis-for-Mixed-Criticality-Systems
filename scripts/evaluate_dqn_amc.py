@@ -12,8 +12,6 @@ from amc_py.dqn import (
     DqnBudgetAgent,
     build_env_from_experiment_config,
     build_rtss11_experiment_config,
-    build_rtss11_taskset,
-    build_schedulable_rtss11_taskset,
     build_small_nominal_experiment_config,
     build_small_stress_experiment_config,
     resolve_experiment_bundle,
@@ -27,60 +25,28 @@ from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationRes
 
 
 def _parse_seeds(raw_value: str) -> list[int]:
-    """将逗号分隔的种子列表解析为整数列表。"""
+    """将种子字符串解析为整数列表，支持 `a:b` 与逗号列表。"""
 
-    return [int(part.strip()) for part in raw_value.split(",") if part.strip()]
+    seeds: list[int] = []
+    for part in (item.strip() for item in raw_value.split(",")):
+        if not part:
+            continue
+        if ":" in part:
+            begin_text, end_text = (token.strip() for token in part.split(":", maxsplit=1))
+            begin = int(begin_text)
+            end = int(end_text)
+            if end < begin:
+                raise ValueError(f"seed 区间必须满足 begin<=end，收到: {part}")
+            seeds.extend(range(begin, end + 1))
+        else:
+            seeds.append(int(part))
+    return seeds
 
 
 def _parse_baselines(raw_value: str) -> list[str]:
     """将逗号分隔 baseline 列表解析为方法名列表。"""
 
     return [part.strip() for part in raw_value.split(",") if part.strip()]
-
-
-def _derive_taskset_seed(seed: int) -> int:
-    """与 RTSS2011 experiment config 保持一致的 taskset seed 派生规则。"""
-
-    return seed * 2
-
-
-def _derive_scenario_seed(seed: int) -> int:
-    """与 RTSS2011 experiment config 保持一致的 scenario seed 派生规则。"""
-
-    return seed * 2 + 1
-
-
-def _build_rtss11_metadata(
-    *,
-    seed: int,
-    total_util: float,
-    num_tasks: int,
-    cf: float,
-    cp: float,
-    require_schedulable: bool,
-) -> tuple[bool, int]:
-    """生成 RTSS2011 评估行所需的 AMC-rtb 可调度性元数据。"""
-
-    taskset_seed = _derive_taskset_seed(seed)
-    if require_schedulable:
-        bundle = build_schedulable_rtss11_taskset(
-            seed=taskset_seed,
-            total_util=total_util,
-            num_tasks=num_tasks,
-            cf=cf,
-            cp=cp,
-        )
-        return bundle.analysis.schedulable, bundle.attempts
-
-    tasks = build_rtss11_taskset(
-        seed=taskset_seed,
-        total_util=total_util,
-        num_tasks=num_tasks,
-        cf=cf,
-        cp=cp,
-    )
-    analysis = evaluate_taskset(tasks, method="amc_rtb", priority_policy="opa")
-    return analysis.schedulable, 1
 
 
 def _budget_overruns_from_result(result: SimulationResult) -> int:
@@ -97,6 +63,11 @@ def _evaluate_dqn_once(
     seed: int,
     end_time: int,
     row_base: dict[str, int | float | str | bool],
+    reward_mode: str,
+    action_space: str,
+    budget_increase_ratio: float,
+    budget_decrease_ratio: float,
+    include_explicit_noop: bool,
     trace_dir: Path | None = None,
     debug_log_dir: Path | None = None,
     trace_enabled: bool = False,
@@ -109,8 +80,18 @@ def _evaluate_dqn_once(
         end_time=end_time,
         agent_period=agent_period,
         semantics=RuntimeSemantics.AMC_PLUS,
+        reward_mode=reward_mode,
+        action_space=action_space,
+        budget_increase_ratio=budget_increase_ratio,
+        budget_decrease_ratio=budget_decrease_ratio,
+        include_explicit_noop=include_explicit_noop,
     )
     agent = DqnBudgetAgent.load(model_path)
+    if agent.action_dim != env.action_space_size:
+        raise ValueError(
+            "模型动作空间与环境不兼容："
+            f"model.action_dim={agent.action_dim}, env.action_space_size={env.action_space_size}"
+        )
 
     obs = env.reset(seed=seed)
     done = False
@@ -183,6 +164,11 @@ def _evaluate_dqn_once(
             "masked_action_count_max": int(debug_stats["masked_action_count_max"]),
             "mask_rejection_rate_mean": float(debug_stats["mask_rejection_rate_mean"]),
             "selected_invalid_mask_actions": int(debug_stats["selected_invalid_mask_actions"]),
+            "action_space_type": str(debug_stats["action_space_type"]),
+            "action_count": int(debug_stats["action_count"]),
+            "budget_increase_ratio": float(debug_stats["budget_increase_ratio"]),
+            "budget_decrease_ratio": float(debug_stats["budget_decrease_ratio"]),
+            "no_safe_action_steps": int(debug_stats["no_safe_action_steps"]),
         },
         runtime_result,
         env.action_log,
@@ -370,6 +356,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-tasks", type=int, default=20)
     parser.add_argument("--cf", type=float, default=2.0)
     parser.add_argument("--cp", type=float, default=0.5)
+    parser.add_argument("--scenario-seed-offset", type=int, default=100000)
     parser.add_argument("--require-schedulable", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--seeds", type=str, default="0")
@@ -387,6 +374,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trace-seeds", type=str, default="")
     parser.add_argument("--trace-methods", type=str, default="")
     parser.add_argument("--debug-log-dir", type=Path, default=None)
+    parser.add_argument(
+        "--reward-mode",
+        choices=["mendes", "event_delta", "event_delta_no_job_start"],
+        default="mendes",
+    )
+    parser.add_argument("--action-space", choices=["triple", "pair", "single"], default="triple")
+    parser.add_argument("--budget-increase-ratio", type=float, default=0.10)
+    parser.add_argument("--budget-decrease-ratio", type=float, default=0.05)
+    parser.add_argument("--include-explicit-noop", action=argparse.BooleanOptionalAction, default=False)
     return parser
 
 
@@ -407,6 +403,7 @@ def main() -> None:
             cf=args.cf,
             cp=args.cp,
             require_schedulable=args.require_schedulable,
+            scenario_seed_offset=args.scenario_seed_offset,
         )
     else:
         experiment_config = build_automotive_experiment_config(
@@ -427,19 +424,26 @@ def main() -> None:
     for seed in _parse_seeds(args.seeds):
         bundle = resolve_experiment_bundle(experiment_config, seed)
         runtime_config = RuntimeConfig(end_time=args.end_time, semantics=RuntimeSemantics.AMC_PLUS)
-        actions = build_budget_action_space(list(bundle.ordered_tasks))
+        actions = build_budget_action_space(
+            list(bundle.ordered_tasks),
+            action_space=args.action_space,
+            budget_increase_ratio=args.budget_increase_ratio,
+            budget_decrease_ratio=args.budget_decrease_ratio,
+            include_explicit_noop=args.include_explicit_noop,
+        )
 
         if args.workload == "rtss11":
-            amc_rtb_schedulable, attempts = _build_rtss11_metadata(
-                seed=seed,
-                total_util=args.total_util,
-                num_tasks=args.num_tasks,
-                cf=args.cf,
-                cp=args.cp,
-                require_schedulable=args.require_schedulable,
-            )
-            taskset_seed = _derive_taskset_seed(seed)
-            scenario_seed = _derive_scenario_seed(seed)
+            if args.require_schedulable:
+                amc_rtb_schedulable = True
+            else:
+                amc_rtb_schedulable = evaluate_taskset(
+                    list(bundle.ordered_tasks),
+                    method="amc_rtb",
+                    priority_policy="opa",
+                ).schedulable
+            attempts = bundle.taskset_attempts
+            taskset_seed = bundle.taskset_seed if bundle.taskset_seed is not None else seed
+            scenario_seed = bundle.scenario_seed if bundle.scenario_seed is not None else seed
         else:
             amc_rtb_schedulable = True
             attempts = 1
@@ -494,6 +498,11 @@ def main() -> None:
                     "masked_action_count_max": 0,
                     "mask_rejection_rate_mean": 0.0,
                     "selected_invalid_mask_actions": 0,
+                    "action_space_type": args.action_space,
+                    "action_count": len(actions),
+                    "budget_increase_ratio": args.budget_increase_ratio,
+                    "budget_decrease_ratio": args.budget_decrease_ratio,
+                    "no_safe_action_steps": 0,
                 }
             )
             deadline_miss_details.extend(
@@ -511,7 +520,12 @@ def main() -> None:
                 scenario=bundle.scenario,
                 agent=NoOpBudgetAgent(),
                 runtime_config=runtime_config,
-                agent_config=AgentRuntimeConfig(agent_period=args.agent_period, end_time=args.end_time, check_safety=True),
+                agent_config=AgentRuntimeConfig(
+                    agent_period=args.agent_period,
+                    end_time=args.end_time,
+                    check_safety=True,
+                    reward_mode=args.reward_mode,
+                ),
                 bounds=bundle.normalization_bounds,
             )
             noop_total_actions = (
@@ -542,6 +556,11 @@ def main() -> None:
                     "masked_action_count_max": 0,
                     "mask_rejection_rate_mean": 0.0,
                     "selected_invalid_mask_actions": 0,
+                    "action_space_type": args.action_space,
+                    "action_count": len(actions),
+                    "budget_increase_ratio": args.budget_increase_ratio,
+                    "budget_decrease_ratio": args.budget_decrease_ratio,
+                    "no_safe_action_steps": 0,
                 }
             )
             deadline_miss_details.extend(
@@ -571,7 +590,12 @@ def main() -> None:
                 scenario=bundle.scenario,
                 agent=RandomBudgetAgent(actions=actions, seed=seed),
                 runtime_config=runtime_config,
-                agent_config=AgentRuntimeConfig(agent_period=args.agent_period, end_time=args.end_time, check_safety=True),
+                agent_config=AgentRuntimeConfig(
+                    agent_period=args.agent_period,
+                    end_time=args.end_time,
+                    check_safety=True,
+                    reward_mode=args.reward_mode,
+                ),
                 bounds=bundle.normalization_bounds,
             )
             random_total_actions = (
@@ -602,6 +626,11 @@ def main() -> None:
                     "masked_action_count_max": 0,
                     "mask_rejection_rate_mean": 0.0,
                     "selected_invalid_mask_actions": 0,
+                    "action_space_type": args.action_space,
+                    "action_count": len(actions),
+                    "budget_increase_ratio": args.budget_increase_ratio,
+                    "budget_decrease_ratio": args.budget_decrease_ratio,
+                    "no_safe_action_steps": 0,
                 }
             )
             deadline_miss_details.extend(
@@ -631,7 +660,12 @@ def main() -> None:
                 scenario=bundle.scenario,
                 agent=HeuristicBudgetAgent(actions=actions),
                 runtime_config=runtime_config,
-                agent_config=AgentRuntimeConfig(agent_period=args.agent_period, end_time=args.end_time, check_safety=True),
+                agent_config=AgentRuntimeConfig(
+                    agent_period=args.agent_period,
+                    end_time=args.end_time,
+                    check_safety=True,
+                    reward_mode=args.reward_mode,
+                ),
                 bounds=bundle.normalization_bounds,
             )
             heuristic_total_actions = (
@@ -666,6 +700,11 @@ def main() -> None:
                     "masked_action_count_max": 0,
                     "mask_rejection_rate_mean": 0.0,
                     "selected_invalid_mask_actions": 0,
+                    "action_space_type": args.action_space,
+                    "action_count": len(actions),
+                    "budget_increase_ratio": args.budget_increase_ratio,
+                    "budget_decrease_ratio": args.budget_decrease_ratio,
+                    "no_safe_action_steps": 0,
                 }
             )
             deadline_miss_details.extend(
@@ -697,6 +736,11 @@ def main() -> None:
                 seed=seed,
                 end_time=args.end_time,
                 row_base=row_base,
+                reward_mode=args.reward_mode,
+                action_space=args.action_space,
+                budget_increase_ratio=args.budget_increase_ratio,
+                budget_decrease_ratio=args.budget_decrease_ratio,
+                include_explicit_noop=args.include_explicit_noop,
                 trace_dir=args.trace_dir,
                 debug_log_dir=args.debug_log_dir,
                 trace_enabled=trace_enabled_for_seed and (not trace_method_set or "dqn_agent" in trace_method_set),
@@ -742,6 +786,11 @@ def main() -> None:
         "masked_action_count_max",
         "mask_rejection_rate_mean",
         "selected_invalid_mask_actions",
+        "action_space_type",
+        "action_count",
+        "budget_increase_ratio",
+        "budget_decrease_ratio",
+        "no_safe_action_steps",
         "end_time",
         "agent_period",
     ]

@@ -43,7 +43,15 @@ def _agent(config: DqnConfig | None = None) -> DqnBudgetAgent:
 def _transition(action_id: int, reward: float = 1.0, done: bool = False) -> Transition:
     """构造测试 transition。"""
 
-    return Transition(state=STATE, action_id=action_id, reward=reward, next_state=NEXT_STATE, done=done)
+    return Transition(
+        state=STATE,
+        action_id=action_id,
+        reward=reward,
+        next_state=NEXT_STATE,
+        done=done,
+        valid_action_mask=(True, True, True),
+        next_valid_action_mask=(True, True, True),
+    )
 
 
 def _set_q_bias(agent: DqnBudgetAgent, q_values: tuple[float, float, float]) -> None:

@@ -19,3 +19,7 @@ class Transition:
     next_state: tuple[float, ...]
     # 是否已经到达 episode 终点。
     done: bool
+    # 当前状态下各离散动作是否合法（与 action_dim 等长）。
+    valid_action_mask: tuple[bool, ...]
+    # 下一状态下各离散动作是否合法（与 action_dim 等长）。
+    next_valid_action_mask: tuple[bool, ...]
