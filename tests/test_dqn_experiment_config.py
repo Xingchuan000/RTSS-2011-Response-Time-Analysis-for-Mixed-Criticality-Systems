@@ -64,3 +64,21 @@ def test_rtss11_experiment_config_name_contains_key_parameters() -> None:
     assert "u650" in config.name
     assert "cf20" in config.name
     assert "cp50" in config.name
+
+
+def test_rtss11_fixed_taskset_seed_keeps_taskset_constant_across_seeds() -> None:
+    """设置 fixed_taskset_seed 后，不同外部 seed 应复用同一 taskset。"""
+
+    config = build_rtss11_experiment_config(
+        total_util=0.65,
+        num_tasks=20,
+        cf=2.0,
+        cp=0.5,
+        fixed_taskset_seed=0,
+    )
+    bundle_a = resolve_experiment_bundle(config, seed=0)
+    bundle_b = resolve_experiment_bundle(config, seed=1)
+    assert bundle_a.taskset_seed == 0
+    assert bundle_b.taskset_seed == 0
+    assert bundle_a.taskset_fingerprint == bundle_b.taskset_fingerprint
+    assert bundle_a.scenario_seed != bundle_b.scenario_seed

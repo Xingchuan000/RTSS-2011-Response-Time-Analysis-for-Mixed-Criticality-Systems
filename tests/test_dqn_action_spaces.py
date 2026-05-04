@@ -32,6 +32,21 @@ def test_action_count_for_n20_triple_and_pair() -> None:
     assert len(pair_actions) == 380
 
 
+def test_triple_action_with_explicit_noop_has_expected_count_and_distinct_tasks() -> None:
+    """triple+显式noop 时动作数应为 3421，且三任务互不相同。"""
+
+    tasks = _tasks(20)
+    actions = build_budget_action_space(tasks, action_space="triple", include_explicit_noop=True)
+    assert len(actions) == 3421
+    for action in actions[:-1]:
+        inc = action.increase_task
+        dec1, dec2 = action.decrease_tasks
+        assert inc is not None
+        assert inc != dec1
+        assert inc != dec2
+        assert dec1 != dec2
+
+
 def test_include_explicit_noop_exists_and_keeps_budget_unchanged() -> None:
     """显式 noop 动作应存在且不修改预算。"""
 

@@ -83,3 +83,45 @@ def test_evaluate_dqn_amc_cli_runs_after_training(tmp_path: Path) -> None:
         "valid_action_count_mean",
     }
     assert expected_summary_fields.issubset(set(unified_rows[0].keys()))
+
+
+def test_evaluate_cli_rejects_legacy_reward_mode(tmp_path: Path) -> None:
+    """评估 CLI 不应再接受旧 reward mode。"""
+
+    output_dir = tmp_path / "dqn_amc_legacy_reward_eval"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--episodes",
+            "1",
+            "--end-time",
+            "20",
+            "--seed",
+            "0",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate_dqn_amc.py",
+            "--model",
+            str(output_dir / "model_final.pt"),
+            "--seeds",
+            "0",
+            "--reward-mode",
+            "event_delta_no_job_start",
+            "--output",
+            str(output_dir / "eval.csv"),
+        ],
+        check=False,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    assert result.returncode != 0

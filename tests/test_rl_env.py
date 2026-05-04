@@ -149,3 +149,12 @@ def test_action_log_time_records_application_time_not_next_decision_time() -> No
 
     assert env.action_log[-1]["time"] == 0
     assert env.action_log[-1]["action_time"] == 0
+
+
+def test_ensure_checker_returns_same_cached_instance() -> None:
+    """_ensure_checker 应返回同一个缓存实例，避免重复构造。"""
+
+    env = _env(end_time=30)
+    first = env._ensure_checker()
+    second = env._ensure_checker()
+    assert first is second

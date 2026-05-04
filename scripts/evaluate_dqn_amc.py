@@ -516,6 +516,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cf", type=float, default=2.0)
     parser.add_argument("--cp", type=float, default=0.5)
     parser.add_argument("--scenario-seed-offset", type=int, default=100000)
+    parser.add_argument(
+        "--fixed-taskset-seed",
+        type=int,
+        default=None,
+        help=(
+            "如果设置该参数，RTSS11 任务集生成固定使用该 seed；"
+            "评估 seed 仅用于 scenario 生成。"
+        ),
+    )
     parser.add_argument("--require-schedulable", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--seeds", type=str, default="0")
@@ -535,7 +544,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--debug-log-dir", type=Path, default=None)
     parser.add_argument(
         "--reward-mode",
-        choices=["mendes", "event_delta", "event_delta_no_job_start"],
+        choices=["mendes"],
         default="mendes",
     )
     parser.add_argument("--action-space", choices=["triple", "pair", "single"], default="triple")
@@ -563,6 +572,7 @@ def main() -> None:
             cp=args.cp,
             require_schedulable=args.require_schedulable,
             scenario_seed_offset=args.scenario_seed_offset,
+            fixed_taskset_seed=args.fixed_taskset_seed,
         )
     else:
         experiment_config = build_automotive_experiment_config(

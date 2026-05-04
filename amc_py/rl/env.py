@@ -35,7 +35,7 @@ class AmcBudgetEnv:
     check_safety: bool = True
     safety_checker: RuntimeBudgetSafetyChecker | None = None
     normalization_bounds: NormalizationBounds | None = None
-    reward_mode: Literal["mendes", "event_delta", "event_delta_no_job_start"] = "mendes"
+    reward_mode: Literal["mendes"] = "mendes"
     action_space: Literal["triple", "pair", "single"] = "triple"
     budget_increase_ratio: float = 0.10
     budget_decrease_ratio: float = 0.05
@@ -243,8 +243,14 @@ class AmcBudgetEnv:
 
         if self.safety_checker is not None:
             return self.safety_checker
+        # 阶段 7：将默认 checker 缓存在 env 实例上，避免每次 mask/step 都重复构造。
+        # 约束：只在调用方未显式注入 `safety_checker` 时才懒加载一次默认 checker。
         design_r_lo = build_design_r_lo_map(self.ordered_tasks)
-        return RuntimeBudgetSafetyChecker(ordered_tasks=self.ordered_tasks, design_r_lo=design_r_lo)
+        self.safety_checker = RuntimeBudgetSafetyChecker(
+            ordered_tasks=self.ordered_tasks,
+            design_r_lo=design_r_lo,
+        )
+        return self.safety_checker
 
     def reset(self, seed: int | None = None) -> AgentObservation:  # noqa: ARG002
         """重置环境并返回初始观测。"""
@@ -382,32 +388,15 @@ class AmcBudgetEnv:
         step_reward_mode_change = 0.0
         step_reward_lo_cancellation = 0.0
         step_reward_deadline_miss = 0.0
-        if self.reward_mode == "mendes":
-            # mendes 奖励与 runtime monitor 口径保持一致。
-            step_reward_job_start = 0.1 * delta_job_start
-            step_reward_lo_overrun = -1.0 * delta_lo_overrun
-            step_reward_hi_overrun = -2.0 * delta_hi_overrun
-        elif self.reward_mode == "event_delta":
-            step_reward_mode_change = -5.0 * delta_mode_changes
-            step_reward_lo_cancellation = -2.0 * delta_lo_cancellations
-            step_reward_deadline_miss = -20.0 * delta_deadline_misses
-            step_reward_job_start = 0.05 * delta_job_start
-        elif self.reward_mode == "event_delta_no_job_start":
-            step_reward_mode_change = -5.0 * delta_mode_changes
-            step_reward_lo_cancellation = -2.0 * delta_lo_cancellations
-            step_reward_deadline_miss = -20.0 * delta_deadline_misses
-        else:
-            raise ValueError(f"不支持的 reward_mode: {self.reward_mode}")
-        reward = (
-            step_reward_job_start
-            + step_reward_lo_overrun
-            + step_reward_hi_overrun
-            + step_reward_mode_change
-            + step_reward_lo_cancellation
-            + step_reward_deadline_miss
-        )
-        # 与 monitor 现有消费语义保持一致，避免历史累计跨步泄漏。
-        _ = self._monitor.consume_reward()
+        # 论文/Mendes 奖励定义（唯一口径）：
+        # +0.1 * job_start -1.0 * LO_overrun -2.0 * HI_overrun。
+        # monitor 在事件发生时就按该定义累计，这里直接消费可严格对应
+        # “从上一次 agent 激活到下一次激活之间的事件奖励和”。
+        reward = self._monitor.consume_reward()
+        # 下面分量仅用于日志可解释性，不再参与 reward 计算分支选择。
+        step_reward_job_start = 0.1 * delta_job_start
+        step_reward_lo_overrun = -1.0 * delta_lo_overrun
+        step_reward_hi_overrun = -2.0 * delta_hi_overrun
         self._prev_job_start_count = self._monitor.job_start_count
         self._prev_lo_overrun_count = self._monitor.lo_overrun_count
         self._prev_hi_overrun_count = self._monitor.hi_overrun_count
