@@ -17,6 +17,7 @@ class RuntimeSafetyReport:
     accepted: bool
     reason: str
     checked_tasks: tuple[str, ...]
+    diagnostics: tuple[dict[str, str | int | float], ...] = ()
 
 
 @dataclass(slots=True)
@@ -38,11 +39,12 @@ class RuntimeBudgetSafetyChecker:
         """校验完整 budget 向量是否满足保守约束。"""
 
         task_names = tuple(task.name for task in self.ordered_tasks)
+        diagnostics: list[dict[str, str | int | float]] = []
         for name in task_names:
             if name not in candidate_budgets:
-                return RuntimeSafetyReport(False, f"missing_budget:{name}", task_names)
+                return RuntimeSafetyReport(False, f"missing_budget:{name}", task_names, tuple(diagnostics))
             if candidate_budgets[name] <= 0:
-                return RuntimeSafetyReport(False, f"non_positive_budget:{name}", task_names)
+                return RuntimeSafetyReport(False, f"non_positive_budget:{name}", task_names, tuple(diagnostics))
 
         for idx, task_i in enumerate(self.ordered_tasks):
             hp = self.ordered_tasks[:idx]
@@ -52,8 +54,19 @@ class RuntimeBudgetSafetyChecker:
                 lhs_lo = candidate_budgets[task_i.name]
                 for task_j in hp:
                     lhs_lo += math.ceil(r_lo_i / task_j.period) * candidate_budgets[task_j.name]
+                diagnostics.append(
+                    {
+                        "task": task_i.name,
+                        "constraint": "hi_lo_mode",
+                        "lhs": lhs_lo,
+                        "rhs": r_lo_i,
+                        "slack": r_lo_i - lhs_lo,
+                    }
+                )
                 if lhs_lo > r_lo_i:
-                    return RuntimeSafetyReport(False, f"hi_lo_mode_violation:{task_i.name}", task_names)
+                    return RuntimeSafetyReport(
+                        False, f"hi_lo_mode_violation:{task_i.name}", task_names, tuple(diagnostics)
+                    )
 
                 lhs_switch = task_i.c_hi
                 for task_j in hp:
@@ -61,17 +74,39 @@ class RuntimeBudgetSafetyChecker:
                         lhs_switch += math.ceil(r_lo_i / task_j.period) * candidate_budgets[task_j.name]
                     else:
                         lhs_switch += math.ceil(task_i.deadline / task_j.period) * task_j.c_hi
+                diagnostics.append(
+                    {
+                        "task": task_i.name,
+                        "constraint": "hi_mode_switch",
+                        "lhs": lhs_switch,
+                        "rhs": task_i.deadline,
+                        "slack": task_i.deadline - lhs_switch,
+                    }
+                )
                 if lhs_switch > task_i.deadline:
-                    return RuntimeSafetyReport(False, f"hi_mode_switch_violation:{task_i.name}", task_names)
+                    return RuntimeSafetyReport(
+                        False, f"hi_mode_switch_violation:{task_i.name}", task_names, tuple(diagnostics)
+                    )
 
             if self.check_lo_tasks and task_i.criticality is Criticality.LO:
                 lhs_lo_task = candidate_budgets[task_i.name]
                 for task_j in hp:
                     lhs_lo_task += math.ceil(task_i.deadline / task_j.period) * candidate_budgets[task_j.name]
+                diagnostics.append(
+                    {
+                        "task": task_i.name,
+                        "constraint": "lo_deadline_bound",
+                        "lhs": lhs_lo_task,
+                        "rhs": task_i.deadline,
+                        "slack": task_i.deadline - lhs_lo_task,
+                    }
+                )
                 if lhs_lo_task > task_i.deadline:
-                    return RuntimeSafetyReport(False, f"lo_mode_violation:{task_i.name}", task_names)
+                    return RuntimeSafetyReport(
+                        False, f"lo_mode_violation:{task_i.name}", task_names, tuple(diagnostics)
+                    )
 
-        return RuntimeSafetyReport(True, "accepted", task_names)
+        return RuntimeSafetyReport(True, "accepted", task_names, tuple(diagnostics))
 
 
 def merge_budget_candidate(current: BudgetState, updates: Mapping[str, int]) -> dict[str, int]:

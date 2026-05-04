@@ -25,6 +25,7 @@ from .runtime_models import (
     ModeSwitchEvent,
     RuntimeConfig,
     RuntimeSemantics,
+    ScheduleTick,
     SimulationResult,
     SystemMode,
 )
@@ -45,7 +46,12 @@ def _validate_event_runtime_bridge_method(method: str) -> None:
         )
 
 
-def _build_job(task: Task, release_index: int, scenario: ExecutionScenario) -> Job:
+def _build_job(
+    task: Task,
+    release_index: int,
+    scenario: ExecutionScenario,
+    runtime_budget_at_release: int,
+) -> Job:
     """按现有 tick runtime 的同等逻辑构建 job。"""
 
     release_time = release_index * task.period
@@ -57,6 +63,7 @@ def _build_job(task: Task, release_index: int, scenario: ExecutionScenario) -> J
         release_time=release_time,
         absolute_deadline=absolute_deadline,
         actual_cost=actual_cost,
+        runtime_budget_at_release=runtime_budget_at_release,
     )
 
 
@@ -162,7 +169,9 @@ def _schedule_running_job_events(
     if state.mode is not SystemMode.LO:
         return
 
-    budget = runtime_budgets.budget_of(job.task)
+    budget = job.runtime_budget_at_release
+    if budget is None:
+        budget = runtime_budgets.budget_of(job.task)
     remaining_to_completion = job.actual_cost - job.executed_time
     remaining_to_overrun = budget + 1 - job.executed_time
     if remaining_to_overrun <= 0 and remaining_to_completion > 0:
@@ -361,30 +370,128 @@ class EventRuntimeEngine:
 
         return self.budget_state
 
-    def apply_budget_updates(self, updates: Mapping[str, int]) -> None:
-        """在当前时刻应用预算更新，并强制触发重调度。"""
+    def _append_debug_event(self, event: str, **payload: object) -> None:
+        """追加一条调试事件。
 
-        update_payload = dict(updates)
-        self.budget_state.apply_updates(update_payload)
-        self.result.budget_update_events.append(
-            BudgetUpdateEvent(time=self.state.current_time, updates=update_payload)
+        这里统一补齐 runtime 上下文，避免各事件分支分别拼装同一批字段，
+        也保证导出的 debug 日志在结构上稳定可解析。
+        """
+
+        running_job = self.state.running_job
+        current_budget: dict[str, int] = dict(self.budget_state.budgets)
+        self.result.debug_events.append(
+            {
+                "time": self.state.current_time,
+                "event": event,
+                "mode": self.state.mode.name,
+                "running_task": None if running_job is None else running_job.task.name,
+                "running_release_index": None if running_job is None else running_job.release_index,
+                "running_executed_time": None if running_job is None else running_job.executed_time,
+                "running_actual_cost": None if running_job is None else running_job.actual_cost,
+                "running_budget_at_release": None if running_job is None else running_job.runtime_budget_at_release,
+                "current_global_budget": current_budget,
+                "active_jobs_count": len(self.state.active_jobs),
+                **payload,
+            }
         )
+
+    def _reschedule(self, now: int, force: bool = False) -> None:
+        """实例级重调度封装。
+
+        包一层实例方法的原因有两个：
+        - 统一在调度切换前后补齐 debug 日志，记录是谁被抢占、谁开始运行；
+        - 避免各事件分支重复拼装 `_reschedule(...)` 的长参数列表。
+        """
+
+        previous = self.state.running_job
+        selected = _select_highest_priority_ready_job(self.state.active_jobs, self.priority_map)
+        if previous is selected and not force:
+            return
+
+        if previous is not None and previous is not selected:
+            self._append_debug_event(
+                "preempt",
+                task=previous.task.name,
+                release_index=previous.release_index,
+                executed_time=previous.executed_time,
+            )
+
         _reschedule(
             self.state,
             self.queue,
             self.budget_state,
             self.priority_map,
-            self.state.current_time,
+            now,
             self.config,
             monitor=self.monitor,
-            force=True,
+            force=force,
         )
+
+        current = self.state.running_job
+        if current is not None and current is not previous:
+            self._append_debug_event(
+                "job_start",
+                task=current.task.name,
+                release_index=current.release_index,
+                executed_time=current.executed_time,
+                actual_cost=current.actual_cost,
+                runtime_budget_at_release=current.runtime_budget_at_release,
+            )
+
+    def _advance_time(self, now: int) -> None:
+        """统一推进 runtime 时间，并结算 running job 的执行量。
+
+        这是本轮修复最关键的语义收口点：
+        - 只要 runtime 时间从 old_time 前进到 now，就必须先把 `[old_time, now)`
+          区间内 running job 已经实际获得的 CPU 时间结算进 executed_time；
+        - 如果开启 `capture_trace`，还要把这段区间按 tick 展开到 `result.trace`，
+          这样后续导出的 runtime trace 才能真实反映 CPU 在每个整数 tick 上
+          的执行任务，而不是只在有事件的时刻留下稀疏快照。
+        """
+
+        old_time = self.state.current_time
+        if now < old_time:
+            raise ValueError("cannot move runtime time backwards")
+
+        if self.config.capture_trace:
+            running_job = self.state.running_job
+            for tick in range(old_time, now):
+                self.result.trace.append(
+                    ScheduleTick(
+                        time=tick,
+                        executing_task=None if running_job is None else running_job.task.name,
+                        executing_release_index=None if running_job is None else running_job.release_index,
+                        mode=self.state.mode,
+                    )
+                )
+
+        _update_running_progress(self.state, now)
+        self.state.current_time = now
+
+    def apply_budget_updates(self, updates: Mapping[str, int]) -> None:
+        """在当前时刻应用预算更新，并强制触发重调度。
+
+        这里显式调用 `_advance_time(self.state.current_time)` 不是多余操作。
+        `run_until()` 在 agent 决策边界返回后，当前时刻的 running job 可能刚好
+        持续执行到了该边界；如果这里直接改预算并强制重排，分段推进路径就会把
+        边界前最后一段执行量“吞掉”。统一走 `_advance_time()` 可以保证：
+        只要预算更新发生在某个逻辑时间点，更新前 CPU 已经执行过的时间一定先
+        结算完成。
+        """
+
+        self._advance_time(self.state.current_time)
+        update_payload = dict(updates)
+        self.budget_state.apply_updates(update_payload)
+        self.result.budget_update_events.append(
+            BudgetUpdateEvent(time=self.state.current_time, updates=update_payload)
+        )
+        self._append_debug_event("budget_update", updates=update_payload)
+        self._reschedule(self.state.current_time, force=True)
 
     def _process_event(self, event: Event) -> bool:
         """处理单个事件。返回 False 表示应终止运行。"""
 
-        self.state.current_time = event.time
-        _update_running_progress(self.state, event.time)
+        self._advance_time(event.time)
 
         if event.event_type is EventType.BUDGET_UPDATE:
             update_payload = dict(event.payload.get("updates", {}))
@@ -392,16 +499,8 @@ class EventRuntimeEngine:
             self.result.budget_update_events.append(
                 BudgetUpdateEvent(time=event.time, updates=dict(update_payload))
             )
-            _reschedule(
-                self.state,
-                self.queue,
-                self.budget_state,
-                self.priority_map,
-                event.time,
-                self.config,
-                monitor=self.monitor,
-                force=True,
-            )
+            self._append_debug_event("budget_update", updates=dict(update_payload))
+            self._reschedule(event.time, force=True)
             return True
 
         if event.event_type is EventType.JOB_ARRIVAL:
@@ -421,21 +520,28 @@ class EventRuntimeEngine:
                             release_index=next_release_index,
                         )
                     )
-                _reschedule(
-                    self.state,
-                    self.queue,
-                    self.budget_state,
-                    self.priority_map,
-                    event.time,
-                    self.config,
-                    monitor=self.monitor,
-                )
+                self._reschedule(event.time)
                 return True
 
-            job = _build_job(task, event.release_index, self.scenario)
+            job = _build_job(
+                task,
+                event.release_index,
+                self.scenario,
+                runtime_budget_at_release=self.budget_state.budget_of(task),
+            )
             self.state.active_jobs.append(job)
             self.all_jobs.append(job)
             self.jobs_by_key[_job_key(task.name, event.release_index)] = job
+            self._append_debug_event(
+                "job_arrival",
+                task=job.task.name,
+                criticality=job.task.criticality.value,
+                release_index=job.release_index,
+                release_time=job.release_time,
+                absolute_deadline=job.absolute_deadline,
+                actual_cost=job.actual_cost,
+                runtime_budget_at_release=job.runtime_budget_at_release,
+            )
             self.queue.push(
                 Event(
                     time=job.absolute_deadline,
@@ -457,15 +563,7 @@ class EventRuntimeEngine:
                     )
                 )
 
-            _reschedule(
-                self.state,
-                self.queue,
-                self.budget_state,
-                self.priority_map,
-                event.time,
-                self.config,
-                monitor=self.monitor,
-            )
+            self._reschedule(event.time)
             return True
 
         if event.event_type is EventType.DEADLINE_CHECK:
@@ -476,6 +574,20 @@ class EventRuntimeEngine:
             if job is None:
                 return True
             if not job.finished():
+                self._append_debug_event(
+                    "deadline_miss",
+                    task=job.task.name,
+                    criticality=job.task.criticality.value,
+                    release_index=job.release_index,
+                    release_time=job.release_time,
+                    absolute_deadline=job.absolute_deadline,
+                    actual_cost=job.actual_cost,
+                    executed_at_miss=job.executed_time,
+                    runtime_budget_at_release=job.runtime_budget_at_release,
+                    completion_time=job.completion_time,
+                    dropped=job.dropped,
+                    drop_time=job.drop_time,
+                )
                 self.result.deadline_misses.append(
                     DeadlineMiss(
                         task=job.task.name,
@@ -504,6 +616,13 @@ class EventRuntimeEngine:
 
             job.executed_time = job.actual_cost
             job.completion_time = event.time
+            self._append_debug_event(
+                "job_completion",
+                task=job.task.name,
+                release_index=job.release_index,
+                completion_time=job.completion_time,
+                actual_cost=job.actual_cost,
+            )
             if self.monitor is not None:
                 self.monitor.record_job_completion(job.task.name, job.executed_time)
             if job in self.state.active_jobs:
@@ -512,15 +631,7 @@ class EventRuntimeEngine:
             self.state.running_job = None
             self.state.run_started_at = None
             _maybe_recover_to_lo(self.state, self.result, event.time)
-            _reschedule(
-                self.state,
-                self.queue,
-                self.budget_state,
-                self.priority_map,
-                event.time,
-                self.config,
-                monitor=self.monitor,
-            )
+            self._reschedule(event.time)
             return True
 
         if event.event_type is EventType.BUDGET_OVERRUN:
@@ -535,7 +646,9 @@ class EventRuntimeEngine:
             if job is None or self.state.running_job is not job:
                 return True
 
-            budget = self.budget_state.budget_of(job.task)
+            budget = job.runtime_budget_at_release
+            if budget is None:
+                budget = self.budget_state.budget_of(job.task)
             if job.executed_time <= budget:
                 return True
 
@@ -543,6 +656,15 @@ class EventRuntimeEngine:
                 self.config.semantics is RuntimeSemantics.AMC_PLUS
                 and job.task.criticality is Criticality.LO
             ):
+                self._append_debug_event(
+                    "budget_overrun",
+                    task=job.task.name,
+                    criticality=job.task.criticality.value,
+                    release_index=job.release_index,
+                    executed_time=job.executed_time,
+                    runtime_budget_at_release=budget,
+                    overrun_semantics=self.config.semantics.value,
+                )
                 if self.monitor is not None:
                     self.monitor.record_lo_budget_overrun(job.task.name, job.executed_time)
                 job.dropped = True
@@ -562,15 +684,7 @@ class EventRuntimeEngine:
                 self.state.running_job = None
                 self.state.run_started_at = None
                 _maybe_recover_to_lo(self.state, self.result, event.time)
-                _reschedule(
-                    self.state,
-                    self.queue,
-                    self.budget_state,
-                    self.priority_map,
-                    event.time,
-                    self.config,
-                    monitor=self.monitor,
-                )
+                self._reschedule(event.time)
                 return True
 
             if self.monitor is not None:
@@ -583,6 +697,16 @@ class EventRuntimeEngine:
                 "hi_budget_overrun"
                 if job.task.criticality is Criticality.HI
                 else "lo_budget_overrun_standard_amc"
+            )
+            self._append_debug_event(
+                "budget_overrun",
+                task=job.task.name,
+                criticality=job.task.criticality.value,
+                release_index=job.release_index,
+                executed_time=job.executed_time,
+                runtime_budget_at_release=budget,
+                overrun_semantics=self.config.semantics.value,
+                reason=reason,
             )
             self.state.mode = SystemMode.HI
             self.result.mode_switches.append(
@@ -607,15 +731,7 @@ class EventRuntimeEngine:
                 self.state.run_started_at = None
 
             _maybe_recover_to_lo(self.state, self.result, event.time)
-            _reschedule(
-                self.state,
-                self.queue,
-                self.budget_state,
-                self.priority_map,
-                event.time,
-                self.config,
-                monitor=self.monitor,
-            )
+            self._reschedule(event.time)
             return True
 
         return True
@@ -645,7 +761,7 @@ class EventRuntimeEngine:
                 halted_now = True
                 break
         if self.state.current_time < target_time and not halted_now and not self.halted:
-            self.state.current_time = target_time
+            self._advance_time(target_time)
 
     def finish(self) -> SimulationResult:
         """收敛并输出最终仿真结果。"""

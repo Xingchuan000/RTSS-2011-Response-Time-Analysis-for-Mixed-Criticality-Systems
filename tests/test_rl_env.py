@@ -51,6 +51,7 @@ def test_step_none_advances_time() -> None:
     env.reset()
     r = env.step(None)
     assert r.info["time"] > 0
+    assert env.action_log[-1]["time"] == 0
 
 
 def test_step_valid_action_returns_reward_and_next_state() -> None:
@@ -61,6 +62,12 @@ def test_step_valid_action_returns_reward_and_next_state() -> None:
     r = env.step(0)
     assert isinstance(r.reward, float)
     assert len(r.observation.state_vector) == 2 * len(_tasks())
+    assert "budget_before" in r.info
+    assert "candidate_budgets" in r.info
+    assert "budget_after" in r.info
+    assert "valid_action_count" in r.info
+    assert "masked_action_count" in r.info
+    assert "selected_action_was_mask_valid" in r.info
 
 
 def test_invalid_action_id_raises_value_error() -> None:
@@ -116,3 +123,29 @@ def test_reset_and_step_share_same_normalization_bounds() -> None:
     obs1 = env.step(None).observation
     assert all(0.0 <= v <= 1.0 for v in obs0.state_vector)
     assert all(0.0 <= v <= 1.0 for v in obs1.state_vector)
+
+
+def test_env_debug_statistics_are_populated_after_mask_and_step() -> None:
+    """DQN 环境应累计 mask/safety 统计，供评估脚本写入 CSV。"""
+
+    env = _env(end_time=30)
+    obs = env.reset()
+    assert obs.state_vector
+    env.valid_action_mask()
+    env.step(0)
+    stats = env.debug_statistics()
+
+    assert int(stats["safety_checked_actions"]) >= 0
+    assert float(stats["valid_action_count_mean"]) >= 0.0
+    assert float(stats["masked_action_count_mean"]) >= 0.0
+
+
+def test_action_log_time_records_application_time_not_next_decision_time() -> None:
+    """action_log.time 应记录动作实际应用时刻。"""
+
+    env = _env(end_time=30)
+    env.reset()
+    env.step(0)
+
+    assert env.action_log[-1]["time"] == 0
+    assert env.action_log[-1]["action_time"] == 0

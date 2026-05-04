@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import sys
 import subprocess
 from pathlib import Path
 
@@ -18,11 +19,7 @@ def test_train_dqn_amc_cli_runs_and_writes_expected_outputs(tmp_path: Path) -> N
     env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
     subprocess.run(
         [
-            "conda",
-            "run",
-            "-n",
-            "amc-repro",
-            "python",
+            sys.executable,
             "scripts/train_dqn_amc.py",
             "--episodes",
             "2",
@@ -63,11 +60,7 @@ def test_train_dqn_amc_cli_is_reasonably_reproducible_for_fixed_seed(tmp_path: P
     output_a = tmp_path / "run_a"
     output_b = tmp_path / "run_b"
     base_cmd = [
-        "conda",
-        "run",
-        "-n",
-        "amc-repro",
-        "python",
+        sys.executable,
         "scripts/train_dqn_amc.py",
         "--episodes",
         "2",

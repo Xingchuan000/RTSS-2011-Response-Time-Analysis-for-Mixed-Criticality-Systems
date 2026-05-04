@@ -37,6 +37,9 @@ class AgentRuntimeResult:
     noop_actions: int
     total_reward: float
     action_log: list[dict] = field(default_factory=list)
+    safety_checked_actions: int = 0
+    safety_accepted_actions: int = 0
+    safety_rejected_actions: int = 0
 
 
 def _default_safety_checker(ordered_tasks: Sequence[Task]) -> RuntimeBudgetSafetyChecker:
@@ -82,6 +85,9 @@ def simulate_ordered_taskset_with_agent(
     noop_actions = 0
     total_reward = 0.0
     action_log: list[dict] = []
+    safety_checked_actions = 0
+    safety_accepted_actions = 0
+    safety_rejected_actions = 0
 
     current_tick = 0
     while current_tick < agent_config.end_time:
@@ -100,8 +106,22 @@ def simulate_ordered_taskset_with_agent(
 
         if action is None:
             noop_actions += 1
-            action_log.append({"time": current_tick, "accepted": False, "noop": True, "action_id": None})
+            action_log.append(
+                {
+                    "time": current_tick,
+                    "accepted": False,
+                    "noop": True,
+                    "action_id": None,
+                    "updates": {},
+                    "budget_before": dict(engine.runtime_budgets.budgets),
+                    "candidate_budgets": dict(engine.runtime_budgets.budgets),
+                    "budget_after": dict(engine.runtime_budgets.budgets),
+                    "check_safety": agent_config.check_safety,
+                    "safety_checked": False,
+                }
+            )
         else:
+            budget_before = dict(engine.runtime_budgets.budgets)
             updates = apply_budget_action_candidate(
                 action=action,
                 budget_state=engine.runtime_budgets,
@@ -111,16 +131,26 @@ def simulate_ordered_taskset_with_agent(
 
             accepted = True
             reject_reason: str | None = None
+            reject_diagnostics: tuple[dict[str, str | int | float], ...] = ()
+            safety_checked = False
             if agent_config.check_safety:
+                safety_checked = True
+                safety_checked_actions += 1
                 report = checker.validate_candidate(merged)
                 accepted = report.accepted
                 reject_reason = None if accepted else report.reason
+                reject_diagnostics = report.diagnostics
+                if accepted:
+                    safety_accepted_actions += 1
+                else:
+                    safety_rejected_actions += 1
 
             if accepted:
                 engine.apply_budget_updates(updates)
                 accepted_actions += 1
             else:
                 rejected_actions += 1
+            budget_after = dict(engine.runtime_budgets.budgets)
             action_log.append(
                 {
                     "time": current_tick,
@@ -128,7 +158,13 @@ def simulate_ordered_taskset_with_agent(
                     "noop": False,
                     "action_id": action.action_id,
                     "reject_reason": reject_reason,
+                    "reject_diagnostics": list(reject_diagnostics),
                     "updates": dict(updates),
+                    "budget_before": budget_before,
+                    "candidate_budgets": dict(merged),
+                    "budget_after": budget_after,
+                    "check_safety": agent_config.check_safety,
+                    "safety_checked": safety_checked,
                 }
             )
 
@@ -144,4 +180,7 @@ def simulate_ordered_taskset_with_agent(
         noop_actions=noop_actions,
         total_reward=total_reward,
         action_log=action_log,
+        safety_checked_actions=safety_checked_actions,
+        safety_accepted_actions=safety_accepted_actions,
+        safety_rejected_actions=safety_rejected_actions,
     )

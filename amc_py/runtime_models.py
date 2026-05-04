@@ -98,6 +98,8 @@ class Job:
     - `release_time`: 绝对释放时刻，显式保存避免到处重新计算；
     - `absolute_deadline`: 绝对截止时刻 = `release_time + task.deadline`；
     - `actual_cost`: 由 `ExecutionScenario` 注入的本次实际执行时间；
+    - `runtime_budget_at_release`: 该 job 释放当刻看到的运行时预算。后续全局预算
+      即使变化，也不允许追溯修改已经释放 job 的预算判定语义；
     - `executed_time`: 已经累计执行的 tick 数，随着仿真推进递增；
     - `completion_time`: 完成时刻（job 首次执行满 actual_cost 的那一刻
       的下一 tick 起点），未完成时为 None；
@@ -112,6 +114,7 @@ class Job:
     release_time: int
     absolute_deadline: int
     actual_cost: int
+    runtime_budget_at_release: int | None = None
     executed_time: int = 0
     completion_time: int | None = None
     dropped: bool = False
@@ -237,6 +240,8 @@ class SimulationResult:
     字段含义：
     - `jobs`: 仿真过程中曾被释放出来的所有 job（含已完成/已丢弃/未完成）；
     - `trace`: 逐 tick 的调度快照，可能为空（当 `capture_trace=False`）；
+    - `debug_events`: 面向排障的事件级调试日志。该字段不会参与调度语义，
+      仅用于导出 trace、定位 accepted action 与 deadline miss 之间的因果链；
     - `mode_switches`: 本次仿真发生过的 `LO -> HI` 切换事件列表；
     - `mode_recoveries`: 本次仿真发生过的 `HI -> LO` 恢复事件列表；
     - `budget_update_events`: 仿真期间应用的预算更新事件列表；
@@ -252,6 +257,7 @@ class SimulationResult:
 
     jobs: list[Job] = field(default_factory=list)
     trace: list[ScheduleTick] = field(default_factory=list)
+    debug_events: list[dict[str, object]] = field(default_factory=list)
     mode_switches: list[ModeSwitchEvent] = field(default_factory=list)
     mode_recoveries: list[ModeRecoveryEvent] = field(default_factory=list)
     budget_update_events: list[BudgetUpdateEvent] = field(default_factory=list)

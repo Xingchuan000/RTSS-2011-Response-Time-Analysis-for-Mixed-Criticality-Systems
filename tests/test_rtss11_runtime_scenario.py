@@ -89,3 +89,69 @@ def test_rtss11_random_scenario_rejects_invalid_parameters() -> None:
         make_rtss11_random_scenario(tasks=tasks, seed=0, lo_overrun_prob=1.1)
     with pytest.raises(ValueError, match="lo_overrun_factor"):
         make_rtss11_random_scenario(tasks=tasks, seed=0, lo_overrun_factor=1.0)
+
+
+def test_rtss11_random_scenario_allows_tiny_lo_budget_overrun() -> None:
+    """c_lo=1 的 LO 任务在 overrun 分支应产生最小 1 tick overrun。"""
+
+    task = Task(
+        name="tau_tiny_lo",
+        period=1000,
+        deadline=1000,
+        c_lo=1,
+        c_hi=1,
+        criticality=Criticality.LO,
+    )
+    scenario = make_rtss11_random_scenario(
+        tasks=[task],
+        seed=0,
+        hi_overrun_prob=0.0,
+        lo_overrun_prob=1.0,
+        lo_overrun_factor=1.5,
+    )
+    actual_cost = scenario.actual_cost_for(task, 0)
+    assert actual_cost == 2
+
+
+def test_rtss11_random_scenario_lo_overrun_upper_for_regular_budget() -> None:
+    """常规预算 LO 任务在 overrun 分支应保持 [C_LO+1, ceil(factor*C_LO)]。"""
+
+    task = Task(
+        name="tau_regular_lo",
+        period=1000,
+        deadline=1000,
+        c_lo=100,
+        c_hi=100,
+        criticality=Criticality.LO,
+    )
+    scenario = make_rtss11_random_scenario(
+        tasks=[task],
+        seed=0,
+        hi_overrun_prob=0.0,
+        lo_overrun_prob=1.0,
+        lo_overrun_factor=1.5,
+    )
+    values = [scenario.actual_cost_for(task, idx) for idx in range(50)]
+    assert all(101 <= value <= 150 for value in values)
+
+
+def test_rtss11_random_scenario_hi_tight_budget_never_exceeds_c_hi() -> None:
+    """当 HI 任务 c_hi==c_lo 时，不应被强行 overrun 到超过 c_hi。"""
+
+    task = Task(
+        name="tau_hi_tight",
+        period=1000,
+        deadline=1000,
+        c_lo=1,
+        c_hi=1,
+        criticality=Criticality.HI,
+    )
+    scenario = make_rtss11_random_scenario(
+        tasks=[task],
+        seed=0,
+        hi_overrun_prob=1.0,
+        lo_overrun_prob=0.0,
+        lo_overrun_factor=1.5,
+    )
+    values = [scenario.actual_cost_for(task, idx) for idx in range(20)]
+    assert all(value <= task.c_hi for value in values)

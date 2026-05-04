@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import os
+import sys
 import subprocess
 from pathlib import Path
 
@@ -20,11 +21,7 @@ def test_evaluate_dqn_rtss11_smoke_outputs_expected_columns_and_methods(tmp_path
 
     subprocess.run(
         [
-            "conda",
-            "run",
-            "-n",
-            "amc-repro",
-            "python",
+            sys.executable,
             "scripts/train_dqn_amc.py",
             "--workload",
             "rtss11",
@@ -57,11 +54,7 @@ def test_evaluate_dqn_rtss11_smoke_outputs_expected_columns_and_methods(tmp_path
 
     subprocess.run(
         [
-            "conda",
-            "run",
-            "-n",
-            "amc-repro",
-            "python",
+            sys.executable,
             "scripts/evaluate_dqn_amc.py",
             "--workload",
             "rtss11",
@@ -121,6 +114,15 @@ def test_evaluate_dqn_rtss11_smoke_outputs_expected_columns_and_methods(tmp_path
         "rejected_actions",
         "noop_actions",
         "total_reward",
+        "check_safety",
+        "safety_checked_actions",
+        "safety_accepted_actions",
+        "safety_rejected_actions",
+        "valid_action_count_mean",
+        "masked_action_count_mean",
+        "masked_action_count_max",
+        "mask_rejection_rate_mean",
+        "selected_invalid_mask_actions",
         "end_time",
         "agent_period",
     }
