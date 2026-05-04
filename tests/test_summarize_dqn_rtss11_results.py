@@ -193,6 +193,7 @@ def test_summarize_output_columns_are_complete(tmp_path: Path) -> None:
         "method",
         "ratio",
         "delta",
+        "is_better_than_baseline",
     }.issubset(improvement_fields)
 
 

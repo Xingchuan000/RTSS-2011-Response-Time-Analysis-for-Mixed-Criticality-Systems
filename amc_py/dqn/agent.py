@@ -143,10 +143,24 @@ class DqnBudgetAgent:
         rewards = torch.tensor([item.reward for item in batch], dtype=torch.float32, device=self.device)
         next_states = torch.tensor([item.next_state for item in batch], dtype=torch.float32, device=self.device)
         dones = torch.tensor([item.done for item in batch], dtype=torch.float32, device=self.device)
+        next_valid_masks = torch.tensor(
+            [item.next_valid_action_mask for item in batch],
+            dtype=torch.bool,
+            device=self.device,
+        )
 
         policy_q = self.policy_network(states).gather(1, actions).squeeze(1)
         with torch.no_grad():
-            next_q = self.target_network(next_states).max(dim=1).values
+            next_q_values = self.target_network(next_states)
+            # Bellman bootstrap 必须与动作选择共享同一套合法动作语义：
+            # 先屏蔽非法动作，再做 max。
+            masked_next_q_values = next_q_values.masked_fill(~next_valid_masks, float("-inf"))
+            next_q = masked_next_q_values.max(dim=1).values
+            # 若 next_state 没有任何合法动作，则 bootstrap 值按 0 处理。
+            has_any_valid_action = next_valid_masks.any(dim=1)
+            next_q = torch.where(has_any_valid_action, next_q, torch.zeros_like(next_q))
+            # done=True 时必须终止 bootstrap。
+            next_q = torch.where(dones > 0.0, torch.zeros_like(next_q), next_q)
             targets = rewards + (1.0 - dones) * self.config.gamma * next_q
 
         loss = self.loss_fn(policy_q, targets)

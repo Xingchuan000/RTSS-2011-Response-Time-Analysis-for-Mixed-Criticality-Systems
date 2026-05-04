@@ -142,6 +142,7 @@ def summarize(input_path: Path, output_path: Path, baseline_method: str = "amc_p
                         "method": method,
                         "ratio": mode_ratio_value,
                         "delta": method_mode - baseline_mode,
+                        "is_better_than_baseline": (method_mode - baseline_mode) < 0,
                     },
                     {
                         "workload": workload,
@@ -151,6 +152,7 @@ def summarize(input_path: Path, output_path: Path, baseline_method: str = "amc_p
                         "method": method,
                         "ratio": lo_ratio_value,
                         "delta": method_lo_cancel - baseline_lo_cancel,
+                        "is_better_than_baseline": (method_lo_cancel - baseline_lo_cancel) < 0,
                     },
                 ]
             )
@@ -164,6 +166,7 @@ def summarize(input_path: Path, output_path: Path, baseline_method: str = "amc_p
         "method",
         "ratio",
         "delta",
+        "is_better_than_baseline",
     ]
     with improvement_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=improvement_fields)
