@@ -53,9 +53,11 @@ def test_training_writes_validation_metrics_and_best_checkpoint(tmp_path: Path) 
     )
 
     validation_metrics_path = output_dir / "validation_metrics.csv"
+    validation_unified_summary_path = output_dir / "validation_unified_summary.csv"
     best_model_path = output_dir / "model_best.pt"
     final_model_path = output_dir / "model_final.pt"
     assert validation_metrics_path.exists()
+    assert validation_unified_summary_path.exists()
     assert best_model_path.exists()
     assert final_model_path.exists()
 
@@ -64,3 +66,7 @@ def test_training_writes_validation_metrics_and_best_checkpoint(tmp_path: Path) 
 
     assert len(rows) >= 3
     assert "deadline_misses_sum" in rows[0]
+    with validation_unified_summary_path.open("r", encoding="utf-8", newline="") as f:
+        unified_rows = list(csv.DictReader(f))
+    assert unified_rows
+    assert "noop_action_rate_mean" in unified_rows[0]

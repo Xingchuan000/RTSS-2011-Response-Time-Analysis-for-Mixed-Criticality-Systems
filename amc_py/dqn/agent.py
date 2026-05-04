@@ -39,11 +39,16 @@ class DqnBudgetAgent:
         self.hidden_layers = hidden_layers if hidden_layers is not None else config.hidden_layers
         self.device = torch.device(device or "cpu")
 
-        # 使用独立随机数生成器，保证探索行为在固定 seed 下可复现。
-        self._rng = random.Random(config.seed)
-        # 在构建网络前固定 torch 随机种子，保证参数初始化可复现。
-        torch.manual_seed(config.seed)
-        self.replay_buffer = ReplayBuffer(capacity=config.replay_capacity, seed=config.seed)
+        # 新字段为空时沿用旧的 seed 语义，保证历史配置不改参数也能复现实验。
+        exploration_seed = config.seed if config.exploration_seed is None else config.exploration_seed
+        network_seed = config.seed if config.network_seed is None else config.network_seed
+        replay_seed = config.seed if config.replay_seed is None else config.replay_seed
+        # 使用独立随机数生成器，保证探索行为在固定 exploration_seed 下可复现。
+        self._rng = random.Random(exploration_seed)
+        # 在构建网络前固定 torch 随机种子，保证参数初始化在 network_seed 下可复现。
+        torch.manual_seed(network_seed)
+        # 回放池采样使用单独 replay_seed，避免与探索随机流互相污染。
+        self.replay_buffer = ReplayBuffer(capacity=config.replay_capacity, seed=replay_seed)
         self.policy_network = DqnNetwork(
             input_dim=observation_dim,
             output_dim=action_dim,

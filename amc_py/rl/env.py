@@ -52,6 +52,7 @@ class AmcBudgetEnv:
     _safety_accepted_actions: int = field(init=False, default=0, repr=False)
     _safety_rejected_actions: int = field(init=False, default=0, repr=False)
     _selected_invalid_mask_actions: int = field(init=False, default=0, repr=False)
+    _selected_explicit_noop_actions: int = field(init=False, default=0, repr=False)
     _no_safe_action_steps: int = field(init=False, default=0, repr=False)
     _prev_job_start_count: int = field(init=False, default=0, repr=False)
     _prev_lo_overrun_count: int = field(init=False, default=0, repr=False)
@@ -113,6 +114,12 @@ class AmcBudgetEnv:
                 (sum(invalid_counts) / (mask_checks * len(self._actions))) if mask_checks > 0 else 0.0
             ),
             "selected_invalid_mask_actions": self._selected_invalid_mask_actions,
+            # 显式 noop（动作空间中的真实动作）与 action_id=None（无合法动作时被动空转）语义不同，
+            # 这里单独统计显式 noop，供阶段 1 验证“agent 是否主动选择不调整预算”。
+            "selected_explicit_noop_actions": self._selected_explicit_noop_actions,
+            "selected_explicit_noop_rate": (
+                (self._selected_explicit_noop_actions / mask_checks) if mask_checks > 0 else 0.0
+            ),
             "no_safe_action_steps": self._no_safe_action_steps,
         }
 
@@ -142,6 +149,25 @@ class AmcBudgetEnv:
         mask_details: list[dict[str, object]] = []
         reject_reason_counts: Counter[str] = Counter()
         for action in self._actions:
+            # 阶段 1 语义：显式 noop 必须始终合法。
+            # 1) 不能再走“是否有效更新”的过滤；
+            # 2) 不能再走预算安全检查；
+            # 3) mask 详情里仍记录预算前后（相同）与 is_noop 标记，便于调试。
+            if action.is_noop:
+                budget_before = dict(self._engine.runtime_budgets.budgets)
+                mask.append(True)
+                mask_details.append(
+                    {
+                        "action_id": action.action_id,
+                        "valid": True,
+                        "reject_reason": None,
+                        "updates": {},
+                        "budget_before": budget_before,
+                        "candidate_budgets": dict(budget_before),
+                        "is_noop": True,
+                    }
+                )
+                continue
             # 仅复用环境现有动作到候选预算的映射，不引入额外决策语义。
             updates = apply_budget_action_candidate(
                 action=action,
@@ -161,6 +187,7 @@ class AmcBudgetEnv:
                         "updates": dict(updates),
                         "budget_before": budget_before,
                         "candidate_budgets": candidate_budgets,
+                        "is_noop": False,
                     }
                 )
                 continue
@@ -174,6 +201,7 @@ class AmcBudgetEnv:
                         "updates": dict(updates),
                         "budget_before": budget_before,
                         "candidate_budgets": candidate_budgets,
+                        "is_noop": False,
                     }
                 )
                 continue
@@ -190,6 +218,7 @@ class AmcBudgetEnv:
                     "updates": dict(updates),
                     "budget_before": budget_before,
                     "candidate_budgets": candidate_budgets,
+                    "is_noop": False,
                 }
             )
         valid_action_count = sum(mask)
@@ -239,6 +268,7 @@ class AmcBudgetEnv:
         self._safety_accepted_actions = 0
         self._safety_rejected_actions = 0
         self._selected_invalid_mask_actions = 0
+        self._selected_explicit_noop_actions = 0
         self._no_safe_action_steps = 0
         self._prev_job_start_count = 0
         self._prev_lo_overrun_count = 0
@@ -273,6 +303,7 @@ class AmcBudgetEnv:
         masked_action_count = 0
         selected_action_was_mask_valid = action_id is None
         action_was_checked = False
+        is_explicit_noop_action = False
 
         if action_id is not None:
             if action_id < 0 or action_id >= len(self._actions):
@@ -284,27 +315,41 @@ class AmcBudgetEnv:
                 if not selected_action_was_mask_valid:
                     self._selected_invalid_mask_actions += 1
             action = self._actions[action_id]
-            updates = apply_budget_action_candidate(
-                action=action,
-                budget_state=self._engine.runtime_budgets,
-                ordered_tasks=self.ordered_tasks,
-            )
-            candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
-            if self.check_safety:
-                action_was_checked = True
-                self._safety_checked_actions += 1
-                report = self._ensure_checker().validate_candidate(candidate_budgets)
-                accepted = report.accepted
-                if not accepted:
-                    reject_reason = report.reason
-                    reject_diagnostics = report.diagnostics
-                    self._safety_rejected_actions += 1
-                else:
-                    self._safety_accepted_actions += 1
-            else:
+            if action.is_noop:
+                # 显式 noop 的执行语义是“主动接受但不改预算”：
+                # - 不做 safety check；
+                # - 不调用 apply_budget_updates；
+                # - 仅在统计上标记为一次被主动选择的 noop。
+                # 这样训练/评估可以区分：
+                # - action_id=None 的隐式 noop（通常因无合法动作）；
+                # - action_id!=None 的显式 noop（agent 明确选择“不调整预算”）。
                 accepted = True
-            if accepted:
-                self._engine.apply_budget_updates(updates)
+                is_explicit_noop_action = True
+                self._selected_explicit_noop_actions += 1
+                updates = {}
+                candidate_budgets = dict(budget_before)
+            else:
+                updates = apply_budget_action_candidate(
+                    action=action,
+                    budget_state=self._engine.runtime_budgets,
+                    ordered_tasks=self.ordered_tasks,
+                )
+                candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
+                if self.check_safety:
+                    action_was_checked = True
+                    self._safety_checked_actions += 1
+                    report = self._ensure_checker().validate_candidate(candidate_budgets)
+                    accepted = report.accepted
+                    if not accepted:
+                        reject_reason = report.reason
+                        reject_diagnostics = report.diagnostics
+                        self._safety_rejected_actions += 1
+                    else:
+                        self._safety_accepted_actions += 1
+                else:
+                    accepted = True
+                if accepted:
+                    self._engine.apply_budget_updates(updates)
         else:
             if self._mask_log:
                 valid_action_count = int(self._mask_log[-1]["valid_action_count"])
@@ -383,6 +428,15 @@ class AmcBudgetEnv:
             "action_time": action_time,
             "action_id": action_id,
             "accepted": accepted,
+            # 统一输出 is_noop，明确区分：
+            # - 显式 noop：action_id 为具体编号且 is_noop=True；
+            # - 隐式 noop：action_id=None（通常是无合法动作）；
+            # - 普通预算动作：is_noop=False。
+            "is_noop": bool(action_id is None or is_explicit_noop_action),
+            # 显式 noop 的单独标记：用于训练/评估统计，避免仅靠 action_id 推断语义。
+            "is_explicit_noop_action": bool(is_explicit_noop_action),
+            # 约定：只有预算真的发生更新时才会出现非空 updates；
+            # 显式/隐式 noop 和被拒绝动作都应保持 updates={}。
             "updates": dict(updates),
             "budget_before": budget_before,
             "candidate_budgets": candidate_budgets,

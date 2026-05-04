@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
+from statistics import mean
 
 from amc_py.automotive_workload import build_automotive_experiment_config
 from amc_py.dqn import (
@@ -47,6 +48,30 @@ def _parse_baselines(raw_value: str) -> list[str]:
     """将逗号分隔 baseline 列表解析为方法名列表。"""
 
     return [part.strip() for part in raw_value.split(",") if part.strip()]
+
+
+def _to_float(row: dict[str, int | float | str | bool], key: str) -> float:
+    """把评估行中的数值字段统一转成 float。"""
+
+    value = row.get(key, 0.0)
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if text == "":
+        return 0.0
+    return float(text)
+
+
+def _safe_ratio(numerator: float, denominator: float) -> str | float:
+    """计算比值并显式处理分母为 0 的情况。"""
+
+    if denominator == 0.0:
+        if numerator > 0.0:
+            return "inf"
+        return "nan"
+    return numerator / denominator
 
 
 def _budget_overruns_from_result(result: SimulationResult) -> int:
@@ -95,9 +120,17 @@ def _evaluate_dqn_once(
 
     obs = env.reset(seed=seed)
     done = False
+    # 评估期统计口径与训练期保持一致：
+    # - step_count：总决策步；
+    # - selected_action_count：action_id 非空步数；
+    # - accepted/rejected：仅对非空 action_id 统计；
+    # - noop/explicit_noop：由环境 info 提供事实标签。
     accepted_actions = 0
     rejected_actions = 0
+    step_count = 0
+    selected_action_count = 0
     noop_actions = 0
+    explicit_noop_actions = 0
     total_reward = 0.0
     last_info: dict[str, int | float | str | bool | None] = {
         "mode_changes": 0,
@@ -106,14 +139,22 @@ def _evaluate_dqn_once(
     }
 
     while not done:
+        # 每次循环对应一次环境 step，所有 rate 都以该值为主分母。
+        step_count += 1
         mask = env.valid_action_mask()
         action_id = agent.select_action_id(obs.state_vector, valid_action_mask=mask, training=False)
-        if action_id is None:
-            noop_actions += 1
+        # 是否提供 action_id 与动作是否 accepted/noop 是两个独立维度。
+        selected_action_count += int(action_id is not None)
 
         result = env.step(action_id)
         total_reward += result.reward
         last_info = result.info
+
+        if bool(result.info.get("is_noop", False)):
+            noop_actions += 1
+            if bool(result.info.get("is_explicit_noop_action", False)):
+                # 只有环境显式标记为 explicit noop，才计入 explicit_noop_actions。
+                explicit_noop_actions += 1
 
         if action_id is not None:
             if bool(result.info.get("accepted")):
@@ -128,8 +169,12 @@ def _evaluate_dqn_once(
     if hasattr(env, "_engine") and env._engine is not None:
         budget_overruns = _budget_overruns_from_result(env._engine.finish())
     debug_stats = env.debug_statistics()
-    action_total = accepted_actions + rejected_actions + noop_actions
-    rejection_rate = (rejected_actions / action_total) if action_total > 0 else 0.0
+    # 阶段 2：所有动作 rate 都基于 step_count，避免 explicit noop 双重计数导致分母膨胀。
+    # rejected_action_rate 沿用历史字段名 `rejection_rate`，语义等价于 rejected/step_count。
+    rejection_rate = (rejected_actions / step_count) if step_count > 0 else 0.0
+    noop_action_rate = (noop_actions / step_count) if step_count > 0 else 0.0
+    explicit_noop_action_rate = (explicit_noop_actions / step_count) if step_count > 0 else 0.0
+    accepted_action_rate = (accepted_actions / step_count) if step_count > 0 else 0.0
     if trace_enabled and hasattr(env, "_engine") and env._engine is not None:
         _write_agent_debug_files(
             trace_dir=trace_dir,
@@ -152,7 +197,13 @@ def _evaluate_dqn_once(
             "budget_overruns": budget_overruns,
             "accepted_actions": accepted_actions,
             "rejected_actions": rejected_actions,
+            "step_count": step_count,
+            "selected_action_count": selected_action_count,
             "noop_actions": noop_actions,
+            "explicit_noop_actions": explicit_noop_actions,
+            "noop_action_rate": noop_action_rate,
+            "explicit_noop_action_rate": explicit_noop_action_rate,
+            "accepted_action_rate": accepted_action_rate,
             "rejection_rate": rejection_rate,
             "total_reward": total_reward,
             "check_safety": bool(debug_stats["check_safety"]),
@@ -164,6 +215,8 @@ def _evaluate_dqn_once(
             "masked_action_count_max": int(debug_stats["masked_action_count_max"]),
             "mask_rejection_rate_mean": float(debug_stats["mask_rejection_rate_mean"]),
             "selected_invalid_mask_actions": int(debug_stats["selected_invalid_mask_actions"]),
+            "selected_explicit_noop_actions": int(debug_stats["selected_explicit_noop_actions"]),
+            "selected_explicit_noop_rate": float(debug_stats["selected_explicit_noop_rate"]),
             "action_space_type": str(debug_stats["action_space_type"]),
             "action_count": int(debug_stats["action_count"]),
             "budget_increase_ratio": float(debug_stats["budget_increase_ratio"]),
@@ -173,6 +226,112 @@ def _evaluate_dqn_once(
         runtime_result,
         env.action_log,
     )
+
+
+def _build_unified_summary_rows(rows: list[dict[str, int | float | str | bool]]) -> list[dict[str, int | float | str]]:
+    """按阶段 0 约定，从评估明细构建统一 summary 行。"""
+
+    grouped: dict[tuple[str, str, str, str, str], list[dict[str, int | float | str | bool]]] = {}
+    for row in rows:
+        key = (
+            str(row.get("workload", "")),
+            str(row.get("total_util", "")),
+            str(row.get("num_tasks", "")),
+            str(row.get("cf", "")),
+            str(row.get("cp", "")),
+        )
+        grouped.setdefault(key, []).append(row)
+
+    summary_rows: list[dict[str, int | float | str]] = []
+    for key, group_rows in sorted(grouped.items()):
+        workload, total_util, num_tasks, cf, cp = key
+        baseline_rows = [row for row in group_rows if str(row.get("method", "")) == "amc_plus_baseline"]
+        dqn_rows = [row for row in group_rows if str(row.get("method", "")) == "dqn_agent"]
+        if not baseline_rows or not dqn_rows:
+            # 没有 baseline 或 dqn 时无法按阶段 0 口径对比，直接跳过。
+            continue
+
+        baseline_mode_changes_mean = mean(_to_float(row, "mode_changes") for row in baseline_rows)
+        baseline_lo_cancellations_mean = mean(_to_float(row, "lo_cancellations") for row in baseline_rows)
+        dqn_mode_changes_mean = mean(_to_float(row, "mode_changes") for row in dqn_rows)
+        dqn_lo_cancellations_mean = mean(_to_float(row, "lo_cancellations") for row in dqn_rows)
+        accepted_action_count_mean = mean(_to_float(row, "accepted_actions") for row in dqn_rows)
+        rejected_action_count_mean = mean(_to_float(row, "rejected_actions") for row in dqn_rows)
+        noop_action_count_mean = mean(_to_float(row, "noop_actions") for row in dqn_rows)
+        explicit_noop_action_count_mean = mean(_to_float(row, "explicit_noop_actions") for row in dqn_rows)
+        masked_action_count_mean = mean(_to_float(row, "masked_action_count_mean") for row in dqn_rows)
+        valid_action_count_mean = mean(_to_float(row, "valid_action_count_mean") for row in dqn_rows)
+        noop_action_rate_mean = mean(_to_float(row, "noop_action_rate") for row in dqn_rows)
+        explicit_noop_action_rate_mean = mean(_to_float(row, "explicit_noop_action_rate") for row in dqn_rows)
+        accepted_action_rate_mean = mean(_to_float(row, "accepted_action_rate") for row in dqn_rows)
+        rejected_action_rate_mean = mean(_to_float(row, "rejection_rate") for row in dqn_rows)
+
+        summary_rows.append(
+            {
+                "workload": workload,
+                "total_util": total_util,
+                "num_tasks": num_tasks,
+                "cf": cf,
+                "cp": cp,
+                "seed_count": len(dqn_rows),
+                "baseline_mode_changes_mean": baseline_mode_changes_mean,
+                "baseline_lo_cancellations_mean": baseline_lo_cancellations_mean,
+                "dqn_mode_changes_mean": dqn_mode_changes_mean,
+                "dqn_lo_cancellations_mean": dqn_lo_cancellations_mean,
+                "mode_change_ratio": _safe_ratio(baseline_mode_changes_mean, dqn_mode_changes_mean),
+                "lo_cancellation_ratio": _safe_ratio(baseline_lo_cancellations_mean, dqn_lo_cancellations_mean),
+                "accepted_action_count_mean": accepted_action_count_mean,
+                "rejected_action_count_mean": rejected_action_count_mean,
+                "noop_action_count_mean": noop_action_count_mean,
+                "explicit_noop_action_count_mean": explicit_noop_action_count_mean,
+                # 下列 rate 全部使用 step_count 口径，便于跨方法横向比较。
+                "noop_action_rate_mean": noop_action_rate_mean,
+                "explicit_noop_action_rate_mean": explicit_noop_action_rate_mean,
+                "accepted_action_rate_mean": accepted_action_rate_mean,
+                "rejected_action_rate_mean": rejected_action_rate_mean,
+                "masked_action_count_mean": masked_action_count_mean,
+                "valid_action_count_mean": valid_action_count_mean,
+            }
+        )
+    return summary_rows
+
+
+def _write_unified_summary_csv(
+    output_path: Path,
+    rows: list[dict[str, int | float | str | bool]],
+) -> None:
+    """把阶段 0/1 所需统一 summary 写成独立 CSV 文件。"""
+
+    summary_rows = _build_unified_summary_rows(rows)
+    summary_path = output_path.with_name(f"{output_path.stem}_unified_summary.csv")
+    fieldnames = [
+        "workload",
+        "total_util",
+        "num_tasks",
+        "cf",
+        "cp",
+        "seed_count",
+        "baseline_mode_changes_mean",
+        "baseline_lo_cancellations_mean",
+        "dqn_mode_changes_mean",
+        "dqn_lo_cancellations_mean",
+        "mode_change_ratio",
+        "lo_cancellation_ratio",
+        "accepted_action_count_mean",
+        "rejected_action_count_mean",
+        "noop_action_count_mean",
+        "explicit_noop_action_count_mean",
+        "noop_action_rate_mean",
+        "explicit_noop_action_rate_mean",
+        "accepted_action_rate_mean",
+        "rejected_action_rate_mean",
+        "masked_action_count_mean",
+        "valid_action_count_mean",
+    ]
+    with summary_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(summary_rows)
 
 
 def _parse_csv_set(raw_value: str) -> set[str]:
@@ -486,7 +645,13 @@ def main() -> None:
                     "budget_overruns": _budget_overruns_from_result(baseline_result),
                     "accepted_actions": 0,
                     "rejected_actions": 0,
+                    "step_count": 0,
+                    "selected_action_count": 0,
                     "noop_actions": 0,
+                    "explicit_noop_actions": 0,
+                    "noop_action_rate": 0.0,
+                    "explicit_noop_action_rate": 0.0,
+                    "accepted_action_rate": 0.0,
                     "rejection_rate": baseline_rejection_rate,
                     "total_reward": 0.0,
                     "check_safety": True,
@@ -498,6 +663,8 @@ def main() -> None:
                     "masked_action_count_max": 0,
                     "mask_rejection_rate_mean": 0.0,
                     "selected_invalid_mask_actions": 0,
+                    "selected_explicit_noop_actions": 0,
+                    "selected_explicit_noop_rate": 0.0,
                     "action_space_type": args.action_space,
                     "action_count": len(actions),
                     "budget_increase_ratio": args.budget_increase_ratio,
@@ -528,12 +695,12 @@ def main() -> None:
                 ),
                 bounds=bundle.normalization_bounds,
             )
-            noop_total_actions = (
-                noop_result.accepted_actions + noop_result.rejected_actions + noop_result.noop_actions
-            )
-            noop_rejection_rate = (
-                (noop_result.rejected_actions / noop_total_actions) if noop_total_actions > 0 else 0.0
-            )
+            # wrapper 路径没有逐步返回 step_count 字段，直接以 action_log 行数作为步数事实来源。
+            noop_step_count = len(noop_result.action_log)
+            noop_selected_action_count = sum(int(row.get("action_id") is not None) for row in noop_result.action_log)
+            # 显式 noop 由 runtime wrapper 在日志中标注，避免通过 action_id 反推造成误判。
+            noop_explicit_noop_actions = sum(int(bool(row.get("is_explicit_noop", False))) for row in noop_result.action_log)
+            noop_rejection_rate = (noop_result.rejected_actions / noop_step_count) if noop_step_count > 0 else 0.0
             rows.append(
                 {
                     **row_base,
@@ -544,7 +711,19 @@ def main() -> None:
                     "budget_overruns": _budget_overruns_from_result(noop_result.runtime_result),
                     "accepted_actions": noop_result.accepted_actions,
                     "rejected_actions": noop_result.rejected_actions,
+                    "step_count": noop_step_count,
+                    "selected_action_count": noop_selected_action_count,
                     "noop_actions": noop_result.noop_actions,
+                    "explicit_noop_actions": noop_explicit_noop_actions,
+                    "noop_action_rate": (
+                        (noop_result.noop_actions / noop_step_count) if noop_step_count > 0 else 0.0
+                    ),
+                    "explicit_noop_action_rate": (
+                        (noop_explicit_noop_actions / noop_step_count) if noop_step_count > 0 else 0.0
+                    ),
+                    "accepted_action_rate": (
+                        (noop_result.accepted_actions / noop_step_count) if noop_step_count > 0 else 0.0
+                    ),
                     "rejection_rate": noop_rejection_rate,
                     "total_reward": noop_result.total_reward,
                     "check_safety": True,
@@ -556,6 +735,8 @@ def main() -> None:
                     "masked_action_count_max": 0,
                     "mask_rejection_rate_mean": 0.0,
                     "selected_invalid_mask_actions": 0,
+                    "selected_explicit_noop_actions": 0,
+                    "selected_explicit_noop_rate": 0.0,
                     "action_space_type": args.action_space,
                     "action_count": len(actions),
                     "budget_increase_ratio": args.budget_increase_ratio,
@@ -598,12 +779,13 @@ def main() -> None:
                 ),
                 bounds=bundle.normalization_bounds,
             )
-            random_total_actions = (
-                random_result.accepted_actions + random_result.rejected_actions + random_result.noop_actions
+            # 与 noop/heuristic 同口径：按 action_log 行数定义 step_count。
+            random_step_count = len(random_result.action_log)
+            random_selected_action_count = sum(int(row.get("action_id") is not None) for row in random_result.action_log)
+            random_explicit_noop_actions = sum(
+                int(bool(row.get("is_explicit_noop", False))) for row in random_result.action_log
             )
-            random_rejection_rate = (
-                (random_result.rejected_actions / random_total_actions) if random_total_actions > 0 else 0.0
-            )
+            random_rejection_rate = (random_result.rejected_actions / random_step_count) if random_step_count > 0 else 0.0
             rows.append(
                 {
                     **row_base,
@@ -614,7 +796,19 @@ def main() -> None:
                     "budget_overruns": _budget_overruns_from_result(random_result.runtime_result),
                     "accepted_actions": random_result.accepted_actions,
                     "rejected_actions": random_result.rejected_actions,
+                    "step_count": random_step_count,
+                    "selected_action_count": random_selected_action_count,
                     "noop_actions": random_result.noop_actions,
+                    "explicit_noop_actions": random_explicit_noop_actions,
+                    "noop_action_rate": (
+                        (random_result.noop_actions / random_step_count) if random_step_count > 0 else 0.0
+                    ),
+                    "explicit_noop_action_rate": (
+                        (random_explicit_noop_actions / random_step_count) if random_step_count > 0 else 0.0
+                    ),
+                    "accepted_action_rate": (
+                        (random_result.accepted_actions / random_step_count) if random_step_count > 0 else 0.0
+                    ),
                     "rejection_rate": random_rejection_rate,
                     "total_reward": random_result.total_reward,
                     "check_safety": True,
@@ -626,6 +820,8 @@ def main() -> None:
                     "masked_action_count_max": 0,
                     "mask_rejection_rate_mean": 0.0,
                     "selected_invalid_mask_actions": 0,
+                    "selected_explicit_noop_actions": 0,
+                    "selected_explicit_noop_rate": 0.0,
                     "action_space_type": args.action_space,
                     "action_count": len(actions),
                     "budget_increase_ratio": args.budget_increase_ratio,
@@ -668,14 +864,17 @@ def main() -> None:
                 ),
                 bounds=bundle.normalization_bounds,
             )
-            heuristic_total_actions = (
-                heuristic_result.accepted_actions
-                + heuristic_result.rejected_actions
-                + heuristic_result.noop_actions
+            # 与其它 wrapper baseline 保持同一分母定义，便于统一比较动作率。
+            heuristic_step_count = len(heuristic_result.action_log)
+            heuristic_selected_action_count = sum(
+                int(row.get("action_id") is not None) for row in heuristic_result.action_log
+            )
+            heuristic_explicit_noop_actions = sum(
+                int(bool(row.get("is_explicit_noop", False))) for row in heuristic_result.action_log
             )
             heuristic_rejection_rate = (
-                (heuristic_result.rejected_actions / heuristic_total_actions)
-                if heuristic_total_actions > 0
+                (heuristic_result.rejected_actions / heuristic_step_count)
+                if heuristic_step_count > 0
                 else 0.0
             )
             rows.append(
@@ -688,7 +887,25 @@ def main() -> None:
                     "budget_overruns": _budget_overruns_from_result(heuristic_result.runtime_result),
                     "accepted_actions": heuristic_result.accepted_actions,
                     "rejected_actions": heuristic_result.rejected_actions,
+                    "step_count": heuristic_step_count,
+                    "selected_action_count": heuristic_selected_action_count,
                     "noop_actions": heuristic_result.noop_actions,
+                    "explicit_noop_actions": heuristic_explicit_noop_actions,
+                    "noop_action_rate": (
+                        (heuristic_result.noop_actions / heuristic_step_count)
+                        if heuristic_step_count > 0
+                        else 0.0
+                    ),
+                    "explicit_noop_action_rate": (
+                        (heuristic_explicit_noop_actions / heuristic_step_count)
+                        if heuristic_step_count > 0
+                        else 0.0
+                    ),
+                    "accepted_action_rate": (
+                        (heuristic_result.accepted_actions / heuristic_step_count)
+                        if heuristic_step_count > 0
+                        else 0.0
+                    ),
                     "rejection_rate": heuristic_rejection_rate,
                     "total_reward": heuristic_result.total_reward,
                     "check_safety": True,
@@ -700,6 +917,8 @@ def main() -> None:
                     "masked_action_count_max": 0,
                     "mask_rejection_rate_mean": 0.0,
                     "selected_invalid_mask_actions": 0,
+                    "selected_explicit_noop_actions": 0,
+                    "selected_explicit_noop_rate": 0.0,
                     "action_space_type": args.action_space,
                     "action_count": len(actions),
                     "budget_increase_ratio": args.budget_increase_ratio,
@@ -774,7 +993,13 @@ def main() -> None:
         "budget_overruns",
         "accepted_actions",
         "rejected_actions",
+        "step_count",
+        "selected_action_count",
         "noop_actions",
+        "explicit_noop_actions",
+        "noop_action_rate",
+        "explicit_noop_action_rate",
+        "accepted_action_rate",
         "rejection_rate",
         "total_reward",
         "check_safety",
@@ -786,6 +1011,8 @@ def main() -> None:
         "masked_action_count_max",
         "mask_rejection_rate_mean",
         "selected_invalid_mask_actions",
+        "selected_explicit_noop_actions",
+        "selected_explicit_noop_rate",
         "action_space_type",
         "action_count",
         "budget_increase_ratio",
@@ -798,6 +1025,7 @@ def main() -> None:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+    _write_unified_summary_csv(args.output, rows)
 
     miss_rows = _deadline_miss_rows(rows)
     if miss_rows:

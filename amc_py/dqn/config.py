@@ -31,3 +31,9 @@ class DqnConfig:
     hidden_layers: tuple[int, ...] | None = None
     # 随机种子，用于回放采样与探索行为复现。
     seed: int = 0
+    # 网络参数初始化随机种子。阶段 0 需要把“网络初始化随机性”单独暴露。
+    network_seed: int | None = None
+    # epsilon-greedy 探索随机种子。阶段 0 需要把“动作探索随机性”单独暴露。
+    exploration_seed: int | None = None
+    # 经验回放采样随机种子。阶段 0 需要把“replay 采样随机性”单独暴露。
+    replay_seed: int | None = None
