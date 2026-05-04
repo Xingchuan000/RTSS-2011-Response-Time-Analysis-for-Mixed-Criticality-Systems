@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import subprocess
+import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -15,11 +16,7 @@ def test_script_runs_and_generates_csv(tmp_path: Path) -> None:
     output = tmp_path / "pre_dqn.csv"
     subprocess.run(
         [
-            "conda",
-            "run",
-            "-n",
-            "amc-repro",
-            "python",
+            sys.executable,
             "scripts/run_pre_dqn_runtime_baselines.py",
             "--end-time",
             "100",
@@ -40,11 +37,7 @@ def test_csv_contains_required_fields_and_noop_matches_baseline(tmp_path: Path) 
     output = tmp_path / "pre_dqn.csv"
     subprocess.run(
         [
-            "conda",
-            "run",
-            "-n",
-            "amc-repro",
-            "python",
+            sys.executable,
             "scripts/run_pre_dqn_runtime_baselines.py",
             "--end-time",
             "100",

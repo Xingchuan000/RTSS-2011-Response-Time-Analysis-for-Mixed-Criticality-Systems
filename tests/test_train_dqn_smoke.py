@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import os
+import sys
 import subprocess
 from pathlib import Path
 
@@ -16,11 +17,7 @@ def test_train_dqn_smoke_runs_and_writes_outputs(tmp_path: Path) -> None:
     output_dir = tmp_path / "dqn_smoke"
     subprocess.run(
         [
-            "conda",
-            "run",
-            "-n",
-            "amc-repro",
-            "python",
+            sys.executable,
             "scripts/train_dqn_smoke.py",
             "--episodes",
             "2",

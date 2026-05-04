@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import os
+import sys
 import subprocess
 from pathlib import Path
 
@@ -20,11 +21,7 @@ def test_evaluate_dqn_amc_cli_runs_after_training(tmp_path: Path) -> None:
 
     subprocess.run(
         [
-            "conda",
-            "run",
-            "-n",
-            "amc-repro",
-            "python",
+            sys.executable,
             "scripts/train_dqn_amc.py",
             "--episodes",
             "2",
@@ -41,11 +38,7 @@ def test_evaluate_dqn_amc_cli_runs_after_training(tmp_path: Path) -> None:
     )
     subprocess.run(
         [
-            "conda",
-            "run",
-            "-n",
-            "amc-repro",
-            "python",
+            sys.executable,
             "scripts/evaluate_dqn_amc.py",
             "--model",
             str(model_path),

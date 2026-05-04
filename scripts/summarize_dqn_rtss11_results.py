@@ -41,6 +41,12 @@ def _safe_ratio(baseline_value: float, method_value: float) -> tuple[str, float]
 def summarize(input_path: Path, output_path: Path, baseline_method: str = "amc_plus_baseline") -> None:
     """从评估 CSV 生成 summary 与 improvement 文件。"""
 
+    if not input_path.exists():
+        raise SystemExit(
+            f"Input CSV not found: {input_path}. "
+            "Please run scripts/evaluate_dqn_amc.py successfully before summarizing."
+        )
+
     with input_path.open("r", encoding="utf-8", newline="") as f:
         rows = list(csv.DictReader(f))
 
@@ -135,7 +141,7 @@ def summarize(input_path: Path, output_path: Path, baseline_method: str = "amc_p
                         "baseline_method": baseline_method,
                         "method": method,
                         "ratio": mode_ratio_value,
-                        "delta": baseline_mode - method_mode,
+                        "delta": method_mode - baseline_mode,
                     },
                     {
                         "workload": workload,
@@ -144,7 +150,7 @@ def summarize(input_path: Path, output_path: Path, baseline_method: str = "amc_p
                         "baseline_method": baseline_method,
                         "method": method,
                         "ratio": lo_ratio_value,
-                        "delta": baseline_lo_cancel - method_lo_cancel,
+                        "delta": method_lo_cancel - baseline_lo_cancel,
                     },
                 ]
             )

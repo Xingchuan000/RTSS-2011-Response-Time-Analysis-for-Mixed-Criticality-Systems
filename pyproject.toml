@@ -28,3 +28,6 @@ packages = ["amc_py", "amc_py.rl", "amc_py.dqn"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: 端到端或耗时较长的测试",
+]

@@ -383,21 +383,9 @@ def make_rtss11_random_scenario(
     if not task_list:
         raise ValueError("tasks 不能为空")
 
-    # 预先做参数可实现性校验，避免运行到中途才暴露“区间为空”的配置问题。
-    if hi_overrun_prob > 0.0:
-        for task in task_list:
-            if task.criticality is Criticality.HI and task.c_hi <= task.c_lo:
-                raise ValueError(
-                    f"HI 任务 {task.name} 的 c_hi={task.c_hi} 不大于 c_lo={task.c_lo}，"
-                    "在 hi_overrun_prob>0 时无法采样 (C_LO, C_HI] 区间"
-                )
-    if lo_overrun_prob > 0.0:
-        for task in task_list:
-            if task.criticality is Criticality.LO and math.floor(lo_overrun_factor * task.c_lo) <= task.c_lo:
-                raise ValueError(
-                    f"LO 任务 {task.name} 的 c_lo={task.c_lo} 与 lo_overrun_factor={lo_overrun_factor} "
-                    "无法形成 (C_LO, lo_overrun_factor*C_LO] 区间"
-                )
+    # 这里不对每个 LO 任务做“可形成整数 overrun 区间”的前置拒绝。
+    # 原因：RTSS11 任务集中允许出现 c_lo=1 的小预算任务，此时连续区间
+    # (C_LO, factor*C_LO] 可能没有整数点。该情况应在采样语义中处理，而不是抛错。
 
     def _task_name_code(name: str) -> int:
         """把任务名编码为稳定整数，避免依赖 Python 随机哈希。"""
@@ -423,12 +411,18 @@ def make_rtss11_random_scenario(
         nominal_high = task.c_lo
 
         if task.criticality is Criticality.HI:
-            if rng.random() < hi_overrun_prob:
+            # HI 任务 overrun 仅在存在严格上界空间时触发，确保始终满足 actual_cost <= C_HI。
+            if rng.random() < hi_overrun_prob and task.c_hi > task.c_lo:
                 return rng.randint(task.c_lo + 1, task.c_hi)
             return rng.randint(nominal_low, nominal_high)
 
         if rng.random() < lo_overrun_prob:
-            lo_overrun_upper = math.floor(lo_overrun_factor * task.c_lo)
+            # 对小预算 LO 任务，使用 “至少 c_lo+1” 与 “ceil(factor*c_lo)” 取最大值，
+            # 保证最小 1 tick overrun 可采样，不会因整数区间为空而崩溃。
+            lo_overrun_upper = max(
+                task.c_lo + 1,
+                int(math.ceil(lo_overrun_factor * task.c_lo)),
+            )
             return rng.randint(task.c_lo + 1, lo_overrun_upper)
         return rng.randint(nominal_low, nominal_high)
 

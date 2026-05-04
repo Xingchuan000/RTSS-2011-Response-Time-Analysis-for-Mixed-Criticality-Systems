@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import os
+import sys
 import subprocess
 from pathlib import Path
 
@@ -62,11 +63,7 @@ def test_plot_dqn_training_generates_png_files(tmp_path: Path) -> None:
 
     subprocess.run(
         [
-            "conda",
-            "run",
-            "-n",
-            "amc-repro",
-            "python",
+            sys.executable,
             "scripts/plot_dqn_training.py",
             "--train-log",
             str(train_log),

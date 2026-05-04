@@ -5,6 +5,8 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import pytest
+
 from scripts.summarize_dqn_rtss11_results import summarize
 
 
@@ -151,6 +153,7 @@ def test_summarize_handles_zero_denominator_without_crash(tmp_path: Path) -> Non
     assert rows
     mode_row = next(row for row in rows if row["metric"] == "mode_changes" and row["method"] == "dqn_agent")
     assert mode_row["ratio"] != ""
+    assert float(mode_row["delta"]) < 0
 
 
 def test_summarize_output_columns_are_complete(tmp_path: Path) -> None:
@@ -191,3 +194,12 @@ def test_summarize_output_columns_are_complete(tmp_path: Path) -> None:
         "ratio",
         "delta",
     }.issubset(improvement_fields)
+
+
+def test_summary_reports_missing_input_cleanly(tmp_path: Path) -> None:
+    """输入文件缺失时应给出清晰错误提示。"""
+
+    missing_input = tmp_path / "missing_eval.csv"
+    output_path = tmp_path / "summary.csv"
+    with pytest.raises(SystemExit, match="Input CSV not found"):
+        summarize(missing_input, output_path)

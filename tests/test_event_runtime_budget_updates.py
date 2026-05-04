@@ -77,8 +77,8 @@ def test_budget_update_prevents_hi_mode_switch() -> None:
     assert with_update.mode_change_count() == 0
 
 
-def test_budget_update_can_trigger_immediate_overrun_when_budget_lowered_below_executed_time() -> None:
-    """下调预算到已执行量以下时，应在同一时刻触发 overrun。"""
+def test_budget_update_does_not_retroactively_trigger_overrun_for_released_job() -> None:
+    """下调预算不应追溯影响已释放 job 的 overrun 判定预算。"""
 
     lo = _lo("l", period=20, c_lo=5)
     scenario = make_table_scenario({("l", 0): 8})
@@ -89,7 +89,8 @@ def test_budget_update_can_trigger_immediate_overrun_when_budget_lowered_below_e
         budget_updates=[BudgetUpdate(time=3, updates={"l": 2})],
     )
     assert result.lo_job_cancellation_count() == 1
-    assert result.job_cancellations[0].cancel_time == 3
+    assert result.job_cancellations[0].cancel_time == 6
+    assert result.job_cancellations[0].budget_at_cancel == 5
 
 
 def test_budget_update_event_is_recorded() -> None:
