@@ -58,7 +58,9 @@ def test_invalid_next_actions_must_not_pollute_bootstrap_target() -> None:
     )
     loss = agent.optimize_one_step()
     assert loss is not None
-    assert math.isclose(loss, 9.0, rel_tol=1e-6)
+    # 稳定性修改后主训练路径使用 Huber loss（SmoothL1Loss）：
+    # 误差 |3| 对应损失为 |3|-0.5 = 2.5（而非 MSE 的 9.0）。
+    assert math.isclose(loss, 2.5, rel_tol=1e-6)
 
 
 def test_next_mask_all_false_must_make_next_q_zero() -> None:
@@ -79,7 +81,8 @@ def test_next_mask_all_false_must_make_next_q_zero() -> None:
     )
     loss = agent.optimize_one_step()
     assert loss is not None
-    assert math.isclose(loss, 1.0, rel_tol=1e-6)
+    # Huber loss 在 |error|=1 时取 0.5。
+    assert math.isclose(loss, 0.5, rel_tol=1e-6)
     assert math.isfinite(loss)
 
 
@@ -101,4 +104,5 @@ def test_done_transition_must_not_bootstrap_even_when_next_mask_has_valid_action
     )
     loss = agent.optimize_one_step()
     assert loss is not None
-    assert math.isclose(loss, 1.0, rel_tol=1e-6)
+    # done=True 时 target=reward=1，当前 Q=0，误差为 1，对应 Huber=0.5。
+    assert math.isclose(loss, 0.5, rel_tol=1e-6)

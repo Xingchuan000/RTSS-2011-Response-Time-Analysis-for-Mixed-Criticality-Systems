@@ -36,6 +36,8 @@ def _build_env() -> AmcBudgetEnv:
         check_safety=False,
         action_space="pair",
         include_explicit_noop=True,
+        # 该测试需要断言 mask 明细中的 updates 字段，因此显式开启 full 详情模式。
+        mask_detail_mode="full",
     )
 
 

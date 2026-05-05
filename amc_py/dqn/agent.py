@@ -24,6 +24,7 @@ class DqnBudgetAgent:
         observation_dim: int,
         action_dim: int,
         config: DqnConfig,
+        noop_action_id: int | None = None,
         hidden_layers: tuple[int, ...] | None = None,
         device: str | None = None,
     ):
@@ -38,6 +39,15 @@ class DqnBudgetAgent:
         self.config = config
         self.hidden_layers = hidden_layers if hidden_layers is not None else config.hidden_layers
         self.device = torch.device(device or "cpu")
+        # 显式 noop 的离散动作编号。
+        # - None 表示当前动作空间没有显式 noop；
+        # - 非 None 时，epsilon 探索分支可按 noop_exploration_prob 优先采样该动作。
+        self.noop_action_id = noop_action_id
+        # 阶段 1 参数：探索分支中“优先采样显式 noop”的概率。
+        # 该值必须在 [0, 1]，否则配置不合法。
+        self.noop_exploration_prob = float(config.noop_exploration_prob)
+        if not 0.0 <= self.noop_exploration_prob <= 1.0:
+            raise ValueError("noop_exploration_prob must be in [0, 1]")
 
         # 新字段为空时沿用旧的 seed 语义，保证历史配置不改参数也能复现实验。
         exploration_seed = config.seed if config.exploration_seed is None else config.exploration_seed
@@ -63,10 +73,19 @@ class DqnBudgetAgent:
         self.target_network.eval()
 
         self.optimizer = Adam(self.policy_network.parameters(), lr=config.learning_rate)
-        self.loss_fn = nn.MSELoss()
+        # 稳定性修改 A：
+        # 将 MSELoss 替换为 Huber loss（PyTorch: SmoothL1Loss）。
+        # 原因：MSE 对大 TD error 做平方放大，容易在 Q 值偏离时放大梯度并加剧发散；
+        # Huber 在误差较大区间退化为 L1，梯度增长更温和，通常更稳。
+        self.loss_fn = nn.SmoothL1Loss()
         self.optimization_steps = 0
         self.epsilon_step = 0
         self.current_epsilon = float(config.epsilon_start)
+        # 探索行为统计：
+        # - exploration_action_count：进入 epsilon 探索并成功选出动作的总次数；
+        # - exploration_noop_action_count：上述探索动作中，显式 noop 被选中的次数。
+        self.exploration_action_count = 0
+        self.exploration_noop_action_count = 0
 
     def _compute_epsilon(self) -> float:
         """按线性衰减规则计算当前 epsilon。"""
@@ -120,7 +139,31 @@ class DqnBudgetAgent:
 
         self.current_epsilon = self._compute_epsilon()
         if training and self._rng.random() < self.current_epsilon:
-            action_id = int(self._rng.choice(valid_action_ids))
+            # 进入 epsilon 探索分支后，先按文档策略尝试“优先采样显式 noop”。
+            # 触发条件必须同时满足：
+            # 1) 动作空间存在 noop_action_id；
+            # 2) 该 noop 在当前 mask 下合法；
+            # 3) noop_exploration_prob > 0；
+            # 4) 采样命中 noop_exploration_prob。
+            self.exploration_action_count += 1
+            should_pick_noop = (
+                self.noop_action_id is not None
+                and self.noop_action_id in valid_action_ids
+                and self.noop_exploration_prob > 0.0
+                and self._rng.random() < self.noop_exploration_prob
+            )
+            if should_pick_noop:
+                action_id = int(self.noop_action_id)
+                self.exploration_noop_action_count += 1
+            else:
+                # 若本轮未选 noop，则从“非 noop 合法动作”中均匀采样。
+                # 当非 noop 集为空（例如动作空间只有显式 noop）时，回退到全部合法动作集合。
+                non_noop_valid_action_ids = [
+                    candidate_action_id
+                    for candidate_action_id in valid_action_ids
+                    if candidate_action_id != self.noop_action_id
+                ]
+                action_id = int(self._rng.choice(non_noop_valid_action_ids or valid_action_ids))
         else:
             action_id = self._greedy_action_id(state_vector, valid_action_mask)
 
@@ -171,6 +214,13 @@ class DqnBudgetAgent:
         loss = self.loss_fn(policy_q, targets)
         self.optimizer.zero_grad()
         loss.backward()
+        # 稳定性修改 B：
+        # 在反向传播后、参数更新前做梯度裁剪，限制总体梯度范数上界。
+        # 这里严格按配置值执行，不引入额外“自适应/动态阈值”逻辑。
+        torch.nn.utils.clip_grad_norm_(
+            self.policy_network.parameters(),
+            max_norm=self.config.grad_clip_norm,
+        )
         self.optimizer.step()
 
         self.optimization_steps += 1

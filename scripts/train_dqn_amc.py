@@ -23,6 +23,7 @@ from amc_py.dqn import (
 )
 from amc_py.event_runtime import simulate_ordered_taskset_event_driven
 from amc_py.models import Task
+from amc_py.rl.reward_config import available_reward_modes, load_reward_mode_config
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationResult
 
 
@@ -92,6 +93,15 @@ def _serialize_tasks(tasks: list[Task]) -> list[dict[str, int | str]]:
         }
         for task in tasks
     ]
+
+
+def _get_noop_action_id(env) -> int | None:
+    """从环境动作空间中解析显式 noop 的 action_id。"""
+
+    for action in env._actions:  # noqa: SLF001
+        if bool(getattr(action, "is_noop", False)):
+            return int(action.action_id)
+    return None
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -173,7 +183,11 @@ def _run_validation(
     budget_increase_ratio: float,
     budget_decrease_ratio: float,
     include_explicit_noop: bool,
-) -> dict[str, int | float]:
+    budget_floor_ratio: float,
+    forbid_decreasing_hi_budgets: bool,
+    mask_detail_mode: str,
+    baseline_cache: dict[str, float] | None = None,
+) -> tuple[dict[str, int | float], dict[str, float], bool]:
     """在验证集上评估当前 agent，并返回聚合指标。"""
 
     # 每个列表都保存“按 seed 的单次验证结果”，最后再做均值聚合写入 validation CSV。
@@ -196,16 +210,25 @@ def _run_validation(
     dqn_no_safe_action_steps: list[int] = []
     baseline_mode_changes: list[int] = []
     baseline_lo_cancellations: list[int] = []
+    used_baseline_cache = baseline_cache is not None
+
+    if baseline_cache is None:
+        for seed in validation_seeds:
+            bundle = resolve_experiment_bundle(experiment_config, seed)
+            baseline_result = simulate_ordered_taskset_event_driven(
+                ordered_tasks=list(bundle.ordered_tasks),
+                scenario=bundle.scenario,
+                config=RuntimeConfig(end_time=validation_end_time, semantics=RuntimeSemantics.AMC_PLUS),
+            )
+            baseline_mode_changes.append(baseline_result.mode_change_count())
+            baseline_lo_cancellations.append(baseline_result.lo_job_cancellation_count())
+        baseline_cache = {
+            "baseline_mode_changes_mean": sum(baseline_mode_changes) / len(validation_seeds),
+            "baseline_lo_cancellations_mean": sum(baseline_lo_cancellations) / len(validation_seeds),
+        }
 
     for seed in validation_seeds:
         bundle = resolve_experiment_bundle(experiment_config, seed)
-        baseline_result = simulate_ordered_taskset_event_driven(
-            ordered_tasks=list(bundle.ordered_tasks),
-            scenario=bundle.scenario,
-            config=RuntimeConfig(end_time=validation_end_time, semantics=RuntimeSemantics.AMC_PLUS),
-        )
-        baseline_mode_changes.append(baseline_result.mode_change_count())
-        baseline_lo_cancellations.append(baseline_result.lo_job_cancellation_count())
 
         env = build_env_from_experiment_config(
             experiment_config,
@@ -218,6 +241,9 @@ def _run_validation(
             budget_increase_ratio=budget_increase_ratio,
             budget_decrease_ratio=budget_decrease_ratio,
             include_explicit_noop=include_explicit_noop,
+            budget_floor_ratio=budget_floor_ratio,
+            forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+            mask_detail_mode=mask_detail_mode,
         )
         obs = env.reset(seed=seed)
         done = False
@@ -290,17 +316,17 @@ def _run_validation(
         dqn_no_safe_action_steps.append(int(debug_stats["no_safe_action_steps"]))
 
     seed_count = len(validation_seeds)
-    mode_delta_sum = sum(dqn - base for dqn, base in zip(dqn_mode_changes, baseline_mode_changes, strict=True))
-    cancel_delta_sum = sum(
-        dqn - base for dqn, base in zip(dqn_lo_cancellations, baseline_lo_cancellations, strict=True)
-    )
-    return {
+    baseline_mode_changes_mean = float(baseline_cache["baseline_mode_changes_mean"])
+    baseline_lo_cancellations_mean = float(baseline_cache["baseline_lo_cancellations_mean"])
+    mode_delta_sum = sum(dqn - baseline_mode_changes_mean for dqn in dqn_mode_changes)
+    cancel_delta_sum = sum(dqn - baseline_lo_cancellations_mean for dqn in dqn_lo_cancellations)
+    return ({
         "validation_seed_count": seed_count,
         "deadline_misses_sum": sum(dqn_deadline_misses),
         "mode_changes_mean": sum(dqn_mode_changes) / seed_count,
         "lo_cancellations_mean": sum(dqn_lo_cancellations) / seed_count,
-        "baseline_mode_changes_mean": sum(baseline_mode_changes) / seed_count,
-        "baseline_lo_cancellations_mean": sum(baseline_lo_cancellations) / seed_count,
+        "baseline_mode_changes_mean": baseline_mode_changes_mean,
+        "baseline_lo_cancellations_mean": baseline_lo_cancellations_mean,
         "dqn_mode_changes_delta_mean": mode_delta_sum / seed_count,
         "dqn_lo_cancellations_delta_mean": cancel_delta_sum / seed_count,
         "accepted_actions_mean": sum(dqn_accepted_actions) / seed_count,
@@ -317,7 +343,7 @@ def _run_validation(
         "masked_action_count_mean": sum(dqn_masked_action_count_mean) / seed_count,
         "no_safe_action_steps_mean": sum(dqn_no_safe_action_steps) / seed_count,
         "reward_mean": sum(dqn_total_reward) / seed_count,
-    }
+    }, baseline_cache, used_baseline_cache)
 
 
 def _is_better_validation_row(
@@ -341,11 +367,9 @@ def _is_better_validation_row(
         return float(candidate_row["reward_mean"]) > float(best_row["reward_mean"])
     if save_best_by == "relative_score":
         # relative_score 越小越好，<0 表示综合优于 baseline。
+        # 本轮要求：即便 relative_score>=0，也要保留“验证集里最好的那个”checkpoint。
+        _ = (relative_score_alpha, require_better_than_baseline_for_best)
         candidate_score = float(candidate_row["relative_score"])
-        if require_better_than_baseline_for_best and candidate_score >= 0.0:
-            return False
-        if best_row is None:
-            return True
         return candidate_score < float(best_row["relative_score"])
     metric_field = {
         "lo_cancellations": "lo_cancellations_mean",
@@ -386,6 +410,10 @@ def _build_validation_unified_summary_rows(
                 "dqn_lo_cancellations_mean": dqn_lo_cancellations_mean,
                 # 这三列用于与文档要求一致地直观看到“相对 baseline 的差值与综合得分”。
                 "relative_score": float(row["relative_score"]),
+                "relative_score_alpha": float(row["relative_score_alpha"]),
+                "relative_delta_mode_changes": float(row["relative_delta_mode_changes"]),
+                "relative_delta_lo_cancellations": float(row["relative_delta_lo_cancellations"]),
+                "is_better_than_baseline": bool(row["is_better_than_baseline"]),
                 "mode_changes_delta_vs_baseline": float(row["dqn_mode_changes_delta_mean"]),
                 "lo_cancellations_delta_vs_baseline": float(row["dqn_lo_cancellations_delta_mean"]),
                 "mode_change_ratio": mode_change_ratio,
@@ -421,11 +449,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hidden-layers", type=str, default="128,128")
     parser.add_argument("--learning-rate", type=float, default=5e-5)
     parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--target-update-freq", type=int, default=100)
+    # 稳定性修改 C：默认 target network 更新频率改为 5（优化步为单位）。
+    # 该值可继续通过 CLI 覆盖，用于后续对照实验。
+    parser.add_argument("--target-update-freq", type=int, default=5)
     parser.add_argument("--target-update-frequency", type=int, default=None)
+    parser.add_argument(
+        "--grad-clip-norm",
+        type=float,
+        default=10.0,
+        help="DQN 梯度裁剪阈值（L2 norm），用于限制反向传播后的梯度范数。",
+    )
     parser.add_argument("--epsilon-start", type=float, default=1.0)
     parser.add_argument("--epsilon-end", type=float, default=0.05)
     parser.add_argument("--epsilon-decay-steps", type=int, default=5000)
+    parser.add_argument(
+        "--noop-exploration-prob",
+        type=float,
+        default=0.0,
+        help=(
+            "During epsilon exploration, if explicit noop is valid, choose noop "
+            "with this probability before sampling other valid actions."
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--checkpoint", type=int, default=0)
     parser.add_argument("--workload", choices=["small", "rtss11", "automotive"], default="small")
@@ -463,7 +508,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--reward-mode",
-        choices=["mendes"],
+        choices=list(available_reward_modes()),
         default="mendes",
     )
     parser.add_argument(
@@ -481,6 +526,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--budget-increase-ratio", type=float, default=0.10)
     parser.add_argument("--budget-decrease-ratio", type=float, default=0.05)
     parser.add_argument("--include-explicit-noop", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--budget-floor-ratio",
+        type=float,
+        default=0.0,
+        help=(
+            "Reject budget actions that would reduce any task budget below "
+            "initial_budget * this ratio. 0 disables the floor."
+        ),
+    )
+    parser.add_argument(
+        "--forbid-decreasing-hi-budgets",
+        action="store_true",
+        # 阶段 3：开启后会在 action mask 中屏蔽“decrease 命中 HI 任务”的动作。
+        # 这是硬约束，不是软惩罚，不依赖 reward 权重调节。
+        help="If set, action masks reject budget actions whose decrease tasks include any HI-criticality task.",
+    )
+    parser.add_argument("--mask-detail-mode", choices=["minimal", "full"], default="minimal")
     return parser
 
 
@@ -496,6 +558,9 @@ def main() -> None:
         raise ValueError("--validate-every 必须为非负整数")
     if args.target_update_frequency is not None:
         args.target_update_freq = int(args.target_update_frequency)
+    if args.budget_floor_ratio < 0.0 or args.budget_floor_ratio > 1.0:
+        raise ValueError("--budget-floor-ratio must be in [0, 1]")
+    reward_mode_config = load_reward_mode_config(args.reward_mode)
 
     experiment_config = _build_experiment_config(args)
     train_seed_candidates = _parse_seed_spec(args.train_seeds)
@@ -522,9 +587,11 @@ def main() -> None:
         replay_capacity=args.replay_capacity,
         min_replay_size=args.min_replay_size,
         target_update_freq=args.target_update_freq,
+        grad_clip_norm=args.grad_clip_norm,
         epsilon_start=args.epsilon_start,
         epsilon_end=args.epsilon_end,
         epsilon_decay_steps=args.epsilon_decay_steps,
+        noop_exploration_prob=args.noop_exploration_prob,
         hidden_layers=hidden_layers,
         seed=args.seed,
         network_seed=network_seed,
@@ -545,12 +612,16 @@ def main() -> None:
         budget_increase_ratio=args.budget_increase_ratio,
         budget_decrease_ratio=args.budget_decrease_ratio,
         include_explicit_noop=args.include_explicit_noop,
+        budget_floor_ratio=args.budget_floor_ratio,
+        forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
+        mask_detail_mode=args.mask_detail_mode,
     )
     initial_obs = initial_env.reset(seed=initial_seed)
     agent = DqnBudgetAgent(
         observation_dim=len(initial_obs.state_vector),
         action_dim=initial_env.action_space_size,
         config=config,
+        noop_action_id=_get_noop_action_id(initial_env),
         hidden_layers=hidden_layers,
     )
 
@@ -578,6 +649,7 @@ def main() -> None:
     model_best_path = output_dir / "model_best.pt"
     best_model_metadata_path = output_dir / "best_model_metadata.json"
     best_model_saved = False
+    baseline_validation_cache: dict[str, float] | None = None
 
     global_step = 0
     for episode in range(args.episodes):
@@ -593,6 +665,9 @@ def main() -> None:
             budget_increase_ratio=args.budget_increase_ratio,
             budget_decrease_ratio=args.budget_decrease_ratio,
             include_explicit_noop=args.include_explicit_noop,
+            budget_floor_ratio=args.budget_floor_ratio,
+            forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
+            mask_detail_mode=args.mask_detail_mode,
         )
         bundle = resolve_experiment_bundle(experiment_config, episode_seed)
         obs = env.reset(seed=episode_seed)
@@ -611,6 +686,14 @@ def main() -> None:
         reward_mode_change_sum = 0.0
         reward_lo_cancellation_sum = 0.0
         reward_deadline_miss_sum = 0.0
+        reward_paper_sum = 0.0
+        reward_noop_bonus_sum = 0.0
+        reward_budget_change_penalty_sum = 0.0
+        reward_budget_change_norm_sum = 0.0
+        reward_budget_drift_penalty_sum = 0.0
+        reward_budget_drift_mean_sum = 0.0
+        exploration_action_count_before = int(agent.exploration_action_count)
+        exploration_noop_action_count_before = int(agent.exploration_noop_action_count)
         episode_action_hist: dict[int, dict[str, int]] = defaultdict(lambda: {"count": 0, "accepted": 0, "rejected": 0})
         last_info: dict[str, int | float | str | bool | None] = {
             "mode_changes": 0,
@@ -685,6 +768,12 @@ def main() -> None:
             reward_mode_change_sum += float(result.info.get("step_reward_mode_change", 0.0))
             reward_lo_cancellation_sum += float(result.info.get("step_reward_lo_cancellation", 0.0))
             reward_deadline_miss_sum += float(result.info.get("step_reward_deadline_miss", 0.0))
+            reward_paper_sum += float(result.info.get("paper_reward", 0.0))
+            reward_noop_bonus_sum += float(result.info.get("noop_reward_bonus", 0.0))
+            reward_budget_change_penalty_sum += float(result.info.get("budget_change_penalty_value", 0.0))
+            reward_budget_change_norm_sum += float(result.info.get("budget_change_norm", 0.0))
+            reward_budget_drift_penalty_sum += float(result.info.get("budget_drift_penalty_value", 0.0))
+            reward_budget_drift_mean_sum += float(result.info.get("budget_drift_mean", 0.0))
             step_rows.append(
                 {
                     "episode": episode,
@@ -714,6 +803,13 @@ def main() -> None:
                     "step_reward_mode_change": float(result.info.get("step_reward_mode_change", 0.0)),
                     "step_reward_lo_cancellation": float(result.info.get("step_reward_lo_cancellation", 0.0)),
                     "step_reward_deadline_miss": float(result.info.get("step_reward_deadline_miss", 0.0)),
+                    "paper_reward": float(result.info.get("paper_reward", 0.0)),
+                    "noop_reward_bonus": float(result.info.get("noop_reward_bonus", 0.0)),
+                    "budget_change_norm": float(result.info.get("budget_change_norm", 0.0)),
+                    "budget_change_penalty_value": float(result.info.get("budget_change_penalty_value", 0.0)),
+                    "budget_drift_mean": float(result.info.get("budget_drift_mean", 0.0)),
+                    "budget_drift_penalty_value": float(result.info.get("budget_drift_penalty_value", 0.0)),
+                    "reward_after_regularization": float(result.info.get("reward_after_regularization", 0.0)),
                     "workload": args.workload,
                     "total_util": args.total_util,
                     "num_tasks": args.num_tasks,
@@ -786,8 +882,13 @@ def main() -> None:
                 "action_count": int(debug_stats["action_count"]),
                 "budget_increase_ratio": float(debug_stats["budget_increase_ratio"]),
                 "budget_decrease_ratio": float(debug_stats["budget_decrease_ratio"]),
+                "budget_floor_ratio": float(debug_stats["budget_floor_ratio"]),
                 "valid_action_count_mean": float(debug_stats["valid_action_count_mean"]),
                 "masked_action_count_mean": float(debug_stats["masked_action_count_mean"]),
+                "masked_decrease_hi_forbidden_count": int(debug_stats["masked_decrease_hi_forbidden_count"]),
+                "masked_decrease_hi_forbidden_rate": float(debug_stats["masked_decrease_hi_forbidden_rate"]),
+                "masked_budget_floor_violation_count": int(debug_stats["masked_budget_floor_violation_count"]),
+                "masked_budget_floor_violation_rate": float(debug_stats["masked_budget_floor_violation_rate"]),
                 "no_safe_action_steps": int(debug_stats["no_safe_action_steps"]),
                 "selected_explicit_noop_actions": int(debug_stats["selected_explicit_noop_actions"]),
                 "selected_explicit_noop_rate": float(debug_stats["selected_explicit_noop_rate"]),
@@ -803,6 +904,23 @@ def main() -> None:
                 "reward_mode_change_sum": reward_mode_change_sum,
                 "reward_lo_cancellation_sum": reward_lo_cancellation_sum,
                 "reward_deadline_miss_sum": reward_deadline_miss_sum,
+                "reward_paper_sum": reward_paper_sum,
+                "reward_noop_bonus_sum": reward_noop_bonus_sum,
+                "reward_budget_change_penalty_sum": reward_budget_change_penalty_sum,
+                "reward_budget_change_norm_sum": reward_budget_change_norm_sum,
+                "reward_budget_drift_penalty_sum": reward_budget_drift_penalty_sum,
+                "reward_budget_drift_mean_sum": reward_budget_drift_mean_sum,
+                "noop_exploration_prob": args.noop_exploration_prob,
+                "exploration_action_count": int(agent.exploration_action_count - exploration_action_count_before),
+                "exploration_noop_action_count": int(
+                    agent.exploration_noop_action_count - exploration_noop_action_count_before
+                ),
+                "exploration_noop_action_rate": (
+                    float(agent.exploration_noop_action_count - exploration_noop_action_count_before)
+                    / float(agent.exploration_action_count - exploration_action_count_before)
+                    if int(agent.exploration_action_count - exploration_action_count_before) > 0
+                    else 0.0
+                ),
             }
         )
         for action_id in sorted(episode_action_hist):
@@ -830,7 +948,7 @@ def main() -> None:
             agent.save(checkpoint_dir / f"model_episode_{episode + 1:04d}.pt")
 
         if args.validate_every > 0 and validation_seeds and (episode + 1) % args.validate_every == 0:
-            validation_row = _run_validation(
+            validation_row, baseline_validation_cache, used_baseline_cache = _run_validation(
                 agent=agent,
                 experiment_config=experiment_config,
                 validation_seeds=validation_seeds,
@@ -841,18 +959,33 @@ def main() -> None:
                 budget_increase_ratio=args.budget_increase_ratio,
                 budget_decrease_ratio=args.budget_decrease_ratio,
                 include_explicit_noop=args.include_explicit_noop,
+                budget_floor_ratio=args.budget_floor_ratio,
+                forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
+                mask_detail_mode=args.mask_detail_mode,
+                baseline_cache=baseline_validation_cache,
             )
+            if used_baseline_cache:
+                print("Using cached baseline validation metrics")
             validation_row["episode"] = episode + 1
-            # 文档要求的 relative_score 定义：越小越好，<0 表示优于 baseline。
-            validation_row["relative_score"] = (
+            # 阶段 2：显式记录相对 baseline 的两类 delta，并按 alpha 计算综合分数。
+            # 这里严格保持“relative_score 越小越好”的选模口径。
+            # 公式：relative_score = delta_lo + alpha * delta_mode
+            # 其中：
+            # - delta_lo   = dqn_lo_cancellations_mean - baseline_lo_cancellations_mean
+            # - delta_mode = dqn_mode_changes_mean    - baseline_mode_changes_mean
+            # is_better_than_baseline 仅做标记，不参与是否保存 best 的硬门槛。
+            delta_lo = (
                 float(validation_row["lo_cancellations_mean"])
                 - float(validation_row["baseline_lo_cancellations_mean"])
-                + args.relative_score_alpha
-                * (
-                    float(validation_row["mode_changes_mean"])
-                    - float(validation_row["baseline_mode_changes_mean"])
-                )
             )
+            delta_mode = float(validation_row["mode_changes_mean"]) - float(
+                validation_row["baseline_mode_changes_mean"]
+            )
+            validation_row["relative_score_alpha"] = args.relative_score_alpha
+            validation_row["relative_delta_lo_cancellations"] = delta_lo
+            validation_row["relative_delta_mode_changes"] = delta_mode
+            validation_row["relative_score"] = delta_lo + args.relative_score_alpha * delta_mode
+            validation_row["is_better_than_baseline"] = float(validation_row["relative_score"]) < 0.0
             validation_rows.append(validation_row)
             if _is_better_validation_row(
                 candidate_row=validation_row,
@@ -864,6 +997,13 @@ def main() -> None:
                 best_validation_row = validation_row
                 agent.save(model_best_path)
                 best_model_saved = True
+            print(
+                {
+                    "episode": episode + 1,
+                    "validation_reward_mean": float(validation_row["reward_mean"]),
+                    "train_loss_last": loss_last,
+                }
+            )
 
     train_log_path = output_dir / "train_log.csv"
     train_metrics_path = output_dir / "train_metrics.csv"
@@ -901,6 +1041,13 @@ def main() -> None:
         "step_reward_mode_change",
         "step_reward_lo_cancellation",
         "step_reward_deadline_miss",
+        "paper_reward",
+        "noop_reward_bonus",
+        "budget_change_norm",
+        "budget_change_penalty_value",
+        "budget_drift_mean",
+        "budget_drift_penalty_value",
+        "reward_after_regularization",
         "workload",
         "total_util",
         "num_tasks",
@@ -948,8 +1095,13 @@ def main() -> None:
             "action_count",
             "budget_increase_ratio",
             "budget_decrease_ratio",
+            "budget_floor_ratio",
             "valid_action_count_mean",
             "masked_action_count_mean",
+            "masked_decrease_hi_forbidden_count",
+            "masked_decrease_hi_forbidden_rate",
+            "masked_budget_floor_violation_count",
+            "masked_budget_floor_violation_rate",
             "no_safe_action_steps",
             "selected_explicit_noop_actions",
             "selected_explicit_noop_rate",
@@ -965,6 +1117,16 @@ def main() -> None:
             "reward_mode_change_sum",
             "reward_lo_cancellation_sum",
             "reward_deadline_miss_sum",
+            "reward_paper_sum",
+            "reward_noop_bonus_sum",
+            "reward_budget_change_penalty_sum",
+            "reward_budget_change_norm_sum",
+            "reward_budget_drift_penalty_sum",
+            "reward_budget_drift_mean_sum",
+            "noop_exploration_prob",
+            "exploration_action_count",
+            "exploration_noop_action_count",
+            "exploration_noop_action_rate",
         ]
         with train_metrics_path.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=metric_fieldnames)
@@ -1002,7 +1164,11 @@ def main() -> None:
             "masked_action_count_mean",
             "no_safe_action_steps_mean",
             "reward_mean",
+            "relative_score_alpha",
+            "relative_delta_lo_cancellations",
+            "relative_delta_mode_changes",
             "relative_score",
+            "is_better_than_baseline",
         ]
         with validation_metrics_path.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=validation_fieldnames)
@@ -1018,6 +1184,10 @@ def main() -> None:
             "dqn_mode_changes_mean",
             "dqn_lo_cancellations_mean",
             "relative_score",
+            "relative_score_alpha",
+            "relative_delta_mode_changes",
+            "relative_delta_lo_cancellations",
+            "is_better_than_baseline",
             "mode_changes_delta_vs_baseline",
             "lo_cancellations_delta_vs_baseline",
             "mode_change_ratio",
@@ -1042,29 +1212,36 @@ def main() -> None:
         if best_validation_row is None:
             best_validation_row = validation_rows[-1]
         best_relative_score = float(best_validation_row.get("relative_score", 0.0))
+        best_delta_mode = float(best_validation_row.get("relative_delta_mode_changes", 0.0))
+        best_delta_lo = float(best_validation_row.get("relative_delta_lo_cancellations", 0.0))
         best_model_metadata = {
             "save_best_by": args.save_best_by,
+            "selection_metric": "relative_score" if args.save_best_by == "relative_score" else args.save_best_by,
             "relative_score_alpha": args.relative_score_alpha,
             "require_better_than_baseline_for_best": args.require_better_than_baseline_for_best,
             "best_validation_episode": int(best_validation_row["episode"]),
             "best_relative_score": best_relative_score,
-            "best_lo_cancellations_mean": float(best_validation_row["lo_cancellations_mean"]),
+            "dqn_lo_cancellations_mean": float(best_validation_row["lo_cancellations_mean"]),
             "baseline_lo_cancellations_mean": float(best_validation_row["baseline_lo_cancellations_mean"]),
-            "best_mode_changes_mean": float(best_validation_row["mode_changes_mean"]),
+            "dqn_mode_changes_mean": float(best_validation_row["mode_changes_mean"]),
             "baseline_mode_changes_mean": float(best_validation_row["baseline_mode_changes_mean"]),
+            "delta_lo_cancellations_mean": best_delta_lo,
+            "delta_mode_changes_mean": best_delta_mode,
             "best_model_is_better_than_baseline": best_relative_score < 0.0,
             "reward_mode": args.reward_mode,
-            "reward_definition": "paper: +0.1 job_start, -1.0 LO_budget_overrun, -2.0 HI_budget_overrun",
-            # 当开启 require-better-than-baseline 且没有任何 checkpoint 满足条件时，
-            # model_best.pt 将按文档要求允许缺失；此处用元数据显式说明。
-            "selection_reason": (
-                "No validation checkpoint achieved relative_score < 0."
-                if args.require_better_than_baseline_for_best and not best_model_saved
-                else "Best checkpoint selected by configured criterion."
+            "reward_definition": reward_mode_config.describe(),
+            "note": (
+                "model_best.pt is the best available checkpoint on validation, but it may still be worse than baseline."
             ),
+            "selection_reason": "Best checkpoint selected by configured criterion.",
         }
         with best_model_metadata_path.open("w", encoding="utf-8") as f:
             json.dump(best_model_metadata, f, ensure_ascii=False, indent=2)
+        if best_relative_score >= 0.0:
+            # 文档要求：即使当前 best 仍劣于 baseline，也必须保留 best checkpoint。
+            # 因此这里只打印提示，不中断、不回滚、不跳过保存。
+            print("WARNING: Best available checkpoint is still worse than baseline on validation.")
+            print("Saved anyway for trend analysis: model_best.pt")
     config_payload = {
         "dqn_config": asdict(config),
         "workload": args.workload,
@@ -1089,11 +1266,14 @@ def main() -> None:
         "relative_score_alpha": args.relative_score_alpha,
         "require_better_than_baseline_for_best": args.require_better_than_baseline_for_best,
         "reward_mode": args.reward_mode,
-        "reward_definition": "paper: +0.1 job_start, -1.0 LO_budget_overrun, -2.0 HI_budget_overrun",
+        "reward_definition": reward_mode_config.describe(),
         "action_space": args.action_space,
         "budget_increase_ratio": args.budget_increase_ratio,
         "budget_decrease_ratio": args.budget_decrease_ratio,
+        "budget_floor_ratio": args.budget_floor_ratio,
         "include_explicit_noop": args.include_explicit_noop,
+        "forbid_decreasing_hi_budgets": args.forbid_decreasing_hi_budgets,
+        "mask_detail_mode": args.mask_detail_mode,
         "log_train_metrics": args.log_train_metrics,
         "trace_every": args.trace_every,
         "seed_metadata": {

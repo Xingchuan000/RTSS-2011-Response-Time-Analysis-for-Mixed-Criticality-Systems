@@ -18,10 +18,38 @@ class BudgetAction:
     action_id: int
     increase_task: str | None
     decrease_tasks: tuple[str, ...]
+    increase_idx: int | None = None
+    decrease_indices: tuple[int, ...] = ()
     increase_ratio: float = 0.10
     decrease_ratio: float = 0.05
     action_space_type: str = "triple"
     is_noop: bool = False
+
+
+def action_violates_hi_decrease_guard(
+    action: BudgetAction | None,
+    ordered_tasks: Sequence[Task],
+    forbid_decreasing_hi_budgets: bool,
+) -> bool:
+    """判断动作是否违反“禁止降低 HI 任务预算”约束。
+
+    约束语义严格按文档执行：
+    1. 配置关闭时，任何动作都不触发该约束；
+    2. `None` 或显式 `noop` 都不触发该约束；
+    3. 只要 decrease 集合中出现任意 HI 任务，就判定为违规。
+
+    设计说明：
+    - 这里不做任何“容错式放行”，例如“只降低一点 HI 预算也允许”等；
+      只要命中 HI decrease 就一票否决，确保行为和文档完全一致。
+    - 函数被 env 与 runtime_wrapper 共用，目的是保证训练路径、评估路径、
+      以及 baseline wrapper 路径使用同一条判定逻辑，避免两套实现出现漂移。
+    """
+
+    if not forbid_decreasing_hi_budgets:
+        return False
+    if action is None or action.is_noop:
+        return False
+    return any(ordered_tasks[idx].criticality is Criticality.HI for idx in action.decrease_indices)
 
 
 def build_budget_action_space(
@@ -48,6 +76,7 @@ def build_budget_action_space(
         raise ValueError("budget_decrease_ratio 必须在 (0, 1) 区间内")
 
     names = [task.name for task in ordered_tasks]
+    name_to_index = {name: idx for idx, name in enumerate(names)}
     actions: list[BudgetAction] = []
     action_id = 0
 
@@ -60,6 +89,8 @@ def build_budget_action_space(
                         action_id=action_id,
                         increase_task=increase_name,
                         decrease_tasks=(dec_a, dec_b),
+                        increase_idx=name_to_index[increase_name],
+                        decrease_indices=(name_to_index[dec_a], name_to_index[dec_b]),
                         increase_ratio=budget_increase_ratio,
                         decrease_ratio=budget_decrease_ratio,
                         action_space_type=action_space,
@@ -73,6 +104,8 @@ def build_budget_action_space(
                     action_id=action_id,
                     increase_task=increase_name,
                     decrease_tasks=(decrease_name,),
+                    increase_idx=name_to_index[increase_name],
+                    decrease_indices=(name_to_index[decrease_name],),
                     increase_ratio=budget_increase_ratio,
                     decrease_ratio=budget_decrease_ratio,
                     action_space_type=action_space,
@@ -86,6 +119,8 @@ def build_budget_action_space(
                     action_id=action_id,
                     increase_task=increase_name,
                     decrease_tasks=(),
+                    increase_idx=name_to_index[increase_name],
+                    decrease_indices=(),
                     increase_ratio=budget_increase_ratio,
                     decrease_ratio=budget_decrease_ratio,
                     action_space_type=action_space,
@@ -98,6 +133,8 @@ def build_budget_action_space(
                     action_id=action_id,
                     increase_task=None,
                     decrease_tasks=(decrease_name,),
+                    increase_idx=None,
+                    decrease_indices=(name_to_index[decrease_name],),
                     increase_ratio=budget_increase_ratio,
                     decrease_ratio=budget_decrease_ratio,
                     action_space_type=action_space,
@@ -111,6 +148,8 @@ def build_budget_action_space(
                 action_id=action_id,
                 increase_task=None,
                 decrease_tasks=(),
+                increase_idx=None,
+                decrease_indices=(),
                 increase_ratio=budget_increase_ratio,
                 decrease_ratio=budget_decrease_ratio,
                 action_space_type=action_space,
@@ -132,12 +171,13 @@ def apply_budget_action_candidate(
     if action.is_noop:
         return {}
 
-    task_map = {task.name: task for task in ordered_tasks}
+    task_names = [task.name for task in ordered_tasks]
     candidate: dict[str, int] = {}
 
-    if action.increase_task is not None:
-        old_inc = budget_state.budgets[action.increase_task]
-        inc_task = task_map[action.increase_task]
+    if action.increase_idx is not None:
+        inc_name = task_names[action.increase_idx]
+        old_inc = budget_state.budgets[inc_name]
+        inc_task = ordered_tasks[action.increase_idx]
         inc_value = math.ceil(old_inc * (1.0 + action.increase_ratio))
 
         if inc_task.criticality is Criticality.HI:
@@ -146,9 +186,10 @@ def apply_budget_action_candidate(
         else:
             inc_value = min(inc_value, inc_task.deadline)
 
-        candidate[action.increase_task] = max(1, inc_value)
+        candidate[inc_name] = max(1, inc_value)
 
-    for dec_name in action.decrease_tasks:
+    for dec_idx in action.decrease_indices:
+        dec_name = task_names[dec_idx]
         old_dec = budget_state.budgets[dec_name]
         dec_value = math.floor(old_dec * (1.0 - action.decrease_ratio))
         candidate[dec_name] = max(1, dec_value)
