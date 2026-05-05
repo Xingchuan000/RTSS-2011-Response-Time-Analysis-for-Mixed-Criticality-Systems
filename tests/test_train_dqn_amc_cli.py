@@ -46,6 +46,7 @@ def test_train_dqn_amc_cli_runs_and_writes_expected_outputs(tmp_path: Path) -> N
         config_payload = json.load(f)
     assert "dqn_config" in config_payload
     assert "normalization_bounds" in config_payload
+    assert "budget_floor_ratio" in config_payload
 
     with (output_dir / "train_log.csv").open("r", encoding="utf-8", newline="") as f:
         rows = list(csv.DictReader(f))
@@ -94,6 +95,31 @@ def test_train_cli_rejects_legacy_reward_mode(tmp_path: Path) -> None:
             str(output_dir),
             "--reward-mode",
             "event_delta_no_job_start",
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        check=False,
+    )
+    assert result.returncode != 0
+
+
+def test_train_cli_rejects_invalid_budget_floor_ratio(tmp_path: Path) -> None:
+    """训练 CLI 应拒绝超出 [0,1] 的 budget floor 参数。"""
+
+    output_dir = tmp_path / "invalid_budget_floor"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--episodes",
+            "1",
+            "--end-time",
+            "20",
+            "--output-dir",
+            str(output_dir),
+            "--budget-floor-ratio",
+            "1.1",
         ],
         cwd=PROJECT_ROOT,
         env=env,

@@ -4,15 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+import math
 
 from amc_py.budget_runtime import BudgetState
 from amc_py.amc import build_design_r_lo_map
 from amc_py.event_runtime import EventRuntimeEngine
 from amc_py.models import Task
-from amc_py.rl.actions import apply_budget_action_candidate
+from amc_py.rl.actions import action_violates_hi_decrease_guard, apply_budget_action_candidate
 from amc_py.rl.agents import BudgetAgent
 from amc_py.rl.monitor import RuntimeMonitor
 from amc_py.rl.observation import NormalizationBounds, build_observation
+from amc_py.rl.reward_config import evaluate_reward_expression, load_reward_mode_config
 from amc_py.rl.safety import RuntimeBudgetSafetyChecker, merge_budget_candidate
 from amc_py.runtime_models import RuntimeConfig, SimulationResult
 from amc_py.runtime_scenarios import ExecutionScenario
@@ -26,6 +28,11 @@ class AgentRuntimeConfig:
     end_time: int = 1000
     check_safety: bool = True
     reward_mode: str = "mendes"
+    # 与训练 env 同步的阶段 3 开关：
+    # True 时，凡是 decrease 集合触及 HI 任务的动作都会被拒绝。
+    forbid_decreasing_hi_budgets: bool = False
+    # 与 DQN env 一致：若 >0，则拒绝任何使任务 budget 低于 episode 初始 budget * ratio 的动作。
+    budget_floor_ratio: float = 0.0
 
 
 @dataclass(slots=True)
@@ -50,6 +57,30 @@ def _default_safety_checker(ordered_tasks: Sequence[Task]) -> RuntimeBudgetSafet
     return RuntimeBudgetSafetyChecker(ordered_tasks=ordered_tasks, design_r_lo=design_r_lo)
 
 
+def _budget_floor_violation(
+    *,
+    updates: dict[str, int],
+    initial_budgets: dict[str, int],
+    budget_floor_ratio: float,
+) -> str | None:
+    """检查局部预算更新是否会让任务预算跌破 episode 初始 floor。
+
+    该 helper 与 `AmcBudgetEnv._budget_floor_violation()` 保持同一口径：
+    - ratio<=0 时不启用约束；
+    - 只检查本步被更新的任务；
+    - floor 使用 `ceil(initial * ratio)`；
+    - 返回值包含任务名，便于 wrapper 日志和 DQN env 日志对齐。
+    """
+
+    if budget_floor_ratio <= 0.0:
+        return None
+    for task_name, candidate_budget in updates.items():
+        floor_value = max(1, math.ceil(initial_budgets[task_name] * budget_floor_ratio))
+        if candidate_budget < floor_value:
+            return f"budget_floor_violation:{task_name}"
+    return None
+
+
 def simulate_ordered_taskset_with_agent(
     *,
     ordered_tasks: Sequence[Task],
@@ -62,7 +93,9 @@ def simulate_ordered_taskset_with_agent(
 ) -> AgentRuntimeResult:
     """以固定 agent 周期驱动 runtime，并记录动作接受/拒绝统计。"""
 
-    monitor = RuntimeMonitor()
+    # 奖励参数按 reward_mode 从配置文件读取，避免 runtime wrapper 内部硬编码。
+    monitor = RuntimeMonitor(reward_mode=agent_config.reward_mode)
+    reward_mode_config = load_reward_mode_config(agent_config.reward_mode)
     runtime_cfg = RuntimeConfig(
         end_time=agent_config.end_time,
         jobs_per_task=runtime_config.jobs_per_task,
@@ -79,6 +112,9 @@ def simulate_ordered_taskset_with_agent(
         budget_state=BudgetState.from_tasks(ordered_tasks),
         monitor=monitor,
     )
+    # 固定记录本轮 episode 的初始预算快照。
+    # 后续任何 floor 判断都必须相对这份初始值，而不是相对当前已漂移的 runtime budget。
+    initial_budgets = dict(engine.runtime_budgets.budgets)
 
     checker = safety_checker or _default_safety_checker(ordered_tasks)
     accepted_actions = 0
@@ -110,8 +146,7 @@ def simulate_ordered_taskset_with_agent(
         delta_mode_changes = mode_changes - prev_mode_changes
         delta_lo_cancellations = lo_cancellations - prev_lo_cancellations
         delta_deadline_misses = deadline_misses - prev_deadline_misses
-        # 与训练环境保持一致：runtime wrapper 也只使用论文/Mendes reward。
-        # monitor 内部已按 +0.1/-1.0/-2.0 逐事件累计，这里直接消费累计值。
+        # 与训练环境保持一致：runtime wrapper 的奖励由“配置文件公式”计算。
         _ = (
             delta_job_start,
             delta_lo_overrun,
@@ -120,7 +155,40 @@ def simulate_ordered_taskset_with_agent(
             delta_lo_cancellations,
             delta_deadline_misses,
         )
-        total_reward += monitor.consume_reward()
+        _ = monitor.consume_reward()
+        event_job_start_reward = monitor.reward_weights.job_start * delta_job_start
+        event_lo_overrun_reward = monitor.reward_weights.lo_overrun * delta_lo_overrun
+        event_hi_overrun_reward = monitor.reward_weights.hi_overrun * delta_hi_overrun
+        paper_reward = evaluate_reward_expression(
+            reward_mode_config.paper_reward_formula,
+            {
+                "delta_job_start": float(delta_job_start),
+                "delta_lo_overrun": float(delta_lo_overrun),
+                "delta_hi_overrun": float(delta_hi_overrun),
+                "event_job_start_reward": float(event_job_start_reward),
+                "event_lo_overrun_reward": float(event_lo_overrun_reward),
+                "event_hi_overrun_reward": float(event_hi_overrun_reward),
+            },
+        )
+        step_reward = evaluate_reward_expression(
+            reward_mode_config.step_reward_formula,
+            {
+                "paper_reward": float(paper_reward),
+                "noop_bonus_if_noop": 0.0,
+                "budget_change_penalty": float(reward_mode_config.reward_parameters.get("budget_change_penalty", 0.0)),
+                "budget_change_norm": 0.0,
+                "budget_drift_penalty": float(reward_mode_config.reward_parameters.get("budget_drift_penalty", 0.0)),
+                "budget_drift_mean": 0.0,
+                "is_explicit_noop_action": False,
+                "event_job_start_reward": float(event_job_start_reward),
+                "event_lo_overrun_reward": float(event_lo_overrun_reward),
+                "event_hi_overrun_reward": float(event_hi_overrun_reward),
+                "delta_job_start": float(delta_job_start),
+                "delta_lo_overrun": float(delta_lo_overrun),
+                "delta_hi_overrun": float(delta_hi_overrun),
+            },
+        )
+        total_reward += step_reward
         prev_job_start_count = monitor.job_start_count
         prev_lo_overrun_count = monitor.lo_overrun_count
         prev_hi_overrun_count = monitor.hi_overrun_count
@@ -173,28 +241,54 @@ def simulate_ordered_taskset_with_agent(
             )
         else:
             budget_before = dict(engine.runtime_budgets.budgets)
-            updates = apply_budget_action_candidate(
-                action=action,
-                budget_state=engine.runtime_budgets,
-                ordered_tasks=ordered_tasks,
-            )
-            merged = merge_budget_candidate(engine.runtime_budgets, updates)
-
             accepted = True
             reject_reason: str | None = None
             reject_diagnostics: tuple[dict[str, str | int | float], ...] = ()
             safety_checked = False
-            if agent_config.check_safety:
-                safety_checked = True
-                safety_checked_actions += 1
-                report = checker.validate_candidate(merged)
-                accepted = report.accepted
-                reject_reason = None if accepted else report.reason
-                reject_diagnostics = report.diagnostics
-                if accepted:
-                    safety_accepted_actions += 1
+            if action_violates_hi_decrease_guard(
+                action=action,
+                ordered_tasks=ordered_tasks,
+                forbid_decreasing_hi_budgets=agent_config.forbid_decreasing_hi_budgets,
+            ):
+                # 与 env 保持完全一致：
+                # - 命中 HI decrease 立即拒绝；
+                # - reject_reason 固定为 decrease_hi_forbidden；
+                # - 不再进入 safety checker，避免被其它 reject_reason 覆盖。
+                accepted = False
+                reject_reason = "decrease_hi_forbidden"
+                updates = {}
+                merged = dict(budget_before)
+            else:
+                updates = apply_budget_action_candidate(
+                    action=action,
+                    budget_state=engine.runtime_budgets,
+                    ordered_tasks=ordered_tasks,
+                )
+                merged = merge_budget_candidate(engine.runtime_budgets, updates)
+                floor_reject_reason = _budget_floor_violation(
+                    updates=updates,
+                    initial_budgets=initial_budgets,
+                    budget_floor_ratio=agent_config.budget_floor_ratio,
+                )
+                if floor_reject_reason is not None:
+                    # floor rejection 不属于 safety checker rejection。
+                    # 因此这里只记录 accepted=False 与 reject_reason，不增加 safety 统计计数。
+                    accepted = False
+                    reject_reason = floor_reject_reason
+                    reject_diagnostics = ()
+                elif agent_config.check_safety:
+                    safety_checked = True
+                    safety_checked_actions += 1
+                    report = checker.validate_candidate(merged)
+                    accepted = report.accepted
+                    reject_reason = None if accepted else report.reason
+                    reject_diagnostics = report.diagnostics
+                    if accepted:
+                        safety_accepted_actions += 1
+                    else:
+                        safety_rejected_actions += 1
                 else:
-                    safety_rejected_actions += 1
+                    accepted = True
 
             if accepted:
                 engine.apply_budget_updates(updates)
@@ -240,7 +334,39 @@ def simulate_ordered_taskset_with_agent(
         final_delta_lo_cancellations,
         final_delta_deadline_misses,
     )
-    total_reward += monitor.consume_reward()
+    _ = monitor.consume_reward()
+    final_event_job_start_reward = monitor.reward_weights.job_start * final_delta_job_start
+    final_event_lo_overrun_reward = monitor.reward_weights.lo_overrun * final_delta_lo_overrun
+    final_event_hi_overrun_reward = monitor.reward_weights.hi_overrun * final_delta_hi_overrun
+    final_paper_reward = evaluate_reward_expression(
+        reward_mode_config.paper_reward_formula,
+        {
+            "delta_job_start": float(final_delta_job_start),
+            "delta_lo_overrun": float(final_delta_lo_overrun),
+            "delta_hi_overrun": float(final_delta_hi_overrun),
+            "event_job_start_reward": float(final_event_job_start_reward),
+            "event_lo_overrun_reward": float(final_event_lo_overrun_reward),
+            "event_hi_overrun_reward": float(final_event_hi_overrun_reward),
+        },
+    )
+    total_reward += evaluate_reward_expression(
+        reward_mode_config.step_reward_formula,
+        {
+            "paper_reward": float(final_paper_reward),
+            "noop_bonus_if_noop": 0.0,
+            "budget_change_penalty": float(reward_mode_config.reward_parameters.get("budget_change_penalty", 0.0)),
+            "budget_change_norm": 0.0,
+            "budget_drift_penalty": float(reward_mode_config.reward_parameters.get("budget_drift_penalty", 0.0)),
+            "budget_drift_mean": 0.0,
+            "is_explicit_noop_action": False,
+            "event_job_start_reward": float(final_event_job_start_reward),
+            "event_lo_overrun_reward": float(final_event_lo_overrun_reward),
+            "event_hi_overrun_reward": float(final_event_hi_overrun_reward),
+            "delta_job_start": float(final_delta_job_start),
+            "delta_lo_overrun": float(final_delta_lo_overrun),
+            "delta_hi_overrun": float(final_delta_hi_overrun),
+        },
+    )
 
     return AgentRuntimeResult(
         runtime_result=engine.finish(),

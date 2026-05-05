@@ -34,7 +34,9 @@ def test_hidden_layers_and_replay_related_params_are_applied(tmp_path: Path) -> 
             "--hidden-layers",
             "128,128",
             "--target-update-frequency",
-            "100",
+            "5",
+            "--grad-clip-norm",
+            "10.0",
             "--output-dir",
             str(output_dir),
         ],
@@ -51,5 +53,6 @@ def test_hidden_layers_and_replay_related_params_are_applied(tmp_path: Path) -> 
     assert dqn_cfg["batch_size"] == 64
     assert dqn_cfg["replay_capacity"] == 10000
     assert dqn_cfg["min_replay_size"] == 500
-    assert dqn_cfg["target_update_freq"] == 100
+    assert dqn_cfg["target_update_freq"] == 5
+    assert dqn_cfg["grad_clip_norm"] == 10.0
     assert tuple(dqn_cfg["hidden_layers"]) == (128, 128)

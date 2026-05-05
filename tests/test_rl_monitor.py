@@ -12,7 +12,7 @@ def test_consume_reward_returns_and_clears_accumulator() -> None:
     monitor.record_job_start("t1")
     monitor.record_lo_budget_overrun("t1", 3)
     reward = monitor.consume_reward()
-    assert reward == -0.9
+    assert reward == -1.5
     assert monitor.consume_reward() == 0.0
 
 
@@ -33,4 +33,4 @@ def test_overrun_penalties_are_distinct() -> None:
     monitor.record_hi_budget_overrun("hi", 5)
     assert monitor.lo_overrun_count == 1
     assert monitor.hi_overrun_count == 1
-    assert monitor.consume_reward() == -3.0
+    assert monitor.consume_reward() == -3.5

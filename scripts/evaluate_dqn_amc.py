@@ -21,6 +21,7 @@ from amc_py.event_runtime import simulate_ordered_taskset_event_driven
 from amc_py.experiments import evaluate_taskset
 from amc_py.rl.actions import build_budget_action_space
 from amc_py.rl.agents import HeuristicBudgetAgent, NoOpBudgetAgent, RandomBudgetAgent
+from amc_py.rl.reward_config import available_reward_modes
 from amc_py.rl.runtime_wrapper import AgentRuntimeConfig, simulate_ordered_taskset_with_agent
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationResult
 
@@ -93,6 +94,9 @@ def _evaluate_dqn_once(
     budget_increase_ratio: float,
     budget_decrease_ratio: float,
     include_explicit_noop: bool,
+    budget_floor_ratio: float,
+    forbid_decreasing_hi_budgets: bool,
+    mask_detail_mode: str,
     trace_dir: Path | None = None,
     debug_log_dir: Path | None = None,
     trace_enabled: bool = False,
@@ -110,6 +114,9 @@ def _evaluate_dqn_once(
         budget_increase_ratio=budget_increase_ratio,
         budget_decrease_ratio=budget_decrease_ratio,
         include_explicit_noop=include_explicit_noop,
+        budget_floor_ratio=budget_floor_ratio,
+        forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+        mask_detail_mode=mask_detail_mode,
     )
     agent = DqnBudgetAgent.load(model_path)
     if agent.action_dim != env.action_space_size:
@@ -212,6 +219,8 @@ def _evaluate_dqn_once(
             "safety_rejected_actions": int(debug_stats["safety_rejected_actions"]),
             "valid_action_count_mean": float(debug_stats["valid_action_count_mean"]),
             "masked_action_count_mean": float(debug_stats["masked_action_count_mean"]),
+            "masked_decrease_hi_forbidden_count": int(debug_stats["masked_decrease_hi_forbidden_count"]),
+            "masked_decrease_hi_forbidden_rate": float(debug_stats["masked_decrease_hi_forbidden_rate"]),
             "masked_action_count_max": int(debug_stats["masked_action_count_max"]),
             "mask_rejection_rate_mean": float(debug_stats["mask_rejection_rate_mean"]),
             "selected_invalid_mask_actions": int(debug_stats["selected_invalid_mask_actions"]),
@@ -221,7 +230,10 @@ def _evaluate_dqn_once(
             "action_count": int(debug_stats["action_count"]),
             "budget_increase_ratio": float(debug_stats["budget_increase_ratio"]),
             "budget_decrease_ratio": float(debug_stats["budget_decrease_ratio"]),
+            "budget_floor_ratio": float(debug_stats["budget_floor_ratio"]),
             "no_safe_action_steps": int(debug_stats["no_safe_action_steps"]),
+            "masked_budget_floor_violation_count": int(debug_stats["masked_budget_floor_violation_count"]),
+            "masked_budget_floor_violation_rate": float(debug_stats["masked_budget_floor_violation_rate"]),
         },
         runtime_result,
         env.action_log,
@@ -544,13 +556,39 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--debug-log-dir", type=Path, default=None)
     parser.add_argument(
         "--reward-mode",
-        choices=["mendes"],
+        choices=list(available_reward_modes()),
         default="mendes",
     )
     parser.add_argument("--action-space", choices=["triple", "pair", "single"], default="triple")
     parser.add_argument("--budget-increase-ratio", type=float, default=0.10)
     parser.add_argument("--budget-decrease-ratio", type=float, default=0.05)
     parser.add_argument("--include-explicit-noop", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--noop-exploration-prob",
+        type=float,
+        default=0.0,
+        help=(
+            "During epsilon exploration, if explicit noop is valid, choose noop "
+            "with this probability before sampling other valid actions."
+        ),
+    )
+    parser.add_argument(
+        "--budget-floor-ratio",
+        type=float,
+        default=0.0,
+        help=(
+            "Reject budget actions that would reduce any task budget below "
+            "initial_budget * this ratio. 0 disables the floor."
+        ),
+    )
+    parser.add_argument(
+        "--forbid-decreasing-hi-budgets",
+        action="store_true",
+        # 与训练脚本同名同义参数，保证“训练怎么约束，评估就怎么约束”。
+        # 如果训练时开启但评估时关闭，会导致动作可行域不一致，比较结果失真。
+        help="If set, action masks reject budget actions whose decrease tasks include any HI-criticality task.",
+    )
+    parser.add_argument("--mask-detail-mode", choices=["minimal", "full"], default="minimal")
     return parser
 
 
@@ -558,6 +596,8 @@ def main() -> None:
     """运行正式 DQN 评估，并输出统一 CSV。"""
 
     args = build_parser().parse_args()
+    if args.budget_floor_ratio < 0.0 or args.budget_floor_ratio > 1.0:
+        raise ValueError("--budget-floor-ratio must be in [0, 1]")
     if args.workload == "small":
         experiment_config = (
             build_small_nominal_experiment_config()
@@ -679,7 +719,10 @@ def main() -> None:
                     "action_count": len(actions),
                     "budget_increase_ratio": args.budget_increase_ratio,
                     "budget_decrease_ratio": args.budget_decrease_ratio,
+                    "budget_floor_ratio": args.budget_floor_ratio,
                     "no_safe_action_steps": 0,
+                    "masked_budget_floor_violation_count": 0,
+                    "masked_budget_floor_violation_rate": 0.0,
                 }
             )
             deadline_miss_details.extend(
@@ -702,6 +745,8 @@ def main() -> None:
                     end_time=args.end_time,
                     check_safety=True,
                     reward_mode=args.reward_mode,
+                    forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
+                    budget_floor_ratio=args.budget_floor_ratio,
                 ),
                 bounds=bundle.normalization_bounds,
             )
@@ -751,7 +796,10 @@ def main() -> None:
                     "action_count": len(actions),
                     "budget_increase_ratio": args.budget_increase_ratio,
                     "budget_decrease_ratio": args.budget_decrease_ratio,
+                    "budget_floor_ratio": args.budget_floor_ratio,
                     "no_safe_action_steps": 0,
+                    "masked_budget_floor_violation_count": 0,
+                    "masked_budget_floor_violation_rate": 0.0,
                 }
             )
             deadline_miss_details.extend(
@@ -786,6 +834,8 @@ def main() -> None:
                     end_time=args.end_time,
                     check_safety=True,
                     reward_mode=args.reward_mode,
+                    forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
+                    budget_floor_ratio=args.budget_floor_ratio,
                 ),
                 bounds=bundle.normalization_bounds,
             )
@@ -836,7 +886,10 @@ def main() -> None:
                     "action_count": len(actions),
                     "budget_increase_ratio": args.budget_increase_ratio,
                     "budget_decrease_ratio": args.budget_decrease_ratio,
+                    "budget_floor_ratio": args.budget_floor_ratio,
                     "no_safe_action_steps": 0,
+                    "masked_budget_floor_violation_count": 0,
+                    "masked_budget_floor_violation_rate": 0.0,
                 }
             )
             deadline_miss_details.extend(
@@ -871,6 +924,8 @@ def main() -> None:
                     end_time=args.end_time,
                     check_safety=True,
                     reward_mode=args.reward_mode,
+                    forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
+                    budget_floor_ratio=args.budget_floor_ratio,
                 ),
                 bounds=bundle.normalization_bounds,
             )
@@ -933,7 +988,10 @@ def main() -> None:
                     "action_count": len(actions),
                     "budget_increase_ratio": args.budget_increase_ratio,
                     "budget_decrease_ratio": args.budget_decrease_ratio,
+                    "budget_floor_ratio": args.budget_floor_ratio,
                     "no_safe_action_steps": 0,
+                    "masked_budget_floor_violation_count": 0,
+                    "masked_budget_floor_violation_rate": 0.0,
                 }
             )
             deadline_miss_details.extend(
@@ -970,6 +1028,9 @@ def main() -> None:
                 budget_increase_ratio=args.budget_increase_ratio,
                 budget_decrease_ratio=args.budget_decrease_ratio,
                 include_explicit_noop=args.include_explicit_noop,
+                budget_floor_ratio=args.budget_floor_ratio,
+                forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
+                mask_detail_mode=args.mask_detail_mode,
                 trace_dir=args.trace_dir,
                 debug_log_dir=args.debug_log_dir,
                 trace_enabled=trace_enabled_for_seed and (not trace_method_set or "dqn_agent" in trace_method_set),
@@ -1018,6 +1079,8 @@ def main() -> None:
         "safety_rejected_actions",
         "valid_action_count_mean",
         "masked_action_count_mean",
+        "masked_decrease_hi_forbidden_count",
+        "masked_decrease_hi_forbidden_rate",
         "masked_action_count_max",
         "mask_rejection_rate_mean",
         "selected_invalid_mask_actions",
@@ -1027,7 +1090,10 @@ def main() -> None:
         "action_count",
         "budget_increase_ratio",
         "budget_decrease_ratio",
+        "budget_floor_ratio",
         "no_safe_action_steps",
+        "masked_budget_floor_violation_count",
+        "masked_budget_floor_violation_rate",
         "end_time",
         "agent_period",
     ]

@@ -164,6 +164,9 @@ def build_env_from_experiment_config(
     budget_increase_ratio: float = 0.10,
     budget_decrease_ratio: float = 0.05,
     include_explicit_noop: bool = False,
+    budget_floor_ratio: float = 0.0,
+    forbid_decreasing_hi_budgets: bool = False,
+    mask_detail_mode: str = "minimal",
 ) -> AmcBudgetEnv:
     """根据实验配置构造 `AmcBudgetEnv`，供训练与评估入口复用。"""
 
@@ -180,6 +183,9 @@ def build_env_from_experiment_config(
         budget_increase_ratio=budget_increase_ratio,
         budget_decrease_ratio=budget_decrease_ratio,
         include_explicit_noop=include_explicit_noop,
+        budget_floor_ratio=budget_floor_ratio,
+        forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+        mask_detail_mode=mask_detail_mode,
     )
 
 

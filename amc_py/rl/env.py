@@ -6,17 +6,24 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Literal
+import math
+import numpy as np
 
 from amc_py.amc import build_design_r_lo_map
 from amc_py.budget_runtime import BudgetState
 from amc_py.event_runtime import EventRuntimeEngine
-from amc_py.models import Task
-from amc_py.rl.actions import BudgetAction, apply_budget_action_candidate, build_budget_action_space
+from amc_py.models import Criticality, Task
+from amc_py.rl.actions import (
+    BudgetAction,
+    action_violates_hi_decrease_guard,
+    apply_budget_action_candidate,
+    build_budget_action_space,
+)
 from amc_py.rl.monitor import RuntimeMonitor
 from amc_py.rl.observation import NormalizationBounds, build_observation
+from amc_py.rl.reward_config import RewardModeConfig, evaluate_reward_expression, load_reward_mode_config
 from amc_py.rl.safety import (
     RuntimeBudgetSafetyChecker,
-    has_effective_budget_updates,
     merge_budget_candidate,
 )
 from amc_py.rl.types import AgentObservation, AgentStepResult
@@ -35,11 +42,14 @@ class AmcBudgetEnv:
     check_safety: bool = True
     safety_checker: RuntimeBudgetSafetyChecker | None = None
     normalization_bounds: NormalizationBounds | None = None
-    reward_mode: Literal["mendes"] = "mendes"
+    reward_mode: str = "mendes"
     action_space: Literal["triple", "pair", "single"] = "triple"
+    mask_detail_mode: Literal["minimal", "full"] = "minimal"
     budget_increase_ratio: float = 0.10
     budget_decrease_ratio: float = 0.05
     include_explicit_noop: bool = False
+    budget_floor_ratio: float = 0.0
+    forbid_decreasing_hi_budgets: bool = False
     _actions: tuple[BudgetAction, ...] = field(init=False, repr=False)
     _monitor: RuntimeMonitor = field(init=False, repr=False)
     _engine: EventRuntimeEngine | None = field(init=False, default=None, repr=False)
@@ -60,9 +70,21 @@ class AmcBudgetEnv:
     _prev_mode_changes: int = field(init=False, default=0, repr=False)
     _prev_lo_cancellations: int = field(init=False, default=0, repr=False)
     _prev_deadline_misses: int = field(init=False, default=0, repr=False)
+    _task_index: dict[str, int] = field(init=False, repr=False)
+    _task_names: tuple[str, ...] = field(init=False, repr=False)
+    _task_upper_bounds: tuple[int, ...] = field(init=False, repr=False)
+    _initial_budgets: dict[str, int] = field(init=False, repr=False)
+    _safety_matrix_a: np.ndarray | None = field(init=False, default=None, repr=False)
+    _safety_bounds: np.ndarray | None = field(init=False, default=None, repr=False)
+    _reward_mode_config: RewardModeConfig = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         """初始化固定动作空间。"""
+        if self.budget_floor_ratio < 0.0 or self.budget_floor_ratio > 1.0:
+            raise ValueError("budget_floor_ratio must be in [0, 1]")
+        # 加载奖励模式配置（权重 + 公式）。
+        # 这样 reward 计算方式可由配置文件驱动，而非写死在代码中。
+        self._reward_mode_config = load_reward_mode_config(self.reward_mode)
 
         self._actions = build_budget_action_space(
             self.ordered_tasks,
@@ -75,6 +97,80 @@ class AmcBudgetEnv:
         self._mask_log = []
         self._mask_reject_reasons = Counter()
         self._last_mask_details = []
+        self._task_names = tuple(task.name for task in self.ordered_tasks)
+        self._task_index = {name: idx for idx, name in enumerate(self._task_names)}
+        self._task_upper_bounds = tuple(
+            (
+                (task.c_hi if task.criticality is Criticality.HI and task.c_hi > 0 else task.deadline)
+                if task.criticality is Criticality.HI
+                else task.deadline
+            )
+            for task in self.ordered_tasks
+        )
+        # 记录环境初始预算，用于阶段 2 的预算变化归一化惩罚。
+        self._initial_budgets = {task.name: task.c_lo for task in self.ordered_tasks}
+
+    def _compute_normalized_budget_change(
+        self,
+        *,
+        budget_before: dict[str, int],
+        candidate_budgets: dict[str, int],
+        initial_budgets: dict[str, int],
+        changed_task_ids: Sequence[str],
+    ) -> float:
+        """按文档口径计算预算改变量归一化和。
+
+        公式严格为：
+        sum(|candidate - before| / initial)
+
+        其中 initial 为 reset 时初始预算，用于把不同任务尺度统一到可比较量纲。
+        """
+
+        normalized_total = 0.0
+        for task_id in changed_task_ids:
+            denominator = max(float(initial_budgets[task_id]), 1e-9)
+            normalized_total += abs(float(candidate_budgets[task_id]) - float(budget_before[task_id])) / denominator
+        return normalized_total
+
+    def _compute_budget_drift_mean(self, *, budgets: dict[str, int], initial_budgets: dict[str, int]) -> float:
+        """计算预算漂移惩罚项中的平均欠配比值。
+
+        公式：
+        mean_i max(0, 1 - B_i / B_i_initial)
+        """
+
+        if not self._task_names:
+            return 0.0
+        drift_total = 0.0
+        for task_name in self._task_names:
+            current_budget = float(budgets[task_name])
+            initial_budget = max(float(initial_budgets[task_name]), 1e-9)
+            drift_total += max(0.0, 1.0 - current_budget / initial_budget)
+        return drift_total / float(len(self._task_names))
+
+    def _budget_floor_violation(
+        self,
+        *,
+        updates: dict[str, int],
+    ) -> str | None:
+        """检查局部预算更新是否违反 episode 初始预算下限。
+
+        约束语义严格遵循文档：
+        - `budget_floor_ratio <= 0.0` 时，表示不启用 floor，直接返回 `None`；
+        - 只检查本步 `updates` 中被修改的任务，因为未修改任务不可能在当前 step 突然跌破 floor；
+        - 下界值按 `ceil(initial_budget * budget_floor_ratio)` 计算，避免整数预算被向下取整后放松过多；
+        - 一旦发现第一个违规任务，立即返回带任务名的 reject_reason，便于日志定位。
+        """
+
+        if self.budget_floor_ratio <= 0.0:
+            return None
+
+        for task_name, candidate_budget in updates.items():
+            initial_budget = self._initial_budgets[task_name]
+            floor_value = max(1, math.ceil(initial_budget * self.budget_floor_ratio))
+            if candidate_budget < floor_value:
+                return f"budget_floor_violation:{task_name}"
+        return None
 
     @property
     def action_log(self) -> list[dict[str, object]]:
@@ -107,6 +203,7 @@ class AmcBudgetEnv:
             "action_count": len(self._actions),
             "budget_increase_ratio": self.budget_increase_ratio,
             "budget_decrease_ratio": self.budget_decrease_ratio,
+            "budget_floor_ratio": self.budget_floor_ratio,
             "valid_action_count_mean": (sum(valid_counts) / mask_checks) if mask_checks > 0 else 0.0,
             "masked_action_count_mean": (sum(invalid_counts) / mask_checks) if mask_checks > 0 else 0.0,
             "masked_action_count_max": max(invalid_counts) if invalid_counts else 0,
@@ -121,6 +218,26 @@ class AmcBudgetEnv:
                 (self._selected_explicit_noop_actions / mask_checks) if mask_checks > 0 else 0.0
             ),
             "no_safe_action_steps": self._no_safe_action_steps,
+            # HI 预算保护约束统计：
+            # - count: 运行期间累计有多少动作因“decrease 命中 HI”被 mask；
+            # - rate : 上述 count 在“总候选动作数(mask_checks * action_count)”中的占比。
+            # 这样在不看原始日志的情况下，也能从 CSV 直接判断该约束对动作空间的压缩强度。
+            "masked_decrease_hi_forbidden_count": int(self._mask_reject_reasons.get("decrease_hi_forbidden", 0)),
+            "masked_decrease_hi_forbidden_rate": (
+                (int(self._mask_reject_reasons.get("decrease_hi_forbidden", 0)) / (mask_checks * len(self._actions)))
+                if mask_checks > 0
+                else 0.0
+            ),
+            # budget floor 统计：
+            # - count: 有多少候选动作因为“会把某任务预算压到初始预算 floor 以下”而被 mask；
+            # - rate : 上述 count 在总候选动作数中的占比。
+            # 这两个字段用于训练/评估后直接判断 floor 约束是否真实参与了动作过滤。
+            "masked_budget_floor_violation_count": int(self._mask_reject_reasons.get("budget_floor_violation", 0)),
+            "masked_budget_floor_violation_rate": (
+                (int(self._mask_reject_reasons.get("budget_floor_violation", 0)) / (mask_checks * len(self._actions)))
+                if mask_checks > 0
+                else 0.0
+            ),
         }
 
     @property
@@ -148,79 +265,217 @@ class AmcBudgetEnv:
         mask: list[bool] = []
         mask_details: list[dict[str, object]] = []
         reject_reason_counts: Counter[str] = Counter()
+        budget_before = dict(self._engine.runtime_budgets.budgets)
+        budget_array = np.array([float(budget_before[name]) for name in self._task_names], dtype=np.float64)
+        if self.check_safety:
+            assert checker is not None
+            if self._safety_matrix_a is None or self._safety_bounds is None:
+                # 缓存 A/b：约束不随 step 变化，只需要构建一次。
+                self._safety_matrix_a, self._safety_bounds = checker.build_linear_constraints()
+            current_lhs = self._safety_matrix_a @ budget_array
+            slack = self._safety_bounds - current_lhs
+        else:
+            slack = None
         for action in self._actions:
             # 阶段 1 语义：显式 noop 必须始终合法。
             # 1) 不能再走“是否有效更新”的过滤；
             # 2) 不能再走预算安全检查；
             # 3) mask 详情里仍记录预算前后（相同）与 is_noop 标记，便于调试。
             if action.is_noop:
-                budget_before = dict(self._engine.runtime_budgets.budgets)
                 mask.append(True)
-                mask_details.append(
-                    {
-                        "action_id": action.action_id,
-                        "valid": True,
-                        "reject_reason": None,
-                        "updates": {},
-                        "budget_before": budget_before,
-                        "candidate_budgets": dict(budget_before),
-                        "is_noop": True,
-                    }
-                )
+                if self.mask_detail_mode == "minimal":
+                    mask_details.append(
+                        {
+                            "action_id": action.action_id,
+                            "valid": True,
+                            "reject_reason": None,
+                            "is_noop": True,
+                        }
+                    )
+                else:
+                    mask_details.append(
+                        {
+                            "action_id": action.action_id,
+                            "valid": True,
+                            "reject_reason": None,
+                            "updates": {},
+                            "budget_before": budget_before,
+                            "candidate_budgets": dict(budget_before),
+                            "is_noop": True,
+                        }
+                    )
                 continue
-            # 仅复用环境现有动作到候选预算的映射，不引入额外决策语义。
-            updates = apply_budget_action_candidate(
+            # HI 预算保护（阶段 3 核心规则）：
+            # - 触发条件：action.decrease_indices 中存在任意 HI 任务；
+            # - 处理方式：直接 mask=False，并记录 reject_reason=decrease_hi_forbidden；
+            # - 语义边界：只约束 decrease，不限制 increase，因此“给 HI 任务加预算”仍然允许。
+            # 注意：显式 noop 已在前面提前放行，不受此规则影响。
+            if action_violates_hi_decrease_guard(
                 action=action,
-                budget_state=self._engine.runtime_budgets,
                 ordered_tasks=self.ordered_tasks,
-            )
-            budget_before = dict(self._engine.runtime_budgets.budgets)
-            candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
-            if not has_effective_budget_updates(self._engine.runtime_budgets, updates):
+                forbid_decreasing_hi_budgets=self.forbid_decreasing_hi_budgets,
+            ):
+                mask.append(False)
+                reject_reason_counts["decrease_hi_forbidden"] += 1
+                if self.mask_detail_mode == "minimal":
+                    mask_details.append(
+                        {
+                            "action_id": action.action_id,
+                            "valid": False,
+                            "reject_reason": "decrease_hi_forbidden",
+                            "is_noop": False,
+                        }
+                    )
+                else:
+                    mask_details.append(
+                        {
+                            "action_id": action.action_id,
+                            "valid": False,
+                            "reject_reason": "decrease_hi_forbidden",
+                            "updates": {},
+                            "budget_before": budget_before,
+                            "candidate_budgets": dict(budget_before),
+                            "is_noop": False,
+                        }
+                    )
+                continue
+            updates: dict[str, int] = {}
+            delta_pairs: list[tuple[int, float]] = []
+            reject_reason: str | None = None
+            if action.increase_idx is not None:
+                inc_idx = action.increase_idx
+                inc_name = self._task_names[inc_idx]
+                old_inc = int(budget_before[inc_name])
+                inc_value = math.ceil(old_inc * (1.0 + action.increase_ratio))
+                inc_value = min(inc_value, self._task_upper_bounds[inc_idx])
+                inc_value = max(1, inc_value)
+                updates[inc_name] = inc_value
+                if inc_value == old_inc:
+                    reject_reason = "no_effective_budget_change"
+                delta_pairs.append((inc_idx, float(inc_value - old_inc)))
+            for dec_idx in action.decrease_indices:
+                dec_name = self._task_names[dec_idx]
+                old_dec = int(budget_before[dec_name])
+                dec_value = math.floor(old_dec * (1.0 - action.decrease_ratio))
+                dec_value = max(1, dec_value)
+                updates[dec_name] = dec_value
+                if dec_value == old_dec:
+                    reject_reason = "no_effective_budget_change"
+                delta_pairs.append((dec_idx, float(dec_value - old_dec)))
+            if reject_reason is not None:
                 mask.append(False)
                 reject_reason_counts["no_effective_budget_change"] += 1
-                mask_details.append(
-                    {
-                        "action_id": action.action_id,
-                        "valid": False,
-                        "reject_reason": "no_effective_budget_change",
-                        "updates": dict(updates),
-                        "budget_before": budget_before,
-                        "candidate_budgets": candidate_budgets,
-                        "is_noop": False,
-                    }
-                )
+                if self.mask_detail_mode == "minimal":
+                    mask_details.append(
+                        {
+                            "action_id": action.action_id,
+                            "valid": False,
+                            "reject_reason": "no_effective_budget_change",
+                            "is_noop": False,
+                        }
+                    )
+                else:
+                    candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
+                    mask_details.append(
+                        {
+                            "action_id": action.action_id,
+                            "valid": False,
+                            "reject_reason": "no_effective_budget_change",
+                            "updates": dict(updates),
+                            "budget_before": budget_before,
+                            "candidate_budgets": candidate_budgets,
+                            "is_noop": False,
+                        }
+                    )
+                continue
+            # budget floor 必须在 safety check 之前执行。
+            # 原因是它属于“动作可行性硬约束”，不是 reward 正则，也不是 safety checker 的线性约束。
+            # 因此一旦违反 floor，应直接把动作标记为 invalid，并保留带任务名的 reject_reason。
+            floor_reject_reason = self._budget_floor_violation(updates=updates)
+            if floor_reject_reason is not None:
+                mask.append(False)
+                reject_reason_counts["budget_floor_violation"] += 1
+                if self.mask_detail_mode == "minimal":
+                    mask_details.append(
+                        {
+                            "action_id": action.action_id,
+                            "valid": False,
+                            "reject_reason": floor_reject_reason,
+                            "is_noop": False,
+                        }
+                    )
+                else:
+                    candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
+                    mask_details.append(
+                        {
+                            "action_id": action.action_id,
+                            "valid": False,
+                            "reject_reason": floor_reject_reason,
+                            "updates": dict(updates),
+                            "budget_before": budget_before,
+                            "candidate_budgets": candidate_budgets,
+                            "is_noop": False,
+                        }
+                    )
                 continue
             if not self.check_safety:
                 mask.append(True)
+                if self.mask_detail_mode == "minimal":
+                    mask_details.append(
+                        {
+                            "action_id": action.action_id,
+                            "valid": True,
+                            "reject_reason": None,
+                            "is_noop": False,
+                        }
+                    )
+                else:
+                    candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
+                    mask_details.append(
+                        {
+                            "action_id": action.action_id,
+                            "valid": True,
+                            "reject_reason": None,
+                            "updates": dict(updates),
+                            "budget_before": budget_before,
+                            "candidate_budgets": candidate_budgets,
+                            "is_noop": False,
+                        }
+                    )
+                continue
+            assert slack is not None
+            delta_lhs = np.zeros_like(slack)
+            for idx, delta in delta_pairs:
+                delta_lhs += self._safety_matrix_a[:, idx] * delta  # type: ignore[index]
+            accepted = bool(np.all(delta_lhs <= slack))
+            if not accepted:
+                reject_reason = "incremental_constraint_violation"
+                reject_reason_counts[reject_reason] += 1
+            mask.append(accepted)
+            if self.mask_detail_mode == "minimal":
                 mask_details.append(
                     {
                         "action_id": action.action_id,
-                        "valid": True,
-                        "reject_reason": None,
+                        "valid": accepted,
+                        "reject_reason": reject_reason,
+                        "is_noop": False,
+                    }
+                )
+            else:
+                candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
+                report = checker.validate_candidate(candidate_budgets)
+                mask_details.append(
+                    {
+                        "action_id": action.action_id,
+                        "valid": accepted,
+                        "reject_reason": None if accepted else reject_reason,
+                        "reject_diagnostics": list(report.diagnostics),
                         "updates": dict(updates),
                         "budget_before": budget_before,
                         "candidate_budgets": candidate_budgets,
                         "is_noop": False,
                     }
                 )
-                continue
-            report = checker.validate_candidate(candidate_budgets)
-            mask.append(report.accepted)
-            if not report.accepted:
-                reject_reason_counts[report.reason] += 1
-            mask_details.append(
-                {
-                    "action_id": action.action_id,
-                    "valid": report.accepted,
-                    "reject_reason": None if report.accepted else report.reason,
-                    "reject_diagnostics": list(report.diagnostics),
-                    "updates": dict(updates),
-                    "budget_before": budget_before,
-                    "candidate_budgets": candidate_budgets,
-                    "is_noop": False,
-                }
-            )
         valid_action_count = sum(mask)
         masked_action_count = len(mask) - valid_action_count
         if valid_action_count == 0:
@@ -255,7 +510,9 @@ class AmcBudgetEnv:
     def reset(self, seed: int | None = None) -> AgentObservation:  # noqa: ARG002
         """重置环境并返回初始观测。"""
 
-        self._monitor = RuntimeMonitor()
+        # 奖励参数不再写死在代码中，而是按 reward_mode 从配置文件加载。
+        # 这样后续调参只需改配置文件，不需要改动 Python 代码。
+        self._monitor = RuntimeMonitor(reward_mode=self.reward_mode)
         self._engine = EventRuntimeEngine.build(
             ordered_tasks=self.ordered_tasks,
             scenario=self.scenario,
@@ -265,6 +522,9 @@ class AmcBudgetEnv:
         )
         # 先处理 time=0 的边界事件，再返回首次观测，避免 agent 早于首批 release 决策。
         self._engine.run_until(0, include_boundary=True)
+        # reset 后把“本轮 episode 的初始预算快照”固定下来。
+        # 后续每一步 budget_change_norm 都以该快照作归一化分母来源。
+        self._initial_budgets = dict(self._engine.runtime_budgets.budgets)
         self._done = False
         self._action_log = []
         self._mask_log = []
@@ -335,25 +595,44 @@ class AmcBudgetEnv:
                 updates = {}
                 candidate_budgets = dict(budget_before)
             else:
-                updates = apply_budget_action_candidate(
+                # 运行时执行路径与 mask 路径做同样判定：
+                # 即便调用方绕过了 valid_action_mask（例如手工传 action_id），
+                # 这里也会拒绝 HI decrease 动作，确保系统级语义一致。
+                if action_violates_hi_decrease_guard(
                     action=action,
-                    budget_state=self._engine.runtime_budgets,
                     ordered_tasks=self.ordered_tasks,
-                )
-                candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
-                if self.check_safety:
-                    action_was_checked = True
-                    self._safety_checked_actions += 1
-                    report = self._ensure_checker().validate_candidate(candidate_budgets)
-                    accepted = report.accepted
-                    if not accepted:
-                        reject_reason = report.reason
-                        reject_diagnostics = report.diagnostics
-                        self._safety_rejected_actions += 1
-                    else:
-                        self._safety_accepted_actions += 1
+                    forbid_decreasing_hi_budgets=self.forbid_decreasing_hi_budgets,
+                ):
+                    accepted = False
+                    reject_reason = "decrease_hi_forbidden"
+                    updates = {}
+                    candidate_budgets = dict(budget_before)
                 else:
-                    accepted = True
+                    updates = apply_budget_action_candidate(
+                        action=action,
+                        budget_state=self._engine.runtime_budgets,
+                        ordered_tasks=self.ordered_tasks,
+                    )
+                    candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
+                    # step() 的 floor 兜底与 mask 路径必须保持同一语义：
+                    # 即便调用方绕过了 valid_action_mask，这里也要拒绝任何会跌破 floor 的动作。
+                    floor_reject_reason = self._budget_floor_violation(updates=updates)
+                    if floor_reject_reason is not None:
+                        accepted = False
+                        reject_reason = floor_reject_reason
+                    elif self.check_safety:
+                        action_was_checked = True
+                        self._safety_checked_actions += 1
+                        report = self._ensure_checker().validate_candidate(candidate_budgets)
+                        accepted = report.accepted
+                        if not accepted:
+                            reject_reason = report.reason
+                            reject_diagnostics = report.diagnostics
+                            self._safety_rejected_actions += 1
+                        else:
+                            self._safety_accepted_actions += 1
+                    else:
+                        accepted = True
                 if accepted:
                     self._engine.apply_budget_updates(updates)
         else:
@@ -388,15 +667,64 @@ class AmcBudgetEnv:
         step_reward_mode_change = 0.0
         step_reward_lo_cancellation = 0.0
         step_reward_deadline_miss = 0.0
-        # 论文/Mendes 奖励定义（唯一口径）：
-        # +0.1 * job_start -1.0 * LO_overrun -2.0 * HI_overrun。
-        # monitor 在事件发生时就按该定义累计，这里直接消费可严格对应
-        # “从上一次 agent 激活到下一次激活之间的事件奖励和”。
-        reward = self._monitor.consume_reward()
-        # 下面分量仅用于日志可解释性，不再参与 reward 计算分支选择。
-        step_reward_job_start = 0.1 * delta_job_start
-        step_reward_lo_overrun = -1.0 * delta_lo_overrun
-        step_reward_hi_overrun = -2.0 * delta_hi_overrun
+        # 为了兼容已有 monitor 行为，这里仍调用 consume_reward 清空累计器；
+        # 真正用于训练的 reward 数值由“配置文件中的公式”重新计算。
+        _ = self._monitor.consume_reward()
+        event_job_start_reward = self._monitor.reward_weights.job_start * delta_job_start
+        event_lo_overrun_reward = self._monitor.reward_weights.lo_overrun * delta_lo_overrun
+        event_hi_overrun_reward = self._monitor.reward_weights.hi_overrun * delta_hi_overrun
+        paper_reward = evaluate_reward_expression(
+            self._reward_mode_config.paper_reward_formula,
+            {
+                "delta_job_start": float(delta_job_start),
+                "delta_lo_overrun": float(delta_lo_overrun),
+                "delta_hi_overrun": float(delta_hi_overrun),
+                "event_job_start_reward": float(event_job_start_reward),
+                "event_lo_overrun_reward": float(event_lo_overrun_reward),
+                "event_hi_overrun_reward": float(event_hi_overrun_reward),
+            },
+        )
+        reward = paper_reward
+        budget_change_norm = self._compute_normalized_budget_change(
+            budget_before=budget_before,
+            candidate_budgets=candidate_budgets,
+            initial_budgets=self._initial_budgets,
+            changed_task_ids=tuple(updates.keys()),
+        )
+        # 下面分量用于日志可解释性，直接记录事件奖励分量。
+        step_reward_job_start = event_job_start_reward
+        step_reward_lo_overrun = event_lo_overrun_reward
+        step_reward_hi_overrun = event_hi_overrun_reward
+        budget_after = dict(self._engine.runtime_budgets.budgets)
+        reward_parameters = self._reward_mode_config.reward_parameters
+        noop_bonus = float(reward_parameters.get("noop_bonus", 0.0))
+        budget_change_penalty = float(reward_parameters.get("budget_change_penalty", 0.0))
+        budget_drift_penalty = float(reward_parameters.get("budget_drift_penalty", 0.0))
+        noop_bonus_if_noop = noop_bonus if is_explicit_noop_action else 0.0
+        budget_change_penalty_value = budget_change_penalty * budget_change_norm
+        budget_drift_mean = self._compute_budget_drift_mean(
+            budgets=budget_after,
+            initial_budgets=self._initial_budgets,
+        )
+        budget_drift_penalty_value = budget_drift_penalty * budget_drift_mean
+        reward = evaluate_reward_expression(
+            self._reward_mode_config.step_reward_formula,
+            {
+                "paper_reward": float(paper_reward),
+                "noop_bonus_if_noop": float(noop_bonus_if_noop),
+                "budget_change_penalty": float(budget_change_penalty),
+                "budget_change_norm": float(budget_change_norm),
+                "budget_drift_penalty": float(budget_drift_penalty),
+                "budget_drift_mean": float(budget_drift_mean),
+                "is_explicit_noop_action": bool(is_explicit_noop_action),
+                "event_job_start_reward": float(event_job_start_reward),
+                "event_lo_overrun_reward": float(event_lo_overrun_reward),
+                "event_hi_overrun_reward": float(event_hi_overrun_reward),
+                "delta_job_start": float(delta_job_start),
+                "delta_lo_overrun": float(delta_lo_overrun),
+                "delta_hi_overrun": float(delta_hi_overrun),
+            },
+        )
         self._prev_job_start_count = self._monitor.job_start_count
         self._prev_lo_overrun_count = self._monitor.lo_overrun_count
         self._prev_hi_overrun_count = self._monitor.hi_overrun_count
@@ -404,7 +732,6 @@ class AmcBudgetEnv:
         self._prev_lo_cancellations = lo_cancellations
         self._prev_deadline_misses = deadline_misses
 
-        budget_after = dict(self._engine.runtime_budgets.budgets)
         observation = build_observation(
             time=current_time,
             ordered_tasks=self.ordered_tasks,
@@ -441,6 +768,13 @@ class AmcBudgetEnv:
             "lo_cancellations": lo_cancellations,
             "deadline_misses": deadline_misses,
             "step_reward_total": reward,
+            "paper_reward": paper_reward,
+            "noop_reward_bonus": noop_bonus_if_noop,
+            "budget_change_norm": budget_change_norm,
+            "budget_change_penalty_value": budget_change_penalty_value,
+            "budget_drift_mean": budget_drift_mean,
+            "budget_drift_penalty_value": budget_drift_penalty_value,
+            "reward_after_regularization": reward,
             "step_reward_job_start": step_reward_job_start,
             "step_reward_lo_overrun": step_reward_lo_overrun,
             "step_reward_hi_overrun": step_reward_hi_overrun,
