@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from amc_py.dqn import build_rtss11_experiment_config, resolve_experiment_bundle
+from amc_py.dqn import build_experiment_config, build_rtss11_experiment_config, resolve_experiment_bundle
 from amc_py.experiments import evaluate_taskset
 from amc_py.models import Criticality
 
@@ -81,4 +81,56 @@ def test_rtss11_fixed_taskset_seed_keeps_taskset_constant_across_seeds() -> None
     assert bundle_a.taskset_seed == 0
     assert bundle_b.taskset_seed == 0
     assert bundle_a.taskset_fingerprint == bundle_b.taskset_fingerprint
+    assert bundle_a.scenario_seed != bundle_b.scenario_seed
+
+
+def test_build_experiment_config_supports_automotive() -> None:
+    """统一 builder 应支持按名称选择 automotive。"""
+
+    config = build_experiment_config(
+        "automotive",
+        num_runnables=150,
+        require_schedulable=False,
+    )
+    bundle = resolve_experiment_bundle(config, seed=0)
+
+    assert config.name.startswith("automotive_")
+    assert bundle.ordered_tasks
+    assert bundle.scenario.name.startswith("automotive")
+
+
+def test_build_experiment_config_supports_paper_exact_automotive() -> None:
+    """统一 builder 应支持按名称选择 paper_exact automotive。"""
+
+    config = build_experiment_config(
+        "automotive",
+        num_runnables=150,
+        mode="paper_exact",
+        require_schedulable=False,
+    )
+    bundle = resolve_experiment_bundle(config, seed=0)
+
+    assert config.name.startswith("automotive_paper_exact_")
+    assert bundle.ordered_tasks
+    assert bundle.scenario.name.startswith("automotive_paper_exact")
+
+
+def test_automotive_fixed_taskset_seed_keeps_taskset_constant_across_seeds() -> None:
+    """automotive 也应支持固定 taskset、仅变化 scenario seed。"""
+
+    config = build_experiment_config(
+        "automotive",
+        num_runnables=150,
+        mode="paper_exact",
+        require_schedulable=False,
+        fixed_taskset_seed=0,
+        scenario_seed_offset=100000,
+    )
+    bundle_a = resolve_experiment_bundle(config, seed=0)
+    bundle_b = resolve_experiment_bundle(config, seed=1)
+
+    assert bundle_a.taskset_seed == 0
+    assert bundle_b.taskset_seed == 0
+    assert bundle_a.taskset_fingerprint == bundle_b.taskset_fingerprint
+    assert len(bundle_a.ordered_tasks) == len(bundle_b.ordered_tasks)
     assert bundle_a.scenario_seed != bundle_b.scenario_seed

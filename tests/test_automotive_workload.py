@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
-from amc_py.automotive_workload import (
+from amc_py.workloads.automotive import (
+    AUTOMOTIVE_PERIOD_SHARES,
     AUTOMOTIVE_PERIOD_SET,
+    ACET_TABLE_US,
+    AutomotiveWorkloadProvider,
     AutomotiveWorkloadConfig,
+    _sample_exact_acet_us_values,
     build_automotive_execution_scenario,
-    build_automotive_experiment_config,
     build_automotive_workload,
+    build_task_to_runnables_map,
+    ms_to_ticks,
+    sample_runnable_cost,
 )
-from amc_py.dqn import build_env_from_experiment_config
+from amc_py.dqn import build_automotive_experiment_config, build_env_from_experiment_config
 from amc_py.runtime_models import RuntimeSemantics
+import random
 
 
 def test_same_seed_produces_reproducible_workload() -> None:
@@ -30,7 +37,7 @@ def test_runnable_periods_follow_paper_period_set() -> None:
     workload = build_automotive_workload(
         AutomotiveWorkloadConfig(num_runnables=150, seed=1, require_schedulable=False)
     )
-    assert {runnable.period for runnable in workload.runnables}.issubset(set(AUTOMOTIVE_PERIOD_SET))
+    assert {runnable.period_ms for runnable in workload.runnables}.issubset(set(AUTOMOTIVE_PERIOD_SET))
 
 
 def test_task_count_is_bounded_by_period_and_criticality_buckets() -> None:
@@ -96,3 +103,96 @@ def test_weibull_scenario_respects_task_execution_bounds() -> None:
         actual_cost = scenario.actual_cost_for(task, 0)
         meta = meta_map[task.name]
         assert meta.bcet <= actual_cost <= meta.wcet
+
+
+def test_automotive_provider_builds_bundle() -> None:
+    """provider 应能一次性返回 tasks、scenario、bounds 与元数据。"""
+
+    provider = AutomotiveWorkloadProvider(
+        AutomotiveWorkloadConfig(num_runnables=150, seed=0, require_schedulable=False)
+    )
+    bundle = provider.build(seed=0)
+
+    assert bundle.tasks
+    assert bundle.scenario is not None
+    assert bundle.normalization_bounds
+    assert bundle.metadata is not None
+    assert bundle.metadata["num_runnables"] == 150
+
+
+def test_paper_exact_period_distribution_matches_table1_for_150_runnables() -> None:
+    """paper_exact 应按 Table 1 的 largest remainder 分配 period 计数。"""
+
+    workload = build_automotive_workload(
+        AutomotiveWorkloadConfig(
+            num_runnables=150,
+            seed=11,
+            mode="paper_exact",
+            require_schedulable=False,
+        )
+    )
+    observed_counts = {
+        period_ms: sum(1 for runnable in workload.runnables if runnable.period_ms == period_ms)
+        for period_ms in AUTOMOTIVE_PERIOD_SET
+    }
+    expected_counts = dict(
+        zip(
+            AUTOMOTIVE_PERIOD_SET,
+            [6, 3, 3, 44, 44, 6, 36, 1, 7],
+            strict=True,
+        )
+    )
+    assert observed_counts == expected_counts
+    assert sum(observed_counts.values()) == 150
+    assert sum(AUTOMOTIVE_PERIOD_SHARES) == 1.0
+
+
+def test_paper_exact_runnables_have_weibull_parameters_and_tick_periods() -> None:
+    """paper_exact runnable 应带完整 Weibull 参数，任务周期应按 tick_ns 换算。"""
+
+    workload = build_automotive_workload(
+        AutomotiveWorkloadConfig(
+            num_runnables=150,
+            seed=12,
+            mode="paper_exact",
+            tick_ns=10,
+            require_schedulable=False,
+        )
+    )
+
+    assert all(runnable.weibull_shape is not None for runnable in workload.runnables)
+    assert all(runnable.weibull_scale is not None for runnable in workload.runnables)
+    assert all(runnable.weibull_location is not None for runnable in workload.runnables)
+    assert all(task.period == ms_to_ticks(meta.period_ms, 10) for task, meta in zip(workload.tasks, workload.task_meta, strict=True))
+
+
+def test_paper_exact_scenario_uses_runnable_level_sampling_sum() -> None:
+    """paper_exact 场景应按 task 内 runnables 逐个采样后求和。"""
+
+    workload = build_automotive_workload(
+        AutomotiveWorkloadConfig(
+            num_runnables=150,
+            seed=13,
+            mode="paper_exact",
+            tick_ns=10,
+            require_schedulable=False,
+        )
+    )
+    scenario = build_automotive_execution_scenario(workload, scenario_seed=13)
+    task_to_runnables = build_task_to_runnables_map(workload)
+    task = workload.tasks[0]
+    expected_rng = random.Random(13 * 1_000_003 + sum((idx + 1) * ord(ch) for idx, ch in enumerate(task.name)) * 1_009)
+    expected_cost = sum(sample_runnable_cost(runnable, expected_rng) for runnable in task_to_runnables[task.name])
+    assert scenario.actual_cost_for(task, 0) == expected_cost
+
+
+def test_paper_exact_acet_sampling_is_bounded_and_sum_preserving_for_tight_bucket() -> None:
+    """1000 ms 这类紧区间 bucket 也应快速返回，并满足边界与总和约束。"""
+
+    rng = random.Random(123)
+    values = _sample_exact_acet_us_values(1000, 7, rng)
+    min_acet_us, avg_acet_us, max_acet_us = ACET_TABLE_US[1000]
+
+    assert len(values) == 7
+    assert all(min_acet_us <= value <= max_acet_us for value in values)
+    assert abs(sum(values) - 7 * avg_acet_us) < 1e-9

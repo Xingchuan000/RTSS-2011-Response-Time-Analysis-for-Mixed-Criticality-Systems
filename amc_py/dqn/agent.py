@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 import random
 
+import numpy as np
 import torch
 from torch import nn
 from torch.optim import Adam
@@ -14,6 +15,50 @@ from amc_py.dqn.config import DqnConfig
 from amc_py.dqn.network import DqnNetwork
 from amc_py.dqn.replay import ReplayBuffer
 from amc_py.dqn.types import Transition
+
+
+@dataclass(frozen=True, slots=True)
+class NoopQDiagnostics:
+    """显式 noop 动作在 DQN Q 值排序中的诊断结果。
+
+    这些字段只描述 policy network 对“当前可决策状态”的估值，不参与训练更新：
+    - `noop_q_*`：显式 noop 动作自身的 Q 值统计；
+    - `noop_q_rank_*`：显式 noop 在合法动作集合里的 Q 值排名，1 表示最高；
+    - `noop_q_margin_to_best_mean`：最佳合法动作 Q 值减去 noop Q 值的平均差距；
+    - `noop_q_is_best_rate`：noop 与最佳合法动作并列或独占第一的样本比例；
+    - `noop_valid_rate`：noop 在采样决策状态中被 mask 标为合法的比例；
+    - `sample_count`：本次诊断纳入的决策状态数量。
+    """
+
+    noop_q_mean: float | None
+    noop_q_std: float | None
+    noop_q_rank_mean: float | None
+    noop_q_rank_median: float | None
+    noop_q_rank_min: float | None
+    noop_q_rank_max: float | None
+    noop_q_margin_to_best_mean: float | None
+    noop_q_is_best_rate: float | None
+    noop_valid_rate: float | None
+    sample_count: int
+
+
+def _resolve_torch_device(device: str | None = None) -> torch.device:
+    """解析 DQN 使用的设备，默认自动优先选择 Apple Metal(MPS)。
+
+    选择策略：
+    - 若调用方显式传入 `device`，则严格使用该值；
+    - 否则若当前 PyTorch 环境支持且可用 `mps`，优先使用 `mps`；
+    - 否则回退到 `cpu`。
+
+    这里不自动尝试 `cuda`，因为当前用户运行环境是 macOS，目标是优先启用
+    Apple Silicon / Metal 加速；若后续需要显式使用其他设备，可继续通过参数覆盖。
+    """
+
+    if device is not None:
+        return torch.device(device)
+    if torch.backends.mps.is_built() and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
 class DqnBudgetAgent:
@@ -27,6 +72,7 @@ class DqnBudgetAgent:
         noop_action_id: int | None = None,
         hidden_layers: tuple[int, ...] | None = None,
         device: str | None = None,
+        double_dqn: bool = True,
     ):
         """初始化网络、优化器和经验回放池。"""
 
@@ -38,7 +84,14 @@ class DqnBudgetAgent:
         self.action_dim = action_dim
         self.config = config
         self.hidden_layers = hidden_layers if hidden_layers is not None else config.hidden_layers
-        self.device = torch.device(device or "cpu")
+        # Double DQN 开关：
+        # - True：按文档要求由 policy network 在 next state 上选择 greedy action，
+        #   再由 target network 评估该 action 的 Q 值；
+        # - False：保留原始标准 DQN 逻辑，直接对 target network 的合法动作 Q 值取 max，
+        #   用于后续 ablation 对照。
+        self.double_dqn = bool(double_dqn)
+        # 默认自动优先选择 `mps`，这样在支持 Metal 的 Mac 上无需额外传参即可启用硬件加速。
+        self.device = _resolve_torch_device(device)
         # 显式 noop 的离散动作编号。
         # - None 表示当前动作空间没有显式 noop；
         # - 非 None 时，epsilon 探索分支可按 noop_exploration_prob 优先采样该动作。
@@ -186,29 +239,56 @@ class DqnBudgetAgent:
             return None
 
         batch = self.replay_buffer.sample(self.config.batch_size)
-        states = torch.tensor([item.state for item in batch], dtype=torch.float32, device=self.device)
-        actions = torch.tensor([item.action_id for item in batch], dtype=torch.int64, device=self.device).unsqueeze(1)
-        rewards = torch.tensor([item.reward for item in batch], dtype=torch.float32, device=self.device)
-        next_states = torch.tensor([item.next_state for item in batch], dtype=torch.float32, device=self.device)
-        dones = torch.tensor([item.done for item in batch], dtype=torch.float32, device=self.device)
-        next_valid_masks = torch.tensor(
+        # 这里先把 Python 层的 tuple/list 批量拼成连续的 NumPy 数组，
+        # 再统一转换成 torch tensor。这样可以减少 `torch.tensor(list_of_tuples)` 在
+        # Python 侧逐元素解包与 dtype 推断的开销，尤其在训练中频繁优化时更明显。
+        states_np = np.asarray([item.state for item in batch], dtype=np.float32)
+        next_states_np = np.asarray([item.next_state for item in batch], dtype=np.float32)
+        actions_np = np.asarray([item.action_id for item in batch], dtype=np.int64)
+        rewards_np = np.asarray([item.reward for item in batch], dtype=np.float32)
+        dones_np = np.asarray([item.done for item in batch], dtype=np.float32)
+        next_valid_masks_np = np.asarray(
             [item.next_valid_action_mask for item in batch],
-            dtype=torch.bool,
-            device=self.device,
+            dtype=np.bool_,
         )
+
+        # `states` / `next_states` 是网络前向传播使用的批量状态张量；
+        # `actions` 是 gather 所需的列索引，因此保持 int64 并扩展成 [B, 1]。
+        states = torch.from_numpy(states_np).to(self.device)
+        next_states = torch.from_numpy(next_states_np).to(self.device)
+        actions = torch.from_numpy(actions_np).to(self.device).unsqueeze(1)
+        rewards = torch.from_numpy(rewards_np).to(self.device)
+        dones = torch.from_numpy(dones_np).to(self.device)
+        next_valid_masks = torch.from_numpy(next_valid_masks_np).to(self.device)
 
         policy_q = self.policy_network(states).gather(1, actions).squeeze(1)
         with torch.no_grad():
-            next_q_values = self.target_network(next_states)
-            # Bellman bootstrap 必须与动作选择共享同一套合法动作语义：
-            # 先屏蔽非法动作，再做 max。
-            masked_next_q_values = next_q_values.masked_fill(~next_valid_masks, float("-inf"))
-            next_q = masked_next_q_values.max(dim=1).values
-            # 若 next_state 没有任何合法动作，则 bootstrap 值按 0 处理。
-            has_any_valid_action = next_valid_masks.any(dim=1)
-            next_q = torch.where(has_any_valid_action, next_q, torch.zeros_like(next_q))
-            # done=True 时必须终止 bootstrap。
-            next_q = torch.where(dones > 0.0, torch.zeros_like(next_q), next_q)
+            if self.double_dqn:
+                # Double DQN target 第一步：policy network 只负责“选动作”。
+                # 这里对 next state 的 policy Q 值套用 next_valid_masks，把非法动作置为 -inf，
+                # 确保 argmax 只会在当前环境允许的动作集合中产生 greedy action。
+                next_policy_q_values = self.policy_network(next_states)
+                next_policy_q_values = next_policy_q_values.masked_fill(
+                    ~next_valid_masks,
+                    float("-inf"),
+                )
+                next_actions = next_policy_q_values.argmax(dim=1, keepdim=True)
+
+                # Double DQN target 第二步：target network 只负责“评估动作”。
+                # gather 的列索引来自 policy network 选出的 next_actions，因此 bootstrap
+                # 使用的是 Q_target(s', argmax_a Q_policy(s', a))，而不是标准 DQN 的
+                # max_a Q_target(s', a)，从而降低大动作空间下的 max over actions 高估。
+                next_target_q_values = self.target_network(next_states)
+                next_q = next_target_q_values.gather(1, next_actions).squeeze(1)
+            else:
+                # 标准 DQN 对照分支：保持原实现语义，直接在 target network 输出上屏蔽非法动作，
+                # 然后取合法动作中的最大 Q 值作为 bootstrap target。
+                next_q_values = self.target_network(next_states)
+                masked_next_q_values = next_q_values.masked_fill(~next_valid_masks, float("-inf"))
+                next_q = masked_next_q_values.max(dim=1).values
+                has_any_valid_action = next_valid_masks.any(dim=1)
+                next_q = torch.where(has_any_valid_action, next_q, torch.zeros_like(next_q))
+            # terminal transition 不 bootstrap：done=True 时只保留即时 reward。
             targets = rewards + (1.0 - dones) * self.config.gamma * next_q
 
         loss = self.loss_fn(policy_q, targets)
@@ -234,6 +314,76 @@ class DqnBudgetAgent:
 
         self.target_network.load_state_dict(self.policy_network.state_dict())
 
+    @torch.no_grad()
+    def compute_noop_q_diagnostics(
+        self,
+        states: torch.Tensor,
+        valid_masks: torch.Tensor,
+        noop_action_id: int | None = None,
+    ) -> NoopQDiagnostics:
+        """计算显式 noop 在合法动作 Q 值集合中的位置。
+
+        参数说明：
+        - `states`：形状为 `[N, observation_dim]` 的决策状态张量；
+        - `valid_masks`：形状为 `[N, action_dim]` 的 bool 张量，True 表示对应动作合法；
+        - `noop_action_id`：显式 noop 的动作编号；不传时使用 agent 初始化时解析到的编号。
+
+        诊断口径严格按文档执行：rank 只在 valid actions 中计算，1 表示 noop 的
+        Q 值不低于任何合法动作；如果没有显式 noop 或 noop 在所有样本中都无效，
+        与 Q 值相关的字段返回 None，仅保留样本数与 noop_valid_rate。
+        """
+
+        resolved_noop_action_id = self.noop_action_id if noop_action_id is None else noop_action_id
+        if resolved_noop_action_id is None:
+            return NoopQDiagnostics(None, None, None, None, None, None, None, None, None, 0)
+        if states.numel() == 0:
+            return NoopQDiagnostics(None, None, None, None, None, None, None, None, None, 0)
+
+        # 诊断只读取 policy network 的 Q 值，不应改变训练/评估模式之外的状态。
+        q_values = self.policy_network(states)
+        noop_valid = valid_masks[:, resolved_noop_action_id]
+        sample_count = int(states.shape[0])
+        noop_valid_count = int(noop_valid.sum().item())
+        noop_valid_rate = noop_valid_count / sample_count if sample_count else 0.0
+        if noop_valid_count == 0:
+            return NoopQDiagnostics(
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                float(noop_valid_rate),
+                sample_count,
+            )
+
+        # 非法动作统一置为 -inf，这样 best/rank/margin 都只反映合法动作集合。
+        valid_q_values = q_values.masked_fill(~valid_masks, float("-inf"))
+        noop_q_values = q_values[:, resolved_noop_action_id]
+        valid_q_rows_with_noop = valid_q_values[noop_valid]
+        noop_q_valid = noop_q_values[noop_valid]
+
+        best_q = valid_q_rows_with_noop.max(dim=1).values
+        margin_to_best = best_q - noop_q_valid
+        # rank=1 表示没有合法动作的 Q 值严格大于 noop；并列最高也算第一。
+        ranks = (valid_q_rows_with_noop > noop_q_valid.unsqueeze(1)).sum(dim=1).float() + 1.0
+        noop_is_best = ranks == 1.0
+
+        return NoopQDiagnostics(
+            noop_q_mean=float(noop_q_valid.mean().item()),
+            noop_q_std=float(noop_q_valid.std(unbiased=False).item()) if noop_valid_count > 1 else 0.0,
+            noop_q_rank_mean=float(ranks.mean().item()),
+            noop_q_rank_median=float(ranks.median().item()),
+            noop_q_rank_min=float(ranks.min().item()),
+            noop_q_rank_max=float(ranks.max().item()),
+            noop_q_margin_to_best_mean=float(margin_to_best.mean().item()),
+            noop_q_is_best_rate=float(noop_is_best.float().mean().item()),
+            noop_valid_rate=float(noop_valid_rate),
+            sample_count=sample_count,
+        )
+
     def save(self, path: Path) -> None:
         """保存训练状态，便于后续继续训练或评估。"""
 
@@ -247,6 +397,8 @@ class DqnBudgetAgent:
                 "observation_dim": self.observation_dim,
                 "action_dim": self.action_dim,
                 "hidden_layers": self.hidden_layers,
+                "noop_action_id": self.noop_action_id,
+                "double_dqn": self.double_dqn,
                 "optimization_steps": self.optimization_steps,
                 "epsilon_step": self.epsilon_step,
                 "current_epsilon": self.current_epsilon,
@@ -262,14 +414,17 @@ class DqnBudgetAgent:
     ) -> "DqnBudgetAgent":
         """从磁盘恢复 DQN agent。"""
 
-        checkpoint = torch.load(path, map_location=device or "cpu")
+        resolved_device = _resolve_torch_device(device)
+        checkpoint = torch.load(path, map_location=resolved_device)
         config = DqnConfig(**checkpoint["config"])
         agent = cls(
             observation_dim=int(checkpoint["observation_dim"]),
             action_dim=int(checkpoint["action_dim"]),
             config=config,
+            noop_action_id=checkpoint.get("noop_action_id"),
             hidden_layers=tuple(checkpoint["hidden_layers"]) if checkpoint["hidden_layers"] is not None else None,
-            device=device,
+            device=str(resolved_device),
+            double_dqn=bool(checkpoint.get("double_dqn", True)),
         )
         agent.policy_network.load_state_dict(checkpoint["policy_network_state_dict"])
         agent.target_network.load_state_dict(checkpoint["target_network_state_dict"])

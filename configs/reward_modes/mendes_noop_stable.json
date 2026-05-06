@@ -1,0 +1,13 @@
+{
+  "event_weights": {
+    "job_start": 0.1,
+    "lo_overrun": -1.0,
+    "hi_overrun": -2.0
+  },
+  "reward_parameters": {
+    "noop_bonus": 0.12,
+    "budget_change_penalty": 0.1,
+    "budget_drift_penalty": 0.3
+  },
+  "step_reward_formula": "event_job_start_reward + event_lo_overrun_reward + event_hi_overrun_reward + noop_bonus_if_noop - budget_change_penalty * budget_change_norm - budget_drift_penalty * budget_drift_mean"
+}

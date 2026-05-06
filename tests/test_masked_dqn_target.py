@@ -28,7 +28,12 @@ def _build_agent() -> DqnBudgetAgent:
     return DqnBudgetAgent(observation_dim=2, action_dim=3, config=config)
 
 
-def _reset_network_biases(agent: DqnBudgetAgent, *, target_bias: tuple[float, float, float]) -> None:
+def _reset_network_biases(
+    agent: DqnBudgetAgent,
+    *,
+    target_bias: tuple[float, float, float],
+    policy_bias: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> None:
     """将 policy/target 网络输出固定为可预测值。"""
 
     with torch.no_grad():
@@ -36,7 +41,9 @@ def _reset_network_biases(agent: DqnBudgetAgent, *, target_bias: tuple[float, fl
             param.zero_()
         for param in agent.target_network.parameters():
             param.zero_()
+        policy_last = agent.policy_network.model[-1]
         target_last = agent.target_network.model[-1]
+        policy_last.bias.copy_(torch.tensor(policy_bias, dtype=torch.float32))
         target_last.bias.copy_(torch.tensor(target_bias, dtype=torch.float32))
 
 
@@ -58,15 +65,69 @@ def test_invalid_next_actions_must_not_pollute_bootstrap_target() -> None:
     )
     loss = agent.optimize_one_step()
     assert loss is not None
-    # 稳定性修改后主训练路径使用 Huber loss（SmoothL1Loss）：
-    # 误差 |3| 对应损失为 |3|-0.5 = 2.5（而非 MSE 的 9.0）。
-    assert math.isclose(loss, 2.5, rel_tol=1e-6)
+    # Double DQN 默认启用：policy 在合法动作 1/2 中按并列 argmax 选择 1，
+    # target 评估 action 1 得到 next_q=1，因此 target=reward+next_q=2。
+    # 当前 Q=0，Huber 误差 |2| 对应损失为 |2|-0.5 = 1.5。
+    assert math.isclose(loss, 1.5, rel_tol=1e-6)
+
+
+def test_double_dqn_uses_policy_action_and_target_value() -> None:
+    """Double DQN 应由 policy 选动作、target 评估该动作。"""
+
+    agent = _build_agent()
+    _reset_network_biases(
+        agent,
+        policy_bias=(0.0, 20.0, 10.0),
+        target_bias=(0.0, 10.0, 100.0),
+    )
+    agent.remember(
+        Transition(
+            state=(0.0, 0.0),
+            action_id=0,
+            reward=0.0,
+            next_state=(0.0, 0.0),
+            done=False,
+            valid_action_mask=(True, True, True),
+            next_valid_action_mask=(True, True, True),
+        )
+    )
+    loss = agent.optimize_one_step()
+    assert loss is not None
+    # policy 选择 action 1，但 target 的最大值在 action 2。
+    # 若错误使用标准 DQN target，误差会按 100 计算；Double DQN 正确误差为 10。
+    assert math.isclose(loss, 9.5, rel_tol=1e-6)
+
+
+def test_standard_dqn_branch_keeps_target_network_max() -> None:
+    """关闭 double_dqn 后应保留标准 DQN 的 target max 对照逻辑。"""
+
+    agent = DqnBudgetAgent(observation_dim=2, action_dim=3, config=_build_agent().config, double_dqn=False)
+    _reset_network_biases(
+        agent,
+        policy_bias=(0.0, 20.0, 10.0),
+        target_bias=(0.0, 10.0, 100.0),
+    )
+    agent.remember(
+        Transition(
+            state=(0.0, 0.0),
+            action_id=0,
+            reward=0.0,
+            next_state=(0.0, 0.0),
+            done=False,
+            valid_action_mask=(True, True, True),
+            next_valid_action_mask=(True, True, True),
+        )
+    )
+    loss = agent.optimize_one_step()
+    assert loss is not None
+    assert math.isclose(loss, 99.5, rel_tol=1e-6)
 
 
 def test_next_mask_all_false_must_make_next_q_zero() -> None:
-    """当 next mask 全 False 时，next_q 必须为 0，且 loss 有限。"""
+    """标准 DQN 对照分支中，next mask 全 False 时 next_q 必须为 0。"""
 
     agent = _build_agent()
+    agent.double_dqn = False
     _reset_network_biases(agent, target_bias=(1000.0, 999.0, 998.0))
     agent.remember(
         Transition(

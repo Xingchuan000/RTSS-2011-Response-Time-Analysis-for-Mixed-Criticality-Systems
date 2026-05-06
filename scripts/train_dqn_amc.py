@@ -6,15 +6,19 @@ import argparse
 import csv
 import json
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from amc_py.automotive_workload import build_automotive_experiment_config
+import torch
+
 from amc_py.dqn import (
     DqnBudgetAgent,
     DqnConfig,
     ExperimentConfig,
     Transition,
+    build_automotive_experiment_config,
     build_env_from_experiment_config,
     build_rtss11_experiment_config,
     build_small_nominal_experiment_config,
@@ -25,6 +29,65 @@ from amc_py.event_runtime import simulate_ordered_taskset_event_driven
 from amc_py.models import Task
 from amc_py.rl.reward_config import available_reward_modes, load_reward_mode_config
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationResult
+
+
+STEP_LOG_FIELDNAMES = [
+    "episode",
+    "step",
+    "sim_time",
+    "reward",
+    "episode_reward",
+    "total_reward",
+    "loss",
+    "epsilon",
+    "action_id",
+    "accepted",
+    "rejected",
+    "reject_reason",
+    "valid_action_count",
+    "masked_action_count",
+    "noop_due_to_no_valid_action",
+    "is_noop",
+    "is_explicit_noop",
+    "mode_changes",
+    "lo_cancellations",
+    "deadline_misses",
+    "step_reward_total",
+    "step_reward_job_start",
+    "step_reward_lo_overrun",
+    "step_reward_hi_overrun",
+    "step_reward_mode_change",
+    "step_reward_lo_cancellation",
+    "step_reward_deadline_miss",
+    "paper_reward",
+    "noop_reward_bonus",
+    "budget_change_norm",
+    "budget_change_penalty_value",
+    "budget_drift_mean",
+    "budget_drift_penalty_value",
+    "reward_after_regularization",
+    "workload",
+    "total_util",
+    "num_tasks",
+    "cf",
+    "cp",
+    "taskset_seed",
+    "scenario_seed",
+    "require_schedulable",
+]
+
+NOOP_Q_DIAGNOSTIC_FIELDNAMES = [
+    "noop_q_mean",
+    "noop_q_std",
+    "noop_q_rank_mean",
+    "noop_q_rank_median",
+    "noop_q_rank_min",
+    "noop_q_rank_max",
+    "noop_q_margin_to_best_mean",
+    "noop_q_is_best_rate",
+    "noop_valid_rate",
+    "noop_q_sample_count",
+]
 
 
 def _parse_hidden_layers(raw_value: str | None) -> tuple[int, ...] | None:
@@ -104,6 +167,51 @@ def _get_noop_action_id(env) -> int | None:
     return None
 
 
+def _noop_q_diagnostics_to_row(agent: DqnBudgetAgent, states: list[tuple[float, ...]], masks: list[tuple[bool, ...]]) -> dict[str, float | int | None]:
+    """把采集到的 validation 决策状态转换为 CSV 可写字段。
+
+    `states` 与 `masks` 只来自 agent 做 greedy 决策前的同一时刻：
+    - state 表示 policy network 实际看到的 observation；
+    - mask 表示同一 observation 下环境允许的合法动作集合。
+
+    这里不对 Q 值结果做额外修正，只调用 `DqnBudgetAgent.compute_noop_q_diagnostics()`，
+    保持文档要求的诊断口径集中在 agent 内部。
+    """
+
+    if states:
+        state_tensor = torch.tensor(states, dtype=torch.float32, device=agent.device)
+        mask_tensor = torch.tensor(masks, dtype=torch.bool, device=agent.device)
+    else:
+        state_tensor = torch.empty((0, agent.observation_dim), dtype=torch.float32, device=agent.device)
+        mask_tensor = torch.empty((0, agent.action_dim), dtype=torch.bool, device=agent.device)
+    diagnostics = agent.compute_noop_q_diagnostics(state_tensor, mask_tensor)
+    return {
+        "noop_q_mean": diagnostics.noop_q_mean,
+        "noop_q_std": diagnostics.noop_q_std,
+        "noop_q_rank_mean": diagnostics.noop_q_rank_mean,
+        "noop_q_rank_median": diagnostics.noop_q_rank_median,
+        "noop_q_rank_min": diagnostics.noop_q_rank_min,
+        "noop_q_rank_max": diagnostics.noop_q_rank_max,
+        "noop_q_margin_to_best_mean": diagnostics.noop_q_margin_to_best_mean,
+        "noop_q_is_best_rate": diagnostics.noop_q_is_best_rate,
+        "noop_valid_rate": diagnostics.noop_valid_rate,
+        "noop_q_sample_count": diagnostics.sample_count,
+    }
+
+
+def _mean_optional_metric(rows: list[dict[str, int | float | None]], key: str) -> float | None:
+    """对可能为空的 noop Q 诊断字段求均值。
+
+    baseline 行没有 DQN Q 值，且没有显式 noop 或 noop 全部无效时相关字段会是 None。
+    因此聚合时只对真实数值求均值；若所有 seed 都为空，则继续输出 None。
+    """
+
+    values = [float(row[key]) for row in rows if row.get(key) is not None]
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     """写入 jsonl 文件。"""
 
@@ -143,6 +251,216 @@ def _trace_rows_from_runtime(result: SimulationResult) -> list[dict]:
     return rows
 
 
+def _run_baseline_validation_seed_worker(args_tuple: tuple[ExperimentConfig, int, int]) -> dict[str, int]:
+    """运行单个 validation seed 的 AMC+ baseline 仿真。
+
+    这里必须使用模块顶层函数，而不能把逻辑写成 `_run_validation()` 的内部闭包。
+    原因是 macOS 的 multiprocessing 默认采用 `spawn` 启动方式，
+    子进程只能 pickle 并导入模块顶层对象；嵌套函数通常无法被子进程恢复。
+    """
+
+    experiment_config, seed, validation_end_time = args_tuple
+    bundle = resolve_experiment_bundle(experiment_config, seed)
+    baseline_result = simulate_ordered_taskset_event_driven(
+        ordered_tasks=list(bundle.ordered_tasks),
+        scenario=bundle.scenario,
+        config=RuntimeConfig(
+            end_time=validation_end_time,
+            semantics=RuntimeSemantics.AMC_PLUS,
+        ),
+    )
+    # worker 只返回单个 seed 的原始计数，主进程统一负责做均值聚合，
+    # 这样可以保证串行路径和并行路径共用同一套聚合口径。
+    return {
+        "mode_changes": baseline_result.mode_change_count(),
+        "lo_cancellations": baseline_result.lo_job_cancellation_count(),
+    }
+
+
+def _evaluate_agent_on_validation_seed(
+    *,
+    agent: DqnBudgetAgent,
+    experiment_config: ExperimentConfig,
+    seed: int,
+    validation_end_time: int,
+    agent_period: int,
+    reward_mode: str,
+    action_space: str,
+    budget_increase_ratio: float,
+    budget_decrease_ratio: float,
+    include_explicit_noop: bool,
+    budget_floor_ratio: float,
+    forbid_decreasing_hi_budgets: bool,
+    mask_detail_mode: str,
+    max_q_diagnostic_samples: int,
+) -> dict[str, int | float | None]:
+    """评估一个 validation seed，并返回该 seed 的完整 DQN 指标。
+
+    这个 helper 是串行路径与并行路径共享的唯一统计实现：
+    - 串行路径直接复用主进程中的 `agent`；
+    - 并行路径在 worker 中先从磁盘加载 CPU agent，再调用本函数。
+
+    这样做的目的是让两条路径在动作选择、环境推进、指标累加和 rate 计算上
+    保持严格一致，避免未来只改了一条路径导致 validation 口径漂移。
+    """
+
+    env = build_env_from_experiment_config(
+        experiment_config,
+        seed=seed,
+        end_time=validation_end_time,
+        agent_period=agent_period,
+        semantics=RuntimeSemantics.AMC_PLUS,
+        reward_mode=reward_mode,
+        action_space=action_space,
+        budget_increase_ratio=budget_increase_ratio,
+        budget_decrease_ratio=budget_decrease_ratio,
+        include_explicit_noop=include_explicit_noop,
+        budget_floor_ratio=budget_floor_ratio,
+        forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+        mask_detail_mode=mask_detail_mode,
+    )
+    obs = env.reset(seed=seed)
+    done = False
+    # 下面这批变量全部是“单个 validation seed 的原始计数器”，
+    # 最终由 `_run_validation()` 跨 seed 做统一均值聚合。
+    accepted_actions = 0
+    rejected_actions = 0
+    step_count = 0
+    selected_action_count = 0
+    noop_actions = 0
+    explicit_noop_actions = 0
+    total_reward = 0.0
+    last_info: dict[str, int | float | str | bool | None] = {
+        "mode_changes": 0,
+        "lo_cancellations": 0,
+        "deadline_misses": 0,
+    }
+    # 保存每次 validation 决策前的状态和合法动作 mask，用于结束后统一诊断 explicit noop Q 值。
+    # 这里不改变 agent 的动作选择，只额外记录 policy network 当时实际看到的输入。
+    diagnostic_states: list[tuple[float, ...]] = []
+    diagnostic_valid_masks: list[tuple[bool, ...]] = []
+
+    while not done:
+        # step_count 明确定义为“完成了多少次 agent 决策循环”，
+        # 因此所有 per-step rate 的分母都必须统一使用它。
+        step_count += 1
+        mask = env.valid_action_mask()
+        if len(diagnostic_states) < max_q_diagnostic_samples:
+            diagnostic_states.append(tuple(float(value) for value in obs.state_vector))
+            diagnostic_valid_masks.append(tuple(bool(value) for value in mask))
+        action_id = agent.select_action_id(
+            obs.state_vector,
+            valid_action_mask=mask,
+            training=False,
+        )
+        # selected_action_count 只表示 agent 是否产生了离散动作编号，
+        # 不表示该动作是否最终被环境接受。
+        selected_action_count += int(action_id is not None)
+        result = env.step(action_id)
+        total_reward += result.reward
+
+        is_noop = bool(result.info.get("is_noop", False))
+        if is_noop:
+            noop_actions += 1
+            if bool(result.info.get("is_explicit_noop_action", False)):
+                explicit_noop_actions += 1
+
+        if action_id is not None:
+            if bool(result.info.get("accepted")):
+                accepted_actions += 1
+            else:
+                rejected_actions += 1
+
+        obs = result.observation
+        done = result.done
+        last_info = result.info
+
+    debug_stats = env.debug_statistics()
+    row = {
+        "mode_changes": int(last_info.get("mode_changes", 0)),
+        "lo_cancellations": int(last_info.get("lo_cancellations", 0)),
+        "deadline_misses": int(last_info.get("deadline_misses", 0)),
+        "accepted_actions": accepted_actions,
+        "rejected_actions": rejected_actions,
+        "step_count": step_count,
+        "selected_action_count": selected_action_count,
+        "noop_actions": noop_actions,
+        "explicit_noop_actions": explicit_noop_actions,
+        # 所有 rate 一律只使用 step_count 做分母，避免一个 step 被重复计入多个类别后
+        # 破坏概率解释。例如显式 noop 既可能是 accepted，也必须计入 noop。
+        "noop_action_rate": noop_actions / step_count if step_count > 0 else 0.0,
+        "explicit_noop_action_rate": explicit_noop_actions / step_count if step_count > 0 else 0.0,
+        "accepted_action_rate": accepted_actions / step_count if step_count > 0 else 0.0,
+        "rejected_action_rate": rejected_actions / step_count if step_count > 0 else 0.0,
+        "valid_action_count_mean": float(debug_stats["valid_action_count_mean"]),
+        "masked_action_count_mean": float(debug_stats["masked_action_count_mean"]),
+        "no_safe_action_steps": int(debug_stats["no_safe_action_steps"]),
+        "reward": float(total_reward),
+    }
+    row.update(_noop_q_diagnostics_to_row(agent, diagnostic_states, diagnostic_valid_masks))
+    return row
+
+
+def _run_dqn_validation_seed_worker(
+    args_tuple: tuple[
+        str,
+        ExperimentConfig,
+        int,
+        int,
+        int,
+        str,
+        str,
+        float,
+        float,
+        bool,
+        float,
+        bool,
+        str,
+        int,
+    ],
+) -> dict[str, int | float | None]:
+    """运行单个 validation seed 的 DQN policy evaluation。
+
+    并行 validation 不直接把主进程里的 agent 实例发送给子进程，
+    因为主进程中的 agent 可能绑定了 MPS/GPU 设备状态。这里严格按文档要求：
+    先在主进程保存模型快照，再由子进程用 CPU 设备重新加载，只做推理与环境仿真。
+    """
+
+    (
+        model_path,
+        experiment_config,
+        seed,
+        validation_end_time,
+        agent_period,
+        reward_mode,
+        action_space,
+        budget_increase_ratio,
+        budget_decrease_ratio,
+        include_explicit_noop,
+        budget_floor_ratio,
+        forbid_decreasing_hi_budgets,
+        mask_detail_mode,
+        max_q_diagnostic_samples,
+    ) = args_tuple
+    agent = DqnBudgetAgent.load(Path(model_path), device="cpu")
+    return _evaluate_agent_on_validation_seed(
+        agent=agent,
+        experiment_config=experiment_config,
+        seed=seed,
+        validation_end_time=validation_end_time,
+        agent_period=agent_period,
+        reward_mode=reward_mode,
+        action_space=action_space,
+        budget_increase_ratio=budget_increase_ratio,
+        budget_decrease_ratio=budget_decrease_ratio,
+        include_explicit_noop=include_explicit_noop,
+        budget_floor_ratio=budget_floor_ratio,
+        forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+        mask_detail_mode=mask_detail_mode,
+        max_q_diagnostic_samples=max_q_diagnostic_samples,
+    )
+
+
 def _build_experiment_config(args: argparse.Namespace) -> ExperimentConfig:
     """按 CLI 参数构建实验配置。"""
 
@@ -166,8 +484,11 @@ def _build_experiment_config(args: argparse.Namespace) -> ExperimentConfig:
             fixed_taskset_seed=args.fixed_taskset_seed,
         )
     return build_automotive_experiment_config(
-        num_runnables=150,
+        num_runnables=args.automotive_num_runnables,
+        mode=args.automotive_mode,
         require_schedulable=args.require_schedulable,
+        scenario_seed_offset=args.scenario_seed_offset,
+        fixed_taskset_seed=args.fixed_taskset_seed,
     )
 
 
@@ -186,164 +507,121 @@ def _run_validation(
     budget_floor_ratio: float,
     forbid_decreasing_hi_budgets: bool,
     mask_detail_mode: str,
+    validation_workers: int = 1,
     baseline_cache: dict[str, float] | None = None,
-) -> tuple[dict[str, int | float], dict[str, float], bool]:
+    max_q_diagnostic_samples: int = 1000,
+) -> tuple[dict[str, int | float | None], dict[str, float], bool]:
     """在验证集上评估当前 agent，并返回聚合指标。"""
 
-    # 每个列表都保存“按 seed 的单次验证结果”，最后再做均值聚合写入 validation CSV。
-    dqn_mode_changes: list[int] = []
-    dqn_lo_cancellations: list[int] = []
-    dqn_deadline_misses: list[int] = []
-    dqn_accepted_actions: list[int] = []
-    dqn_rejected_actions: list[int] = []
-    dqn_step_counts: list[int] = []
-    dqn_selected_action_counts: list[int] = []
-    dqn_noop_actions: list[int] = []
-    dqn_explicit_noop_actions: list[int] = []
-    dqn_noop_action_rate: list[float] = []
-    dqn_explicit_noop_action_rate: list[float] = []
-    dqn_accepted_action_rate: list[float] = []
-    dqn_rejected_action_rate: list[float] = []
-    dqn_valid_action_count_mean: list[float] = []
-    dqn_masked_action_count_mean: list[float] = []
-    dqn_total_reward: list[float] = []
-    dqn_no_safe_action_steps: list[int] = []
-    baseline_mode_changes: list[int] = []
-    baseline_lo_cancellations: list[int] = []
     used_baseline_cache = baseline_cache is not None
 
     if baseline_cache is None:
-        for seed in validation_seeds:
-            bundle = resolve_experiment_bundle(experiment_config, seed)
-            baseline_result = simulate_ordered_taskset_event_driven(
-                ordered_tasks=list(bundle.ordered_tasks),
-                scenario=bundle.scenario,
-                config=RuntimeConfig(end_time=validation_end_time, semantics=RuntimeSemantics.AMC_PLUS),
-            )
-            baseline_mode_changes.append(baseline_result.mode_change_count())
-            baseline_lo_cancellations.append(baseline_result.lo_job_cancellation_count())
+        # baseline 的输入参数只依赖 experiment_config、seed 和验证时长，
+        # 因此最适合按 seed 拆成完全独立的 worker 任务。
+        baseline_worker_args = [
+            (experiment_config, seed, validation_end_time)
+            for seed in validation_seeds
+        ]
+        if validation_workers == 1:
+            baseline_rows = [
+                _run_baseline_validation_seed_worker(item)
+                for item in baseline_worker_args
+            ]
+        else:
+            with ProcessPoolExecutor(max_workers=validation_workers) as executor:
+                baseline_rows = list(executor.map(_run_baseline_validation_seed_worker, baseline_worker_args))
         baseline_cache = {
-            "baseline_mode_changes_mean": sum(baseline_mode_changes) / len(validation_seeds),
-            "baseline_lo_cancellations_mean": sum(baseline_lo_cancellations) / len(validation_seeds),
+            "baseline_mode_changes_mean": sum(row["mode_changes"] for row in baseline_rows) / len(validation_seeds),
+            "baseline_lo_cancellations_mean": (
+                sum(row["lo_cancellations"] for row in baseline_rows) / len(validation_seeds)
+            ),
         }
 
-    for seed in validation_seeds:
-        bundle = resolve_experiment_bundle(experiment_config, seed)
-
-        env = build_env_from_experiment_config(
-            experiment_config,
-            seed=seed,
-            end_time=validation_end_time,
-            agent_period=agent_period,
-            semantics=RuntimeSemantics.AMC_PLUS,
-            reward_mode=reward_mode,
-            action_space=action_space,
-            budget_increase_ratio=budget_increase_ratio,
-            budget_decrease_ratio=budget_decrease_ratio,
-            include_explicit_noop=include_explicit_noop,
-            budget_floor_ratio=budget_floor_ratio,
-            forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
-            mask_detail_mode=mask_detail_mode,
-        )
-        obs = env.reset(seed=seed)
-        done = False
-        # 统一阶段 2 统计口径：
-        # - step_count：决策步总数（每个 while 循环 +1）；
-        # - selected_action_count：action_id 非空的步数；
-        # - accepted/rejected：仅统计 action_id 非空时是否被接受；
-        # - noop_actions：任何 is_noop=True 的步；
-        # - explicit_noop_actions：仅 is_explicit_noop_action=True 的步。
-        accepted_actions = 0
-        rejected_actions = 0
-        step_count = 0
-        selected_action_count = 0
-        noop_actions = 0
-        explicit_noop_actions = 0
-        total_reward = 0.0
-        last_info: dict[str, int | float | str | bool | None] = {
-            "mode_changes": 0,
-            "lo_cancellations": 0,
-            "deadline_misses": 0,
-        }
-
-        while not done:
-            # 每进入一次循环就代表完成一个 agent 决策步，该值是所有 rate 的唯一分母。
-            step_count += 1
-            mask = env.valid_action_mask()
-            action_id = agent.select_action_id(
-                obs.state_vector,
-                valid_action_mask=mask,
-                training=False,
+    if validation_workers == 1:
+        # 串行路径直接复用当前主进程中的 agent，避免默认配置下每次 validation 都发生 save/load 开销。
+        dqn_rows = [
+            _evaluate_agent_on_validation_seed(
+                agent=agent,
+                experiment_config=experiment_config,
+                seed=seed,
+                validation_end_time=validation_end_time,
+                agent_period=agent_period,
+                reward_mode=reward_mode,
+                action_space=action_space,
+                budget_increase_ratio=budget_increase_ratio,
+                budget_decrease_ratio=budget_decrease_ratio,
+                include_explicit_noop=include_explicit_noop,
+                budget_floor_ratio=budget_floor_ratio,
+                forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+                mask_detail_mode=mask_detail_mode,
+                max_q_diagnostic_samples=max_q_diagnostic_samples,
             )
-            # selected_action_count 仅反映“是否给出离散动作编号”，不关心动作是否被接受。
-            selected_action_count += int(action_id is not None)
-            result = env.step(action_id)
-            total_reward += result.reward
-            is_noop = bool(result.info.get("is_noop", False))
-            if is_noop:
-                noop_actions += 1
-                if bool(result.info.get("is_explicit_noop_action", False)):
-                    explicit_noop_actions += 1
-            if action_id is not None:
-                if bool(result.info.get("accepted")):
-                    accepted_actions += 1
-                else:
-                    rejected_actions += 1
-            obs = result.observation
-            done = result.done
-            last_info = result.info
-
-        dqn_mode_changes.append(int(last_info.get("mode_changes", 0)))
-        dqn_lo_cancellations.append(int(last_info.get("lo_cancellations", 0)))
-        dqn_deadline_misses.append(int(last_info.get("deadline_misses", 0)))
-        dqn_step_counts.append(step_count)
-        dqn_selected_action_counts.append(selected_action_count)
-        dqn_accepted_actions.append(accepted_actions)
-        dqn_rejected_actions.append(rejected_actions)
-        dqn_noop_actions.append(noop_actions)
-        dqn_explicit_noop_actions.append(explicit_noop_actions)
-        # 阶段 2：所有 rate 一律用 step_count 做分母，避免 explicit noop 在 accepted/noop 双重计数。
-        # 例：explicit noop 同时满足 accepted=True 与 is_noop=True，
-        # 如果分母错误写成 accepted+rejected+noop，会把同一步算两次。
-        dqn_noop_action_rate.append((noop_actions / step_count) if step_count > 0 else 0.0)
-        dqn_explicit_noop_action_rate.append((explicit_noop_actions / step_count) if step_count > 0 else 0.0)
-        dqn_accepted_action_rate.append((accepted_actions / step_count) if step_count > 0 else 0.0)
-        dqn_rejected_action_rate.append((rejected_actions / step_count) if step_count > 0 else 0.0)
-        dqn_total_reward.append(total_reward)
-        debug_stats = env.debug_statistics()
-        dqn_valid_action_count_mean.append(float(debug_stats["valid_action_count_mean"]))
-        dqn_masked_action_count_mean.append(float(debug_stats["masked_action_count_mean"]))
-        dqn_no_safe_action_steps.append(int(debug_stats["no_safe_action_steps"]))
+            for seed in validation_seeds
+        ]
+    else:
+        # 并行路径在 validation 开始时冻结一次模型快照，确保所有 worker 使用完全相同的策略参数。
+        with TemporaryDirectory(prefix="dqn_validation_") as tmp_dir:
+            model_path = Path(tmp_dir) / "policy_snapshot.pt"
+            agent.save(model_path)
+            dqn_worker_args = [
+                (
+                    str(model_path),
+                    experiment_config,
+                    seed,
+                    validation_end_time,
+                    agent_period,
+                    reward_mode,
+                    action_space,
+                    budget_increase_ratio,
+                    budget_decrease_ratio,
+                    include_explicit_noop,
+                    budget_floor_ratio,
+                    forbid_decreasing_hi_budgets,
+                    mask_detail_mode,
+                    max_q_diagnostic_samples,
+                )
+                for seed in validation_seeds
+            ]
+            with ProcessPoolExecutor(max_workers=validation_workers) as executor:
+                dqn_rows = list(executor.map(_run_dqn_validation_seed_worker, dqn_worker_args))
 
     seed_count = len(validation_seeds)
     baseline_mode_changes_mean = float(baseline_cache["baseline_mode_changes_mean"])
     baseline_lo_cancellations_mean = float(baseline_cache["baseline_lo_cancellations_mean"])
-    mode_delta_sum = sum(dqn - baseline_mode_changes_mean for dqn in dqn_mode_changes)
-    cancel_delta_sum = sum(dqn - baseline_lo_cancellations_mean for dqn in dqn_lo_cancellations)
-    return ({
+    mode_delta_sum = sum(row["mode_changes"] for row in dqn_rows) - baseline_mode_changes_mean * seed_count
+    cancel_delta_sum = sum(row["lo_cancellations"] for row in dqn_rows) - baseline_lo_cancellations_mean * seed_count
+    validation_row = {
         "validation_seed_count": seed_count,
-        "deadline_misses_sum": sum(dqn_deadline_misses),
-        "mode_changes_mean": sum(dqn_mode_changes) / seed_count,
-        "lo_cancellations_mean": sum(dqn_lo_cancellations) / seed_count,
+        "deadline_misses_sum": sum(int(row["deadline_misses"]) for row in dqn_rows),
+        "mode_changes_mean": sum(row["mode_changes"] for row in dqn_rows) / seed_count,
+        "lo_cancellations_mean": sum(row["lo_cancellations"] for row in dqn_rows) / seed_count,
         "baseline_mode_changes_mean": baseline_mode_changes_mean,
         "baseline_lo_cancellations_mean": baseline_lo_cancellations_mean,
         "dqn_mode_changes_delta_mean": mode_delta_sum / seed_count,
         "dqn_lo_cancellations_delta_mean": cancel_delta_sum / seed_count,
-        "accepted_actions_mean": sum(dqn_accepted_actions) / seed_count,
-        "rejected_actions_mean": sum(dqn_rejected_actions) / seed_count,
-        "step_count_mean": sum(dqn_step_counts) / seed_count,
-        "selected_action_count_mean": sum(dqn_selected_action_counts) / seed_count,
-        "noop_actions_mean": sum(dqn_noop_actions) / seed_count,
-        "explicit_noop_actions_mean": sum(dqn_explicit_noop_actions) / seed_count,
-        "noop_action_rate_mean": sum(dqn_noop_action_rate) / seed_count,
-        "explicit_noop_action_rate_mean": sum(dqn_explicit_noop_action_rate) / seed_count,
-        "accepted_action_rate_mean": sum(dqn_accepted_action_rate) / seed_count,
-        "rejected_action_rate_mean": sum(dqn_rejected_action_rate) / seed_count,
-        "valid_action_count_mean": sum(dqn_valid_action_count_mean) / seed_count,
-        "masked_action_count_mean": sum(dqn_masked_action_count_mean) / seed_count,
-        "no_safe_action_steps_mean": sum(dqn_no_safe_action_steps) / seed_count,
-        "reward_mean": sum(dqn_total_reward) / seed_count,
-    }, baseline_cache, used_baseline_cache)
+        "accepted_actions_mean": sum(row["accepted_actions"] for row in dqn_rows) / seed_count,
+        "rejected_actions_mean": sum(row["rejected_actions"] for row in dqn_rows) / seed_count,
+        "step_count_mean": sum(row["step_count"] for row in dqn_rows) / seed_count,
+        "selected_action_count_mean": sum(row["selected_action_count"] for row in dqn_rows) / seed_count,
+        "noop_actions_mean": sum(row["noop_actions"] for row in dqn_rows) / seed_count,
+        "explicit_noop_actions_mean": sum(row["explicit_noop_actions"] for row in dqn_rows) / seed_count,
+        "noop_action_rate_mean": sum(row["noop_action_rate"] for row in dqn_rows) / seed_count,
+        "explicit_noop_action_rate_mean": sum(row["explicit_noop_action_rate"] for row in dqn_rows) / seed_count,
+        "accepted_action_rate_mean": sum(row["accepted_action_rate"] for row in dqn_rows) / seed_count,
+        "rejected_action_rate_mean": sum(row["rejected_action_rate"] for row in dqn_rows) / seed_count,
+        "valid_action_count_mean": sum(row["valid_action_count_mean"] for row in dqn_rows) / seed_count,
+        "masked_action_count_mean": sum(row["masked_action_count_mean"] for row in dqn_rows) / seed_count,
+        "no_safe_action_steps_mean": sum(row["no_safe_action_steps"] for row in dqn_rows) / seed_count,
+        "reward_mean": sum(row["reward"] for row in dqn_rows) / seed_count,
+    }
+    # validation 输出采用文档第 6 节的字段名，数值为各 validation seed 诊断结果的均值；
+    # `noop_q_sample_count` 代表实际参与 Q 诊断的状态样本总数，便于核对采样是否达到上限。
+    for fieldname in NOOP_Q_DIAGNOSTIC_FIELDNAMES:
+        if fieldname == "noop_q_sample_count":
+            validation_row[fieldname] = sum(int(row[fieldname] or 0) for row in dqn_rows)
+        else:
+            validation_row[fieldname] = _mean_optional_metric(dqn_rows, fieldname)
+    return validation_row, baseline_cache, used_baseline_cache
 
 
 def _is_better_validation_row(
@@ -358,10 +636,25 @@ def _is_better_validation_row(
 
     if int(candidate_row["deadline_misses_sum"]) != 0:
         return False
+    use_lo_cancellations_gate = save_best_by == "lo_cancellations"
     if best_row is None:
+        if use_lo_cancellations_gate:
+            return float(candidate_row["mode_changes_mean"]) <= float(
+                candidate_row["baseline_mode_changes_mean"]
+            )
         return True
     if int(best_row["deadline_misses_sum"]) != 0:
         return True
+    if use_lo_cancellations_gate:
+        candidate_mode_ok = float(candidate_row["mode_changes_mean"]) <= float(
+            candidate_row["baseline_mode_changes_mean"]
+        )
+        if not candidate_mode_ok:
+            return False
+        best_mode_ok = float(best_row["mode_changes_mean"]) <= float(best_row["baseline_mode_changes_mean"])
+        if not best_mode_ok:
+            return True
+        return float(candidate_row["lo_cancellations_mean"]) < float(best_row["lo_cancellations_mean"])
     if save_best_by == "reward":
         # 阶段 3：reward 指标方向应为“越大越好”，与 cancellation/mode-change 相反。
         return float(candidate_row["reward_mean"]) > float(best_row["reward_mean"])
@@ -427,6 +720,18 @@ def _build_validation_unified_summary_rows(
                 "rejected_action_rate_mean": float(row["rejected_action_rate_mean"]),
                 "masked_action_count_mean": float(row["masked_action_count_mean"]),
                 "valid_action_count_mean": float(row["valid_action_count_mean"]),
+                # explicit noop 的 Q 值诊断字段直接透传到 unified summary，
+                # 这样验证趋势表可以同时观察动作实际选择频率与 Q 值排名变化。
+                "noop_q_mean": row.get("noop_q_mean"),
+                "noop_q_std": row.get("noop_q_std"),
+                "noop_q_rank_mean": row.get("noop_q_rank_mean"),
+                "noop_q_rank_median": row.get("noop_q_rank_median"),
+                "noop_q_rank_min": row.get("noop_q_rank_min"),
+                "noop_q_rank_max": row.get("noop_q_rank_max"),
+                "noop_q_margin_to_best_mean": row.get("noop_q_margin_to_best_mean"),
+                "noop_q_is_best_rate": row.get("noop_q_is_best_rate"),
+                "noop_valid_rate": row.get("noop_valid_rate"),
+                "noop_q_sample_count": row.get("noop_q_sample_count"),
             }
         )
     return summary_rows
@@ -471,9 +776,29 @@ def build_parser() -> argparse.ArgumentParser:
             "with this probability before sampling other valid actions."
         ),
     )
+    parser.add_argument(
+        "--double-dqn",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use Double DQN target calculation: policy net selects next action, target net evaluates it.",
+    )
+    parser.add_argument(
+        "--max-q-diagnostic-samples",
+        type=int,
+        default=1000,
+        help="Maximum validation decision states sampled for noop Q diagnostics per validation seed.",
+    )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--checkpoint", type=int, default=0)
     parser.add_argument("--workload", choices=["small", "rtss11", "automotive"], default="small")
+    # automotive workload 允许从 CLI 显式切换 runnable 数量与 workload 语义模式，
+    # 这样训练入口就不再把 automotive 固定写死为 150 + paper_like。
+    parser.add_argument("--automotive-num-runnables", type=int, choices=[150, 250], default=150)
+    parser.add_argument(
+        "--automotive-mode",
+        choices=["fast", "paper_like", "paper_exact"],
+        default="paper_like",
+    )
     parser.add_argument("--scenario", choices=["nominal", "stress"], default="stress")
     parser.add_argument("--total-util", type=float, default=0.65)
     parser.add_argument("--num-tasks", type=int, default=20)
@@ -502,9 +827,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--validate-every", type=int, default=50)
     parser.add_argument("--validation-end-time", type=int, default=10000)
     parser.add_argument(
+        "--validation-workers",
+        type=int,
+        default=1,
+        help="并行 validation 的进程数；1 表示保持串行。",
+    )
+    parser.add_argument(
+        "--log-step-every",
+        type=int,
+        default=1,
+        help="每隔多少个 global step 记录一行 step-level 日志；1 表示每步记录，0 表示关闭 step-level 日志。",
+    )
+    parser.add_argument(
         "--save-best-by",
         choices=["lo_cancellations", "mode_changes", "reward", "relative_score"],
-        default="lo_cancellations",
+        default="mode_changes",
     )
     parser.add_argument(
         "--reward-mode",
@@ -556,6 +893,12 @@ def main() -> None:
         raise ValueError("设置 --trace-every 时必须同时提供 --trace-dir")
     if args.validate_every < 0:
         raise ValueError("--validate-every 必须为非负整数")
+    if args.validation_workers < 1:
+        raise ValueError("--validation-workers 必须为正整数")
+    if args.log_step_every < 0:
+        raise ValueError("--log-step-every 必须为非负整数")
+    if args.max_q_diagnostic_samples < 0:
+        raise ValueError("--max-q-diagnostic-samples 必须为非负整数")
     if args.target_update_frequency is not None:
         args.target_update_freq = int(args.target_update_frequency)
     if args.budget_floor_ratio < 0.0 or args.budget_floor_ratio > 1.0:
@@ -623,6 +966,7 @@ def main() -> None:
         config=config,
         noop_action_id=_get_noop_action_id(initial_env),
         hidden_layers=hidden_layers,
+        double_dqn=args.double_dqn,
     )
 
     if args.output_dir is None:
@@ -644,8 +988,8 @@ def main() -> None:
     step_rows: list[dict[str, int | float | str | bool]] = []
     train_metric_rows: list[dict[str, int | float | str]] = []
     action_hist_rows: list[dict[str, int]] = []
-    validation_rows: list[dict[str, int | float]] = []
-    best_validation_row: dict[str, int | float] | None = None
+    validation_rows: list[dict[str, int | float | None]] = []
+    best_validation_row: dict[str, int | float | None] | None = None
     model_best_path = output_dir / "model_best.pt"
     best_model_metadata_path = output_dir / "best_model_metadata.json"
     best_model_saved = False
@@ -774,52 +1118,58 @@ def main() -> None:
             reward_budget_change_norm_sum += float(result.info.get("budget_change_norm", 0.0))
             reward_budget_drift_penalty_sum += float(result.info.get("budget_drift_penalty_value", 0.0))
             reward_budget_drift_mean_sum += float(result.info.get("budget_drift_mean", 0.0))
-            step_rows.append(
-                {
-                    "episode": episode,
-                    "step": global_step,
-                    "sim_time": int(result.info.get("time", 0)),
-                    "reward": float(result.reward),
-                    "episode_reward": float(episode_reward),
-                    "total_reward": float(episode_reward),
-                    "loss": "" if loss is None else loss,
-                    "epsilon": agent.current_epsilon,
-                    "action_id": "" if action_id is None else action_id,
-                    "accepted": accepted,
-                    "rejected": rejected,
-                    "reject_reason": "no_valid_action" if action_id is None else str(result.info.get("reject_reason", "")),
-                    "valid_action_count": valid_action_count,
-                    "masked_action_count": masked_action_count,
-                    "noop_due_to_no_valid_action": action_id is None,
-                    "is_noop": noop,
-                    "is_explicit_noop": explicit_noop,
-                    "mode_changes": int(result.info.get("mode_changes", 0)),
-                    "lo_cancellations": int(result.info.get("lo_cancellations", 0)),
-                    "deadline_misses": int(result.info.get("deadline_misses", 0)),
-                    "step_reward_total": float(result.info.get("step_reward_total", 0.0)),
-                    "step_reward_job_start": float(result.info.get("step_reward_job_start", 0.0)),
-                    "step_reward_lo_overrun": float(result.info.get("step_reward_lo_overrun", 0.0)),
-                    "step_reward_hi_overrun": float(result.info.get("step_reward_hi_overrun", 0.0)),
-                    "step_reward_mode_change": float(result.info.get("step_reward_mode_change", 0.0)),
-                    "step_reward_lo_cancellation": float(result.info.get("step_reward_lo_cancellation", 0.0)),
-                    "step_reward_deadline_miss": float(result.info.get("step_reward_deadline_miss", 0.0)),
-                    "paper_reward": float(result.info.get("paper_reward", 0.0)),
-                    "noop_reward_bonus": float(result.info.get("noop_reward_bonus", 0.0)),
-                    "budget_change_norm": float(result.info.get("budget_change_norm", 0.0)),
-                    "budget_change_penalty_value": float(result.info.get("budget_change_penalty_value", 0.0)),
-                    "budget_drift_mean": float(result.info.get("budget_drift_mean", 0.0)),
-                    "budget_drift_penalty_value": float(result.info.get("budget_drift_penalty_value", 0.0)),
-                    "reward_after_regularization": float(result.info.get("reward_after_regularization", 0.0)),
-                    "workload": args.workload,
-                    "total_util": args.total_util,
-                    "num_tasks": args.num_tasks,
-                    "cf": args.cf,
-                    "cp": args.cp,
-                    "taskset_seed": bundle.taskset_seed if bundle.taskset_seed is not None else episode_seed,
-                    "scenario_seed": bundle.scenario_seed if bundle.scenario_seed is not None else episode_seed,
-                    "require_schedulable": args.require_schedulable,
-                }
-            )
+            # `global_step` 是跨 episode 的全局步号。
+            # 文档要求只对 step-level 明细日志做采样，不改变任何训练统计与优化逻辑。
+            should_log_step = args.log_step_every > 0 and global_step % args.log_step_every == 0
+            if should_log_step:
+                step_rows.append(
+                    {
+                        "episode": episode,
+                        "step": global_step,
+                        "sim_time": int(result.info.get("time", 0)),
+                        "reward": float(result.reward),
+                        "episode_reward": float(episode_reward),
+                        "total_reward": float(episode_reward),
+                        "loss": "" if loss is None else loss,
+                        "epsilon": agent.current_epsilon,
+                        "action_id": "" if action_id is None else action_id,
+                        "accepted": accepted,
+                        "rejected": rejected,
+                        "reject_reason": (
+                            "no_valid_action" if action_id is None else str(result.info.get("reject_reason", ""))
+                        ),
+                        "valid_action_count": valid_action_count,
+                        "masked_action_count": masked_action_count,
+                        "noop_due_to_no_valid_action": action_id is None,
+                        "is_noop": noop,
+                        "is_explicit_noop": explicit_noop,
+                        "mode_changes": int(result.info.get("mode_changes", 0)),
+                        "lo_cancellations": int(result.info.get("lo_cancellations", 0)),
+                        "deadline_misses": int(result.info.get("deadline_misses", 0)),
+                        "step_reward_total": float(result.info.get("step_reward_total", 0.0)),
+                        "step_reward_job_start": float(result.info.get("step_reward_job_start", 0.0)),
+                        "step_reward_lo_overrun": float(result.info.get("step_reward_lo_overrun", 0.0)),
+                        "step_reward_hi_overrun": float(result.info.get("step_reward_hi_overrun", 0.0)),
+                        "step_reward_mode_change": float(result.info.get("step_reward_mode_change", 0.0)),
+                        "step_reward_lo_cancellation": float(result.info.get("step_reward_lo_cancellation", 0.0)),
+                        "step_reward_deadline_miss": float(result.info.get("step_reward_deadline_miss", 0.0)),
+                        "paper_reward": float(result.info.get("paper_reward", 0.0)),
+                        "noop_reward_bonus": float(result.info.get("noop_reward_bonus", 0.0)),
+                        "budget_change_norm": float(result.info.get("budget_change_norm", 0.0)),
+                        "budget_change_penalty_value": float(result.info.get("budget_change_penalty_value", 0.0)),
+                        "budget_drift_mean": float(result.info.get("budget_drift_mean", 0.0)),
+                        "budget_drift_penalty_value": float(result.info.get("budget_drift_penalty_value", 0.0)),
+                        "reward_after_regularization": float(result.info.get("reward_after_regularization", 0.0)),
+                        "workload": args.workload,
+                        "total_util": args.total_util,
+                        "num_tasks": args.num_tasks,
+                        "cf": args.cf,
+                        "cp": args.cp,
+                        "taskset_seed": bundle.taskset_seed if bundle.taskset_seed is not None else episode_seed,
+                        "scenario_seed": bundle.scenario_seed if bundle.scenario_seed is not None else episode_seed,
+                        "require_schedulable": args.require_schedulable,
+                    }
+                )
             obs = result.observation
             done = result.done
             last_info = result.info
@@ -962,7 +1312,9 @@ def main() -> None:
                 budget_floor_ratio=args.budget_floor_ratio,
                 forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
                 mask_detail_mode=args.mask_detail_mode,
+                validation_workers=args.validation_workers,
                 baseline_cache=baseline_validation_cache,
+                max_q_diagnostic_samples=args.max_q_diagnostic_samples,
             )
             if used_baseline_cache:
                 print("Using cached baseline validation metrics")
@@ -1013,52 +1365,10 @@ def main() -> None:
     model_path = output_dir / "model_final.pt"
     config_path = output_dir / "config.json"
 
-    step_fieldnames = [
-        "episode",
-        "step",
-        "sim_time",
-        "reward",
-        "episode_reward",
-        "total_reward",
-        "loss",
-        "epsilon",
-        "action_id",
-        "accepted",
-        "rejected",
-        "reject_reason",
-        "valid_action_count",
-        "masked_action_count",
-        "noop_due_to_no_valid_action",
-        "is_noop",
-        "is_explicit_noop",
-        "mode_changes",
-        "lo_cancellations",
-        "deadline_misses",
-        "step_reward_total",
-        "step_reward_job_start",
-        "step_reward_lo_overrun",
-        "step_reward_hi_overrun",
-        "step_reward_mode_change",
-        "step_reward_lo_cancellation",
-        "step_reward_deadline_miss",
-        "paper_reward",
-        "noop_reward_bonus",
-        "budget_change_norm",
-        "budget_change_penalty_value",
-        "budget_drift_mean",
-        "budget_drift_penalty_value",
-        "reward_after_regularization",
-        "workload",
-        "total_util",
-        "num_tasks",
-        "cf",
-        "cp",
-        "taskset_seed",
-        "scenario_seed",
-        "require_schedulable",
-    ]
     with train_log_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=step_fieldnames)
+        # 即使 `--log-step-every 0` 让 step_rows 为空，也仍然写出固定 header，
+        # 这样下游脚本可以明确识别“文件存在但没有逐步日志”。
+        writer = csv.DictWriter(f, fieldnames=STEP_LOG_FIELDNAMES)
         writer.writeheader()
         writer.writerows(step_rows)
 
@@ -1170,6 +1480,7 @@ def main() -> None:
             "relative_score",
             "is_better_than_baseline",
         ]
+        validation_fieldnames.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
         with validation_metrics_path.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=validation_fieldnames)
             writer.writeheader()
@@ -1202,6 +1513,7 @@ def main() -> None:
             "masked_action_count_mean",
             "valid_action_count_mean",
         ]
+        validation_unified_summary_fields.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
         with validation_unified_summary_path.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=validation_unified_summary_fields)
             writer.writeheader()
@@ -1230,6 +1542,7 @@ def main() -> None:
             "best_model_is_better_than_baseline": best_relative_score < 0.0,
             "reward_mode": args.reward_mode,
             "reward_definition": reward_mode_config.describe(),
+            "double_dqn": args.double_dqn,
             "note": (
                 "model_best.pt is the best available checkpoint on validation, but it may still be worse than baseline."
             ),
@@ -1262,11 +1575,14 @@ def main() -> None:
         "validation_seeds": validation_seeds,
         "validate_every": args.validate_every,
         "validation_end_time": args.validation_end_time,
+        "validation_workers": args.validation_workers,
+        "max_q_diagnostic_samples": args.max_q_diagnostic_samples,
         "save_best_by": args.save_best_by,
         "relative_score_alpha": args.relative_score_alpha,
         "require_better_than_baseline_for_best": args.require_better_than_baseline_for_best,
         "reward_mode": args.reward_mode,
         "reward_definition": reward_mode_config.describe(),
+        "double_dqn": args.double_dqn,
         "action_space": args.action_space,
         "budget_increase_ratio": args.budget_increase_ratio,
         "budget_decrease_ratio": args.budget_decrease_ratio,
@@ -1274,6 +1590,7 @@ def main() -> None:
         "include_explicit_noop": args.include_explicit_noop,
         "forbid_decreasing_hi_budgets": args.forbid_decreasing_hi_budgets,
         "mask_detail_mode": args.mask_detail_mode,
+        "log_step_every": args.log_step_every,
         "log_train_metrics": args.log_train_metrics,
         "trace_every": args.trace_every,
         "seed_metadata": {
