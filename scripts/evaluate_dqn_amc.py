@@ -5,12 +5,15 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from statistics import mean
 
-from amc_py.automotive_workload import build_automotive_experiment_config
+import torch
+
 from amc_py.dqn import (
     DqnBudgetAgent,
+    build_automotive_experiment_config,
     build_env_from_experiment_config,
     build_rtss11_experiment_config,
     build_small_nominal_experiment_config,
@@ -24,6 +27,20 @@ from amc_py.rl.agents import HeuristicBudgetAgent, NoOpBudgetAgent, RandomBudget
 from amc_py.rl.reward_config import available_reward_modes
 from amc_py.rl.runtime_wrapper import AgentRuntimeConfig, simulate_ordered_taskset_with_agent
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationResult
+
+
+NOOP_Q_DIAGNOSTIC_FIELDNAMES = [
+    "noop_q_mean",
+    "noop_q_std",
+    "noop_q_rank_mean",
+    "noop_q_rank_median",
+    "noop_q_rank_min",
+    "noop_q_rank_max",
+    "noop_q_margin_to_best_mean",
+    "noop_q_is_best_rate",
+    "noop_valid_rate",
+    "noop_q_sample_count",
+]
 
 
 def _parse_seeds(raw_value: str) -> list[int]:
@@ -81,6 +98,52 @@ def _budget_overruns_from_result(result: SimulationResult) -> int:
     return result.mode_change_count() + result.lo_job_cancellation_count()
 
 
+def _empty_noop_q_diagnostics_row() -> dict[str, float | int | None]:
+    """生成非 DQN 方法使用的空 noop Q 诊断字段。
+
+    baseline、random、heuristic、noop agent 没有 policy network Q 值，因此这些字段按文档要求写空值。
+    """
+
+    return {fieldname: None for fieldname in NOOP_Q_DIAGNOSTIC_FIELDNAMES}
+
+
+def _noop_q_diagnostics_to_row(agent: DqnBudgetAgent, states: list[tuple[float, ...]], masks: list[tuple[bool, ...]]) -> dict[str, float | int | None]:
+    """把评估期采集的决策状态转换为 explicit noop Q 诊断字段。
+
+    这些状态均在 agent 调用 `select_action_id()` 之前记录，因此 Q 值诊断反映的是
+    实际 greedy 决策时刻 noop 在合法动作集合中的相对位置。
+    """
+
+    if states:
+        state_tensor = torch.tensor(states, dtype=torch.float32, device=agent.device)
+        mask_tensor = torch.tensor(masks, dtype=torch.bool, device=agent.device)
+    else:
+        state_tensor = torch.empty((0, agent.observation_dim), dtype=torch.float32, device=agent.device)
+        mask_tensor = torch.empty((0, agent.action_dim), dtype=torch.bool, device=agent.device)
+    diagnostics = agent.compute_noop_q_diagnostics(state_tensor, mask_tensor)
+    return {
+        "noop_q_mean": diagnostics.noop_q_mean,
+        "noop_q_std": diagnostics.noop_q_std,
+        "noop_q_rank_mean": diagnostics.noop_q_rank_mean,
+        "noop_q_rank_median": diagnostics.noop_q_rank_median,
+        "noop_q_rank_min": diagnostics.noop_q_rank_min,
+        "noop_q_rank_max": diagnostics.noop_q_rank_max,
+        "noop_q_margin_to_best_mean": diagnostics.noop_q_margin_to_best_mean,
+        "noop_q_is_best_rate": diagnostics.noop_q_is_best_rate,
+        "noop_valid_rate": diagnostics.noop_valid_rate,
+        "noop_q_sample_count": diagnostics.sample_count,
+    }
+
+
+def _mean_optional_metric(rows: list[dict[str, int | float | str | bool]], key: str) -> float | None:
+    """对可能为空的 noop Q 诊断字段求均值。"""
+
+    values = [float(row[key]) for row in rows if row.get(key) not in (None, "")]
+    if not values:
+        return None
+    return mean(values)
+
+
 def _evaluate_dqn_once(
     *,
     model_path: Path,
@@ -100,6 +163,9 @@ def _evaluate_dqn_once(
     trace_dir: Path | None = None,
     debug_log_dir: Path | None = None,
     trace_enabled: bool = False,
+    agent_device: str | None = None,
+    double_dqn: bool = True,
+    max_q_diagnostic_samples: int = 1000,
 ) -> tuple[dict[str, int | float | str | bool], SimulationResult, list[dict[str, object]]]:
     """以评估模式运行一次 DQN agent。"""
 
@@ -118,7 +184,12 @@ def _evaluate_dqn_once(
         forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
         mask_detail_mode=mask_detail_mode,
     )
-    agent = DqnBudgetAgent.load(model_path)
+    # 评估阶段既支持主进程串行加载，也支持并行 worker 中按需加载。
+    # 并行 worker 会显式传入 `agent_device="cpu"`，避免子进程去占用 MPS/GPU。
+    agent = DqnBudgetAgent.load(model_path, device=agent_device)
+    # 评估本身不执行 bootstrap target 计算，但仍保存 CLI 传入的 Double DQN 开关，
+    # 让本次评估进程中的 agent 配置与训练/消融命令保持同一语义入口。
+    agent.double_dqn = bool(double_dqn)
     if agent.action_dim != env.action_space_size:
         raise ValueError(
             "模型动作空间与环境不兼容："
@@ -144,11 +215,18 @@ def _evaluate_dqn_once(
         "lo_cancellations": 0,
         "deadline_misses": 0,
     }
+    # 评估期 noop Q 诊断缓存：每一行对应一次 DQN agent 决策前的 observation 和合法动作 mask。
+    # 结束后统一送入 agent.compute_noop_q_diagnostics，避免在每个 step 中重复做额外统计。
+    diagnostic_states: list[tuple[float, ...]] = []
+    diagnostic_valid_masks: list[tuple[bool, ...]] = []
 
     while not done:
         # 每次循环对应一次环境 step，所有 rate 都以该值为主分母。
         step_count += 1
         mask = env.valid_action_mask()
+        if len(diagnostic_states) < max_q_diagnostic_samples:
+            diagnostic_states.append(tuple(float(value) for value in obs.state_vector))
+            diagnostic_valid_masks.append(tuple(bool(value) for value in mask))
         action_id = agent.select_action_id(obs.state_vector, valid_action_mask=mask, training=False)
         # 是否提供 action_id 与动作是否 accepted/noop 是两个独立维度。
         selected_action_count += int(action_id is not None)
@@ -194,8 +272,7 @@ def _evaluate_dqn_once(
         )
 
     runtime_result = env._engine.finish() if env._engine is not None else SimulationResult()
-    return (
-        {
+    row = {
             **row_base,
             "method": "dqn_agent",
             "mode_changes": int(last_info.get("mode_changes", 0)),
@@ -234,7 +311,10 @@ def _evaluate_dqn_once(
             "no_safe_action_steps": int(debug_stats["no_safe_action_steps"]),
             "masked_budget_floor_violation_count": int(debug_stats["masked_budget_floor_violation_count"]),
             "masked_budget_floor_violation_rate": float(debug_stats["masked_budget_floor_violation_rate"]),
-        },
+        }
+    row.update(_noop_q_diagnostics_to_row(agent, diagnostic_states, diagnostic_valid_masks))
+    return (
+        row,
         runtime_result,
         env.action_log,
     )
@@ -277,6 +357,14 @@ def _build_unified_summary_rows(rows: list[dict[str, int | float | str | bool]])
         explicit_noop_action_rate_mean = mean(_to_float(row, "explicit_noop_action_rate") for row in dqn_rows)
         accepted_action_rate_mean = mean(_to_float(row, "accepted_action_rate") for row in dqn_rows)
         rejected_action_rate_mean = mean(_to_float(row, "rejection_rate") for row in dqn_rows)
+        noop_q_diagnostic_summary = {
+            fieldname: (
+                sum(int(row.get(fieldname) or 0) for row in dqn_rows)
+                if fieldname == "noop_q_sample_count"
+                else _mean_optional_metric(dqn_rows, fieldname)
+            )
+            for fieldname in NOOP_Q_DIAGNOSTIC_FIELDNAMES
+        }
 
         summary_rows.append(
             {
@@ -303,6 +391,7 @@ def _build_unified_summary_rows(rows: list[dict[str, int | float | str | bool]])
                 "rejected_action_rate_mean": rejected_action_rate_mean,
                 "masked_action_count_mean": masked_action_count_mean,
                 "valid_action_count_mean": valid_action_count_mean,
+                **noop_q_diagnostic_summary,
             }
         )
     return summary_rows
@@ -340,6 +429,7 @@ def _write_unified_summary_csv(
         "masked_action_count_mean",
         "valid_action_count_mean",
     ]
+    fieldnames.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
     with summary_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -518,6 +608,559 @@ def _deadline_miss_rows(rows: list[dict[str, int | float | str]]) -> list[dict[s
     return [row for row in rows if int(row["deadline_misses"]) > 0]
 
 
+def _evaluate_enabled_methods_for_seed(
+    *,
+    seed: int,
+    experiment_config,
+    workload: str,
+    total_util: float,
+    num_tasks: int,
+    cf: float,
+    cp: float,
+    require_schedulable: bool,
+    enabled_methods: set[str],
+    model_path: Path,
+    end_time: int,
+    agent_period: int,
+    reward_mode: str,
+    action_space: str,
+    budget_increase_ratio: float,
+    budget_decrease_ratio: float,
+    include_explicit_noop: bool,
+    budget_floor_ratio: float,
+    forbid_decreasing_hi_budgets: bool,
+    mask_detail_mode: str,
+    trace_dir: Path | None,
+    debug_log_dir: Path | None,
+    trace_seed_set: set[int],
+    trace_method_set: set[str],
+    dqn_agent_device: str | None = None,
+    double_dqn: bool = True,
+    max_q_diagnostic_samples: int = 1000,
+) -> tuple[list[dict[str, int | float | str | bool]], list[dict[str, object]]]:
+    """评估单个 seed 下的所有启用方法。
+
+    这里把“一个 seed 对应的整组评估工作”封装成独立 helper，有两个目的：
+    - 串行路径直接在主进程里调用，保持现有行为与口径；
+    - 并行路径把 seed 分发给多个子进程时，也复用同一份实现，避免两套逻辑漂移。
+
+    返回值拆成两部分：
+    - rows：最终写入评估 CSV 的按方法统计行；
+    - deadline_miss_details：若存在 miss，则展开写入 jsonl 的详情行。
+    """
+
+    bundle = resolve_experiment_bundle(experiment_config, seed)
+    runtime_config = RuntimeConfig(end_time=end_time, semantics=RuntimeSemantics.AMC_PLUS)
+    actions = build_budget_action_space(
+        list(bundle.ordered_tasks),
+        action_space=action_space,
+        budget_increase_ratio=budget_increase_ratio,
+        budget_decrease_ratio=budget_decrease_ratio,
+        include_explicit_noop=include_explicit_noop,
+    )
+
+    if require_schedulable:
+        amc_rtb_schedulable = True
+    else:
+        amc_rtb_schedulable = evaluate_taskset(
+            list(bundle.ordered_tasks),
+            method="amc_rtb",
+            priority_policy="opa",
+        ).schedulable
+    attempts = bundle.taskset_attempts
+    taskset_seed = bundle.taskset_seed if bundle.taskset_seed is not None else seed
+    scenario_seed = bundle.scenario_seed if bundle.scenario_seed is not None else seed
+
+    row_base: dict[str, int | float | str | bool] = {
+        "workload": workload,
+        "total_util": total_util,
+        "num_tasks": num_tasks,
+        "cf": cf,
+        "cp": cp,
+        "seed": seed,
+        "taskset_seed": taskset_seed,
+        "scenario_seed": scenario_seed,
+        "amc_rtb_schedulable": amc_rtb_schedulable,
+        "attempts": attempts,
+        "end_time": end_time,
+        "agent_period": agent_period,
+    }
+    # trace 的开关粒度仍然保持“按 seed、按 method 控制”，
+    # 这样并行后也不会改变原有调试文件的生成规则。
+    trace_enabled_for_seed = (
+        (trace_dir is not None or debug_log_dir is not None)
+        and (not trace_seed_set or seed in trace_seed_set)
+    )
+
+    rows: list[dict[str, int | float | str | bool]] = []
+    deadline_miss_details: list[dict[str, object]] = []
+
+    if "amc_plus_baseline" in enabled_methods:
+        baseline_result = simulate_ordered_taskset_event_driven(
+            ordered_tasks=list(bundle.ordered_tasks),
+            scenario=bundle.scenario,
+            config=runtime_config,
+        )
+        baseline_rejection_rate = 0.0
+        rows.append(
+            {
+                **row_base,
+                **_empty_noop_q_diagnostics_row(),
+                "method": "amc_plus_baseline",
+                "mode_changes": baseline_result.mode_change_count(),
+                "lo_cancellations": baseline_result.lo_job_cancellation_count(),
+                "deadline_misses": len(baseline_result.deadline_misses),
+                "budget_overruns": _budget_overruns_from_result(baseline_result),
+                "accepted_actions": 0,
+                "rejected_actions": 0,
+                "step_count": 0,
+                "selected_action_count": 0,
+                "noop_actions": 0,
+                "explicit_noop_actions": 0,
+                "noop_action_rate": 0.0,
+                "explicit_noop_action_rate": 0.0,
+                "accepted_action_rate": 0.0,
+                "rejection_rate": baseline_rejection_rate,
+                "total_reward": 0.0,
+                "check_safety": True,
+                "safety_checked_actions": 0,
+                "safety_accepted_actions": 0,
+                "safety_rejected_actions": 0,
+                "valid_action_count_mean": 0.0,
+                "masked_action_count_mean": 0.0,
+                "masked_decrease_hi_forbidden_count": 0,
+                "masked_decrease_hi_forbidden_rate": 0.0,
+                "masked_action_count_max": 0,
+                "mask_rejection_rate_mean": 0.0,
+                "selected_invalid_mask_actions": 0,
+                "selected_explicit_noop_actions": 0,
+                "selected_explicit_noop_rate": 0.0,
+                "action_space_type": action_space,
+                "action_count": len(actions),
+                "budget_increase_ratio": budget_increase_ratio,
+                "budget_decrease_ratio": budget_decrease_ratio,
+                "budget_floor_ratio": budget_floor_ratio,
+                "no_safe_action_steps": 0,
+                "masked_budget_floor_violation_count": 0,
+                "masked_budget_floor_violation_rate": 0.0,
+            }
+        )
+        deadline_miss_details.extend(
+            _deadline_miss_detail_rows(
+                row_base=row_base,
+                method="amc_plus_baseline",
+                runtime_result=baseline_result,
+                action_log=[],
+            )
+        )
+
+    if "noop_agent" in enabled_methods:
+        noop_result = simulate_ordered_taskset_with_agent(
+            ordered_tasks=list(bundle.ordered_tasks),
+            scenario=bundle.scenario,
+            agent=NoOpBudgetAgent(),
+            runtime_config=runtime_config,
+            agent_config=AgentRuntimeConfig(
+                agent_period=agent_period,
+                end_time=end_time,
+                check_safety=True,
+                reward_mode=reward_mode,
+                forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+                budget_floor_ratio=budget_floor_ratio,
+            ),
+            bounds=bundle.normalization_bounds,
+        )
+        # wrapper 类 baseline 自己不返回显式的 step_count 字段，
+        # 因此统一用 action_log 行数来定义“发生了多少次 agent 决策”。
+        noop_step_count = len(noop_result.action_log)
+        noop_selected_action_count = sum(int(row.get("action_id") is not None) for row in noop_result.action_log)
+        noop_explicit_noop_actions = sum(int(bool(row.get("is_explicit_noop", False))) for row in noop_result.action_log)
+        noop_rejection_rate = (noop_result.rejected_actions / noop_step_count) if noop_step_count > 0 else 0.0
+        rows.append(
+            {
+                **row_base,
+                **_empty_noop_q_diagnostics_row(),
+                "method": "noop_agent",
+                "mode_changes": noop_result.runtime_result.mode_change_count(),
+                "lo_cancellations": noop_result.runtime_result.lo_job_cancellation_count(),
+                "deadline_misses": len(noop_result.runtime_result.deadline_misses),
+                "budget_overruns": _budget_overruns_from_result(noop_result.runtime_result),
+                "accepted_actions": noop_result.accepted_actions,
+                "rejected_actions": noop_result.rejected_actions,
+                "step_count": noop_step_count,
+                "selected_action_count": noop_selected_action_count,
+                "noop_actions": noop_result.noop_actions,
+                "explicit_noop_actions": noop_explicit_noop_actions,
+                "noop_action_rate": ((noop_result.noop_actions / noop_step_count) if noop_step_count > 0 else 0.0),
+                "explicit_noop_action_rate": (
+                    (noop_explicit_noop_actions / noop_step_count) if noop_step_count > 0 else 0.0
+                ),
+                "accepted_action_rate": (
+                    (noop_result.accepted_actions / noop_step_count) if noop_step_count > 0 else 0.0
+                ),
+                "rejection_rate": noop_rejection_rate,
+                "total_reward": noop_result.total_reward,
+                "check_safety": True,
+                "safety_checked_actions": noop_result.safety_checked_actions,
+                "safety_accepted_actions": noop_result.safety_accepted_actions,
+                "safety_rejected_actions": noop_result.safety_rejected_actions,
+                "valid_action_count_mean": 0.0,
+                "masked_action_count_mean": 0.0,
+                "masked_decrease_hi_forbidden_count": 0,
+                "masked_decrease_hi_forbidden_rate": 0.0,
+                "masked_action_count_max": 0,
+                "mask_rejection_rate_mean": 0.0,
+                "selected_invalid_mask_actions": 0,
+                "selected_explicit_noop_actions": 0,
+                "selected_explicit_noop_rate": 0.0,
+                "action_space_type": action_space,
+                "action_count": len(actions),
+                "budget_increase_ratio": budget_increase_ratio,
+                "budget_decrease_ratio": budget_decrease_ratio,
+                "budget_floor_ratio": budget_floor_ratio,
+                "no_safe_action_steps": 0,
+                "masked_budget_floor_violation_count": 0,
+                "masked_budget_floor_violation_rate": 0.0,
+            }
+        )
+        deadline_miss_details.extend(
+            _deadline_miss_detail_rows(
+                row_base=row_base,
+                method="noop_agent",
+                runtime_result=noop_result.runtime_result,
+                action_log=noop_result.action_log,
+            )
+        )
+        if trace_enabled_for_seed and (not trace_method_set or "noop_agent" in trace_method_set):
+            _write_agent_debug_files(
+                trace_dir=trace_dir,
+                debug_log_dir=debug_log_dir,
+                seed=seed,
+                method="noop_agent",
+                action_log=noop_result.action_log,
+                runtime_result=noop_result.runtime_result,
+            )
+
+    if "random_agent" in enabled_methods:
+        random_result = simulate_ordered_taskset_with_agent(
+            ordered_tasks=list(bundle.ordered_tasks),
+            scenario=bundle.scenario,
+            agent=RandomBudgetAgent(actions=actions, seed=seed),
+            runtime_config=runtime_config,
+            agent_config=AgentRuntimeConfig(
+                agent_period=agent_period,
+                end_time=end_time,
+                check_safety=True,
+                reward_mode=reward_mode,
+                forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+                budget_floor_ratio=budget_floor_ratio,
+            ),
+            bounds=bundle.normalization_bounds,
+        )
+        random_step_count = len(random_result.action_log)
+        random_selected_action_count = sum(int(row.get("action_id") is not None) for row in random_result.action_log)
+        random_explicit_noop_actions = sum(
+            int(bool(row.get("is_explicit_noop", False))) for row in random_result.action_log
+        )
+        random_rejection_rate = (random_result.rejected_actions / random_step_count) if random_step_count > 0 else 0.0
+        rows.append(
+            {
+                **row_base,
+                **_empty_noop_q_diagnostics_row(),
+                "method": "random_agent",
+                "mode_changes": random_result.runtime_result.mode_change_count(),
+                "lo_cancellations": random_result.runtime_result.lo_job_cancellation_count(),
+                "deadline_misses": len(random_result.runtime_result.deadline_misses),
+                "budget_overruns": _budget_overruns_from_result(random_result.runtime_result),
+                "accepted_actions": random_result.accepted_actions,
+                "rejected_actions": random_result.rejected_actions,
+                "step_count": random_step_count,
+                "selected_action_count": random_selected_action_count,
+                "noop_actions": random_result.noop_actions,
+                "explicit_noop_actions": random_explicit_noop_actions,
+                "noop_action_rate": ((random_result.noop_actions / random_step_count) if random_step_count > 0 else 0.0),
+                "explicit_noop_action_rate": (
+                    (random_explicit_noop_actions / random_step_count) if random_step_count > 0 else 0.0
+                ),
+                "accepted_action_rate": (
+                    (random_result.accepted_actions / random_step_count) if random_step_count > 0 else 0.0
+                ),
+                "rejection_rate": random_rejection_rate,
+                "total_reward": random_result.total_reward,
+                "check_safety": True,
+                "safety_checked_actions": random_result.safety_checked_actions,
+                "safety_accepted_actions": random_result.safety_accepted_actions,
+                "safety_rejected_actions": random_result.safety_rejected_actions,
+                "valid_action_count_mean": 0.0,
+                "masked_action_count_mean": 0.0,
+                "masked_decrease_hi_forbidden_count": 0,
+                "masked_decrease_hi_forbidden_rate": 0.0,
+                "masked_action_count_max": 0,
+                "mask_rejection_rate_mean": 0.0,
+                "selected_invalid_mask_actions": 0,
+                "selected_explicit_noop_actions": 0,
+                "selected_explicit_noop_rate": 0.0,
+                "action_space_type": action_space,
+                "action_count": len(actions),
+                "budget_increase_ratio": budget_increase_ratio,
+                "budget_decrease_ratio": budget_decrease_ratio,
+                "budget_floor_ratio": budget_floor_ratio,
+                "no_safe_action_steps": 0,
+                "masked_budget_floor_violation_count": 0,
+                "masked_budget_floor_violation_rate": 0.0,
+            }
+        )
+        deadline_miss_details.extend(
+            _deadline_miss_detail_rows(
+                row_base=row_base,
+                method="random_agent",
+                runtime_result=random_result.runtime_result,
+                action_log=random_result.action_log,
+            )
+        )
+        if trace_enabled_for_seed and (not trace_method_set or "random_agent" in trace_method_set):
+            _write_agent_debug_files(
+                trace_dir=trace_dir,
+                debug_log_dir=debug_log_dir,
+                seed=seed,
+                method="random_agent",
+                action_log=random_result.action_log,
+                runtime_result=random_result.runtime_result,
+            )
+
+    if "heuristic_agent" in enabled_methods:
+        heuristic_result = simulate_ordered_taskset_with_agent(
+            ordered_tasks=list(bundle.ordered_tasks),
+            scenario=bundle.scenario,
+            agent=HeuristicBudgetAgent(actions=actions),
+            runtime_config=runtime_config,
+            agent_config=AgentRuntimeConfig(
+                agent_period=agent_period,
+                end_time=end_time,
+                check_safety=True,
+                reward_mode=reward_mode,
+                forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+                budget_floor_ratio=budget_floor_ratio,
+            ),
+            bounds=bundle.normalization_bounds,
+        )
+        heuristic_step_count = len(heuristic_result.action_log)
+        heuristic_selected_action_count = sum(
+            int(row.get("action_id") is not None) for row in heuristic_result.action_log
+        )
+        heuristic_explicit_noop_actions = sum(
+            int(bool(row.get("is_explicit_noop", False))) for row in heuristic_result.action_log
+        )
+        heuristic_rejection_rate = (
+            (heuristic_result.rejected_actions / heuristic_step_count)
+            if heuristic_step_count > 0
+            else 0.0
+        )
+        rows.append(
+            {
+                **row_base,
+                **_empty_noop_q_diagnostics_row(),
+                "method": "heuristic_agent",
+                "mode_changes": heuristic_result.runtime_result.mode_change_count(),
+                "lo_cancellations": heuristic_result.runtime_result.lo_job_cancellation_count(),
+                "deadline_misses": len(heuristic_result.runtime_result.deadline_misses),
+                "budget_overruns": _budget_overruns_from_result(heuristic_result.runtime_result),
+                "accepted_actions": heuristic_result.accepted_actions,
+                "rejected_actions": heuristic_result.rejected_actions,
+                "step_count": heuristic_step_count,
+                "selected_action_count": heuristic_selected_action_count,
+                "noop_actions": heuristic_result.noop_actions,
+                "explicit_noop_actions": heuristic_explicit_noop_actions,
+                "noop_action_rate": (
+                    (heuristic_result.noop_actions / heuristic_step_count)
+                    if heuristic_step_count > 0
+                    else 0.0
+                ),
+                "explicit_noop_action_rate": (
+                    (heuristic_explicit_noop_actions / heuristic_step_count)
+                    if heuristic_step_count > 0
+                    else 0.0
+                ),
+                "accepted_action_rate": (
+                    (heuristic_result.accepted_actions / heuristic_step_count)
+                    if heuristic_step_count > 0
+                    else 0.0
+                ),
+                "rejection_rate": heuristic_rejection_rate,
+                "total_reward": heuristic_result.total_reward,
+                "check_safety": True,
+                "safety_checked_actions": heuristic_result.safety_checked_actions,
+                "safety_accepted_actions": heuristic_result.safety_accepted_actions,
+                "safety_rejected_actions": heuristic_result.safety_rejected_actions,
+                "valid_action_count_mean": 0.0,
+                "masked_action_count_mean": 0.0,
+                "masked_decrease_hi_forbidden_count": 0,
+                "masked_decrease_hi_forbidden_rate": 0.0,
+                "masked_action_count_max": 0,
+                "mask_rejection_rate_mean": 0.0,
+                "selected_invalid_mask_actions": 0,
+                "selected_explicit_noop_actions": 0,
+                "selected_explicit_noop_rate": 0.0,
+                "action_space_type": action_space,
+                "action_count": len(actions),
+                "budget_increase_ratio": budget_increase_ratio,
+                "budget_decrease_ratio": budget_decrease_ratio,
+                "budget_floor_ratio": budget_floor_ratio,
+                "no_safe_action_steps": 0,
+                "masked_budget_floor_violation_count": 0,
+                "masked_budget_floor_violation_rate": 0.0,
+            }
+        )
+        deadline_miss_details.extend(
+            _deadline_miss_detail_rows(
+                row_base=row_base,
+                method="heuristic_agent",
+                runtime_result=heuristic_result.runtime_result,
+                action_log=heuristic_result.action_log,
+            )
+        )
+        if trace_enabled_for_seed and (not trace_method_set or "heuristic_agent" in trace_method_set):
+            _write_agent_debug_files(
+                trace_dir=trace_dir,
+                debug_log_dir=debug_log_dir,
+                seed=seed,
+                method="heuristic_agent",
+                action_log=heuristic_result.action_log,
+                runtime_result=heuristic_result.runtime_result,
+            )
+
+    if "dqn_agent" in enabled_methods:
+        dqn_row, dqn_runtime_result, dqn_action_log = _evaluate_dqn_once(
+            model_path=model_path,
+            experiment_config=experiment_config,
+            agent_period=agent_period,
+            seed=seed,
+            end_time=end_time,
+            row_base=row_base,
+            reward_mode=reward_mode,
+            action_space=action_space,
+            budget_increase_ratio=budget_increase_ratio,
+            budget_decrease_ratio=budget_decrease_ratio,
+            include_explicit_noop=include_explicit_noop,
+            budget_floor_ratio=budget_floor_ratio,
+            forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+            mask_detail_mode=mask_detail_mode,
+            trace_dir=trace_dir,
+            debug_log_dir=debug_log_dir,
+            trace_enabled=trace_enabled_for_seed and (not trace_method_set or "dqn_agent" in trace_method_set),
+            agent_device=dqn_agent_device,
+            double_dqn=double_dqn,
+            max_q_diagnostic_samples=max_q_diagnostic_samples,
+        )
+        rows.append(dqn_row)
+        deadline_miss_details.extend(
+            _deadline_miss_detail_rows(
+                row_base=row_base,
+                method="dqn_agent",
+                runtime_result=dqn_runtime_result,
+                action_log=dqn_action_log,
+            )
+        )
+
+    return rows, deadline_miss_details
+
+
+def _evaluate_seed_worker(
+    args_tuple: tuple[
+        int,
+        object,
+        str,
+        float,
+        int,
+        float,
+        float,
+        bool,
+        set[str],
+        Path,
+        int,
+        int,
+        str,
+        str,
+        float,
+        float,
+        bool,
+        float,
+        bool,
+        str,
+        Path | None,
+        Path | None,
+        set[int],
+        set[str],
+        bool,
+        int,
+    ],
+) -> tuple[list[dict[str, int | float | str | bool]], list[dict[str, object]]]:
+    """并行 worker：完成单个 seed 的全部评估方法。
+
+    这里仍然按“一个 seed 内部顺序执行多个方法”的粒度并行，而不是把每个方法单独拆开。
+    这样可以保持当前输出结构、trace 文件命名以及每个 seed 的局部执行顺序都不变，
+    同时也避免把同一个任务集/场景在多个子进程里重复构造多次。
+    """
+
+    (
+        seed,
+        experiment_config,
+        workload,
+        total_util,
+        num_tasks,
+        cf,
+        cp,
+        require_schedulable,
+        enabled_methods,
+        model_path,
+        end_time,
+        agent_period,
+        reward_mode,
+        action_space,
+        budget_increase_ratio,
+        budget_decrease_ratio,
+        include_explicit_noop,
+        budget_floor_ratio,
+        forbid_decreasing_hi_budgets,
+        mask_detail_mode,
+        trace_dir,
+        debug_log_dir,
+        trace_seed_set,
+        trace_method_set,
+        double_dqn,
+        max_q_diagnostic_samples,
+    ) = args_tuple
+    return _evaluate_enabled_methods_for_seed(
+        seed=seed,
+        experiment_config=experiment_config,
+        workload=workload,
+        total_util=total_util,
+        num_tasks=num_tasks,
+        cf=cf,
+        cp=cp,
+        require_schedulable=require_schedulable,
+        enabled_methods=enabled_methods,
+        model_path=model_path,
+        end_time=end_time,
+        agent_period=agent_period,
+        reward_mode=reward_mode,
+        action_space=action_space,
+        budget_increase_ratio=budget_increase_ratio,
+        budget_decrease_ratio=budget_decrease_ratio,
+        include_explicit_noop=include_explicit_noop,
+        budget_floor_ratio=budget_floor_ratio,
+        forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+        mask_detail_mode=mask_detail_mode,
+        trace_dir=trace_dir,
+        debug_log_dir=debug_log_dir,
+        trace_seed_set=trace_seed_set,
+        trace_method_set=trace_method_set,
+        dqn_agent_device="cpu",
+        double_dqn=double_dqn,
+        max_q_diagnostic_samples=max_q_diagnostic_samples,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """构建正式评估 CLI 的参数解析器。"""
 
@@ -533,13 +1176,19 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "如果设置该参数，RTSS11 任务集生成固定使用该 seed；"
+            "如果设置该参数，支持 fixed taskset 的 workload 会固定使用该 seed 生成任务集；"
             "评估 seed 仅用于 scenario 生成。"
         ),
     )
     parser.add_argument("--require-schedulable", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--seeds", type=str, default="0")
+    parser.add_argument(
+        "--evaluation-workers",
+        type=int,
+        default=1,
+        help="并行按 seed 评估的进程数；1 表示保持串行。",
+    )
     parser.add_argument("--end-time", type=int, default=100)
     parser.add_argument("--agent-period", type=int, default=1000)
     parser.add_argument("--scenario", choices=["nominal", "stress"], default="stress")
@@ -573,6 +1222,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--double-dqn",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use Double DQN target calculation flag for consistency with training checkpoints.",
+    )
+    parser.add_argument(
+        "--max-q-diagnostic-samples",
+        type=int,
+        default=1000,
+        help="Maximum DQN decision states sampled for noop Q diagnostics per evaluation seed.",
+    )
+    parser.add_argument(
         "--budget-floor-ratio",
         type=float,
         default=0.0,
@@ -588,6 +1249,14 @@ def build_parser() -> argparse.ArgumentParser:
         # 如果训练时开启但评估时关闭，会导致动作可行域不一致，比较结果失真。
         help="If set, action masks reject budget actions whose decrease tasks include any HI-criticality task.",
     )
+    # automotive workload 允许从 CLI 显式切换 runnable 数量与 workload 语义模式，
+    # 保证评估入口与训练入口能使用相同的 automotive 配置。
+    parser.add_argument("--automotive-num-runnables", type=int, choices=[150, 250], default=150)
+    parser.add_argument(
+        "--automotive-mode",
+        choices=["fast", "paper_like", "paper_exact"],
+        default="paper_like",
+    )
     parser.add_argument("--mask-detail-mode", choices=["minimal", "full"], default="minimal")
     return parser
 
@@ -596,6 +1265,10 @@ def main() -> None:
     """运行正式 DQN 评估，并输出统一 CSV。"""
 
     args = build_parser().parse_args()
+    if args.evaluation_workers < 1:
+        raise ValueError("--evaluation-workers 必须为正整数")
+    if args.max_q_diagnostic_samples < 0:
+        raise ValueError("--max-q-diagnostic-samples 必须为非负整数")
     if args.budget_floor_ratio < 0.0 or args.budget_floor_ratio > 1.0:
         raise ValueError("--budget-floor-ratio must be in [0, 1]")
     if args.workload == "small":
@@ -616,8 +1289,11 @@ def main() -> None:
         )
     else:
         experiment_config = build_automotive_experiment_config(
-            num_runnables=150,
+            num_runnables=args.automotive_num_runnables,
+            mode=args.automotive_mode,
             require_schedulable=args.require_schedulable,
+            scenario_seed_offset=args.scenario_seed_offset,
+            fixed_taskset_seed=args.fixed_taskset_seed,
         )
 
     enabled_methods = set(_parse_baselines(args.baselines))
@@ -628,401 +1304,24 @@ def main() -> None:
     if unsupported_methods:
         raise ValueError(f"不支持的 baselines: {unsupported_methods}")
 
-    rows: list[dict[str, int | float | str]] = []
+    rows: list[dict[str, int | float | str | bool]] = []
     deadline_miss_details: list[dict[str, object]] = []
-    for seed in _parse_seeds(args.seeds):
-        bundle = resolve_experiment_bundle(experiment_config, seed)
-        runtime_config = RuntimeConfig(end_time=args.end_time, semantics=RuntimeSemantics.AMC_PLUS)
-        actions = build_budget_action_space(
-            list(bundle.ordered_tasks),
-            action_space=args.action_space,
-            budget_increase_ratio=args.budget_increase_ratio,
-            budget_decrease_ratio=args.budget_decrease_ratio,
-            include_explicit_noop=args.include_explicit_noop,
-        )
-
-        if args.workload == "rtss11":
-            if args.require_schedulable:
-                amc_rtb_schedulable = True
-            else:
-                amc_rtb_schedulable = evaluate_taskset(
-                    list(bundle.ordered_tasks),
-                    method="amc_rtb",
-                    priority_policy="opa",
-                ).schedulable
-            attempts = bundle.taskset_attempts
-            taskset_seed = bundle.taskset_seed if bundle.taskset_seed is not None else seed
-            scenario_seed = bundle.scenario_seed if bundle.scenario_seed is not None else seed
-        else:
-            amc_rtb_schedulable = True
-            attempts = 1
-            taskset_seed = seed
-            scenario_seed = seed
-
-        row_base: dict[str, int | float | str | bool] = {
-            "workload": args.workload,
-            "total_util": args.total_util,
-            "num_tasks": args.num_tasks,
-            "cf": args.cf,
-            "cp": args.cp,
-            "seed": seed,
-            "taskset_seed": taskset_seed,
-            "scenario_seed": scenario_seed,
-            "amc_rtb_schedulable": amc_rtb_schedulable,
-            "attempts": attempts,
-            "end_time": args.end_time,
-            "agent_period": args.agent_period,
-        }
-        trace_enabled_for_seed = (
-            (args.trace_dir is not None or args.debug_log_dir is not None)
-            and (not trace_seed_set or seed in trace_seed_set)
-        )
-
-        if "amc_plus_baseline" in enabled_methods:
-            baseline_result = simulate_ordered_taskset_event_driven(
-                ordered_tasks=list(bundle.ordered_tasks),
-                scenario=bundle.scenario,
-                config=runtime_config,
-            )
-            baseline_rejection_rate = 0.0
-            rows.append(
-                {
-                    **row_base,
-                    "method": "amc_plus_baseline",
-                    "mode_changes": baseline_result.mode_change_count(),
-                    "lo_cancellations": baseline_result.lo_job_cancellation_count(),
-                    "deadline_misses": len(baseline_result.deadline_misses),
-                    "budget_overruns": _budget_overruns_from_result(baseline_result),
-                    "accepted_actions": 0,
-                    "rejected_actions": 0,
-                    "step_count": 0,
-                    "selected_action_count": 0,
-                    "noop_actions": 0,
-                    "explicit_noop_actions": 0,
-                    "noop_action_rate": 0.0,
-                    "explicit_noop_action_rate": 0.0,
-                    "accepted_action_rate": 0.0,
-                    "rejection_rate": baseline_rejection_rate,
-                    "total_reward": 0.0,
-                    "check_safety": True,
-                    "safety_checked_actions": 0,
-                    "safety_accepted_actions": 0,
-                    "safety_rejected_actions": 0,
-                    "valid_action_count_mean": 0.0,
-                    "masked_action_count_mean": 0.0,
-                    "masked_action_count_max": 0,
-                    "mask_rejection_rate_mean": 0.0,
-                    "selected_invalid_mask_actions": 0,
-                    "selected_explicit_noop_actions": 0,
-                    "selected_explicit_noop_rate": 0.0,
-                    "action_space_type": args.action_space,
-                    "action_count": len(actions),
-                    "budget_increase_ratio": args.budget_increase_ratio,
-                    "budget_decrease_ratio": args.budget_decrease_ratio,
-                    "budget_floor_ratio": args.budget_floor_ratio,
-                    "no_safe_action_steps": 0,
-                    "masked_budget_floor_violation_count": 0,
-                    "masked_budget_floor_violation_rate": 0.0,
-                }
-            )
-            deadline_miss_details.extend(
-                _deadline_miss_detail_rows(
-                    row_base=row_base,
-                    method="amc_plus_baseline",
-                    runtime_result=baseline_result,
-                    action_log=[],
-                )
-            )
-
-        if "noop_agent" in enabled_methods:
-            noop_result = simulate_ordered_taskset_with_agent(
-                ordered_tasks=list(bundle.ordered_tasks),
-                scenario=bundle.scenario,
-                agent=NoOpBudgetAgent(),
-                runtime_config=runtime_config,
-                agent_config=AgentRuntimeConfig(
-                    agent_period=args.agent_period,
-                    end_time=args.end_time,
-                    check_safety=True,
-                    reward_mode=args.reward_mode,
-                    forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
-                    budget_floor_ratio=args.budget_floor_ratio,
-                ),
-                bounds=bundle.normalization_bounds,
-            )
-            # wrapper 路径没有逐步返回 step_count 字段，直接以 action_log 行数作为步数事实来源。
-            noop_step_count = len(noop_result.action_log)
-            noop_selected_action_count = sum(int(row.get("action_id") is not None) for row in noop_result.action_log)
-            # 显式 noop 由 runtime wrapper 在日志中标注，避免通过 action_id 反推造成误判。
-            noop_explicit_noop_actions = sum(int(bool(row.get("is_explicit_noop", False))) for row in noop_result.action_log)
-            noop_rejection_rate = (noop_result.rejected_actions / noop_step_count) if noop_step_count > 0 else 0.0
-            rows.append(
-                {
-                    **row_base,
-                    "method": "noop_agent",
-                    "mode_changes": noop_result.runtime_result.mode_change_count(),
-                    "lo_cancellations": noop_result.runtime_result.lo_job_cancellation_count(),
-                    "deadline_misses": len(noop_result.runtime_result.deadline_misses),
-                    "budget_overruns": _budget_overruns_from_result(noop_result.runtime_result),
-                    "accepted_actions": noop_result.accepted_actions,
-                    "rejected_actions": noop_result.rejected_actions,
-                    "step_count": noop_step_count,
-                    "selected_action_count": noop_selected_action_count,
-                    "noop_actions": noop_result.noop_actions,
-                    "explicit_noop_actions": noop_explicit_noop_actions,
-                    "noop_action_rate": (
-                        (noop_result.noop_actions / noop_step_count) if noop_step_count > 0 else 0.0
-                    ),
-                    "explicit_noop_action_rate": (
-                        (noop_explicit_noop_actions / noop_step_count) if noop_step_count > 0 else 0.0
-                    ),
-                    "accepted_action_rate": (
-                        (noop_result.accepted_actions / noop_step_count) if noop_step_count > 0 else 0.0
-                    ),
-                    "rejection_rate": noop_rejection_rate,
-                    "total_reward": noop_result.total_reward,
-                    "check_safety": True,
-                    "safety_checked_actions": noop_result.safety_checked_actions,
-                    "safety_accepted_actions": noop_result.safety_accepted_actions,
-                    "safety_rejected_actions": noop_result.safety_rejected_actions,
-                    "valid_action_count_mean": 0.0,
-                    "masked_action_count_mean": 0.0,
-                    "masked_action_count_max": 0,
-                    "mask_rejection_rate_mean": 0.0,
-                    "selected_invalid_mask_actions": 0,
-                    "selected_explicit_noop_actions": 0,
-                    "selected_explicit_noop_rate": 0.0,
-                    "action_space_type": args.action_space,
-                    "action_count": len(actions),
-                    "budget_increase_ratio": args.budget_increase_ratio,
-                    "budget_decrease_ratio": args.budget_decrease_ratio,
-                    "budget_floor_ratio": args.budget_floor_ratio,
-                    "no_safe_action_steps": 0,
-                    "masked_budget_floor_violation_count": 0,
-                    "masked_budget_floor_violation_rate": 0.0,
-                }
-            )
-            deadline_miss_details.extend(
-                _deadline_miss_detail_rows(
-                    row_base=row_base,
-                    method="noop_agent",
-                    runtime_result=noop_result.runtime_result,
-                    action_log=noop_result.action_log,
-                )
-            )
-            if (
-                trace_enabled_for_seed
-                and (not trace_method_set or "noop_agent" in trace_method_set)
-            ):
-                _write_agent_debug_files(
-                    trace_dir=args.trace_dir,
-                    debug_log_dir=args.debug_log_dir,
-                    seed=seed,
-                    method="noop_agent",
-                    action_log=noop_result.action_log,
-                    runtime_result=noop_result.runtime_result,
-                )
-
-        if "random_agent" in enabled_methods:
-            random_result = simulate_ordered_taskset_with_agent(
-                ordered_tasks=list(bundle.ordered_tasks),
-                scenario=bundle.scenario,
-                agent=RandomBudgetAgent(actions=actions, seed=seed),
-                runtime_config=runtime_config,
-                agent_config=AgentRuntimeConfig(
-                    agent_period=args.agent_period,
-                    end_time=args.end_time,
-                    check_safety=True,
-                    reward_mode=args.reward_mode,
-                    forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
-                    budget_floor_ratio=args.budget_floor_ratio,
-                ),
-                bounds=bundle.normalization_bounds,
-            )
-            # 与 noop/heuristic 同口径：按 action_log 行数定义 step_count。
-            random_step_count = len(random_result.action_log)
-            random_selected_action_count = sum(int(row.get("action_id") is not None) for row in random_result.action_log)
-            random_explicit_noop_actions = sum(
-                int(bool(row.get("is_explicit_noop", False))) for row in random_result.action_log
-            )
-            random_rejection_rate = (random_result.rejected_actions / random_step_count) if random_step_count > 0 else 0.0
-            rows.append(
-                {
-                    **row_base,
-                    "method": "random_agent",
-                    "mode_changes": random_result.runtime_result.mode_change_count(),
-                    "lo_cancellations": random_result.runtime_result.lo_job_cancellation_count(),
-                    "deadline_misses": len(random_result.runtime_result.deadline_misses),
-                    "budget_overruns": _budget_overruns_from_result(random_result.runtime_result),
-                    "accepted_actions": random_result.accepted_actions,
-                    "rejected_actions": random_result.rejected_actions,
-                    "step_count": random_step_count,
-                    "selected_action_count": random_selected_action_count,
-                    "noop_actions": random_result.noop_actions,
-                    "explicit_noop_actions": random_explicit_noop_actions,
-                    "noop_action_rate": (
-                        (random_result.noop_actions / random_step_count) if random_step_count > 0 else 0.0
-                    ),
-                    "explicit_noop_action_rate": (
-                        (random_explicit_noop_actions / random_step_count) if random_step_count > 0 else 0.0
-                    ),
-                    "accepted_action_rate": (
-                        (random_result.accepted_actions / random_step_count) if random_step_count > 0 else 0.0
-                    ),
-                    "rejection_rate": random_rejection_rate,
-                    "total_reward": random_result.total_reward,
-                    "check_safety": True,
-                    "safety_checked_actions": random_result.safety_checked_actions,
-                    "safety_accepted_actions": random_result.safety_accepted_actions,
-                    "safety_rejected_actions": random_result.safety_rejected_actions,
-                    "valid_action_count_mean": 0.0,
-                    "masked_action_count_mean": 0.0,
-                    "masked_action_count_max": 0,
-                    "mask_rejection_rate_mean": 0.0,
-                    "selected_invalid_mask_actions": 0,
-                    "selected_explicit_noop_actions": 0,
-                    "selected_explicit_noop_rate": 0.0,
-                    "action_space_type": args.action_space,
-                    "action_count": len(actions),
-                    "budget_increase_ratio": args.budget_increase_ratio,
-                    "budget_decrease_ratio": args.budget_decrease_ratio,
-                    "budget_floor_ratio": args.budget_floor_ratio,
-                    "no_safe_action_steps": 0,
-                    "masked_budget_floor_violation_count": 0,
-                    "masked_budget_floor_violation_rate": 0.0,
-                }
-            )
-            deadline_miss_details.extend(
-                _deadline_miss_detail_rows(
-                    row_base=row_base,
-                    method="random_agent",
-                    runtime_result=random_result.runtime_result,
-                    action_log=random_result.action_log,
-                )
-            )
-            if (
-                trace_enabled_for_seed
-                and (not trace_method_set or "random_agent" in trace_method_set)
-            ):
-                _write_agent_debug_files(
-                    trace_dir=args.trace_dir,
-                    debug_log_dir=args.debug_log_dir,
-                    seed=seed,
-                    method="random_agent",
-                    action_log=random_result.action_log,
-                    runtime_result=random_result.runtime_result,
-                )
-
-        if "heuristic_agent" in enabled_methods:
-            heuristic_result = simulate_ordered_taskset_with_agent(
-                ordered_tasks=list(bundle.ordered_tasks),
-                scenario=bundle.scenario,
-                agent=HeuristicBudgetAgent(actions=actions),
-                runtime_config=runtime_config,
-                agent_config=AgentRuntimeConfig(
-                    agent_period=args.agent_period,
-                    end_time=args.end_time,
-                    check_safety=True,
-                    reward_mode=args.reward_mode,
-                    forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
-                    budget_floor_ratio=args.budget_floor_ratio,
-                ),
-                bounds=bundle.normalization_bounds,
-            )
-            # 与其它 wrapper baseline 保持同一分母定义，便于统一比较动作率。
-            heuristic_step_count = len(heuristic_result.action_log)
-            heuristic_selected_action_count = sum(
-                int(row.get("action_id") is not None) for row in heuristic_result.action_log
-            )
-            heuristic_explicit_noop_actions = sum(
-                int(bool(row.get("is_explicit_noop", False))) for row in heuristic_result.action_log
-            )
-            heuristic_rejection_rate = (
-                (heuristic_result.rejected_actions / heuristic_step_count)
-                if heuristic_step_count > 0
-                else 0.0
-            )
-            rows.append(
-                {
-                    **row_base,
-                    "method": "heuristic_agent",
-                    "mode_changes": heuristic_result.runtime_result.mode_change_count(),
-                    "lo_cancellations": heuristic_result.runtime_result.lo_job_cancellation_count(),
-                    "deadline_misses": len(heuristic_result.runtime_result.deadline_misses),
-                    "budget_overruns": _budget_overruns_from_result(heuristic_result.runtime_result),
-                    "accepted_actions": heuristic_result.accepted_actions,
-                    "rejected_actions": heuristic_result.rejected_actions,
-                    "step_count": heuristic_step_count,
-                    "selected_action_count": heuristic_selected_action_count,
-                    "noop_actions": heuristic_result.noop_actions,
-                    "explicit_noop_actions": heuristic_explicit_noop_actions,
-                    "noop_action_rate": (
-                        (heuristic_result.noop_actions / heuristic_step_count)
-                        if heuristic_step_count > 0
-                        else 0.0
-                    ),
-                    "explicit_noop_action_rate": (
-                        (heuristic_explicit_noop_actions / heuristic_step_count)
-                        if heuristic_step_count > 0
-                        else 0.0
-                    ),
-                    "accepted_action_rate": (
-                        (heuristic_result.accepted_actions / heuristic_step_count)
-                        if heuristic_step_count > 0
-                        else 0.0
-                    ),
-                    "rejection_rate": heuristic_rejection_rate,
-                    "total_reward": heuristic_result.total_reward,
-                    "check_safety": True,
-                    "safety_checked_actions": heuristic_result.safety_checked_actions,
-                    "safety_accepted_actions": heuristic_result.safety_accepted_actions,
-                    "safety_rejected_actions": heuristic_result.safety_rejected_actions,
-                    "valid_action_count_mean": 0.0,
-                    "masked_action_count_mean": 0.0,
-                    "masked_action_count_max": 0,
-                    "mask_rejection_rate_mean": 0.0,
-                    "selected_invalid_mask_actions": 0,
-                    "selected_explicit_noop_actions": 0,
-                    "selected_explicit_noop_rate": 0.0,
-                    "action_space_type": args.action_space,
-                    "action_count": len(actions),
-                    "budget_increase_ratio": args.budget_increase_ratio,
-                    "budget_decrease_ratio": args.budget_decrease_ratio,
-                    "budget_floor_ratio": args.budget_floor_ratio,
-                    "no_safe_action_steps": 0,
-                    "masked_budget_floor_violation_count": 0,
-                    "masked_budget_floor_violation_rate": 0.0,
-                }
-            )
-            deadline_miss_details.extend(
-                _deadline_miss_detail_rows(
-                    row_base=row_base,
-                    method="heuristic_agent",
-                    runtime_result=heuristic_result.runtime_result,
-                    action_log=heuristic_result.action_log,
-                )
-            )
-            if (
-                trace_enabled_for_seed
-                and (not trace_method_set or "heuristic_agent" in trace_method_set)
-            ):
-                _write_agent_debug_files(
-                    trace_dir=args.trace_dir,
-                    debug_log_dir=args.debug_log_dir,
-                    seed=seed,
-                    method="heuristic_agent",
-                    action_log=heuristic_result.action_log,
-                    runtime_result=heuristic_result.runtime_result,
-                )
-
-        if "dqn_agent" in enabled_methods:
-            dqn_row, dqn_runtime_result, dqn_action_log = _evaluate_dqn_once(
-                model_path=args.model,
-                experiment_config=experiment_config,
-                agent_period=args.agent_period,
+    seeds = _parse_seeds(args.seeds)
+    if args.evaluation_workers == 1:
+        per_seed_results = [
+            _evaluate_enabled_methods_for_seed(
                 seed=seed,
+                experiment_config=experiment_config,
+                workload=args.workload,
+                total_util=args.total_util,
+                num_tasks=args.num_tasks,
+                cf=args.cf,
+                cp=args.cp,
+                require_schedulable=args.require_schedulable,
+                enabled_methods=enabled_methods,
+                model_path=args.model,
                 end_time=args.end_time,
-                row_base=row_base,
+                agent_period=args.agent_period,
                 reward_mode=args.reward_mode,
                 action_space=args.action_space,
                 budget_increase_ratio=args.budget_increase_ratio,
@@ -1033,17 +1332,53 @@ def main() -> None:
                 mask_detail_mode=args.mask_detail_mode,
                 trace_dir=args.trace_dir,
                 debug_log_dir=args.debug_log_dir,
-                trace_enabled=trace_enabled_for_seed and (not trace_method_set or "dqn_agent" in trace_method_set),
+                trace_seed_set=trace_seed_set,
+                trace_method_set=trace_method_set,
+                double_dqn=args.double_dqn,
+                max_q_diagnostic_samples=args.max_q_diagnostic_samples,
             )
-            rows.append(dqn_row)
-            deadline_miss_details.extend(
-                _deadline_miss_detail_rows(
-                    row_base=row_base,
-                    method="dqn_agent",
-                    runtime_result=dqn_runtime_result,
-                    action_log=dqn_action_log,
-                )
+            for seed in seeds
+        ]
+    else:
+        # 按 seed 并行时，每个 worker 都独立完成该 seed 的全部方法评估。
+        # executor.map 会保持输入 seeds 的顺序，因此最终 CSV 仍然是稳定的。
+        worker_args = [
+            (
+                seed,
+                experiment_config,
+                args.workload,
+                args.total_util,
+                args.num_tasks,
+                args.cf,
+                args.cp,
+                args.require_schedulable,
+                enabled_methods,
+                args.model,
+                args.end_time,
+                args.agent_period,
+                args.reward_mode,
+                args.action_space,
+                args.budget_increase_ratio,
+                args.budget_decrease_ratio,
+                args.include_explicit_noop,
+                args.budget_floor_ratio,
+                args.forbid_decreasing_hi_budgets,
+                args.mask_detail_mode,
+                args.trace_dir,
+                args.debug_log_dir,
+                trace_seed_set,
+                trace_method_set,
+                args.double_dqn,
+                args.max_q_diagnostic_samples,
             )
+            for seed in seeds
+        ]
+        with ProcessPoolExecutor(max_workers=args.evaluation_workers) as executor:
+            per_seed_results = list(executor.map(_evaluate_seed_worker, worker_args))
+
+    for seed_rows, seed_deadline_miss_details in per_seed_results:
+        rows.extend(seed_rows)
+        deadline_miss_details.extend(seed_deadline_miss_details)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
@@ -1097,6 +1432,7 @@ def main() -> None:
         "end_time",
         "agent_period",
     ]
+    fieldnames.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
     with args.output.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()

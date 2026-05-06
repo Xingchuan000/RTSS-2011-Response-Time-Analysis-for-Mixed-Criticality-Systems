@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from amc_py.dqn import (
     ExperimentConfig,
+    build_automotive_experiment_config,
     build_env_from_experiment_config,
     build_small_stress_experiment_config,
     resolve_experiment_bundle,
@@ -70,3 +71,37 @@ def test_different_seed_changes_bundle_and_same_seed_is_reproducible() -> None:
     assert bundle_a.ordered_tasks == bundle_b.ordered_tasks
     assert bundle_a.normalization_bounds == bundle_b.normalization_bounds
     assert bundle_a.ordered_tasks != bundle_c.ordered_tasks
+
+
+def test_automotive_workload_provider_branch_can_resolve_bundle() -> None:
+    """provider 分支应能解析出 bundle，并保留 automotive 命名。"""
+
+    config = build_automotive_experiment_config(num_runnables=150, require_schedulable=False)
+    bundle = resolve_experiment_bundle(config, seed=0)
+
+    assert bundle.ordered_tasks
+    assert bundle.scenario.name.startswith("automotive")
+    assert bundle.normalization_bounds
+
+
+def test_experiment_config_rejects_invalid_source_combinations() -> None:
+    """ExperimentConfig 应拒绝“都给”或“都不给”的歧义配置。"""
+
+    try:
+        ExperimentConfig(name="invalid_empty")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError when no source is configured")
+
+    try:
+        ExperimentConfig(
+            name="invalid_both",
+            taskset_factory=build_seeded_taskset,
+            scenario_factory=lambda seed, tasks: make_nominal_scenario(),
+            workload_provider=build_automotive_experiment_config().workload_provider,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError when both provider and factories are configured")

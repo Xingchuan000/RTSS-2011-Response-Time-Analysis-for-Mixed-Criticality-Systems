@@ -122,7 +122,13 @@ def test_optimize_returns_finite_loss_when_replay_is_ready() -> None:
 def test_save_and_load_keep_same_greedy_output(tmp_path: Path) -> None:
     """save/load 后同一状态的 greedy 输出应一致。"""
 
-    agent = _agent(_config(epsilon_start=0.0, epsilon_end=0.0))
+    agent = DqnBudgetAgent(
+        observation_dim=len(STATE),
+        action_dim=3,
+        config=_config(epsilon_start=0.0, epsilon_end=0.0),
+        noop_action_id=2,
+        double_dqn=True,
+    )
     _set_q_bias(agent, (0.5, 1.5, 1.0))
     expected = agent.select_action_id(STATE, training=False)
 
@@ -131,3 +137,36 @@ def test_save_and_load_keep_same_greedy_output(tmp_path: Path) -> None:
     loaded = DqnBudgetAgent.load(model_path)
 
     assert loaded.select_action_id(STATE, training=False) == expected
+    assert loaded.noop_action_id == 2
+    assert loaded.double_dqn is True
+
+
+def test_noop_q_rank_is_one_when_noop_is_best() -> None:
+    """当显式 noop 是合法动作中最高 Q 时，rank 应为 1。"""
+
+    agent = DqnBudgetAgent(observation_dim=len(STATE), action_dim=3, config=_config(), noop_action_id=2)
+    _set_q_bias(agent, (0.1, 0.2, 0.3))
+    diagnostics = agent.compute_noop_q_diagnostics(
+        torch.tensor([STATE], dtype=torch.float32, device=agent.device),
+        torch.tensor([[True, True, True]], dtype=torch.bool, device=agent.device),
+    )
+    assert diagnostics.noop_q_rank_mean == 1.0
+    assert diagnostics.noop_q_margin_to_best_mean == 0.0
+    assert diagnostics.noop_q_is_best_rate == 1.0
+    assert diagnostics.noop_valid_rate == 1.0
+    assert diagnostics.sample_count == 1
+
+
+def test_noop_q_diagnostics_return_empty_fields_when_noop_is_invalid() -> None:
+    """当显式 noop 在所有样本中都非法时，只应保留 noop_valid_rate 与样本数。"""
+
+    agent = DqnBudgetAgent(observation_dim=len(STATE), action_dim=3, config=_config(), noop_action_id=2)
+    _set_q_bias(agent, (0.1, 0.2, 0.3))
+    diagnostics = agent.compute_noop_q_diagnostics(
+        torch.tensor([STATE], dtype=torch.float32, device=agent.device),
+        torch.tensor([[True, True, False]], dtype=torch.bool, device=agent.device),
+    )
+    assert diagnostics.noop_valid_rate == 0.0
+    assert diagnostics.sample_count == 1
+    assert diagnostics.noop_q_mean is None
+    assert diagnostics.noop_q_rank_mean is None

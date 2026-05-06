@@ -19,6 +19,7 @@ from amc_py.runtime_scenarios import (
     make_rtss11_random_scenario,
     make_table_scenario,
 )
+from amc_py.workloads.base import WorkloadProvider
 
 TasksetFactory = Callable[[int], list[Task]]
 ScenarioFactory = Callable[[int, Sequence[Task]], ExecutionScenario]
@@ -30,10 +31,22 @@ class ExperimentConfig:
     """描述一组可复用的训练/评估环境构造参数。"""
 
     name: str
-    taskset_factory: TasksetFactory
-    scenario_factory: ScenarioFactory
+    taskset_factory: TasksetFactory | None = None
+    scenario_factory: ScenarioFactory | None = None
     normalization_bounds_factory: NormalizationBoundsFactory | None = None
+    workload_provider: WorkloadProvider | None = None
     check_safety: bool = True
+
+    def __post_init__(self) -> None:
+        """校验 experiment 配置只使用一种数据来源。"""
+
+        has_provider = self.workload_provider is not None
+        has_factories = self.taskset_factory is not None and self.scenario_factory is not None
+        if has_provider == has_factories:
+            raise ValueError(
+                "ExperimentConfig must use exactly one source: "
+                "either workload_provider or taskset/scenario factories"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,9 +130,95 @@ def build_small_nominal_experiment_config() -> ExperimentConfig:
     )
 
 
+def build_automotive_experiment_config(
+    *,
+    num_runnables: int = 150,
+    mode: str = "paper_like",
+    require_schedulable: bool = False,
+    check_safety: bool = True,
+    hi_probability: float = 0.5,
+    weibull_shape: float = 2.0,
+    lo_budget_quantile: float = 0.7,
+    period_scale: int = 100,
+    max_attempts: int = 50,
+    scenario_seed_offset: int = 100000,
+    fixed_taskset_seed: int | None = None,
+) -> ExperimentConfig:
+    """构造可直接接入训练/评估流程的 automotive experiment 配置。
+
+    这里把 automotive provider 的 import 放在函数内部，目的是保持依赖方向单向：
+    DQN 层可以主动选择使用 workload provider，但 workload 模块本身不需要知道 DQN。
+    """
+
+    from amc_py.workloads.automotive import AutomotiveWorkloadConfig, AutomotiveWorkloadProvider
+
+    provider = AutomotiveWorkloadProvider(
+        AutomotiveWorkloadConfig(
+            num_runnables=num_runnables,
+            mode=mode,
+            require_schedulable=require_schedulable,
+            hi_probability=hi_probability,
+            weibull_shape=weibull_shape,
+            lo_budget_quantile=lo_budget_quantile,
+            period_scale=period_scale,
+            max_attempts=max_attempts,
+        ),
+        fixed_taskset_seed=fixed_taskset_seed,
+        scenario_seed_offset=scenario_seed_offset,
+    )
+    return ExperimentConfig(
+        name=f"automotive_{mode}_{num_runnables}",
+        workload_provider=provider,
+        check_safety=check_safety,
+    )
+
+
+def build_experiment_config(name: str, **kwargs) -> ExperimentConfig:
+    """按统一字符串名称选择 experiment builder。"""
+
+    if name == "small_stress":
+        return build_small_stress_experiment_config()
+    if name == "small_nominal":
+        return build_small_nominal_experiment_config()
+    if name == "rtss11":
+        return build_rtss11_experiment_config(**kwargs)
+    if name == "automotive":
+        return build_automotive_experiment_config(**kwargs)
+    raise ValueError(f"unsupported workload/experiment name: {name}")
+
+
 def resolve_experiment_bundle(config: ExperimentConfig, seed: int) -> ExperimentBundle:
     """使用实验工厂解析出任务集、场景与归一化边界。"""
 
+    if config.workload_provider is not None:
+        # provider 分支服务新的 workload 层抽象。
+        # workload provider 只返回“未排序任务集”，优先级解析必须仍由 experiment 层统一负责，
+        # 这样才能保证排序策略不会倒灌回 workload 模块。
+        workload_bundle = config.workload_provider.build(seed)
+        ordered_tasks = resolve_ordering(
+            list(workload_bundle.tasks),
+            method="amc_rtb",
+            priority_policy="dm",
+        )
+        fingerprint_source = str(
+            [
+                (task.name, task.period, task.deadline, task.c_lo, task.c_hi, task.criticality.value)
+                for task in ordered_tasks
+            ]
+        ).encode("utf-8")
+        taskset_fingerprint = hashlib.sha256(fingerprint_source).hexdigest()[:12]
+        return ExperimentBundle(
+            ordered_tasks=tuple(ordered_tasks),
+            scenario=workload_bundle.scenario,
+            normalization_bounds=workload_bundle.normalization_bounds,
+            taskset_seed=workload_bundle.taskset_seed,
+            scenario_seed=workload_bundle.scenario_seed,
+            taskset_attempts=workload_bundle.attempts,
+            taskset_fingerprint=taskset_fingerprint,
+        )
+
+    assert config.taskset_factory is not None
+    assert config.scenario_factory is not None
     ordered_tasks = tuple(config.taskset_factory(seed))
     scenario = config.scenario_factory(seed, ordered_tasks)
     normalization_bounds = (

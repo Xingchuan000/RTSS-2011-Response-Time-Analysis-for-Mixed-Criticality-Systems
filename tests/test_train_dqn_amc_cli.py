@@ -47,6 +47,8 @@ def test_train_dqn_amc_cli_runs_and_writes_expected_outputs(tmp_path: Path) -> N
     assert "dqn_config" in config_payload
     assert "normalization_bounds" in config_payload
     assert "budget_floor_ratio" in config_payload
+    assert config_payload["validation_workers"] == 1
+    assert config_payload["log_step_every"] == 1
 
     with (output_dir / "train_log.csv").open("r", encoding="utf-8", newline="") as f:
         rows = list(csv.DictReader(f))
@@ -120,6 +122,82 @@ def test_train_cli_rejects_invalid_budget_floor_ratio(tmp_path: Path) -> None:
             str(output_dir),
             "--budget-floor-ratio",
             "1.1",
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        check=False,
+    )
+    assert result.returncode != 0
+
+
+def test_train_cli_supports_parallel_validation_and_disabling_step_log(tmp_path: Path) -> None:
+    """并行 validation 与关闭 step 日志时，训练仍应正常完成并写出空表头 CSV。"""
+
+    output_dir = tmp_path / "parallel_validation"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--workload",
+            "small",
+            "--episodes",
+            "2",
+            "--end-time",
+            "100",
+            "--validate-every",
+            "1",
+            "--validation-seeds",
+            "100:101",
+            "--validation-workers",
+            "2",
+            "--log-step-every",
+            "0",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+
+    train_log_path = output_dir / "train_log.csv"
+    validation_metrics_path = output_dir / "validation_metrics.csv"
+    assert train_log_path.exists()
+    assert validation_metrics_path.exists()
+
+    with train_log_path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        fieldnames = reader.fieldnames
+
+    assert fieldnames is not None
+    assert "valid_action_count" in fieldnames
+    assert rows == []
+
+    with (output_dir / "config.json").open("r", encoding="utf-8") as f:
+        config_payload = json.load(f)
+    assert config_payload["validation_workers"] == 2
+    assert config_payload["log_step_every"] == 0
+
+
+def test_train_cli_rejects_invalid_validation_workers(tmp_path: Path) -> None:
+    """validation worker 数小于 1 时，训练 CLI 应显式报错。"""
+
+    output_dir = tmp_path / "invalid_validation_workers"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--episodes",
+            "1",
+            "--end-time",
+            "20",
+            "--output-dir",
+            str(output_dir),
+            "--validation-workers",
+            "0",
         ],
         cwd=PROJECT_ROOT,
         env=env,
