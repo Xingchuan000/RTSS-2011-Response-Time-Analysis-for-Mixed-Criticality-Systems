@@ -660,6 +660,32 @@ class AmcBudgetEnv:
         delta_mode_changes = mode_changes - self._prev_mode_changes
         delta_lo_cancellations = lo_cancellations - self._prev_lo_cancellations
         delta_deadline_misses = deadline_misses - self._prev_deadline_misses
+        # interval_time 表示“本次 step 覆盖了多长模拟时间”。
+        # 这里严格按文档采用 max(1.0, current_time - action_time)：
+        # 1) 分母不会为 0；
+        # 2) 后续 mode_change_rate 使用该值归一化，避免短 interval 下数值异常放大。
+        interval_time = max(1.0, float(current_time - action_time))
+        # delta_total_jobs 表示“本次 interval 内启动了多少个 job”。
+        # 同样使用 max(1.0, delta_job_start) 作为归一化分母，确保 overrun/miss 比率可计算。
+        delta_total_jobs = max(1.0, float(delta_job_start))
+        # LO overrun rate：interval 内 LO overrun 次数 / interval 内 job_start 次数。
+        lo_overrun_rate = float(delta_lo_overrun) / delta_total_jobs
+        # HI overrun rate：interval 内 HI overrun 次数 / interval 内 job_start 次数。
+        hi_overrun_rate = float(delta_hi_overrun) / delta_total_jobs
+        # mode change rate：interval 内模式切换次数 / interval 覆盖时长。
+        # 该变量保留是为了兼容可能已存在的旧 reward 公式。
+        mode_change_rate = float(delta_mode_changes) / interval_time
+        # mode_change_per_job：interval 内模式切换次数 / interval 内 job_start 次数。
+        # 这是当前更稳的主推荐指标：每次 mode change 的惩罚会随着该 interval 的 job 数归一化，
+        # 避免“单次 mode change 在 job 很少时对 reward 造成过大离散冲击”。
+        mode_change_per_job = float(delta_mode_changes) / delta_total_jobs
+        # LO cancellation rate：interval 内 LO 任务取消次数 / interval 内 job_start 次数。
+        lo_cancellation_rate = float(delta_lo_cancellations) / delta_total_jobs
+        # deadline miss rate：interval 内 deadline miss 次数 / interval 内 job_start 次数。
+        deadline_miss_rate = float(delta_deadline_misses) / delta_total_jobs
+        # invalid_action：动作经过安全检查且未被接受时记为 1.0，否则记为 0.0。
+        # 这样可以把“动作被拒绝”作为一个可在奖励公式里直接惩罚的显式信号。
+        invalid_action = 1.0 if action_was_checked and not accepted else 0.0
 
         step_reward_job_start = 0.0
         step_reward_lo_overrun = 0.0
@@ -691,12 +717,21 @@ class AmcBudgetEnv:
             initial_budgets=self._initial_budgets,
             changed_task_ids=tuple(updates.keys()),
         )
-        # 下面分量用于日志可解释性，直接记录事件奖励分量。
-        step_reward_job_start = event_job_start_reward
-        step_reward_lo_overrun = event_lo_overrun_reward
-        step_reward_hi_overrun = event_hi_overrun_reward
+        # 下面分量用于日志可解释性：
+        # 这里不再记录旧 event-based 分量，而是记录“与当前 interval 公式同口径”的主要分量，
+        # 这样 episode 级别的 reward_*_sum 才能反映当前训练目标，而不是被 event_weights=0 误导为全 0。
+        # 注意：这些分量是诊断口径，最终总 reward 仍以 step_reward_formula 的表达式求值为准。
         budget_after = dict(self._engine.runtime_budgets.budgets)
         reward_parameters = self._reward_mode_config.reward_parameters
+        # job_start_weight 对应公式中的正向 job 启动奖励系数。
+        job_start_weight = float(reward_parameters.get("job_start_weight", 0.0))
+        # 以下 penalty 系数与 interval 公式中的各惩罚项一一对应。
+        lo_overrun_penalty = float(reward_parameters.get("lo_overrun_penalty", 0.0))
+        hi_overrun_penalty = float(reward_parameters.get("hi_overrun_penalty", 0.0))
+        mode_change_penalty = float(reward_parameters.get("mode_change_penalty", 0.0))
+        lo_cancellation_penalty = float(reward_parameters.get("lo_cancellation_penalty", 0.0))
+        deadline_miss_penalty = float(reward_parameters.get("deadline_miss_penalty", 0.0))
+        invalid_action_penalty = float(reward_parameters.get("invalid_action_penalty", 0.0))
         noop_bonus = float(reward_parameters.get("noop_bonus", 0.0))
         budget_change_penalty = float(reward_parameters.get("budget_change_penalty", 0.0))
         budget_drift_penalty = float(reward_parameters.get("budget_drift_penalty", 0.0))
@@ -707,23 +742,57 @@ class AmcBudgetEnv:
             initial_budgets=self._initial_budgets,
         )
         budget_drift_penalty_value = budget_drift_penalty * budget_drift_mean
+        # interval 公式分量（用于日志拆分）：
+        # - lo/hi/job_start 保留 event 分量并叠加 interval 分量，兼容旧 reward mode 的日志语义；
+        # - mode change 惩罚明确使用按 job 归一化后的 mode_change_per_job；
+        # - 各项符号与公式保持一致（惩罚项为负）。
+        step_reward_job_start = event_job_start_reward + job_start_weight * float(delta_job_start)
+        step_reward_lo_overrun = event_lo_overrun_reward - lo_overrun_penalty * lo_overrun_rate
+        step_reward_hi_overrun = event_hi_overrun_reward - hi_overrun_penalty * hi_overrun_rate
+        step_reward_mode_change = -mode_change_penalty * mode_change_per_job
+        step_reward_lo_cancellation = -lo_cancellation_penalty * lo_cancellation_rate
+        step_reward_deadline_miss = -deadline_miss_penalty * deadline_miss_rate
+        step_reward_invalid_action = -invalid_action_penalty * invalid_action
+        # reward_variables 是“奖励表达式可见变量表”：
+        # - 继续保留原有 event/paper 变量，确保旧 reward 配置不受影响；
+        # - 新增 interval 差分与 rate 变量，供 interval-based reward 使用；
+        # - 后续再把 reward_parameters 动态合并进来，使 JSON 可直接引用参数名。
+        reward_variables: dict[str, float | bool] = {
+            "paper_reward": float(paper_reward),
+            "noop_bonus_if_noop": float(noop_bonus_if_noop),
+            "budget_change_penalty": float(budget_change_penalty),
+            "budget_change_norm": float(budget_change_norm),
+            "budget_drift_penalty": float(budget_drift_penalty),
+            "budget_drift_mean": float(budget_drift_mean),
+            "is_explicit_noop_action": bool(is_explicit_noop_action),
+            "event_job_start_reward": float(event_job_start_reward),
+            "event_lo_overrun_reward": float(event_lo_overrun_reward),
+            "event_hi_overrun_reward": float(event_hi_overrun_reward),
+            "delta_job_start": float(delta_job_start),
+            "delta_lo_overrun": float(delta_lo_overrun),
+            "delta_hi_overrun": float(delta_hi_overrun),
+            "delta_mode_changes": float(delta_mode_changes),
+            "delta_lo_cancellations": float(delta_lo_cancellations),
+            "delta_deadline_misses": float(delta_deadline_misses),
+            "interval_time": float(interval_time),
+            "delta_total_jobs": float(delta_total_jobs),
+            "lo_overrun_rate": float(lo_overrun_rate),
+            "hi_overrun_rate": float(hi_overrun_rate),
+            "mode_change_rate": float(mode_change_rate),
+            "mode_change_per_job": float(mode_change_per_job),
+            "lo_cancellation_rate": float(lo_cancellation_rate),
+            "deadline_miss_rate": float(deadline_miss_rate),
+            "invalid_action": float(invalid_action),
+        }
+        # 必须把 reward_parameters 合并进变量表：
+        # 这样 step_reward_formula 可以直接写 `lo_overrun_penalty * lo_overrun_rate`，
+        # 而无需在公式里硬编码数值，便于后续仅通过配置调参。
+        for key, value in reward_parameters.items():
+            if isinstance(value, (int, float, bool)):
+                reward_variables[key] = float(value)
         reward = evaluate_reward_expression(
             self._reward_mode_config.step_reward_formula,
-            {
-                "paper_reward": float(paper_reward),
-                "noop_bonus_if_noop": float(noop_bonus_if_noop),
-                "budget_change_penalty": float(budget_change_penalty),
-                "budget_change_norm": float(budget_change_norm),
-                "budget_drift_penalty": float(budget_drift_penalty),
-                "budget_drift_mean": float(budget_drift_mean),
-                "is_explicit_noop_action": bool(is_explicit_noop_action),
-                "event_job_start_reward": float(event_job_start_reward),
-                "event_lo_overrun_reward": float(event_lo_overrun_reward),
-                "event_hi_overrun_reward": float(event_hi_overrun_reward),
-                "delta_job_start": float(delta_job_start),
-                "delta_lo_overrun": float(delta_lo_overrun),
-                "delta_hi_overrun": float(delta_hi_overrun),
-            },
+            reward_variables,
         )
         self._prev_job_start_count = self._monitor.job_start_count
         self._prev_lo_overrun_count = self._monitor.lo_overrun_count
@@ -767,6 +836,22 @@ class AmcBudgetEnv:
             "mode_changes": mode_changes,
             "lo_cancellations": lo_cancellations,
             "deadline_misses": deadline_misses,
+            "interval_time": float(interval_time),
+            "delta_total_jobs": float(delta_total_jobs),
+            "delta_job_start": float(delta_job_start),
+            "delta_lo_overrun": float(delta_lo_overrun),
+            "delta_hi_overrun": float(delta_hi_overrun),
+            "delta_mode_changes": float(delta_mode_changes),
+            "delta_lo_cancellations": float(delta_lo_cancellations),
+            "delta_deadline_misses": float(delta_deadline_misses),
+            "lo_overrun_rate": float(lo_overrun_rate),
+            "hi_overrun_rate": float(hi_overrun_rate),
+            "mode_change_rate": float(mode_change_rate),
+            "mode_change_per_job": float(mode_change_per_job),
+            "lo_cancellation_rate": float(lo_cancellation_rate),
+            "deadline_miss_rate": float(deadline_miss_rate),
+            "invalid_action": float(invalid_action),
+            "reward": float(reward),
             "step_reward_total": reward,
             "paper_reward": paper_reward,
             "noop_reward_bonus": noop_bonus_if_noop,
@@ -781,6 +866,8 @@ class AmcBudgetEnv:
             "step_reward_mode_change": step_reward_mode_change,
             "step_reward_lo_cancellation": step_reward_lo_cancellation,
             "step_reward_deadline_miss": step_reward_deadline_miss,
+            # invalid_action 惩罚单独记录，便于分析“动作被拒绝”对 reward 的影响权重。
+            "step_reward_invalid_action": step_reward_invalid_action,
         }
         action_log_entry = dict(info)
         action_log_entry["time"] = action_time

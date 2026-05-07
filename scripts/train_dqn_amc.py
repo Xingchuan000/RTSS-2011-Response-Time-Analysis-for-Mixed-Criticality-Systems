@@ -59,8 +59,15 @@ STEP_LOG_FIELDNAMES = [
     "step_reward_mode_change",
     "step_reward_lo_cancellation",
     "step_reward_deadline_miss",
+    "step_reward_invalid_action",
     "paper_reward",
     "noop_reward_bonus",
+    "lo_overrun_rate",
+    "hi_overrun_rate",
+    "mode_change_per_job",
+    "lo_cancellation_rate",
+    "deadline_miss_rate",
+    "invalid_action",
     "budget_change_norm",
     "budget_change_penalty_value",
     "budget_drift_mean",
@@ -706,6 +713,12 @@ def _build_validation_unified_summary_rows(
                 "relative_score_alpha": float(row["relative_score_alpha"]),
                 "relative_delta_mode_changes": float(row["relative_delta_mode_changes"]),
                 "relative_delta_lo_cancellations": float(row["relative_delta_lo_cancellations"]),
+                "raw_delta_mode_changes": float(
+                    row.get("raw_delta_mode_changes", row["dqn_mode_changes_delta_mean"])
+                ),
+                "raw_delta_lo_cancellations": float(
+                    row.get("raw_delta_lo_cancellations", row["dqn_lo_cancellations_delta_mean"])
+                ),
                 "is_better_than_baseline": bool(row["is_better_than_baseline"]),
                 "mode_changes_delta_vs_baseline": float(row["dqn_mode_changes_delta_mean"]),
                 "lo_cancellations_delta_vs_baseline": float(row["dqn_lo_cancellations_delta_mean"]),
@@ -1153,8 +1166,16 @@ def main() -> None:
                         "step_reward_mode_change": float(result.info.get("step_reward_mode_change", 0.0)),
                         "step_reward_lo_cancellation": float(result.info.get("step_reward_lo_cancellation", 0.0)),
                         "step_reward_deadline_miss": float(result.info.get("step_reward_deadline_miss", 0.0)),
+                        "step_reward_invalid_action": float(result.info.get("step_reward_invalid_action", 0.0)),
                         "paper_reward": float(result.info.get("paper_reward", 0.0)),
                         "noop_reward_bonus": float(result.info.get("noop_reward_bonus", 0.0)),
+                        # 新 reward 公式关键变量写入 step log，便于后续定位“哪一项在主导训练”。
+                        "lo_overrun_rate": float(result.info.get("lo_overrun_rate", 0.0)),
+                        "hi_overrun_rate": float(result.info.get("hi_overrun_rate", 0.0)),
+                        "mode_change_per_job": float(result.info.get("mode_change_per_job", 0.0)),
+                        "lo_cancellation_rate": float(result.info.get("lo_cancellation_rate", 0.0)),
+                        "deadline_miss_rate": float(result.info.get("deadline_miss_rate", 0.0)),
+                        "invalid_action": float(result.info.get("invalid_action", 0.0)),
                         "budget_change_norm": float(result.info.get("budget_change_norm", 0.0)),
                         "budget_change_penalty_value": float(result.info.get("budget_change_penalty_value", 0.0)),
                         "budget_drift_mean": float(result.info.get("budget_drift_mean", 0.0)),
@@ -1320,23 +1341,43 @@ def main() -> None:
                 print("Using cached baseline validation metrics")
             validation_row["episode"] = episode + 1
             # 阶段 2：显式记录相对 baseline 的两类 delta，并按 alpha 计算综合分数。
-            # 这里严格保持“relative_score 越小越好”的选模口径。
-            # 公式：relative_score = delta_lo + alpha * delta_mode
-            # 其中：
-            # - delta_lo   = dqn_lo_cancellations_mean - baseline_lo_cancellations_mean
-            # - delta_mode = dqn_mode_changes_mean    - baseline_mode_changes_mean
-            # is_better_than_baseline 仅做标记，不参与是否保存 best 的硬门槛。
-            delta_lo = (
+            # 当前版本采用“归一化 validation 口径”，使 validation 选模尺度与 interval reward 更一致：
+            # - raw_delta_lo   = dqn_lo_cancellations_mean - baseline_lo_cancellations_mean
+            # - raw_delta_mode = dqn_mode_changes_mean    - baseline_mode_changes_mean
+            # - normalized_delta_lo   = raw_delta_lo   / max(1, baseline_lo_cancellations_mean)
+            # - normalized_delta_mode = raw_delta_mode / max(1, baseline_mode_changes_mean)
+            # 公式：relative_score = normalized_delta_lo + alpha * normalized_delta_mode
+            # 因此 relative_score 越小越好，<0 表示按归一化综合指标优于 baseline。
+            # raw delta 仍写入额外字段，便于人工查看实际 count 差异。
+            raw_delta_lo = (
                 float(validation_row["lo_cancellations_mean"])
                 - float(validation_row["baseline_lo_cancellations_mean"])
             )
-            delta_mode = float(validation_row["mode_changes_mean"]) - float(
+            raw_delta_mode = float(validation_row["mode_changes_mean"]) - float(
                 validation_row["baseline_mode_changes_mean"]
             )
+
+            baseline_lo_denominator = max(
+                1.0,
+                float(validation_row["baseline_lo_cancellations_mean"]),
+            )
+            baseline_mode_denominator = max(
+                1.0,
+                float(validation_row["baseline_mode_changes_mean"]),
+            )
+
+            normalized_delta_lo = raw_delta_lo / baseline_lo_denominator
+            normalized_delta_mode = raw_delta_mode / baseline_mode_denominator
+
             validation_row["relative_score_alpha"] = args.relative_score_alpha
-            validation_row["relative_delta_lo_cancellations"] = delta_lo
-            validation_row["relative_delta_mode_changes"] = delta_mode
-            validation_row["relative_score"] = delta_lo + args.relative_score_alpha * delta_mode
+            validation_row["raw_delta_lo_cancellations"] = raw_delta_lo
+            validation_row["raw_delta_mode_changes"] = raw_delta_mode
+            validation_row["relative_delta_lo_cancellations"] = normalized_delta_lo
+            validation_row["relative_delta_mode_changes"] = normalized_delta_mode
+            validation_row["relative_score"] = (
+                normalized_delta_lo
+                + args.relative_score_alpha * normalized_delta_mode
+            )
             validation_row["is_better_than_baseline"] = float(validation_row["relative_score"]) < 0.0
             validation_rows.append(validation_row)
             if _is_better_validation_row(
@@ -1475,6 +1516,8 @@ def main() -> None:
             "no_safe_action_steps_mean",
             "reward_mean",
             "relative_score_alpha",
+            "raw_delta_lo_cancellations",
+            "raw_delta_mode_changes",
             "relative_delta_lo_cancellations",
             "relative_delta_mode_changes",
             "relative_score",
@@ -1498,6 +1541,8 @@ def main() -> None:
             "relative_score_alpha",
             "relative_delta_mode_changes",
             "relative_delta_lo_cancellations",
+            "raw_delta_mode_changes",
+            "raw_delta_lo_cancellations",
             "is_better_than_baseline",
             "mode_changes_delta_vs_baseline",
             "lo_cancellations_delta_vs_baseline",
@@ -1526,6 +1571,18 @@ def main() -> None:
         best_relative_score = float(best_validation_row.get("relative_score", 0.0))
         best_delta_mode = float(best_validation_row.get("relative_delta_mode_changes", 0.0))
         best_delta_lo = float(best_validation_row.get("relative_delta_lo_cancellations", 0.0))
+        best_raw_delta_mode = float(
+            best_validation_row.get(
+                "raw_delta_mode_changes",
+                best_validation_row.get("dqn_mode_changes_delta_mean", 0.0),
+            )
+        )
+        best_raw_delta_lo = float(
+            best_validation_row.get(
+                "raw_delta_lo_cancellations",
+                best_validation_row.get("dqn_lo_cancellations_delta_mean", 0.0),
+            )
+        )
         best_model_metadata = {
             "save_best_by": args.save_best_by,
             "selection_metric": "relative_score" if args.save_best_by == "relative_score" else args.save_best_by,
@@ -1537,8 +1594,10 @@ def main() -> None:
             "baseline_lo_cancellations_mean": float(best_validation_row["baseline_lo_cancellations_mean"]),
             "dqn_mode_changes_mean": float(best_validation_row["mode_changes_mean"]),
             "baseline_mode_changes_mean": float(best_validation_row["baseline_mode_changes_mean"]),
-            "delta_lo_cancellations_mean": best_delta_lo,
-            "delta_mode_changes_mean": best_delta_mode,
+            "normalized_delta_lo_cancellations": best_delta_lo,
+            "normalized_delta_mode_changes": best_delta_mode,
+            "raw_delta_lo_cancellations_mean": best_raw_delta_lo,
+            "raw_delta_mode_changes_mean": best_raw_delta_mode,
             "best_model_is_better_than_baseline": best_relative_score < 0.0,
             "reward_mode": args.reward_mode,
             "reward_definition": reward_mode_config.describe(),
@@ -1546,7 +1605,10 @@ def main() -> None:
             "note": (
                 "model_best.pt is the best available checkpoint on validation, but it may still be worse than baseline."
             ),
-            "selection_reason": "Best checkpoint selected by configured criterion.",
+            "selection_reason": (
+                "Best checkpoint selected by configured criterion. "
+                "For relative_score, validation uses normalized deltas against baseline."
+            ),
         }
         with best_model_metadata_path.open("w", encoding="utf-8") as f:
             json.dump(best_model_metadata, f, ensure_ascii=False, indent=2)
@@ -1579,7 +1641,7 @@ def main() -> None:
         "max_q_diagnostic_samples": args.max_q_diagnostic_samples,
         "save_best_by": args.save_best_by,
         "relative_score_alpha": args.relative_score_alpha,
-        "require_better_than_baseline_for_best": args.require_better_than_baseline_for_best,
+        "relative_score_normalization": "baseline_mean_denominator",
         "reward_mode": args.reward_mode,
         "reward_definition": reward_mode_config.describe(),
         "double_dqn": args.double_dqn,
