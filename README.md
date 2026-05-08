@@ -232,6 +232,90 @@ conda run -n amc-repro python scripts/run_pre_dqn_runtime_baselines.py --end-tim
 
 当前仓库已经包含最小 DQN 接入、正式 DQN CLI、训练诊断绘图脚本，以及可接入的 automotive workload 生成器。
 
+### 12.0 v11 observation（per-task 10d + global 8d）配置
+
+当前训练/评估 CLI 已支持通过参数启用：
+
+- `--observation-mode v10_basic`（默认，旧模式，`state_dim = 2 * n_tasks`）
+- `--observation-mode v11_full_10d`（新模式，`state_dim = 10 * n_tasks + 8`）
+
+对应 v11 特征参数：
+
+- `--ema-alpha`
+- `--overrun-ema-alpha`
+- `--history-k`
+- `--event-window`
+- `--max-cost-weight`
+- `--risk-max-scale`
+- `--include-safety-margin / --no-include-safety-margin`
+
+训练示例（仅展示 observation 相关参数）：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/train_dqn_amc.py \
+  --episodes 2 \
+  --workload small \
+  --scenario stress \
+  --action-space single \
+  --observation-mode v11_full_10d \
+  --ema-alpha 0.2 \
+  --overrun-ema-alpha 0.1 \
+  --history-k 8 \
+  --event-window 10 \
+  --max-cost-weight 0.7 \
+  --risk-max-scale 3.0 \
+  --include-safety-margin
+```
+
+评估示例（需与训练期 observation 配置保持一致）：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/evaluate_dqn_amc.py \
+  --model outputs/dqn_amc/model_final.pt \
+  --workload small \
+  --scenario stress \
+  --action-space single \
+  --observation-mode v11_full_10d \
+  --ema-alpha 0.2 \
+  --overrun-ema-alpha 0.1 \
+  --history-k 8 \
+  --event-window 10 \
+  --max-cost-weight 0.7 \
+  --risk-max-scale 3.0 \
+  --include-safety-margin
+```
+
+日志与产物中已记录：
+
+- step info / 训练日志：`observation_mode`、`state_dim`
+- validation 指标：`observation_mode`、`state_dim_mean`
+- 评估 CSV：`observation_mode`、`state_dim`
+- 训练配置快照 `config.json`：`observation_mode` 与 `feature_config`
+
+### 12.0.1 阶段 8 测试（v11 observation）
+
+新增测试文件：
+
+- `tests/test_v11_observation.py`
+
+覆盖项：
+
+1. `v10_basic` 长度保持 `2 * n_tasks`
+2. `v11_full_10d` 长度为 `10 * n_tasks + 8`
+3. `v11_full_10d` 所有特征值在 `[0, 1]`
+4. `step` 后 `v11_full_10d` 维度保持正确
+5. `feature_state` 在 step 后存在且任务键集合保持一致
+6. event window 长度不超过 `event_window`
+
+运行命令：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python -m pytest -q tests/test_v11_observation.py
+```
+
 ### 12.1 运行前说明
 
 所有 DQN 命令都应在 `amc-repro` 环境中运行：
@@ -343,6 +427,7 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py
 - `--output-dir`
 - `--checkpoint`
 - `--scenario`
+- `--save-best-by`
 
 输出文件：
 
@@ -350,6 +435,51 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py
 - `outputs/dqn_amc/model_final.pt`
 - `outputs/dqn_amc/config.json`
 - `outputs/dqn_amc/checkpoints/model_episode_XXXX.pt`（当 `--checkpoint > 0` 时）
+
+### 12.4.1 `--save-best-by` 策略说明
+
+`train_dqn_amc.py` 会在 validation 过程中维护 `model_best.pt`。  
+`--save-best-by` 用于决定“什么叫更好的 checkpoint”。
+
+当前支持：
+
+1. `--save-best-by mode_changes`
+- 目标：`mode_changes_mean` 越小越好。
+- 约束：`deadline_misses_sum` 必须为 0，否则候选不会被选为 best。
+
+2. `--save-best-by lo_cancellations`
+- 目标：`lo_cancellations_mean` 越小越好。
+- 额外门槛：候选必须满足 `mode_changes_mean <= baseline_mode_changes_mean`，即 mode-change 不能比 baseline 更差。
+- 同样要求 `deadline_misses_sum == 0`。
+
+3. `--save-best-by reward`
+- 目标：`reward_mean` 越大越好。
+- 同样要求 `deadline_misses_sum == 0`。
+
+4. `--save-best-by relative_score`
+- 目标：`relative_score` 越小越好。
+- 定义（validation 聚合后）：
+  `relative_score = relative_delta_lo_cancellations + alpha * relative_delta_mode_changes`
+- 其中 `alpha` 由 `--relative-score-alpha` 控制。
+- 同样要求 `deadline_misses_sum == 0`。
+
+5. `--save-best-by pareto_relative_score`（温和版本）
+- 目标：在 `relative_score` 基础上，对“劣于 baseline”的维度做软惩罚，分数越小越好。
+- 定义：
+  `pareto_relative_score = relative_score + 10 * max(0, relative_delta_mode_changes) + 10 * max(0, relative_delta_lo_cancellations)`
+- 解释：
+  - 如果两个 delta 都 `<= 0`（不劣于 baseline），该策略退化为 `relative_score` 比较；
+  - 如果某一维劣于 baseline，不会硬性淘汰，而是增加惩罚（更温和）。
+- 同样要求 `deadline_misses_sum == 0`。
+
+常用示例：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py \
+  --save-best-by pareto_relative_score \
+  --relative-score-alpha 1.0
+```
 
 配置参考文件：
 

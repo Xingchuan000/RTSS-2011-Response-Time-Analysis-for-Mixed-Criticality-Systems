@@ -10,6 +10,7 @@ import random
 from amc_py.experiments import evaluate_taskset, resolve_ordering
 from amc_py.generator import generate_taskset
 from amc_py.models import Criticality, SchedulabilityResult, Task
+from amc_py.rl.feature_config import FeatureConfig
 from amc_py.rl.env import AmcBudgetEnv
 from amc_py.rl.observation import NormalizationBounds, build_default_normalization_bounds
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics
@@ -266,6 +267,7 @@ def build_env_from_experiment_config(
     budget_floor_ratio: float = 0.0,
     forbid_decreasing_hi_budgets: bool = False,
     mask_detail_mode: str = "minimal",
+    feature_config: FeatureConfig | None = None,
 ) -> AmcBudgetEnv:
     """根据实验配置构造 `AmcBudgetEnv`，供训练与评估入口复用。"""
 
@@ -285,6 +287,7 @@ def build_env_from_experiment_config(
         budget_floor_ratio=budget_floor_ratio,
         forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
         mask_detail_mode=mask_detail_mode,
+        feature_config=FeatureConfig() if feature_config is None else feature_config,
     )
 
 
