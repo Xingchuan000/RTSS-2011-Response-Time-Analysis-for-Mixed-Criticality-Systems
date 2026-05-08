@@ -24,6 +24,7 @@ from amc_py.event_runtime import simulate_ordered_taskset_event_driven
 from amc_py.experiments import evaluate_taskset
 from amc_py.rl.actions import build_budget_action_space
 from amc_py.rl.agents import HeuristicBudgetAgent, NoOpBudgetAgent, RandomBudgetAgent
+from amc_py.rl.feature_config import FeatureConfig
 from amc_py.rl.reward_config import available_reward_modes
 from amc_py.rl.runtime_wrapper import AgentRuntimeConfig, simulate_ordered_taskset_with_agent
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationResult
@@ -160,6 +161,7 @@ def _evaluate_dqn_once(
     budget_floor_ratio: float,
     forbid_decreasing_hi_budgets: bool,
     mask_detail_mode: str,
+    feature_config: FeatureConfig,
     trace_dir: Path | None = None,
     debug_log_dir: Path | None = None,
     trace_enabled: bool = False,
@@ -183,6 +185,7 @@ def _evaluate_dqn_once(
         budget_floor_ratio=budget_floor_ratio,
         forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
         mask_detail_mode=mask_detail_mode,
+        feature_config=feature_config,
     )
     # 评估阶段既支持主进程串行加载，也支持并行 worker 中按需加载。
     # 并行 worker 会显式传入 `agent_device="cpu"`，避免子进程去占用 MPS/GPU。
@@ -311,6 +314,8 @@ def _evaluate_dqn_once(
             "no_safe_action_steps": int(debug_stats["no_safe_action_steps"]),
             "masked_budget_floor_violation_count": int(debug_stats["masked_budget_floor_violation_count"]),
             "masked_budget_floor_violation_rate": float(debug_stats["masked_budget_floor_violation_rate"]),
+            "observation_mode": str(last_info.get("observation_mode", feature_config.observation_mode)),
+            "state_dim": int(last_info.get("state_dim", len(obs.state_vector))),
         }
     row.update(_noop_q_diagnostics_to_row(agent, diagnostic_states, diagnostic_valid_masks))
     return (
@@ -630,6 +635,7 @@ def _evaluate_enabled_methods_for_seed(
     budget_floor_ratio: float,
     forbid_decreasing_hi_budgets: bool,
     mask_detail_mode: str,
+    feature_config: FeatureConfig,
     trace_dir: Path | None,
     debug_log_dir: Path | None,
     trace_seed_set: set[int],
@@ -1051,6 +1057,7 @@ def _evaluate_enabled_methods_for_seed(
             agent_device=dqn_agent_device,
             double_dqn=double_dqn,
             max_q_diagnostic_samples=max_q_diagnostic_samples,
+            feature_config=feature_config,
         )
         rows.append(dqn_row)
         deadline_miss_details.extend(
@@ -1087,6 +1094,7 @@ def _evaluate_seed_worker(
         float,
         bool,
         str,
+        FeatureConfig,
         Path | None,
         Path | None,
         set[int],
@@ -1123,6 +1131,7 @@ def _evaluate_seed_worker(
         budget_floor_ratio,
         forbid_decreasing_hi_budgets,
         mask_detail_mode,
+        feature_config,
         trace_dir,
         debug_log_dir,
         trace_seed_set,
@@ -1151,6 +1160,7 @@ def _evaluate_seed_worker(
         budget_floor_ratio=budget_floor_ratio,
         forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
         mask_detail_mode=mask_detail_mode,
+        feature_config=feature_config,
         trace_dir=trace_dir,
         debug_log_dir=debug_log_dir,
         trace_seed_set=trace_seed_set,
@@ -1258,6 +1268,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="paper_like",
     )
     parser.add_argument("--mask-detail-mode", choices=["minimal", "full"], default="minimal")
+    parser.add_argument("--observation-mode", choices=["v10_basic", "v11_full_10d"], default="v10_basic")
+    parser.add_argument("--ema-alpha", type=float, default=0.2)
+    parser.add_argument("--overrun-ema-alpha", type=float, default=0.1)
+    parser.add_argument("--history-k", type=int, default=8)
+    parser.add_argument("--event-window", type=int, default=10)
+    parser.add_argument("--max-cost-weight", type=float, default=0.7)
+    parser.add_argument("--risk-max-scale", type=float, default=3.0)
+    parser.add_argument("--include-safety-margin", action=argparse.BooleanOptionalAction, default=True)
     return parser
 
 
@@ -1271,6 +1289,16 @@ def main() -> None:
         raise ValueError("--max-q-diagnostic-samples 必须为非负整数")
     if args.budget_floor_ratio < 0.0 or args.budget_floor_ratio > 1.0:
         raise ValueError("--budget-floor-ratio must be in [0, 1]")
+    feature_config = FeatureConfig(
+        observation_mode=args.observation_mode,
+        ema_alpha=args.ema_alpha,
+        overrun_ema_alpha=args.overrun_ema_alpha,
+        history_k=args.history_k,
+        event_window=args.event_window,
+        max_cost_weight=args.max_cost_weight,
+        risk_max_scale=args.risk_max_scale,
+        include_safety_margin=args.include_safety_margin,
+    )
     if args.workload == "small":
         experiment_config = (
             build_small_nominal_experiment_config()
@@ -1330,6 +1358,7 @@ def main() -> None:
                 budget_floor_ratio=args.budget_floor_ratio,
                 forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
                 mask_detail_mode=args.mask_detail_mode,
+                feature_config=feature_config,
                 trace_dir=args.trace_dir,
                 debug_log_dir=args.debug_log_dir,
                 trace_seed_set=trace_seed_set,
@@ -1364,6 +1393,7 @@ def main() -> None:
                 args.budget_floor_ratio,
                 args.forbid_decreasing_hi_budgets,
                 args.mask_detail_mode,
+                feature_config,
                 args.trace_dir,
                 args.debug_log_dir,
                 trace_seed_set,
@@ -1429,6 +1459,8 @@ def main() -> None:
         "no_safe_action_steps",
         "masked_budget_floor_violation_count",
         "masked_budget_floor_violation_rate",
+        "observation_mode",
+        "state_dim",
         "end_time",
         "agent_period",
     ]

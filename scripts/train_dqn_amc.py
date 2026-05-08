@@ -27,6 +27,7 @@ from amc_py.dqn import (
 )
 from amc_py.event_runtime import simulate_ordered_taskset_event_driven
 from amc_py.models import Task
+from amc_py.rl.feature_config import FeatureConfig
 from amc_py.rl.reward_config import available_reward_modes, load_reward_mode_config
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationResult
 
@@ -81,6 +82,8 @@ STEP_LOG_FIELDNAMES = [
     "taskset_seed",
     "scenario_seed",
     "require_schedulable",
+    "observation_mode",
+    "state_dim",
 ]
 
 NOOP_Q_DIAGNOSTIC_FIELDNAMES = [
@@ -219,6 +222,28 @@ def _mean_optional_metric(rows: list[dict[str, int | float | None]], key: str) -
     return sum(values) / len(values)
 
 
+def _percentile(values: list[float], q: float) -> float:
+    """计算分位数（线性插值），用于 episode 级特征诊断。
+
+    这里不引入额外依赖，直接用稳定的线性插值实现：
+    - q 取值范围是 [0, 1]；
+    - 当样本为空时返回 0.0，保持 CSV 字段始终可写。
+    """
+
+    if not values:
+        return 0.0
+    if q <= 0.0:
+        return float(min(values))
+    if q >= 1.0:
+        return float(max(values))
+    ordered = sorted(float(value) for value in values)
+    position = (len(ordered) - 1) * q
+    lo = int(position)
+    hi = min(lo + 1, len(ordered) - 1)
+    weight = position - float(lo)
+    return float(ordered[lo] * (1.0 - weight) + ordered[hi] * weight)
+
+
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     """写入 jsonl 文件。"""
 
@@ -299,6 +324,7 @@ def _evaluate_agent_on_validation_seed(
     budget_floor_ratio: float,
     forbid_decreasing_hi_budgets: bool,
     mask_detail_mode: str,
+    feature_config: FeatureConfig,
     max_q_diagnostic_samples: int,
 ) -> dict[str, int | float | None]:
     """评估一个 validation seed，并返回该 seed 的完整 DQN 指标。
@@ -325,6 +351,7 @@ def _evaluate_agent_on_validation_seed(
         budget_floor_ratio=budget_floor_ratio,
         forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
         mask_detail_mode=mask_detail_mode,
+        feature_config=feature_config,
     )
     obs = env.reset(seed=seed)
     done = False
@@ -403,6 +430,8 @@ def _evaluate_agent_on_validation_seed(
         "masked_action_count_mean": float(debug_stats["masked_action_count_mean"]),
         "no_safe_action_steps": int(debug_stats["no_safe_action_steps"]),
         "reward": float(total_reward),
+        "observation_mode": str(last_info.get("observation_mode", feature_config.observation_mode)),
+        "state_dim": int(last_info.get("state_dim", len(obs.state_vector))),
     }
     row.update(_noop_q_diagnostics_to_row(agent, diagnostic_states, diagnostic_valid_masks))
     return row
@@ -423,6 +452,7 @@ def _run_dqn_validation_seed_worker(
         float,
         bool,
         str,
+        FeatureConfig,
         int,
     ],
 ) -> dict[str, int | float | None]:
@@ -447,6 +477,7 @@ def _run_dqn_validation_seed_worker(
         budget_floor_ratio,
         forbid_decreasing_hi_budgets,
         mask_detail_mode,
+        feature_config,
         max_q_diagnostic_samples,
     ) = args_tuple
     agent = DqnBudgetAgent.load(Path(model_path), device="cpu")
@@ -464,6 +495,7 @@ def _run_dqn_validation_seed_worker(
         budget_floor_ratio=budget_floor_ratio,
         forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
         mask_detail_mode=mask_detail_mode,
+        feature_config=feature_config,
         max_q_diagnostic_samples=max_q_diagnostic_samples,
     )
 
@@ -514,6 +546,7 @@ def _run_validation(
     budget_floor_ratio: float,
     forbid_decreasing_hi_budgets: bool,
     mask_detail_mode: str,
+    feature_config: FeatureConfig = FeatureConfig(),
     validation_workers: int = 1,
     baseline_cache: dict[str, float] | None = None,
     max_q_diagnostic_samples: int = 1000,
@@ -561,6 +594,7 @@ def _run_validation(
                 budget_floor_ratio=budget_floor_ratio,
                 forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
                 mask_detail_mode=mask_detail_mode,
+                feature_config=feature_config,
                 max_q_diagnostic_samples=max_q_diagnostic_samples,
             )
             for seed in validation_seeds
@@ -585,6 +619,7 @@ def _run_validation(
                     budget_floor_ratio,
                     forbid_decreasing_hi_budgets,
                     mask_detail_mode,
+                    feature_config,
                     max_q_diagnostic_samples,
                 )
                 for seed in validation_seeds
@@ -620,6 +655,8 @@ def _run_validation(
         "masked_action_count_mean": sum(row["masked_action_count_mean"] for row in dqn_rows) / seed_count,
         "no_safe_action_steps_mean": sum(row["no_safe_action_steps"] for row in dqn_rows) / seed_count,
         "reward_mean": sum(row["reward"] for row in dqn_rows) / seed_count,
+        "observation_mode": str(feature_config.observation_mode),
+        "state_dim_mean": sum(row["state_dim"] for row in dqn_rows) / seed_count,
     }
     # validation 输出采用文档第 6 节的字段名，数值为各 validation seed 诊断结果的均值；
     # `noop_q_sample_count` 代表实际参与 Q 诊断的状态样本总数，便于核对采样是否达到上限。
@@ -671,11 +708,56 @@ def _is_better_validation_row(
         _ = (relative_score_alpha, require_better_than_baseline_for_best)
         candidate_score = float(candidate_row["relative_score"])
         return candidate_score < float(best_row["relative_score"])
+    if save_best_by == "pareto_relative_score":
+        # 更温和的 Pareto 风格选模分数：
+        # 1) 保留原有 relative_score（越小越好）作为主项；
+        # 2) 对“比 baseline 更差”的维度施加软惩罚，而不是硬性 +inf；
+        # 3) 两个惩罚项都基于归一化差值，保持与 relative_score 同量纲。
+        #
+        # 公式：
+        # score = relative_score
+        #       + 10 * max(0, relative_delta_mode_changes)
+        #       + 10 * max(0, relative_delta_lo_cancellations)
+        #
+        # 解释：
+        # - 当候选同时不劣于 baseline（两个 delta 都 <=0）时，惩罚为 0，退化为 relative_score 比较；
+        # - 当某一维劣于 baseline 时，仍允许进入比较，但会因软惩罚降低被选中概率；
+        # - 这比 strict gate 更平滑，适合你要求的“温和版本”。
+        _ = (relative_score_alpha, require_better_than_baseline_for_best)
+        candidate_score = (
+            float(candidate_row["relative_score"])
+            + 10.0 * max(0.0, float(candidate_row["relative_delta_mode_changes"]))
+            + 10.0 * max(0.0, float(candidate_row["relative_delta_lo_cancellations"]))
+        )
+        best_score = (
+            float(best_row["relative_score"])
+            + 10.0 * max(0.0, float(best_row["relative_delta_mode_changes"]))
+            + 10.0 * max(0.0, float(best_row["relative_delta_lo_cancellations"]))
+        )
+        return candidate_score < best_score
     metric_field = {
         "lo_cancellations": "lo_cancellations_mean",
         "mode_changes": "mode_changes_mean",
     }[save_best_by]
     return float(candidate_row[metric_field]) < float(best_row[metric_field])
+
+
+def _is_pareto_valid_checkpoint(row: dict[str, int | float | None]) -> bool:
+    """判断一个 validation checkpoint 是否满足 Pareto-valid 条件。
+
+    Pareto-valid 的定义严格按你给出的规则：
+    1. deadline_misses_sum == 0（硬约束）；
+    2. dqn_mode_changes_mean <= baseline_mode_changes_mean；
+    3. dqn_lo_cancellations_mean <= baseline_lo_cancellations_mean。
+
+    该函数只负责“是否通过筛选”，不负责在候选之间排序。
+    """
+
+    return (
+        int(row["deadline_misses_sum"]) == 0
+        and float(row["mode_changes_mean"]) <= float(row["baseline_mode_changes_mean"])
+        and float(row["lo_cancellations_mean"]) <= float(row["baseline_lo_cancellations_mean"])
+    )
 
 
 def _build_validation_unified_summary_rows(
@@ -853,7 +935,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--save-best-by",
-        choices=["lo_cancellations", "mode_changes", "reward", "relative_score"],
+        choices=["lo_cancellations", "mode_changes", "reward", "relative_score", "pareto_relative_score"],
         default="mode_changes",
     )
     parser.add_argument(
@@ -893,6 +975,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="If set, action masks reject budget actions whose decrease tasks include any HI-criticality task.",
     )
     parser.add_argument("--mask-detail-mode", choices=["minimal", "full"], default="minimal")
+    parser.add_argument("--observation-mode", choices=["v10_basic", "v11_full_10d"], default="v10_basic")
+    parser.add_argument("--ema-alpha", type=float, default=0.2)
+    parser.add_argument("--overrun-ema-alpha", type=float, default=0.1)
+    parser.add_argument("--history-k", type=int, default=8)
+    parser.add_argument("--event-window", type=int, default=10)
+    parser.add_argument("--max-cost-weight", type=float, default=0.7)
+    parser.add_argument("--risk-max-scale", type=float, default=3.0)
+    parser.add_argument("--include-safety-margin", action=argparse.BooleanOptionalAction, default=True)
     return parser
 
 
@@ -917,6 +1007,16 @@ def main() -> None:
     if args.budget_floor_ratio < 0.0 or args.budget_floor_ratio > 1.0:
         raise ValueError("--budget-floor-ratio must be in [0, 1]")
     reward_mode_config = load_reward_mode_config(args.reward_mode)
+    feature_config = FeatureConfig(
+        observation_mode=args.observation_mode,
+        ema_alpha=args.ema_alpha,
+        overrun_ema_alpha=args.overrun_ema_alpha,
+        history_k=args.history_k,
+        event_window=args.event_window,
+        max_cost_weight=args.max_cost_weight,
+        risk_max_scale=args.risk_max_scale,
+        include_safety_margin=args.include_safety_margin,
+    )
 
     experiment_config = _build_experiment_config(args)
     train_seed_candidates = _parse_seed_spec(args.train_seeds)
@@ -971,6 +1071,7 @@ def main() -> None:
         budget_floor_ratio=args.budget_floor_ratio,
         forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
         mask_detail_mode=args.mask_detail_mode,
+        feature_config=feature_config,
     )
     initial_obs = initial_env.reset(seed=initial_seed)
     agent = DqnBudgetAgent(
@@ -1007,6 +1108,10 @@ def main() -> None:
     best_model_metadata_path = output_dir / "best_model_metadata.json"
     best_model_saved = False
     baseline_validation_cache: dict[str, float] | None = None
+    # `pareto_relative_score` 两阶段选模状态：
+    # - False：尚未见到任何 Pareto-valid checkpoint，允许 fallback 到软分数；
+    # - True ：已经见到至少一个 Pareto-valid checkpoint，后续仅在 Pareto-valid 集合内比较。
+    pareto_valid_seen: bool = False
 
     global_step = 0
     for episode in range(args.episodes):
@@ -1025,6 +1130,7 @@ def main() -> None:
             budget_floor_ratio=args.budget_floor_ratio,
             forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
             mask_detail_mode=args.mask_detail_mode,
+            feature_config=feature_config,
         )
         bundle = resolve_experiment_bundle(experiment_config, episode_seed)
         obs = env.reset(seed=episode_seed)
@@ -1049,6 +1155,8 @@ def main() -> None:
         reward_budget_change_norm_sum = 0.0
         reward_budget_drift_penalty_sum = 0.0
         reward_budget_drift_mean_sum = 0.0
+        # v11 诊断：记录每个 step 的 safety margin，再聚合为 episode 级 mean/p05。
+        feature_safety_margin_min_values: list[float] = []
         exploration_action_count_before = int(agent.exploration_action_count)
         exploration_noop_action_count_before = int(agent.exploration_noop_action_count)
         episode_action_hist: dict[int, dict[str, int]] = defaultdict(lambda: {"count": 0, "accepted": 0, "rejected": 0})
@@ -1131,6 +1239,7 @@ def main() -> None:
             reward_budget_change_norm_sum += float(result.info.get("budget_change_norm", 0.0))
             reward_budget_drift_penalty_sum += float(result.info.get("budget_drift_penalty_value", 0.0))
             reward_budget_drift_mean_sum += float(result.info.get("budget_drift_mean", 0.0))
+            feature_safety_margin_min_values.append(float(result.info.get("feature_safety_margin_min", 1.0)))
             # `global_step` 是跨 episode 的全局步号。
             # 文档要求只对 step-level 明细日志做采样，不改变任何训练统计与优化逻辑。
             should_log_step = args.log_step_every > 0 and global_step % args.log_step_every == 0
@@ -1189,6 +1298,8 @@ def main() -> None:
                         "taskset_seed": bundle.taskset_seed if bundle.taskset_seed is not None else episode_seed,
                         "scenario_seed": bundle.scenario_seed if bundle.scenario_seed is not None else episode_seed,
                         "require_schedulable": args.require_schedulable,
+                        "observation_mode": str(result.info.get("observation_mode", args.observation_mode)),
+                        "state_dim": int(result.info.get("state_dim", len(result.observation.state_vector))),
                     }
                 )
             obs = result.observation
@@ -1292,6 +1403,14 @@ def main() -> None:
                     if int(agent.exploration_action_count - exploration_action_count_before) > 0
                     else 0.0
                 ),
+                "observation_mode": str(last_info.get("observation_mode", args.observation_mode)),
+                "state_dim": int(last_info.get("state_dim", len(obs.state_vector))),
+                "feature_safety_margin_min_mean": (
+                    sum(feature_safety_margin_min_values) / len(feature_safety_margin_min_values)
+                    if feature_safety_margin_min_values
+                    else 0.0
+                ),
+                "feature_safety_margin_min_p05": _percentile(feature_safety_margin_min_values, 0.05),
             }
         )
         for action_id in sorted(episode_action_hist):
@@ -1333,6 +1452,7 @@ def main() -> None:
                 budget_floor_ratio=args.budget_floor_ratio,
                 forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
                 mask_detail_mode=args.mask_detail_mode,
+                feature_config=feature_config,
                 validation_workers=args.validation_workers,
                 baseline_cache=baseline_validation_cache,
                 max_q_diagnostic_samples=args.max_q_diagnostic_samples,
@@ -1379,14 +1499,63 @@ def main() -> None:
                 + args.relative_score_alpha * normalized_delta_mode
             )
             validation_row["is_better_than_baseline"] = float(validation_row["relative_score"]) < 0.0
+            # 标记当前候选是否满足 Pareto-valid，用于“先筛选，再排序”的两阶段策略。
+            validation_row["is_pareto_valid"] = _is_pareto_valid_checkpoint(validation_row)
             validation_rows.append(validation_row)
-            if _is_better_validation_row(
-                candidate_row=validation_row,
-                best_row=best_validation_row,
-                save_best_by=args.save_best_by,
-                relative_score_alpha=args.relative_score_alpha,
-                require_better_than_baseline_for_best=args.require_better_than_baseline_for_best,
-            ):
+
+            should_update_best = False
+            if args.save_best_by == "pareto_relative_score":
+                # 方向 2：Pareto 选模改为“先筛选，再排序”
+                # ------------------------------------------
+                # 阶段一（筛选）：
+                # - 先判断当前候选是否 Pareto-valid。
+                # - 一旦历史中出现过 Pareto-valid，后续只允许在 Pareto-valid 集合中竞争 best。
+                #
+                # 阶段二（排序）：
+                # - 在 Pareto-valid 集合内，按 relative_score（越小越好）排序。
+                #
+                # fallback（仅在阶段一尚未出现任何 Pareto-valid 时）：
+                # - 临时使用温和软分数 `pareto_relative_score` 维持“有 best 可保存”的行为。
+                is_pareto_valid = bool(validation_row["is_pareto_valid"])
+                if is_pareto_valid:
+                    if not pareto_valid_seen:
+                        # 首次出现 Pareto-valid：立刻切换到“只看 Pareto-valid”阶段，
+                        # 并直接把当前候选设为新的 best 基准。
+                        pareto_valid_seen = True
+                        should_update_best = True
+                    else:
+                        # 已进入 Pareto-only 阶段：
+                        # - 如果当前 best 不是 Pareto-valid（理论上只会在切换边界出现），直接替换；
+                        # - 否则只比较 relative_score。
+                        if best_validation_row is None or not _is_pareto_valid_checkpoint(best_validation_row):
+                            should_update_best = True
+                        else:
+                            should_update_best = float(validation_row["relative_score"]) < float(
+                                best_validation_row["relative_score"]
+                            )
+                else:
+                    if not pareto_valid_seen:
+                        # 还没见到任何 Pareto-valid，允许 fallback 到温和软分数排序。
+                        should_update_best = _is_better_validation_row(
+                            candidate_row=validation_row,
+                            best_row=best_validation_row,
+                            save_best_by="pareto_relative_score",
+                            relative_score_alpha=args.relative_score_alpha,
+                            require_better_than_baseline_for_best=args.require_better_than_baseline_for_best,
+                        )
+                    else:
+                        # 已见到 Pareto-valid 后，非 Pareto-valid 候选直接丢弃，不参与 best 竞争。
+                        should_update_best = False
+            else:
+                should_update_best = _is_better_validation_row(
+                    candidate_row=validation_row,
+                    best_row=best_validation_row,
+                    save_best_by=args.save_best_by,
+                    relative_score_alpha=args.relative_score_alpha,
+                    require_better_than_baseline_for_best=args.require_better_than_baseline_for_best,
+                )
+
+            if should_update_best:
                 best_validation_row = validation_row
                 agent.save(model_best_path)
                 best_model_saved = True
@@ -1478,6 +1647,10 @@ def main() -> None:
             "exploration_action_count",
             "exploration_noop_action_count",
             "exploration_noop_action_rate",
+            "observation_mode",
+            "state_dim",
+            "feature_safety_margin_min_mean",
+            "feature_safety_margin_min_p05",
         ]
         with train_metrics_path.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=metric_fieldnames)
@@ -1515,6 +1688,8 @@ def main() -> None:
             "masked_action_count_mean",
             "no_safe_action_steps_mean",
             "reward_mean",
+            "observation_mode",
+            "state_dim_mean",
             "relative_score_alpha",
             "raw_delta_lo_cancellations",
             "raw_delta_mode_changes",
@@ -1522,6 +1697,7 @@ def main() -> None:
             "relative_delta_mode_changes",
             "relative_score",
             "is_better_than_baseline",
+            "is_pareto_valid",
         ]
         validation_fieldnames.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
         with validation_metrics_path.open("w", encoding="utf-8", newline="") as f:
@@ -1585,7 +1761,15 @@ def main() -> None:
         )
         best_model_metadata = {
             "save_best_by": args.save_best_by,
-            "selection_metric": "relative_score" if args.save_best_by == "relative_score" else args.save_best_by,
+            "selection_metric": (
+                "relative_score"
+                if args.save_best_by == "relative_score"
+                else (
+                    "pareto_relative_score"
+                    if args.save_best_by == "pareto_relative_score"
+                    else args.save_best_by
+                )
+            ),
             "relative_score_alpha": args.relative_score_alpha,
             "require_better_than_baseline_for_best": args.require_better_than_baseline_for_best,
             "best_validation_episode": int(best_validation_row["episode"]),
@@ -1607,7 +1791,7 @@ def main() -> None:
             ),
             "selection_reason": (
                 "Best checkpoint selected by configured criterion. "
-                "For relative_score, validation uses normalized deltas against baseline."
+                "For relative_score / pareto_relative_score, validation uses normalized deltas against baseline."
             ),
         }
         with best_model_metadata_path.open("w", encoding="utf-8") as f:
@@ -1652,6 +1836,16 @@ def main() -> None:
         "include_explicit_noop": args.include_explicit_noop,
         "forbid_decreasing_hi_budgets": args.forbid_decreasing_hi_budgets,
         "mask_detail_mode": args.mask_detail_mode,
+        "observation_mode": args.observation_mode,
+        "feature_config": {
+            "ema_alpha": args.ema_alpha,
+            "overrun_ema_alpha": args.overrun_ema_alpha,
+            "history_k": args.history_k,
+            "event_window": args.event_window,
+            "max_cost_weight": args.max_cost_weight,
+            "risk_max_scale": args.risk_max_scale,
+            "include_safety_margin": args.include_safety_margin,
+        },
         "log_step_every": args.log_step_every,
         "log_train_metrics": args.log_train_metrics,
         "trace_every": args.trace_every,

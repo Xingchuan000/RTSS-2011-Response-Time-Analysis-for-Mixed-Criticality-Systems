@@ -19,6 +19,8 @@ from amc_py.rl.actions import (
     apply_budget_action_candidate,
     build_budget_action_space,
 )
+from amc_py.rl.feature_config import FeatureConfig
+from amc_py.rl.feature_state import RuntimeFeatureState
 from amc_py.rl.monitor import RuntimeMonitor
 from amc_py.rl.observation import NormalizationBounds, build_observation
 from amc_py.rl.reward_config import RewardModeConfig, evaluate_reward_expression, load_reward_mode_config
@@ -50,6 +52,8 @@ class AmcBudgetEnv:
     include_explicit_noop: bool = False
     budget_floor_ratio: float = 0.0
     forbid_decreasing_hi_budgets: bool = False
+    # v11 特征配置。默认保持 v10_basic，确保旧实验行为不变。
+    feature_config: FeatureConfig = field(default_factory=FeatureConfig)
     _actions: tuple[BudgetAction, ...] = field(init=False, repr=False)
     _monitor: RuntimeMonitor = field(init=False, repr=False)
     _engine: EventRuntimeEngine | None = field(init=False, default=None, repr=False)
@@ -77,6 +81,8 @@ class AmcBudgetEnv:
     _safety_matrix_a: np.ndarray | None = field(init=False, default=None, repr=False)
     _safety_bounds: np.ndarray | None = field(init=False, default=None, repr=False)
     _reward_mode_config: RewardModeConfig = field(init=False, repr=False)
+    # v11 运行时特征缓存（EMA/history/event window）。
+    _feature_state: RuntimeFeatureState | None = field(init=False, default=None, repr=False)
 
     def __post_init__(self) -> None:
         """初始化固定动作空间。"""
@@ -507,6 +513,97 @@ class AmcBudgetEnv:
         )
         return self.safety_checker
 
+    def _compute_current_safety_margin_min(self) -> float:
+        """计算当前预算向量在线性安全约束下的最小归一化裕量。
+
+        语义与实现计划保持一致：
+        - check_safety=False 时直接返回 1.0；
+        - 复用 valid_action_mask 中已缓存的 A/b，避免重复构建约束；
+        - 不吞异常，若 checker 构建失败应直接暴露问题。
+        """
+
+        if not self.check_safety:
+            return 1.0
+        if self._engine is None:
+            return 1.0
+
+        checker = self._ensure_checker()
+        if self._safety_matrix_a is None or self._safety_bounds is None:
+            self._safety_matrix_a, self._safety_bounds = checker.build_linear_constraints()
+
+        budget_array = np.array(
+            [float(self._engine.runtime_budgets.budgets[name]) for name in self._task_names],
+            dtype=np.float64,
+        )
+        lhs = self._safety_matrix_a @ budget_array
+        slack = self._safety_bounds - lhs
+        denom = np.maximum(1.0, np.abs(self._safety_bounds))
+        margin = float(np.min(slack / denom))
+        return float(np.clip(margin, 0.0, 1.0))
+
+    def _update_feature_state(
+        self,
+        *,
+        delta_job_start: int,
+        delta_mode_changes: int,
+        delta_lo_cancellations: int,
+        delta_hi_overrun: int,
+        delta_lo_overrun: int,
+    ) -> None:
+        """在每个 step 结束后更新 v11 运行时特征缓存。
+
+        更新顺序与文档一致：
+        1. 先按“每任务新样本计数”判断当前 step 是否出现新样本；
+        2. 仅对有新样本的任务更新 ema_cost / overrun_ema；
+        3. 仅对有新样本的任务追加 recent_cost 到 cost_history；
+        3. 追加全局事件窗口计数。
+        """
+
+        if self._feature_state is None:
+            return
+        if self._engine is None:
+            return
+
+        cfg = self.feature_config
+        feature_state = self._feature_state
+
+        for task in self.ordered_tasks:
+            task_name = task.name
+            # current_completion_count 表示该任务截至当前时刻总共产生了多少个“新执行样本”。
+            # last_seen_completion_count 表示 feature_state 已消费到哪个样本版本号。
+            # 只有 current > last_seen 才说明“本 step 区间内真的出现了新样本”。
+            current_completion_count = self._monitor.completed_job_count_by_task.get(task_name, 0)
+            last_seen_completion_count = feature_state.last_seen_completion_count.get(task_name, 0)
+
+            feature_state.init_task(task_name, init_cost=float(task.c_lo))
+            if current_completion_count <= last_seen_completion_count:
+                # 没有新样本：跳过该任务的 EMA/history 更新，避免重复采样污染。
+                continue
+
+            budget = float(self._engine.runtime_budgets.budgets[task_name])
+            recent_cost = float(self._monitor.recent_execution.get(task_name, 0.0))
+
+            old_ema = feature_state.ema_cost[task_name]
+            feature_state.ema_cost[task_name] = cfg.ema_alpha * recent_cost + (1.0 - cfg.ema_alpha) * old_ema
+
+            overrun_flag = 1.0 if recent_cost > budget else 0.0
+            old_overrun_ema = feature_state.overrun_ema[task_name]
+            feature_state.overrun_ema[task_name] = (
+                cfg.overrun_ema_alpha * overrun_flag + (1.0 - cfg.overrun_ema_alpha) * old_overrun_ema
+            )
+
+            feature_state.cost_history[task_name].append(recent_cost)
+            # 标记该任务的样本版本号已被消费到 current_completion_count。
+            feature_state.last_seen_completion_count[task_name] = current_completion_count
+
+        feature_state.append_event_window(
+            mode_changes=delta_mode_changes,
+            lo_cancellations=delta_lo_cancellations,
+            hi_overruns=delta_hi_overrun,
+            lo_overruns=delta_lo_overrun,
+            job_starts=delta_job_start,
+        )
+
     def reset(self, seed: int | None = None) -> AgentObservation:  # noqa: ARG002
         """重置环境并返回初始观测。"""
 
@@ -542,12 +639,29 @@ class AmcBudgetEnv:
         self._prev_mode_changes = 0
         self._prev_lo_cancellations = 0
         self._prev_deadline_misses = 0
+        # v11 特征缓存在每个 episode reset 后重置，避免跨 episode 污染。
+        self._feature_state = RuntimeFeatureState(
+            history_k=self.feature_config.history_k,
+            event_window=self.feature_config.event_window,
+        )
+        for task in self.ordered_tasks:
+            init_cost = float(task.c_lo)
+            self._feature_state.init_task(task.name, init_cost=init_cost)
+            self._feature_state.cost_history[task.name].append(init_cost)
+            # reset 时把“已消费样本版本号”对齐到 monitor 当前计数，
+            # 避免后续 step 把 reset 前的旧样本误判为“本 interval 新样本”。
+            self._feature_state.last_seen_completion_count[task.name] = (
+                self._monitor.completed_job_count_by_task.get(task.name, 0)
+            )
         return build_observation(
             time=self._engine.current_time,
             ordered_tasks=self.ordered_tasks,
             budget_state=self._engine.runtime_budgets,
             monitor=self._monitor,
             bounds=self.normalization_bounds,
+            feature_state=self._feature_state,
+            feature_config=self.feature_config,
+            safety_margin_min=self._compute_current_safety_margin_min(),
         )
 
     def step(self, action_id: int | None) -> AgentStepResult:
@@ -800,6 +914,14 @@ class AmcBudgetEnv:
         self._prev_mode_changes = mode_changes
         self._prev_lo_cancellations = lo_cancellations
         self._prev_deadline_misses = deadline_misses
+        self._update_feature_state(
+            delta_job_start=delta_job_start,
+            delta_mode_changes=delta_mode_changes,
+            delta_lo_cancellations=delta_lo_cancellations,
+            delta_hi_overrun=delta_hi_overrun,
+            delta_lo_overrun=delta_lo_overrun,
+        )
+        safety_margin_min = self._compute_current_safety_margin_min()
 
         observation = build_observation(
             time=current_time,
@@ -807,6 +929,9 @@ class AmcBudgetEnv:
             budget_state=self._engine.runtime_budgets,
             monitor=self._monitor,
             bounds=self.normalization_bounds,
+            feature_state=self._feature_state,
+            feature_config=self.feature_config,
+            safety_margin_min=safety_margin_min,
         )
         info = {
             "time": current_time,
@@ -868,6 +993,9 @@ class AmcBudgetEnv:
             "step_reward_deadline_miss": step_reward_deadline_miss,
             # invalid_action 惩罚单独记录，便于分析“动作被拒绝”对 reward 的影响权重。
             "step_reward_invalid_action": step_reward_invalid_action,
+            "observation_mode": self.feature_config.observation_mode,
+            "state_dim": len(observation.state_vector),
+            "feature_safety_margin_min": float(safety_margin_min),
         }
         action_log_entry = dict(info)
         action_log_entry["time"] = action_time
