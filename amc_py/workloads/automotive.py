@@ -72,7 +72,38 @@ L_WCET_PROB: dict[int, dict[Criticality, float]] = {
     1000: {Criticality.LO: 0.50, Criticality.HI: 0.67},
 }
 
-AutomotiveMode = Literal["fast", "paper_like", "paper_exact"]
+AutomotiveMode = Literal["fast", "paper_like", "paper_exact", "paper_learnable_headroom"]
+
+
+@dataclass(frozen=True, slots=True)
+class LearnableHeadroomConfig:
+    """`paper_learnable_headroom` 模式的预算生成配置。
+
+    该配置只负责“预算如何从 paper_exact 结构上二次生成”，
+    不负责静态 reserve 检查和 fast 诊断筛选（这两项由独立生成脚本执行）。
+    """
+
+    target_budget_util_min: float = 0.62
+    target_budget_util_max: float = 0.78
+    hi_budget_rho_min: float = 0.45
+    hi_budget_rho_max: float = 0.65
+    lo_budget_rho_min: float = 0.35
+    lo_budget_rho_max: float = 0.60
+    max_budget_util_error: float = 0.08
+
+    def __post_init__(self) -> None:
+        """严格校验区间参数，确保预算生成行为可解释且可复现。"""
+
+        if self.target_budget_util_min <= 0.0 or self.target_budget_util_max <= 0.0:
+            raise ValueError("target budget util bounds must be positive")
+        if self.target_budget_util_min > self.target_budget_util_max:
+            raise ValueError("target_budget_util_min must be <= target_budget_util_max")
+        if self.hi_budget_rho_min > self.hi_budget_rho_max:
+            raise ValueError("hi_budget_rho_min must be <= hi_budget_rho_max")
+        if self.lo_budget_rho_min > self.lo_budget_rho_max:
+            raise ValueError("lo_budget_rho_min must be <= lo_budget_rho_max")
+        if self.max_budget_util_error < 0.0:
+            raise ValueError("max_budget_util_error must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +129,8 @@ class AutomotiveWorkloadConfig:
     period_scale: int = 100
     weibull_shape: float = 2.0
     lo_budget_quantile: float = 0.7
+    learnable_headroom: LearnableHeadroomConfig = LearnableHeadroomConfig()
+    budget_floor_ratio: float = 0.9
 
     def __post_init__(self) -> None:
         """严格校验文档要求的基础配置约束。"""
@@ -116,6 +149,8 @@ class AutomotiveWorkloadConfig:
             raise ValueError("lo_budget_quantile must be in [0, 1]")
         if self.period_scale <= 0:
             raise ValueError("period_scale must be positive")
+        if not 0.0 <= self.budget_floor_ratio <= 1.0:
+            raise ValueError("budget_floor_ratio must be in [0, 1]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +193,7 @@ class AutomotiveWorkload:
     task_meta: tuple[AutomotiveTaskMeta, ...]
     normalization_bounds: NormalizationBounds
     attempts: int = 1
+    metadata: dict[str, float | int | str | bool] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +231,7 @@ class AutomotiveWorkloadProvider:
                 "num_runnables": workload.config.num_runnables,
                 "mode": workload.config.mode,
                 "task_meta": workload.task_meta,
+                "workload_metadata": workload.metadata,
             },
         )
 
@@ -367,6 +404,17 @@ def fit_shifted_weibull_from_acet_bcet_wcet(acet: int, bcet: int, wcet: int) -> 
     p_low = 0.00001
     p_high = 0.99999
 
+    # 当 `wcet - bcet <= 1` 时，`q_high / q_low == 1`，quantile-ratio 拟合会出现
+    # `log(1)=0` 的分母退化，无法继续求解 shape k。
+    # 这种情况下不再强行拟合，直接返回一个保守 fallback Weibull：
+    # - shape 取 2.0（中等尾部，避免过尖或过重尾）；
+    # - scale 取 max(1, acet-bcet)，让均值仍与 ACET 同量级；
+    # - location 仍为 BCET，保持下界语义不变。
+    if q_high <= q_low:
+        fallback_shape = 2.0
+        fallback_scale = max(1.0, float(max(1, acet - bcet)))
+        return fallback_shape, fallback_scale, loc
+
     a = -math.log(1.0 - p_low)
     b = -math.log(1.0 - p_high)
     k = math.log(b / a) / math.log(q_high / q_low)
@@ -447,7 +495,7 @@ def _build_exact_runnables(config: AutomotiveWorkloadConfig) -> tuple[Automotive
 def sample_automotive_runnables(config: AutomotiveWorkloadConfig) -> tuple[AutomotiveRunnable, ...]:
     """按配置采样完整 runnable 集合。"""
 
-    if config.mode == "paper_exact":
+    if config.mode in {"paper_exact", "paper_learnable_headroom"}:
         return _build_exact_runnables(config)
 
     rng = random.Random(config.seed)
@@ -543,6 +591,98 @@ def aggregate_runnables_to_tasks(
     return tuple(tasks), tuple(meta_list), bounds
 
 
+def _build_learnable_headroom_tasks(
+    *,
+    base_tasks: Sequence[Task],
+    cfg: LearnableHeadroomConfig,
+    budget_floor_ratio: float,
+    rng: random.Random,
+) -> tuple[tuple[Task, ...], dict[str, float]]:
+    """在 paper_exact 的任务结构上生成可学习 headroom 预算。
+
+    实现严格遵循计划文档：
+    1) 为每个任务计算 min/max budget；
+    2) 按 HI/LO 不同 rho 区间采样初始预算；
+    3) 按目标总预算利用率统一缩放并再次 clamp；
+    4) 返回最终任务与预算利用率误差元数据。
+    """
+
+    min_budget: dict[str, int] = {}
+    max_budget: dict[str, int] = {}
+    initial_budget: dict[str, int] = {}
+    locked_budget_tasks: set[str] = set()
+    for task in base_tasks:
+        original_budget = int(task.c_lo)
+        min_b = max(1, int(round(original_budget * budget_floor_ratio)))
+        max_b = (
+            int(task.c_hi)
+            if task.criticality is Criticality.HI
+            else int(max(task.c_hi, min(task.deadline, task.period)))
+        )
+        if min_b >= max_b:
+            # 按计划文档“min>=max 时跳过该任务的 headroom generation”执行：
+            # 该任务保持原始预算，不参与 rho 采样。
+            min_budget[task.name] = original_budget
+            max_budget[task.name] = original_budget
+            initial_budget[task.name] = original_budget
+            locked_budget_tasks.add(task.name)
+            continue
+        rho = (
+            rng.uniform(cfg.hi_budget_rho_min, cfg.hi_budget_rho_max)
+            if task.criticality is Criticality.HI
+            else rng.uniform(cfg.lo_budget_rho_min, cfg.lo_budget_rho_max)
+        )
+        sampled_budget = int(round(min_b + rho * float(max_b - min_b)))
+        initial_budget[task.name] = max(min_b, min(max_b, sampled_budget))
+        min_budget[task.name] = min_b
+        max_budget[task.name] = max_b
+
+    current_total_util = sum(float(initial_budget[task.name]) / float(task.period) for task in base_tasks)
+    target_total_util = rng.uniform(cfg.target_budget_util_min, cfg.target_budget_util_max)
+    scale = target_total_util / current_total_util
+
+    scaled_budget: dict[str, int] = {}
+    for task in base_tasks:
+        if task.name in locked_budget_tasks:
+            scaled_budget[task.name] = initial_budget[task.name]
+            continue
+        scaled = int(round(float(initial_budget[task.name]) * scale))
+        scaled_budget[task.name] = max(min_budget[task.name], min(max_budget[task.name], scaled))
+
+    actual_total_util = sum(float(scaled_budget[task.name]) / float(task.period) for task in base_tasks)
+    budget_util_error = abs(actual_total_util - target_total_util)
+    new_tasks: list[Task] = []
+    for task in base_tasks:
+        c_lo = scaled_budget[task.name]
+        c_hi = task.c_hi if task.criticality is Criticality.HI else c_lo
+        new_tasks.append(
+            Task(
+                name=task.name,
+                period=task.period,
+                deadline=task.deadline,
+                c_lo=c_lo,
+                c_hi=c_hi,
+                criticality=task.criticality,
+            )
+        )
+
+    hi_total_util = sum(
+        float(scaled_budget[task.name]) / float(task.period) for task in base_tasks if task.criticality is Criticality.HI
+    )
+    lo_total_util = sum(
+        float(scaled_budget[task.name]) / float(task.period) for task in base_tasks if task.criticality is Criticality.LO
+    )
+    metadata = {
+        "target_budget_util": target_total_util,
+        "actual_budget_util_total": actual_total_util,
+        "actual_budget_util_hi": hi_total_util,
+        "actual_budget_util_lo": lo_total_util,
+        "budget_util_error": budget_util_error,
+        "locked_budget_task_count": float(len(locked_budget_tasks)),
+    }
+    return tuple(new_tasks), metadata
+
+
 def build_task_to_runnables_map(workload: AutomotiveWorkload) -> dict[str, tuple[AutomotiveRunnable, ...]]:
     """把聚合后的 task 名回映射到组成它的 runnables。"""
 
@@ -612,6 +752,17 @@ def generate_automotive_workload(config: AutomotiveWorkloadConfig) -> Automotive
         tick_ns=config.tick_ns,
         rng_seed=config.seed,
     )
+    metadata: dict[str, float | int | str | bool] | None = None
+    if config.mode == "paper_learnable_headroom":
+        # 使用独立随机源，确保同一 seed+参数下预算重建完全可复现。
+        budget_rng = random.Random(config.seed * 2_000_003 + 97_409)
+        tasks, metadata = _build_learnable_headroom_tasks(
+            base_tasks=tasks,
+            cfg=config.learnable_headroom,
+            budget_floor_ratio=config.budget_floor_ratio,
+            rng=budget_rng,
+        )
+
     return AutomotiveWorkload(
         config=config,
         runnables=runnables,
@@ -619,6 +770,7 @@ def generate_automotive_workload(config: AutomotiveWorkloadConfig) -> Automotive
         task_meta=task_meta,
         normalization_bounds=bounds,
         attempts=1,
+        metadata=metadata,
     )
 
 
@@ -643,6 +795,7 @@ def generate_schedulable_automotive_workload(config: AutomotiveWorkloadConfig) -
                 task_meta=workload.task_meta,
                 normalization_bounds=workload.normalization_bounds,
                 attempts=offset + 1,
+                metadata=workload.metadata,
             )
     raise RuntimeError("在 max_attempts 范围内未找到可调度的 automotive workload")
 
@@ -668,6 +821,7 @@ __all__ = [
     "AutomotiveWorkloadProvider",
     "FACTOR_TABLE",
     "L_WCET_PROB",
+    "LearnableHeadroomConfig",
     "aggregate_runnables_to_tasks",
     "build_automotive_execution_scenario",
     "build_automotive_workload",

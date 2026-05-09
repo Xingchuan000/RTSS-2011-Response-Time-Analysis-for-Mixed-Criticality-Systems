@@ -134,3 +134,18 @@ def test_automotive_fixed_taskset_seed_keeps_taskset_constant_across_seeds() -> 
     assert bundle_a.taskset_fingerprint == bundle_b.taskset_fingerprint
     assert len(bundle_a.ordered_tasks) == len(bundle_b.ordered_tasks)
     assert bundle_a.scenario_seed != bundle_b.scenario_seed
+
+
+def test_build_experiment_config_supports_paper_learnable_headroom() -> None:
+    """统一 builder 应支持按名称选择 paper_learnable_headroom automotive。"""
+
+    config = build_experiment_config(
+        "automotive",
+        num_runnables=150,
+        mode="paper_learnable_headroom",
+        require_schedulable=False,
+        fixed_taskset_seed=0,
+    )
+    bundle = resolve_experiment_bundle(config, seed=0)
+    assert config.name.startswith("automotive_paper_learnable_headroom_")
+    assert bundle.ordered_tasks
