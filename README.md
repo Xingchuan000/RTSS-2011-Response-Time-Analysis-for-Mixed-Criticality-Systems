@@ -232,6 +232,118 @@ conda run -n amc-repro python scripts/run_pre_dqn_runtime_baselines.py --end-tim
 
 当前仓库已经包含最小 DQN 接入、正式 DQN CLI、训练诊断绘图脚本，以及可接入的 automotive workload 生成器。
 
+## 13. 最小 taskset slack 验证（阶段 A/B）
+
+本节对应 `minimal_taskset_slack_validation_plan.md` 的阶段 A、阶段 B。
+
+### 13.1 阶段 A：扫描 baseline 与可调余量
+
+脚本：`scripts/scan_taskset_headroom.py`
+
+用途：
+- 扫描多个 `fixed_taskset_seed × budget_scale` 组合；
+- 对每个组合汇总 baseline 事件指标与动作空间/安全余量诊断指标；
+- 输出二维扫描 CSV，用于分析预算缩放对 headroom 与事件强度的影响。
+
+第一阶段（并行化改造前置重构）使用说明：
+- 命令行参数与输出 CSV 字段保持不变，现有调用命令无需修改；
+- 脚本内部已重构为 `ScanConfig` + `scan_one_taskset_seed(...)` 的结构化串行执行路径；
+- 当前版本等价于按 `fixed_taskset_seed` 逐个串行扫描，便于后续在不改统计口径的前提下接入 `--workers` 并行化；
+- 如需二次开发，建议直接复用 `scan_one_taskset_seed(taskset_seed, config)`，并通过 `ScanConfig.from_args(...)` 构造参数。
+
+第二/三阶段（并行化 + 安全写出）使用说明：
+- 新增参数：`--workers N`，用于控制并行进程数；`--workers 1` 为完全串行模式；
+- 并行粒度是 `fixed_taskset_seed × budget_scale` 级别；
+- 运行时会打印进度日志：`[scan] completed x/y fixed_taskset_seed=... budget_scale=...`；
+- 任意 worker 失败会直接中断并报出出错 seed；
+- CSV 由主进程统一写出，先写到 `*.tmp`，成功后原子替换到目标 `--output` 文件，避免中途失败留下半写结果。
+
+本次 budget scale 扫描改动使用说明：
+- 新增参数：`--budget-scales`，支持逗号分隔浮点列表（如 `0.85,0.90,0.95,1.00,1.05`）；
+- 扫描种子参数支持 `--fixed-taskset-seeds` 的两种写法：`0,1,2` 或 `0:3`（半开区间，不含右端）；
+- 评估种子支持 `--seeds`（推荐）或 `--eval-seeds`，两者均支持 `a,b,c` 与 `a:b`（半开区间）；
+- `budget_scale` 会先作用到任务 `c_lo`（含 floor/upper bound 裁剪），再同时用于 baseline 与 diagnostic，保证两者预算口径一致；
+- 输出按 `fixed_taskset_seed` 升序、`budget_scale` 升序排序。
+
+示例命令（与计划文档对齐）：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro env PYTHONPATH=. python scripts/scan_taskset_headroom.py \
+  --workload automotive \
+  --automotive-mode paper_exact \
+  --automotive-num-runnables 150 \
+  --require-schedulable \
+  --fixed-taskset-seeds 0,1,2 \
+  --budget-scales 0.85,0.90,0.95,1.00,1.05 \
+  --seeds 200:229 \
+  --end-time 10000000 \
+  --agent-period 100000 \
+  --reward-mode interval_v1 \
+  --action-space single \
+  --budget-increase-ratio 0.025 \
+  --budget-decrease-ratio 0.0125 \
+  --include-explicit-noop \
+  --budget-floor-ratio 0.9 \
+  --observation-mode v11_full_10d \
+  --ema-alpha 0.2 \
+  --overrun-ema-alpha 0.1 \
+  --history-k 8 \
+  --event-window 10 \
+  --max-cost-weight 0.7 \
+  --risk-max-scale 3.0 \
+  --include-safety-margin \
+  --workers 4 \
+  --output outputs/taskset_slack_scan/paper_exact_r150_seed012_budget_scale_scan.csv
+```
+
+主要输出字段：
+- 组合键与缩放诊断：`fixed_taskset_seed`、`budget_scale`、`budget_scaled_task_count`、`budget_scale_effective_mean`、`budget_scale_effective_min`、`budget_scale_effective_max`；
+- baseline 指标：`baseline_mode_changes_mean`、`baseline_lo_cancellations_mean`、`baseline_deadline_misses_sum` 等；
+- headroom 指标：`valid_action_count_mean`、`valid_increase_count_mean`、`valid_decrease_count_mean`、`increase_decrease_balance`；
+- headroom 分组：`headroom_group`（legacy）、`total_headroom_group`、`increase_headroom_group`、`decrease_headroom_group`、`balanced_headroom_group`；
+- HI/LO 动作细分：`valid_increase_hi_count_mean`、`valid_increase_lo_count_mean`、`valid_decrease_hi_count_mean`、`valid_decrease_lo_count_mean`；
+- 安全余量指标：`safety_margin_min_mean`、`safety_margin_min_p05`、`safety_margin_min_fraction_zero`；
+- 预算利用率与风险指标：`total_budget_util_sum`、`hi_budget_util_sum`、`lo_budget_util_sum`、`risk_mean`、`surplus_mean`；
+- 自动分组与推荐：`event_group`、`slack_group`、`recommended_for_dqn`、`not_recommended_reason`。
+
+脚本结束时会打印 summary：
+- 扫描 taskset 数；
+- schedulable 数量；
+- 推荐给 DQN 的数量；
+- slack/event 分布统计。
+
+### 13.2 阶段 B：选择代表性 taskset
+
+脚本：`scripts/select_representative_tasksets.py`
+
+用途：
+- 读取阶段 A 扫描 CSV；
+- 强制包含 `--must-include` 指定 seed（默认 1）；
+- 自动补齐 medium/high event 候选，最终输出 `selected_tasksets.csv`。
+
+示例命令：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro env PYTHONPATH=. python scripts/select_representative_tasksets.py \
+  --input outputs/taskset_slack_scan/paper_exact_r150_taskset_scan.csv \
+  --output outputs/taskset_slack_scan/selected_tasksets.csv \
+  --current-seed 1 \
+  --max-tasksets 5 \
+  --min-tasksets 3
+```
+
+输出字段：
+- `rank`、`fixed_taskset_seed`、`selection_roles`、`selection_reasons`；
+- baseline 事件指标：`baseline_mode_changes_mean`、`baseline_lo_cancellations_mean`、`baseline_total_events_mean`；
+- headroom 指标：`valid_increase_count_mean`、`valid_decrease_count_mean`、`increase_headroom_group`、`balanced_headroom_group`；
+- 安全与推荐字段：`safety_margin_min_p05`、`recommended_for_dqn`、`not_recommended_reason`。
+
+脚本结束时会打印：
+- `Selected tasksets:`
+- 每个候选的 seed / roles / 事件强度 / increase 余量 / 平衡分组。
+
 ### 12.0 v11 observation（per-task 10d + global 8d）配置
 
 当前训练/评估 CLI 已支持通过参数启用：
