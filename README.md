@@ -344,6 +344,93 @@ conda run -n amc-repro env PYTHONPATH=. python scripts/select_representative_tas
 - `Selected tasksets:`
 - 每个候选的 seed / roles / 事件强度 / increase 余量 / 平衡分组。
 
+### 13.3 `paper_learnable_headroom` 生成与使用（新增）
+
+本次新增了 automotive 模式：`paper_learnable_headroom`。  
+该模式保留 `paper_exact` 的任务结构生成语义，只替换初始预算生成逻辑：
+
+- 按 `min/max budget` 与 HI/LO 分别的 `rho` 区间采样预算；
+- 再按目标 `total budget utilization` 做整体缩放并回夹到 `min/max`；
+- 生成过程可复现（固定 seed + 参数会得到相同 taskset）。
+
+新增脚本：`scripts/generate_learnable_tasksets.py`，用于批量生成候选并筛选：
+- 先做静态 reserve 检查（increase/HI increase/decrease）；
+- 在 fast diagnostic 前增加 AMCRTB 设计时可调度性预检查（`amc_rtb + opa`）；
+- 再做 fast 诊断（events/headroom/deadline_miss）；
+- 输出：
+  - `--output-manifest`：通过筛选的 accepted taskset；
+  - `--output-rejections`：被拒绝候选及原因。
+
+修复后的关键行为：
+- 新增 `--require-schedulable` 参数，可要求 workload 在生成阶段先满足可调度；
+- 新增 `--learnable-generation-strategy`：
+  - `two_stage_from_paper_exact`（默认，推荐）；
+  - `direct`（保留为可选对照策略）；
+- 新增 safety-mask-aware 放松参数（用于在 fast diagnostic 前释放 safety-valid increase）：
+  - `--learnable-enable-safety-relaxation`
+  - `--learnable-relax-target-valid-increase`
+  - `--learnable-relax-max-rounds`
+  - `--learnable-relax-step-ratio`
+  - `--learnable-relax-min-budget-floor-ratio`
+- `R_LO 不可解`、安全检查器构造失败、可调度性相关错误会被细化写入 `reject_reason`，不会中断整个生成流程；
+- `manifest/rejections` 都会包含预算利用率与静态 reserve 等关键元数据字段，便于复现与失败归因。
+- fast diagnostic 新增 mask 诊断字段（用于定位“动作空间不足”还是“安全约束过强”）：
+  - `fast_valid_increase_count_no_safety_mean`
+  - `fast_valid_decrease_count_no_safety_mean`
+  - `fast_mask_reject_incremental_constraint_violation_mean`
+  - `fast_mask_reject_no_effective_budget_change_mean`
+  - `fast_mask_reject_budget_floor_violation_mean`
+  - `fast_mask_reject_budget_upper_bound_violation_mean`
+  - `fast_mask_reject_decrease_hi_forbidden_mean`
+
+示例命令：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro env PYTHONPATH=. python scripts/generate_learnable_tasksets.py \
+  --automotive-num-runnables 150 \
+  --num-tasksets 3 \
+  --candidate-seed-start 0 \
+  --learnable-max-attempts 50 \
+  --learnable-target-budget-util-min 0.35 \
+  --learnable-target-budget-util-max 0.55 \
+  --learnable-hi-budget-rho-min 0.35 \
+  --learnable-hi-budget-rho-max 0.55 \
+  --learnable-lo-budget-rho-min 0.25 \
+  --learnable-lo-budget-rho-max 0.50 \
+  --learnable-min-static-increase-reserve 4 \
+  --learnable-min-static-hi-increase-reserve 2 \
+  --learnable-min-static-decrease-reserve 4 \
+  --learnable-fast-end-time 500000 \
+  --learnable-fast-eval-seeds 3 \
+  --learnable-fast-event-min 3 \
+  --learnable-fast-event-max 80 \
+  --learnable-fast-min-balance 0.12 \
+  --require-schedulable \
+  --reward-mode interval_v1 \
+  --action-space single \
+  --budget-increase-ratio 0.025 \
+  --budget-decrease-ratio 0.0125 \
+  --include-explicit-noop \
+  --budget-floor-ratio 0.9 \
+  --observation-mode v11_full_10d \
+  --ema-alpha 0.2 \
+  --overrun-ema-alpha 0.1 \
+  --history-k 8 \
+  --event-window 10 \
+  --max-cost-weight 0.7 \
+  --risk-max-scale 3.0 \
+  --include-safety-margin \
+  --output-manifest /tmp/learnable_manifest.csv \
+  --output-rejections /tmp/learnable_rejections.csv
+```
+
+训练/评估/扫描脚本也已支持：
+- `--automotive-mode paper_learnable_headroom`
+- `--learnable-target-budget-util-min/max`
+- `--learnable-hi-budget-rho-min/max`
+- `--learnable-lo-budget-rho-min/max`
+
 ### 12.0 v11 observation（per-task 10d + global 8d）配置
 
 当前训练/评估 CLI 已支持通过参数启用：

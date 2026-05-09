@@ -61,6 +61,7 @@ class ExperimentBundle:
     scenario_seed: int | None = None
     taskset_attempts: int = 1
     taskset_fingerprint: str | None = None
+    metadata: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +145,14 @@ def build_automotive_experiment_config(
     max_attempts: int = 50,
     scenario_seed_offset: int = 100000,
     fixed_taskset_seed: int | None = None,
+    learnable_target_budget_util_min: float = 0.62,
+    learnable_target_budget_util_max: float = 0.78,
+    learnable_hi_budget_rho_min: float = 0.45,
+    learnable_hi_budget_rho_max: float = 0.65,
+    learnable_lo_budget_rho_min: float = 0.35,
+    learnable_lo_budget_rho_max: float = 0.60,
+    learnable_max_budget_util_error: float = 0.08,
+    budget_floor_ratio: float = 0.9,
 ) -> ExperimentConfig:
     """构造可直接接入训练/评估流程的 automotive experiment 配置。
 
@@ -151,7 +160,11 @@ def build_automotive_experiment_config(
     DQN 层可以主动选择使用 workload provider，但 workload 模块本身不需要知道 DQN。
     """
 
-    from amc_py.workloads.automotive import AutomotiveWorkloadConfig, AutomotiveWorkloadProvider
+    from amc_py.workloads.automotive import (
+        AutomotiveWorkloadConfig,
+        AutomotiveWorkloadProvider,
+        LearnableHeadroomConfig,
+    )
 
     provider = AutomotiveWorkloadProvider(
         AutomotiveWorkloadConfig(
@@ -163,6 +176,16 @@ def build_automotive_experiment_config(
             lo_budget_quantile=lo_budget_quantile,
             period_scale=period_scale,
             max_attempts=max_attempts,
+            learnable_headroom=LearnableHeadroomConfig(
+                target_budget_util_min=learnable_target_budget_util_min,
+                target_budget_util_max=learnable_target_budget_util_max,
+                hi_budget_rho_min=learnable_hi_budget_rho_min,
+                hi_budget_rho_max=learnable_hi_budget_rho_max,
+                lo_budget_rho_min=learnable_lo_budget_rho_min,
+                lo_budget_rho_max=learnable_lo_budget_rho_max,
+                max_budget_util_error=learnable_max_budget_util_error,
+            ),
+            budget_floor_ratio=budget_floor_ratio,
         ),
         fixed_taskset_seed=fixed_taskset_seed,
         scenario_seed_offset=scenario_seed_offset,
@@ -216,6 +239,7 @@ def resolve_experiment_bundle(config: ExperimentConfig, seed: int) -> Experiment
             scenario_seed=workload_bundle.scenario_seed,
             taskset_attempts=workload_bundle.attempts,
             taskset_fingerprint=taskset_fingerprint,
+            metadata=workload_bundle.metadata,
         )
 
     assert config.taskset_factory is not None

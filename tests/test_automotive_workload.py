@@ -196,3 +196,46 @@ def test_paper_exact_acet_sampling_is_bounded_and_sum_preserving_for_tight_bucke
     assert len(values) == 7
     assert all(min_acet_us <= value <= max_acet_us for value in values)
     assert abs(sum(values) - 7 * avg_acet_us) < 1e-9
+
+
+def test_paper_learnable_headroom_budget_is_within_min_max_range() -> None:
+    """learnable 模式下生成的预算应严格位于 min/max 区间内。"""
+
+    floor_ratio = 0.9
+    base_workload = build_automotive_workload(
+        AutomotiveWorkloadConfig(
+            num_runnables=150,
+            seed=21,
+            mode="paper_exact",
+            require_schedulable=False,
+        )
+    )
+    workload = build_automotive_workload(
+        AutomotiveWorkloadConfig(
+            num_runnables=150,
+            seed=21,
+            mode="paper_learnable_headroom",
+            budget_floor_ratio=floor_ratio,
+            require_schedulable=False,
+        )
+    )
+    base_budget_map = {task.name: task.c_lo for task in base_workload.tasks}
+    for task in workload.tasks:
+        min_budget = max(1, int(round(float(base_budget_map[task.name]) * floor_ratio)))
+        max_budget = task.c_hi if task.criticality.value == "HI" else max(task.c_hi, min(task.deadline, task.period))
+        assert min_budget <= task.c_lo <= max_budget
+
+
+def test_paper_learnable_headroom_is_reproducible_for_same_seed() -> None:
+    """learnable 模式在相同 seed 与参数下应可复现。"""
+
+    config = AutomotiveWorkloadConfig(
+        num_runnables=150,
+        seed=22,
+        mode="paper_learnable_headroom",
+        require_schedulable=False,
+    )
+    workload_a = build_automotive_workload(config)
+    workload_b = build_automotive_workload(config)
+    assert workload_a.tasks == workload_b.tasks
+    assert workload_a.metadata == workload_b.metadata

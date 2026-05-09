@@ -1264,9 +1264,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--automotive-num-runnables", type=int, choices=[150, 250], default=150)
     parser.add_argument(
         "--automotive-mode",
-        choices=["fast", "paper_like", "paper_exact"],
+        choices=["fast", "paper_like", "paper_exact", "paper_learnable_headroom"],
         default="paper_like",
     )
+    parser.add_argument("--learnable-target-budget-util-min", type=float, default=0.62)
+    parser.add_argument("--learnable-target-budget-util-max", type=float, default=0.78)
+    parser.add_argument("--learnable-hi-budget-rho-min", type=float, default=0.45)
+    parser.add_argument("--learnable-hi-budget-rho-max", type=float, default=0.65)
+    parser.add_argument("--learnable-lo-budget-rho-min", type=float, default=0.35)
+    parser.add_argument("--learnable-lo-budget-rho-max", type=float, default=0.60)
     parser.add_argument("--mask-detail-mode", choices=["minimal", "full"], default="minimal")
     parser.add_argument("--observation-mode", choices=["v10_basic", "v11_full_10d"], default="v10_basic")
     parser.add_argument("--ema-alpha", type=float, default=0.2)
@@ -1322,6 +1328,13 @@ def main() -> None:
             require_schedulable=args.require_schedulable,
             scenario_seed_offset=args.scenario_seed_offset,
             fixed_taskset_seed=args.fixed_taskset_seed,
+            learnable_target_budget_util_min=args.learnable_target_budget_util_min,
+            learnable_target_budget_util_max=args.learnable_target_budget_util_max,
+            learnable_hi_budget_rho_min=args.learnable_hi_budget_rho_min,
+            learnable_hi_budget_rho_max=args.learnable_hi_budget_rho_max,
+            learnable_lo_budget_rho_min=args.learnable_lo_budget_rho_min,
+            learnable_lo_budget_rho_max=args.learnable_lo_budget_rho_max,
+            budget_floor_ratio=args.budget_floor_ratio,
         )
 
     enabled_methods = set(_parse_baselines(args.baselines))

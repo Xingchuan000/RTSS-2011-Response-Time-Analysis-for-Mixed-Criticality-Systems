@@ -503,6 +503,12 @@ class ScanConfig:
     include_safety_margin: bool
     low_event_threshold: float
     high_event_threshold: float
+    learnable_target_budget_util_min: float
+    learnable_target_budget_util_max: float
+    learnable_hi_budget_rho_min: float
+    learnable_hi_budget_rho_max: float
+    learnable_lo_budget_rho_min: float
+    learnable_lo_budget_rho_max: float
 
     @classmethod
     def from_args(cls, args: argparse.Namespace, eval_seeds: list[int], budget_scales: list[float]) -> "ScanConfig":
@@ -534,6 +540,12 @@ class ScanConfig:
             include_safety_margin=args.include_safety_margin,
             low_event_threshold=args.low_event_threshold,
             high_event_threshold=args.high_event_threshold,
+            learnable_target_budget_util_min=args.learnable_target_budget_util_min,
+            learnable_target_budget_util_max=args.learnable_target_budget_util_max,
+            learnable_hi_budget_rho_min=args.learnable_hi_budget_rho_min,
+            learnable_hi_budget_rho_max=args.learnable_hi_budget_rho_max,
+            learnable_lo_budget_rho_min=args.learnable_lo_budget_rho_min,
+            learnable_lo_budget_rho_max=args.learnable_lo_budget_rho_max,
         )
 
 
@@ -552,6 +564,13 @@ def scan_one_taskset_seed_budget_scale(
         mode=config.automotive_mode,
         require_schedulable=config.require_schedulable,
         fixed_taskset_seed=taskset_seed,
+        learnable_target_budget_util_min=config.learnable_target_budget_util_min,
+        learnable_target_budget_util_max=config.learnable_target_budget_util_max,
+        learnable_hi_budget_rho_min=config.learnable_hi_budget_rho_min,
+        learnable_hi_budget_rho_max=config.learnable_hi_budget_rho_max,
+        learnable_lo_budget_rho_min=config.learnable_lo_budget_rho_min,
+        learnable_lo_budget_rho_max=config.learnable_lo_budget_rho_max,
+        budget_floor_ratio=config.budget_floor_ratio,
     )
 
     feature_config = FeatureConfig(
@@ -800,6 +819,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workload", choices=["automotive"], default="automotive")
     parser.add_argument("--automotive-mode", type=str, default="paper_exact")
+    parser.add_argument("--learnable-target-budget-util-min", type=float, default=0.62)
+    parser.add_argument("--learnable-target-budget-util-max", type=float, default=0.78)
+    parser.add_argument("--learnable-hi-budget-rho-min", type=float, default=0.45)
+    parser.add_argument("--learnable-hi-budget-rho-max", type=float, default=0.65)
+    parser.add_argument("--learnable-lo-budget-rho-min", type=float, default=0.35)
+    parser.add_argument("--learnable-lo-budget-rho-max", type=float, default=0.60)
     parser.add_argument("--automotive-num-runnables", type=int, default=150)
     parser.add_argument("--require-schedulable", action="store_true")
     parser.add_argument("--fixed-taskset-seeds", type=str, required=True)

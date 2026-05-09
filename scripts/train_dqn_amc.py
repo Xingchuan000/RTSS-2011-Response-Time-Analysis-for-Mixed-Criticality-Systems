@@ -528,6 +528,13 @@ def _build_experiment_config(args: argparse.Namespace) -> ExperimentConfig:
         require_schedulable=args.require_schedulable,
         scenario_seed_offset=args.scenario_seed_offset,
         fixed_taskset_seed=args.fixed_taskset_seed,
+        learnable_target_budget_util_min=args.learnable_target_budget_util_min,
+        learnable_target_budget_util_max=args.learnable_target_budget_util_max,
+        learnable_hi_budget_rho_min=args.learnable_hi_budget_rho_min,
+        learnable_hi_budget_rho_max=args.learnable_hi_budget_rho_max,
+        learnable_lo_budget_rho_min=args.learnable_lo_budget_rho_min,
+        learnable_lo_budget_rho_max=args.learnable_lo_budget_rho_max,
+        budget_floor_ratio=args.budget_floor_ratio,
     )
 
 
@@ -891,9 +898,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--automotive-num-runnables", type=int, choices=[150, 250], default=150)
     parser.add_argument(
         "--automotive-mode",
-        choices=["fast", "paper_like", "paper_exact"],
+        choices=["fast", "paper_like", "paper_exact", "paper_learnable_headroom"],
         default="paper_like",
     )
+    parser.add_argument("--learnable-target-budget-util-min", type=float, default=0.62)
+    parser.add_argument("--learnable-target-budget-util-max", type=float, default=0.78)
+    parser.add_argument("--learnable-hi-budget-rho-min", type=float, default=0.45)
+    parser.add_argument("--learnable-hi-budget-rho-max", type=float, default=0.65)
+    parser.add_argument("--learnable-lo-budget-rho-min", type=float, default=0.35)
+    parser.add_argument("--learnable-lo-budget-rho-max", type=float, default=0.60)
     parser.add_argument("--scenario", choices=["nominal", "stress"], default="stress")
     parser.add_argument("--total-util", type=float, default=0.65)
     parser.add_argument("--num-tasks", type=int, default=20)
