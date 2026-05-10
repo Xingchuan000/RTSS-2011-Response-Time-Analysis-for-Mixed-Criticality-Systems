@@ -218,6 +218,73 @@ conda run -n amc-repro python scripts/run_small_experiment.py
 
 ## 11. Pre-DQN runtime interface
 
+## 12. Constraint-Guided Pair 诊断使用说明
+
+`scripts/generate_learnable_tasksets.py` 已新增 constraint-guided pair diagnostic（仅诊断，不改变训练 action space）：
+
+- `--enable-constraint-guided-pair-diagnostic`：开启 constraint-guided pair 诊断。
+- `--constraint-guided-pair-min-valid-count`：`fast_valid_constraint_guided_pair_count_mean` 的最小通过阈值，默认 `1.0`。
+- `--constraint-guided-pair-top-k-risk`：每步用于构造 increase 候选的 top-k risk 数量，默认 `3`。
+- `--constraint-guided-pair-top-k-decrease`：每个 increase 目标选取的约束贡献型 decrease 数量，默认 `4`。
+- `--constraint-guided-pair-prefer-lo`：选择 decrease 目标时对 LO 任务加权优先。
+- `--learnable-selection-target`：筛选目标，支持 `single|ranked_pair|constraint_guided_pair`。
+
+当使用 `--learnable-selection-target constraint_guided_pair` 时，候选 taskset 的通过与拒绝主要由以下字段决定：
+
+- `recommended_for_constraint_guided_pair_dqn`
+- `constraint_guided_pair_not_recommended_reason`
+- `fast_valid_constraint_guided_pair_count_mean`
+- `fast_constraint_guided_pair_reject_hi_lo_mode_violation_mean`
+
+示例命令（与计划文档一致）：
+
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/generate_learnable_tasksets.py \
+  --automotive-num-runnables 150 \
+  --num-tasksets 5 \
+  --candidate-seed-start 0 \
+  --learnable-max-attempts 50 \
+  --learnable-generation-strategy two_stage_from_paper_exact \
+  --learnable-selection-target constraint_guided_pair \
+  --learnable-target-budget-util-min 0.35 \
+  --learnable-target-budget-util-max 0.55 \
+  --learnable-hi-budget-rho-min 0.35 \
+  --learnable-hi-budget-rho-max 0.55 \
+  --learnable-lo-budget-rho-min 0.25 \
+  --learnable-lo-budget-rho-max 0.50 \
+  --learnable-min-static-increase-reserve 4 \
+  --learnable-min-static-hi-increase-reserve 2 \
+  --learnable-min-static-decrease-reserve 4 \
+  --learnable-fast-end-time 500000 \
+  --learnable-fast-eval-seeds 3 \
+  --learnable-fast-event-min 0 \
+  --learnable-fast-event-max 120 \
+  --learnable-fast-min-valid-increase 1 \
+  --learnable-fast-min-valid-decrease 3 \
+  --learnable-fast-min-balance 0.05 \
+  --enable-constraint-guided-pair-diagnostic \
+  --constraint-guided-pair-min-valid-count 1 \
+  --constraint-guided-pair-top-k-risk 3 \
+  --constraint-guided-pair-top-k-decrease 4 \
+  --constraint-guided-pair-prefer-lo \
+  --reward-mode interval_v1 \
+  --action-space single \
+  --budget-increase-ratio 0.01 \
+  --budget-decrease-ratio 0.0125 \
+  --include-explicit-noop \
+  --budget-floor-ratio 0.9 \
+  --observation-mode v11_full_10d \
+  --ema-alpha 0.2 \
+  --overrun-ema-alpha 0.1 \
+  --history-k 8 \
+  --event-window 10 \
+  --max-cost-weight 0.7 \
+  --risk-max-scale 3.0 \
+  --include-safety-margin \
+  --output-manifest outputs/tasksets/paper_learnable_constraint_guided_pair_r150_manifest.csv \
+  --output-rejections outputs/tasksets/paper_learnable_constraint_guided_pair_r150_rejections.csv
+```
+
 在接入 DQN 之前，当前仓库已经提供可直接用于训练循环的运行时环境封装：
 
 ```bash
@@ -264,6 +331,48 @@ conda run -n amc-repro python scripts/run_pre_dqn_runtime_baselines.py --end-tim
 - 评估种子支持 `--seeds`（推荐）或 `--eval-seeds`，两者均支持 `a,b,c` 与 `a:b`（半开区间）；
 - `budget_scale` 会先作用到任务 `c_lo`（含 floor/upper bound 裁剪），再同时用于 baseline 与 diagnostic，保证两者预算口径一致；
 - 输出按 `fixed_taskset_seed` 升序、`budget_scale` 升序排序。
+- 新增 manifest 扫描模式：可通过 `--taskset-manifest` 直接读取
+  `generate_learnable_tasksets.py` 产生的 accepted 行，不再依赖
+  `paper_learnable_headroom + require_schedulable` 的内部搜索。
+
+### 从 manifest 扫描 accepted taskset
+
+当提供 `--taskset-manifest` 时：
+- 扫描种子来自 manifest 的 `candidate_seed`（或 `--manifest-seed-column` 指定列）；
+- `--fixed-taskset-seeds` 可省略，若同时提供则以 manifest 为准；
+- 任务构造路径强制复用 two-stage 逻辑：`paper_exact(require_schedulable=True)` +
+  `learnable headroom budget rewrite`，保证与生成脚本一致；
+- 同一 `candidate_seed` 下 taskset 固定，仅随 `--seeds` 变化 execution scenario。
+
+新增参数：
+- `--taskset-manifest`
+- `--manifest-seed-column`
+- `--manifest-seed-limit`
+- `--manifest-filter-recommended`
+- `--manifest-output-selected`
+- `--manifest-strict-parameter-check`
+
+示例：
+
+```bash
+conda run -n amc-repro env PYTHONPATH=. python -u scripts/scan_taskset_headroom.py \
+  --workload automotive \
+  --taskset-manifest outputs/tasksets/paper_learnable_constraint_guided_r150_manifest_500_inc002.csv \
+  --manifest-seed-column candidate_seed \
+  --manifest-seed-limit 30 \
+  --budget-scales 1.00 \
+  --seeds 200:229 \
+  --end-time 10000000 \
+  --agent-period 100000 \
+  --enable-constraint-guided-pair-diagnostic \
+  --constraint-guided-pair-min-valid-count 2 \
+  --constraint-guided-pair-top-k-risk 3 \
+  --constraint-guided-pair-top-k-decrease 4 \
+  --constraint-guided-pair-prefer-lo \
+  --workers 4 \
+  --manifest-output-selected outputs/tasksets/paper_learnable_constraint_guided_r150_manifest_selected.csv \
+  --output outputs/taskset_slack_scan/paper_learnable_constraint_guided_r150_formal_scan.csv
+```
 
 示例命令（与计划文档对齐）：
 
@@ -301,6 +410,9 @@ conda run -n amc-repro env PYTHONPATH=. python scripts/scan_taskset_headroom.py 
 - 组合键与缩放诊断：`fixed_taskset_seed`、`budget_scale`、`budget_scaled_task_count`、`budget_scale_effective_mean`、`budget_scale_effective_min`、`budget_scale_effective_max`；
 - baseline 指标：`baseline_mode_changes_mean`、`baseline_lo_cancellations_mean`、`baseline_deadline_misses_sum` 等；
 - headroom 指标：`valid_action_count_mean`、`valid_increase_count_mean`、`valid_decrease_count_mean`、`increase_decrease_balance`；
+- ranked-pair 诊断指标（启用 `--enable-ranked-pair-diagnostic` 后输出）：
+  `ranked_pair_candidate_count_mean`、`valid_ranked_pair_count_mean`、`valid_ranked_pair_count_no_safety_mean`、
+  `valid_ranked_pair_to_single_increase_ratio`、`ranked_pair_reject_incremental_constraint_violation_mean`；
 - headroom 分组：`headroom_group`（legacy）、`total_headroom_group`、`increase_headroom_group`、`decrease_headroom_group`、`balanced_headroom_group`；
 - HI/LO 动作细分：`valid_increase_hi_count_mean`、`valid_increase_lo_count_mean`、`valid_decrease_hi_count_mean`、`valid_decrease_lo_count_mean`；
 - 安全余量指标：`safety_margin_min_mean`、`safety_margin_min_p05`、`safety_margin_min_fraction_zero`；
@@ -382,6 +494,30 @@ conda run -n amc-repro env PYTHONPATH=. python scripts/select_representative_tas
   - `fast_mask_reject_budget_floor_violation_mean`
   - `fast_mask_reject_budget_upper_bound_violation_mean`
   - `fast_mask_reject_decrease_hi_forbidden_mean`
+- ranked-pair diagnostic（仅诊断，不改训练动作空间）新增参数：
+  - `--enable-ranked-pair-diagnostic`
+  - `--ranked-pair-min-valid-count`
+  - `--ranked-pair-top-k-risk`
+  - `--ranked-pair-top-k-surplus`
+  - `--ranked-pair-decrease-mode`（`top1_surplus`/`top2_surplus`/`topk_surplus`）
+  - `--ranked-pair-include-single-controls`
+- 启用 ranked-pair 后新增输出字段：
+  - `fast_ranked_pair_candidate_count_mean`
+  - `fast_valid_ranked_pair_count_mean`
+  - `fast_valid_ranked_pair_count_no_safety_mean`
+  - `fast_valid_ranked_pair_to_single_increase_ratio`
+  - `fast_ranked_pair_reject_incremental_constraint_violation_mean`
+  - `fast_ranked_pair_reject_budget_floor_violation_mean`
+  - `fast_ranked_pair_reject_budget_upper_bound_violation_mean`
+  - `fast_ranked_pair_reject_no_effective_budget_change_mean`
+  - `fast_ranked_pair_reject_decrease_hi_forbidden_mean`
+  - `fast_ranked_pair_reject_unknown_mean`
+  - `fast_ranked_pair_reject_unknown_no_safety_mean`
+  - `fast_ranked_pair_reject_hi_lo_mode_violation_mean`
+  - `fast_ranked_pair_reject_hi_mode_switch_violation_mean`
+  - `fast_ranked_pair_reject_lo_mode_violation_mean`
+  - `recommended_for_ranked_pair_dqn`
+  - `ranked_pair_not_recommended_reason`
 
 示例命令：
 

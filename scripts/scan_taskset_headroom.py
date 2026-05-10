@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -18,6 +19,181 @@ from amc_py.models import Criticality, Task
 from amc_py.rl.env import AmcBudgetEnv
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics
+from scripts.generate_learnable_tasksets import _rewrite_budgets_for_learnable_headroom
+
+
+@dataclass(frozen=True)
+class _TwoStageRewriteConfig:
+    """two-stage 预算重写所需的最小配置子集。
+
+    说明：
+    - generate 脚本中的 `_rewrite_budgets_for_learnable_headroom` 只读取这几个字段；
+    - 这里用最小配置对象复用同一重写函数，保证 scan 与生成脚本口径一致。
+    """
+
+    budget_floor_ratio: float
+    learnable_target_budget_util_min: float
+    learnable_target_budget_util_max: float
+    learnable_hi_budget_rho_min: float
+    learnable_hi_budget_rho_max: float
+    learnable_lo_budget_rho_min: float
+    learnable_lo_budget_rho_max: float
+
+
+def _parse_bool_like(value: object) -> bool:
+    """把 manifest 中的布尔样式文本解析为 bool。"""
+
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "y"}
+
+
+def _load_manifest_rows(
+    manifest_path: str,
+    *,
+    seed_column: str,
+    seed_limit: int | None,
+    filter_recommended: bool,
+) -> list[dict[str, str]]:
+    """从 manifest 读取候选行并按种子去重。
+
+    约束：
+    - 按 manifest 原始顺序保留；
+    - 仅保留 seed 可解析的行；
+    - 使用首出现去重，避免重复扫描同一个 candidate_seed。
+    """
+
+    path = Path(manifest_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Manifest not found: {manifest_path}")
+
+    with path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    if not rows:
+        raise ValueError(f"Manifest is empty: {manifest_path}")
+    if seed_column not in rows[0]:
+        raise ValueError(
+            f"Manifest seed column '{seed_column}' not found. Available columns: {sorted(rows[0].keys())}"
+        )
+
+    selected = rows
+    if filter_recommended:
+        recommendation_columns = [
+            "recommended_for_constraint_guided_pair_dqn",
+            "recommended_for_ranked_pair_dqn",
+            "recommended_fast",
+        ]
+        existing = [column for column in recommendation_columns if column in rows[0]]
+        if not existing:
+            raise ValueError(
+                "--manifest-filter-recommended was set, but no known recommendation column exists in manifest."
+            )
+        selected = [row for row in selected if any(_parse_bool_like(row.get(column, "")) for column in existing)]
+
+    deduped: list[dict[str, str]] = []
+    seen: set[int] = set()
+    for row in selected:
+        seed_text = str(row.get(seed_column, "")).strip()
+        if not seed_text:
+            continue
+        seed_value = int(float(seed_text))
+        if seed_value in seen:
+            continue
+        seen.add(seed_value)
+        copied = dict(row)
+        copied[seed_column] = str(seed_value)
+        deduped.append(copied)
+
+    if seed_limit is not None:
+        deduped = deduped[:seed_limit]
+    if not deduped:
+        raise ValueError(f"No manifest rows selected from {manifest_path}")
+    return deduped
+
+
+def _write_selected_manifest_rows(path: str, rows: list[dict[str, str]]) -> None:
+    """把本次真正用于扫描的 manifest 子集写盘，便于追溯。"""
+
+    if not rows:
+        return
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(rows[0].keys())
+    with output.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _warn_or_raise_manifest_parameter_mismatch(
+    *,
+    args: argparse.Namespace,
+    manifest_rows: list[dict[str, str]],
+) -> None:
+    """校验 CLI 参数与 manifest 内参数的一致性。
+
+    策略：
+    - 当 `--manifest-strict-parameter-check` 为真：不一致直接报错；
+    - 否则打印 WARNING，继续执行。
+    """
+
+    first = manifest_rows[0]
+    checks: list[tuple[str, str, float]] = [
+        ("learnable_target_budget_util_min", "learnable_target_budget_util_min", float(args.learnable_target_budget_util_min)),
+        ("learnable_target_budget_util_max", "learnable_target_budget_util_max", float(args.learnable_target_budget_util_max)),
+        ("learnable_hi_budget_rho_min", "learnable_hi_budget_rho_min", float(args.learnable_hi_budget_rho_min)),
+        ("learnable_hi_budget_rho_max", "learnable_hi_budget_rho_max", float(args.learnable_hi_budget_rho_max)),
+        ("learnable_lo_budget_rho_min", "learnable_lo_budget_rho_min", float(args.learnable_lo_budget_rho_min)),
+        ("learnable_lo_budget_rho_max", "learnable_lo_budget_rho_max", float(args.learnable_lo_budget_rho_max)),
+        ("budget_increase_ratio", "budget_increase_ratio", float(args.budget_increase_ratio)),
+        ("budget_decrease_ratio", "budget_decrease_ratio", float(args.budget_decrease_ratio)),
+        ("budget_floor_ratio", "budget_floor_ratio", float(args.budget_floor_ratio)),
+        ("constraint_guided_pair_top_k_risk", "constraint_guided_pair_top_k_risk", float(args.constraint_guided_pair_top_k_risk)),
+        ("constraint_guided_pair_top_k_decrease", "constraint_guided_pair_top_k_decrease", float(args.constraint_guided_pair_top_k_decrease)),
+    ]
+    mismatches: list[str] = []
+    for manifest_column, display_name, cli_value in checks:
+        if manifest_column not in first:
+            continue
+        manifest_text = str(first.get(manifest_column, "")).strip()
+        if not manifest_text:
+            continue
+        manifest_value = float(manifest_text)
+        if abs(manifest_value - cli_value) > 1e-12:
+            mismatches.append(
+                f"{display_name}: CLI={cli_value} vs manifest={manifest_value}"
+            )
+    if not mismatches:
+        return
+    message = "Manifest parameter mismatch detected:\n" + "\n".join(f"- {item}" for item in mismatches)
+    if args.manifest_strict_parameter_check:
+        raise ValueError(message)
+    print(f"WARNING: {message}", flush=True)
+
+
+def _extract_task_rank_features(env: AmcBudgetEnv, observation) -> list[dict[str, int | float | bool]]:
+    """提取 ranked-pair 诊断所需特征。"""
+
+    if env.feature_config.observation_mode != "v11_full_10d":
+        raise ValueError("ranked_pair diagnostic 仅支持 v11_full_10d observation_mode")
+    vec = observation.state_vector
+    out: list[dict[str, int | float | bool]] = []
+    for idx, task in enumerate(env.ordered_tasks):
+        base = idx * 10
+        out.append(
+            {
+                "index": idx,
+                "is_hi": task.criticality is Criticality.HI,
+                "is_lo": task.criticality is not Criticality.HI,
+                "risk": float(vec[base + 5]),
+                "surplus": float(vec[base + 6]),
+                "period": float(task.period),
+                "priority_rank": idx,
+            }
+        )
+    return out
 
 
 def _parse_int_list_or_range(raw_value: str) -> list[int]:
@@ -259,6 +435,142 @@ def _compute_budget_utils(ordered_tasks: list[Task], budgets: dict[str, int]) ->
     }
 
 
+def _sanitize_ranked_pair_candidate(candidate: dict[str, object]) -> dict[str, object] | None:
+    """按计划规则清洗候选。"""
+
+    inc = list(dict.fromkeys(int(i) for i in candidate["increase_indices"]))  # type: ignore[index]
+    dec = list(dict.fromkeys(int(i) for i in candidate["decrease_indices"]))  # type: ignore[index]
+    dec = [idx for idx in dec if idx not in inc]
+    if not inc or not dec:
+        return None
+    return {"name": str(candidate["name"]), "increase_indices": inc, "decrease_indices": dec}
+
+
+def _build_ranked_pair_candidates(env: AmcBudgetEnv, observation, top_k_risk: int, top_k_surplus: int, decrease_mode: str) -> list[dict[str, object]]:
+    """构建 ranked-pair 候选集合。"""
+
+    feats = _extract_task_rank_features(env, observation)
+    risk_order = sorted(feats, key=lambda f: (float(f["risk"]), 1 if bool(f["is_hi"]) else 0, -int(f["priority_rank"])), reverse=True)
+    surplus_order = sorted(
+        feats,
+        key=lambda f: (float(f["surplus"]), 1 if bool(f["is_lo"]) else 0, float(f["period"]), -float(f["risk"])),
+        reverse=True,
+    )
+    hi_risk_order = [f for f in risk_order if bool(f["is_hi"])]
+    lo_surplus_order = [f for f in surplus_order if bool(f["is_lo"])]
+    risk_top = risk_order[: max(1, top_k_risk)]
+    surplus_top = surplus_order[: max(1, top_k_surplus)]
+    hi_top = hi_risk_order[: max(1, top_k_risk)]
+    lo_top = lo_surplus_order[: max(1, top_k_surplus)]
+    dec_count = 1 if decrease_mode == "top1_surplus" else 2
+    if decrease_mode == "topk_surplus":
+        dec_count = max(1, top_k_surplus)
+    raw: list[dict[str, object]] = []
+    if risk_top and surplus_top:
+        raw.append({"name": "inc_toprisk_dec_topsurplus", "increase_indices": [int(risk_top[0]["index"])], "decrease_indices": [int(surplus_top[0]["index"])]})
+        raw.append({"name": "inc_toprisk_dec_top2surplus", "increase_indices": [int(risk_top[0]["index"])], "decrease_indices": [int(x["index"]) for x in surplus_top[:dec_count]]})
+    if hi_top and lo_top:
+        raw.append({"name": "inc_tophirisk_dec_toplosurplus", "increase_indices": [int(hi_top[0]["index"])], "decrease_indices": [int(lo_top[0]["index"])]})
+        raw.append({"name": "inc_tophirisk_dec_top2losurplus", "increase_indices": [int(hi_top[0]["index"])], "decrease_indices": [int(x["index"]) for x in lo_top[:dec_count]]})
+    if len(risk_top) >= 2 and surplus_top:
+        raw.append({"name": "inc_top2risk_dec_top2surplus", "increase_indices": [int(risk_top[0]["index"]), int(risk_top[1]["index"])], "decrease_indices": [int(x["index"]) for x in surplus_top[:dec_count]]})
+    seen: dict[tuple[str, tuple[int, ...], tuple[int, ...]], dict[str, object]] = {}
+    for item in raw:
+        cleaned = _sanitize_ranked_pair_candidate(item)
+        if cleaned is None:
+            continue
+        key = (str(cleaned["name"]), tuple(cleaned["increase_indices"]), tuple(cleaned["decrease_indices"]))  # type: ignore[arg-type]
+        seen[key] = cleaned
+    return list(seen.values())
+
+
+def _build_candidate_budget_update(env: AmcBudgetEnv, candidate: dict[str, object], increase_ratio: float, decrease_ratio: float) -> dict[str, int]:
+    """构建候选预算向量。"""
+
+    if env._engine is None:  # noqa: SLF001
+        raise RuntimeError("环境尚未 reset")
+    base = dict(env._engine.runtime_budgets.budgets)  # noqa: SLF001
+    new_budgets = dict(base)
+    for idx in candidate["increase_indices"]:  # type: ignore[index]
+        task = env.ordered_tasks[int(idx)]
+        name = task.name
+        value = int(round(int(new_budgets[name]) * (1.0 + increase_ratio)))
+        upper = int(task.c_hi) if task.criticality is Criticality.HI else int(task.deadline)
+        new_budgets[name] = max(1, min(value, upper))
+    for idx in candidate["decrease_indices"]:  # type: ignore[index]
+        task = env.ordered_tasks[int(idx)]
+        name = task.name
+        value = int(round(int(new_budgets[name]) * (1.0 - decrease_ratio)))
+        new_budgets[name] = max(1, value)
+    return new_budgets
+
+
+def _build_constraint_guided_increase_candidates(
+    env: AmcBudgetEnv,
+    observation,
+    top_k_risk: int,
+) -> list[int]:
+    """构造 constraint-guided 的 increase 候选任务索引。
+
+    规则与生成脚本保持一致：
+    1. 先取全任务 top-k risk；
+    2. 再拼接 HI 任务 top-k risk；
+    3. 最后去重并保持顺序。
+    """
+
+    feats = _extract_task_rank_features(env, observation)
+    risk_order = sorted(
+        feats,
+        key=lambda f: (float(f["risk"]), 1 if bool(f["is_hi"]) else 0, -int(f["priority_rank"])),
+        reverse=True,
+    )
+    hi_risk_order = [f for f in risk_order if bool(f["is_hi"])]
+    indices = [int(item["index"]) for item in risk_order[: max(1, top_k_risk)]]
+    indices.extend(int(item["index"]) for item in hi_risk_order[: max(1, top_k_risk)])
+    return list(dict.fromkeys(indices))
+
+
+def _select_constraint_guided_decrease_targets(
+    *,
+    env: AmcBudgetEnv,
+    diagnosis,
+    increase_indices: set[int],
+    budgets: dict[str, int],
+    budget_floor_ratio: float,
+    top_k: int,
+    prefer_lo: bool,
+) -> list[int]:
+    """按 violated row 的约束贡献分数选择 decrease 目标。
+
+    分数定义：
+    score = max(0, coeff_j) * possible_decrease_j
+    其中 possible_decrease_j = current_budget_j - floor_budget_j。
+    """
+
+    if diagnosis.violated_row_index is None:
+        return []
+
+    scored: list[tuple[float, int]] = []
+    for idx, task in enumerate(env.ordered_tasks):
+        if idx in increase_indices:
+            continue
+        current = int(budgets[task.name])
+        floor = max(1, int(round(float(task.c_lo) * budget_floor_ratio)))
+        possible_decrease = current - floor
+        if possible_decrease <= 0:
+            continue
+        coeff = max(0.0, float(diagnosis.row_coefficients[idx]))
+        if coeff <= 0.0:
+            continue
+        score = coeff * float(possible_decrease)
+        if prefer_lo and not _is_hi_task(task):
+            score *= 1.25
+        scored.append((score, idx))
+
+    scored.sort(reverse=True)
+    return [idx for _, idx in scored[: max(1, top_k)]]
+
+
 def _apply_budget_scale_to_tasks(
     *,
     ordered_tasks: list[Task],
@@ -320,6 +632,14 @@ def _run_diagnostic_on_seed(
     include_explicit_noop: bool,
     budget_floor_ratio: float,
     forbid_decreasing_hi_budgets: bool,
+    enable_ranked_pair_diagnostic: bool,
+    ranked_pair_top_k_risk: int,
+    ranked_pair_top_k_surplus: int,
+    ranked_pair_decrease_mode: str,
+    enable_constraint_guided_pair_diagnostic: bool,
+    constraint_guided_pair_top_k_risk: int,
+    constraint_guided_pair_top_k_decrease: int,
+    constraint_guided_pair_prefer_lo: bool,
 ) -> dict[str, float]:
     """在单个 eval_seed 上运行 noop 诊断并采集 headroom 指标。"""
 
@@ -376,6 +696,18 @@ def _run_diagnostic_on_seed(
     diagnostic_mode_changes = 0.0
     diagnostic_lo_cancellations = 0.0
     diagnostic_deadline_misses = 0.0
+    ranked_pair_candidate_values: list[float] = []
+    ranked_pair_valid_values: list[float] = []
+    ranked_pair_valid_no_safety_values: list[float] = []
+    ranked_pair_reject_incremental_values: list[float] = []
+    constraint_guided_pair_valid_values: list[float] = []
+    constraint_guided_pair_valid_no_safety_values: list[float] = []
+    constraint_guided_pair_reject_incremental_values: list[float] = []
+    constraint_guided_pair_reject_hi_lo_values: list[float] = []
+    constraint_guided_pair_reject_hi_mode_switch_values: list[float] = []
+    constraint_guided_pair_reject_lo_mode_values: list[float] = []
+    constraint_guided_pair_reject_budget_floor_values: list[float] = []
+    constraint_guided_pair_reject_unknown_values: list[float] = []
 
     while not done:
         mask = env.valid_action_mask()
@@ -423,6 +755,131 @@ def _run_diagnostic_on_seed(
                     lo_risk_values.append(risk)
                     lo_surplus_values.append(surplus)
 
+        if enable_ranked_pair_diagnostic:
+            candidates = _build_ranked_pair_candidates(
+                env,
+                obs,
+                top_k_risk=ranked_pair_top_k_risk,
+                top_k_surplus=ranked_pair_top_k_surplus,
+                decrease_mode=ranked_pair_decrease_mode,
+            )
+            valid_count = 0
+            valid_no_safety_count = 0
+            reject_counts: Counter[str] = Counter()
+            for cand in candidates:
+                new_budgets = _build_candidate_budget_update(
+                    env,
+                    cand,
+                    increase_ratio=budget_increase_ratio,
+                    decrease_ratio=budget_decrease_ratio,
+                )
+                old_flag = env.check_safety
+                env.check_safety = False
+                ok_no_safety, _ = env.check_candidate_budget_update(new_budgets=new_budgets)
+                env.check_safety = old_flag
+                ok, reason = env.check_candidate_budget_update(new_budgets=new_budgets)
+                if ok:
+                    valid_count += 1
+                else:
+                    reject_counts[reason] += 1
+                if ok_no_safety:
+                    valid_no_safety_count += 1
+            ranked_pair_candidate_values.append(float(len(candidates)))
+            ranked_pair_valid_values.append(float(valid_count))
+            ranked_pair_valid_no_safety_values.append(float(valid_no_safety_count))
+            ranked_pair_reject_incremental_values.append(
+                float(reject_counts.get("incremental_constraint_violation", 0))
+            )
+        if enable_constraint_guided_pair_diagnostic:
+            # constraint-guided 诊断：先 increase，再根据 violated row 选 decrease。
+            if env._engine is None:  # noqa: SLF001
+                raise RuntimeError("环境尚未 reset")
+            current_budgets = dict(env._engine.runtime_budgets.budgets)  # noqa: SLF001
+            increase_candidates = _build_constraint_guided_increase_candidates(
+                env=env,
+                observation=obs,
+                top_k_risk=constraint_guided_pair_top_k_risk,
+            )
+            valid_count = 0
+            valid_no_safety_count = 0
+            reject_counts: Counter[str] = Counter()
+            for inc_idx in increase_candidates:
+                inc_task = env.ordered_tasks[int(inc_idx)]
+                single_budgets = dict(current_budgets)
+                old_inc = int(single_budgets[inc_task.name])
+                inc_value = int(round(float(old_inc) * (1.0 + budget_increase_ratio)))
+                inc_upper = int(inc_task.c_hi) if _is_hi_task(inc_task) else int(inc_task.deadline)
+                single_budgets[inc_task.name] = max(1, min(inc_value, inc_upper))
+
+                diagnosis = env.diagnose_candidate_budget_update(new_budgets=single_budgets)
+                pair_budgets = dict(single_budgets)
+                if not diagnosis.accepted:
+                    decrease_indices = _select_constraint_guided_decrease_targets(
+                        env=env,
+                        diagnosis=diagnosis,
+                        increase_indices={int(inc_idx)},
+                        budgets=current_budgets,
+                        budget_floor_ratio=budget_floor_ratio,
+                        top_k=constraint_guided_pair_top_k_decrease,
+                        prefer_lo=constraint_guided_pair_prefer_lo,
+                    )
+                    for dec_idx in decrease_indices:
+                        dec_task = env.ordered_tasks[int(dec_idx)]
+                        old_dec = int(pair_budgets[dec_task.name])
+                        dec_value = int(round(float(old_dec) * (1.0 - budget_decrease_ratio)))
+                        pair_budgets[dec_task.name] = max(1, dec_value)
+
+                old_flag = env.check_safety
+                env.check_safety = False
+                ok_no_safety, _ = env.check_candidate_budget_update(new_budgets=pair_budgets)
+                env.check_safety = old_flag
+
+                ok, _reason = env.check_candidate_budget_update(new_budgets=pair_budgets)
+                pair_diag = env.diagnose_candidate_budget_update(new_budgets=pair_budgets)
+                if ok:
+                    valid_count += 1
+                else:
+                    normalized = str(pair_diag.normalized_reason or "unknown")
+                    reject_counts[normalized] += 1
+                    if normalized == "incremental_constraint_violation":
+                        fine_reason = env._ensure_checker().validate_candidate(pair_budgets).reason  # noqa: SLF001
+                        if isinstance(fine_reason, str):
+                            if fine_reason.startswith("hi_lo_mode_violation"):
+                                reject_counts["hi_lo_mode_violation"] += 1
+                            elif fine_reason.startswith("hi_mode_switch_violation"):
+                                reject_counts["hi_mode_switch_violation"] += 1
+                            elif fine_reason.startswith("lo_mode_violation"):
+                                reject_counts["lo_mode_violation"] += 1
+                            else:
+                                reject_counts["unknown"] += 1
+                if ok_no_safety:
+                    valid_no_safety_count += 1
+
+            constraint_guided_pair_valid_values.append(float(valid_count))
+            constraint_guided_pair_valid_no_safety_values.append(float(valid_no_safety_count))
+            constraint_guided_pair_reject_incremental_values.append(
+                float(reject_counts.get("incremental_constraint_violation", 0))
+            )
+            constraint_guided_pair_reject_hi_lo_values.append(float(reject_counts.get("hi_lo_mode_violation", 0)))
+            constraint_guided_pair_reject_hi_mode_switch_values.append(
+                float(reject_counts.get("hi_mode_switch_violation", 0))
+            )
+            constraint_guided_pair_reject_lo_mode_values.append(float(reject_counts.get("lo_mode_violation", 0)))
+            constraint_guided_pair_reject_budget_floor_values.append(
+                float(reject_counts.get("budget_floor_violation", 0))
+            )
+            known = {
+                "incremental_constraint_violation",
+                "hi_lo_mode_violation",
+                "hi_mode_switch_violation",
+                "lo_mode_violation",
+                "budget_floor_violation",
+                "budget_upper_bound_violation",
+                "no_effective_budget_change",
+            }
+            unknown_count = float(sum(v for k, v in reject_counts.items() if k not in known and not k.startswith("hi_")))
+            constraint_guided_pair_reject_unknown_values.append(unknown_count)
+
         obs = step_result.observation
         done = step_result.done
 
@@ -468,6 +925,46 @@ def _run_diagnostic_on_seed(
         "diagnostic_mode_changes": diagnostic_mode_changes,
         "diagnostic_lo_cancellations": diagnostic_lo_cancellations,
         "diagnostic_deadline_misses": diagnostic_deadline_misses,
+        "ranked_pair_candidate_count_mean": mean(ranked_pair_candidate_values) if ranked_pair_candidate_values else 0.0,
+        "valid_ranked_pair_count_mean": mean(ranked_pair_valid_values) if ranked_pair_valid_values else 0.0,
+        "valid_ranked_pair_count_no_safety_mean": (
+            mean(ranked_pair_valid_no_safety_values) if ranked_pair_valid_no_safety_values else 0.0
+        ),
+        "ranked_pair_reject_incremental_constraint_violation_mean": (
+            mean(ranked_pair_reject_incremental_values) if ranked_pair_reject_incremental_values else 0.0
+        ),
+        "valid_constraint_guided_pair_count_mean": (
+            mean(constraint_guided_pair_valid_values) if constraint_guided_pair_valid_values else 0.0
+        ),
+        "valid_constraint_guided_pair_count_no_safety_mean": (
+            mean(constraint_guided_pair_valid_no_safety_values)
+            if constraint_guided_pair_valid_no_safety_values
+            else 0.0
+        ),
+        "constraint_guided_pair_reject_incremental_constraint_violation_mean": (
+            mean(constraint_guided_pair_reject_incremental_values)
+            if constraint_guided_pair_reject_incremental_values
+            else 0.0
+        ),
+        "constraint_guided_pair_reject_hi_lo_mode_violation_mean": (
+            mean(constraint_guided_pair_reject_hi_lo_values) if constraint_guided_pair_reject_hi_lo_values else 0.0
+        ),
+        "constraint_guided_pair_reject_hi_mode_switch_violation_mean": (
+            mean(constraint_guided_pair_reject_hi_mode_switch_values)
+            if constraint_guided_pair_reject_hi_mode_switch_values
+            else 0.0
+        ),
+        "constraint_guided_pair_reject_lo_mode_violation_mean": (
+            mean(constraint_guided_pair_reject_lo_mode_values) if constraint_guided_pair_reject_lo_mode_values else 0.0
+        ),
+        "constraint_guided_pair_reject_budget_floor_violation_mean": (
+            mean(constraint_guided_pair_reject_budget_floor_values)
+            if constraint_guided_pair_reject_budget_floor_values
+            else 0.0
+        ),
+        "constraint_guided_pair_reject_unknown_mean": (
+            mean(constraint_guided_pair_reject_unknown_values) if constraint_guided_pair_reject_unknown_values else 0.0
+        ),
     }
 
 
@@ -484,6 +981,9 @@ class ScanConfig:
     require_schedulable: bool
     eval_seeds: tuple[int, ...]
     budget_scales: tuple[float, ...]
+    taskset_manifest: str | None
+    manifest_seed_column: str
+    manifest_rows_by_seed: dict[int, dict[str, str]]
     end_time: int
     agent_period: int
     reward_mode: str
@@ -509,9 +1009,25 @@ class ScanConfig:
     learnable_hi_budget_rho_max: float
     learnable_lo_budget_rho_min: float
     learnable_lo_budget_rho_max: float
+    enable_ranked_pair_diagnostic: bool
+    ranked_pair_min_valid_count: float
+    ranked_pair_top_k_risk: int
+    ranked_pair_top_k_surplus: int
+    ranked_pair_decrease_mode: str
+    enable_constraint_guided_pair_diagnostic: bool
+    constraint_guided_pair_min_valid_count: float
+    constraint_guided_pair_top_k_risk: int
+    constraint_guided_pair_top_k_decrease: int
+    constraint_guided_pair_prefer_lo: bool
 
     @classmethod
-    def from_args(cls, args: argparse.Namespace, eval_seeds: list[int], budget_scales: list[float]) -> "ScanConfig":
+    def from_args(
+        cls,
+        args: argparse.Namespace,
+        eval_seeds: list[int],
+        budget_scales: list[float],
+        manifest_rows_by_seed: dict[int, dict[str, str]],
+    ) -> "ScanConfig":
         """从命令行参数构造不可变配置对象。"""
 
         return cls(
@@ -521,6 +1037,9 @@ class ScanConfig:
             require_schedulable=args.require_schedulable,
             eval_seeds=tuple(eval_seeds),
             budget_scales=tuple(budget_scales),
+            taskset_manifest=args.taskset_manifest,
+            manifest_seed_column=args.manifest_seed_column,
+            manifest_rows_by_seed=manifest_rows_by_seed,
             end_time=args.end_time,
             agent_period=args.agent_period,
             reward_mode=args.reward_mode,
@@ -546,6 +1065,16 @@ class ScanConfig:
             learnable_hi_budget_rho_max=args.learnable_hi_budget_rho_max,
             learnable_lo_budget_rho_min=args.learnable_lo_budget_rho_min,
             learnable_lo_budget_rho_max=args.learnable_lo_budget_rho_max,
+            enable_ranked_pair_diagnostic=args.enable_ranked_pair_diagnostic,
+            ranked_pair_min_valid_count=args.ranked_pair_min_valid_count,
+            ranked_pair_top_k_risk=args.ranked_pair_top_k_risk,
+            ranked_pair_top_k_surplus=args.ranked_pair_top_k_surplus,
+            ranked_pair_decrease_mode=args.ranked_pair_decrease_mode,
+            enable_constraint_guided_pair_diagnostic=args.enable_constraint_guided_pair_diagnostic,
+            constraint_guided_pair_min_valid_count=args.constraint_guided_pair_min_valid_count,
+            constraint_guided_pair_top_k_risk=args.constraint_guided_pair_top_k_risk,
+            constraint_guided_pair_top_k_decrease=args.constraint_guided_pair_top_k_decrease,
+            constraint_guided_pair_prefer_lo=args.constraint_guided_pair_prefer_lo,
         )
 
 
@@ -584,12 +1113,45 @@ def scan_one_taskset_seed_budget_scale(
         include_safety_margin=config.include_safety_margin,
     )
 
-    initial_bundle = resolve_experiment_bundle(experiment_config, config.eval_seeds[0])
-    scaled_tasks_for_sched, budget_scale_stats = _apply_budget_scale_to_tasks(
-        ordered_tasks=list(initial_bundle.ordered_tasks),
-        budget_scale=budget_scale,
-        budget_floor_ratio=config.budget_floor_ratio,
-    )
+    manifest_row = config.manifest_rows_by_seed.get(taskset_seed, {})
+    # 当使用 manifest 扫描时，必须复现 generate 脚本的 two-stage 路径：
+    # paper_exact(require_schedulable=True) -> learnable budget rewrite。
+    if config.taskset_manifest is not None:
+        base_config = build_automotive_experiment_config(
+            num_runnables=config.automotive_num_runnables,
+            mode="paper_exact",
+            require_schedulable=True,
+            fixed_taskset_seed=taskset_seed,
+            budget_floor_ratio=config.budget_floor_ratio,
+        )
+        base_bundle = resolve_experiment_bundle(base_config, seed=10_000 + taskset_seed)
+        rewrite_cfg = _TwoStageRewriteConfig(
+            budget_floor_ratio=config.budget_floor_ratio,
+            learnable_target_budget_util_min=config.learnable_target_budget_util_min,
+            learnable_target_budget_util_max=config.learnable_target_budget_util_max,
+            learnable_hi_budget_rho_min=config.learnable_hi_budget_rho_min,
+            learnable_hi_budget_rho_max=config.learnable_hi_budget_rho_max,
+            learnable_lo_budget_rho_min=config.learnable_lo_budget_rho_min,
+            learnable_lo_budget_rho_max=config.learnable_lo_budget_rho_max,
+        )
+        rewritten_tasks, rewritten_meta = _rewrite_budgets_for_learnable_headroom(
+            ordered_tasks=list(base_bundle.ordered_tasks),
+            candidate_seed=taskset_seed,
+            cfg=rewrite_cfg,  # type: ignore[arg-type]
+        )
+        scaled_tasks_for_sched, budget_scale_stats = _apply_budget_scale_to_tasks(
+            ordered_tasks=list(rewritten_tasks),
+            budget_scale=budget_scale,
+            budget_floor_ratio=config.budget_floor_ratio,
+        )
+    else:
+        initial_bundle = resolve_experiment_bundle(experiment_config, config.eval_seeds[0])
+        rewritten_meta = {}
+        scaled_tasks_for_sched, budget_scale_stats = _apply_budget_scale_to_tasks(
+            ordered_tasks=list(initial_bundle.ordered_tasks),
+            budget_scale=budget_scale,
+            budget_floor_ratio=config.budget_floor_ratio,
+        )
     schedulable = evaluate_taskset(scaled_tasks_for_sched, method="amc_rtb", priority_policy="opa").schedulable
     num_hi_tasks = sum(1 for task in scaled_tasks_for_sched if _is_hi_task(task))
     num_lo_tasks = len(scaled_tasks_for_sched) - num_hi_tasks
@@ -601,16 +1163,23 @@ def scan_one_taskset_seed_budget_scale(
 
     if not (config.require_schedulable and not schedulable):
         for eval_seed in config.eval_seeds:
-            bundle_for_seed = resolve_experiment_bundle(experiment_config, eval_seed)
-            scaled_tasks, _ = _apply_budget_scale_to_tasks(
-                ordered_tasks=list(bundle_for_seed.ordered_tasks),
-                budget_scale=budget_scale,
-                budget_floor_ratio=config.budget_floor_ratio,
-            )
+            if config.taskset_manifest is not None:
+                # manifest 模式下固定同一份 two-stage 任务集，仅替换 scenario seed。
+                scenario_bundle = resolve_experiment_bundle(base_config, eval_seed)
+                scaled_tasks = list(scaled_tasks_for_sched)
+                scenario = scenario_bundle.scenario
+            else:
+                bundle_for_seed = resolve_experiment_bundle(experiment_config, eval_seed)
+                scaled_tasks, _ = _apply_budget_scale_to_tasks(
+                    ordered_tasks=list(bundle_for_seed.ordered_tasks),
+                    budget_scale=budget_scale,
+                    budget_floor_ratio=config.budget_floor_ratio,
+                )
+                scenario = bundle_for_seed.scenario
 
             baseline_result = simulate_ordered_taskset_event_driven(
                 ordered_tasks=scaled_tasks,
-                scenario=bundle_for_seed.scenario,
+                scenario=scenario,
                 config=RuntimeConfig(end_time=config.end_time, semantics=RuntimeSemantics.AMC_PLUS),
             )
             baseline_mode_changes_values.append(float(baseline_result.mode_change_count()))
@@ -620,7 +1189,7 @@ def scan_one_taskset_seed_budget_scale(
             diagnostic_rows.append(
                 _run_diagnostic_on_seed(
                     ordered_tasks=scaled_tasks,
-                    scenario=bundle_for_seed.scenario,
+                    scenario=scenario,
                     feature_config=feature_config,
                     eval_seed=eval_seed,
                     end_time=config.end_time,
@@ -632,6 +1201,14 @@ def scan_one_taskset_seed_budget_scale(
                     include_explicit_noop=config.include_explicit_noop,
                     budget_floor_ratio=config.budget_floor_ratio,
                     forbid_decreasing_hi_budgets=config.forbid_decreasing_hi_budgets,
+                    enable_ranked_pair_diagnostic=config.enable_ranked_pair_diagnostic,
+                    ranked_pair_top_k_risk=config.ranked_pair_top_k_risk,
+                    ranked_pair_top_k_surplus=config.ranked_pair_top_k_surplus,
+                    ranked_pair_decrease_mode=config.ranked_pair_decrease_mode,
+                    enable_constraint_guided_pair_diagnostic=config.enable_constraint_guided_pair_diagnostic,
+                    constraint_guided_pair_top_k_risk=config.constraint_guided_pair_top_k_risk,
+                    constraint_guided_pair_top_k_decrease=config.constraint_guided_pair_top_k_decrease,
+                    constraint_guided_pair_prefer_lo=config.constraint_guided_pair_prefer_lo,
                 )
             )
 
@@ -649,7 +1226,59 @@ def scan_one_taskset_seed_budget_scale(
     valid_action_count_mean = mean(item["valid_action_count_mean"] for item in diagnostic_rows) if diagnostic_rows else 0.0
     safety_margin_min_p05 = mean(item["safety_margin_min_p05"] for item in diagnostic_rows) if diagnostic_rows else 0.0
     increase_decrease_balance = valid_increase_count_mean / max(1.0, valid_decrease_count_mean)
+    valid_ranked_pair_count_mean = mean(item["valid_ranked_pair_count_mean"] for item in diagnostic_rows) if diagnostic_rows else 0.0
+    valid_ranked_pair_count_no_safety_mean = (
+        mean(item["valid_ranked_pair_count_no_safety_mean"] for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    ranked_pair_candidate_count_mean = (
+        mean(item["ranked_pair_candidate_count_mean"] for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    ranked_pair_reject_incremental_constraint_violation_mean = (
+        mean(item["ranked_pair_reject_incremental_constraint_violation_mean"] for item in diagnostic_rows)
+        if diagnostic_rows
+        else 0.0
+    )
+    valid_constraint_guided_pair_count_mean = (
+        mean(item["valid_constraint_guided_pair_count_mean"] for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    valid_constraint_guided_pair_count_no_safety_mean = (
+        mean(item["valid_constraint_guided_pair_count_no_safety_mean"] for item in diagnostic_rows)
+        if diagnostic_rows
+        else 0.0
+    )
+    constraint_guided_pair_reject_incremental_constraint_violation_mean = (
+        mean(item["constraint_guided_pair_reject_incremental_constraint_violation_mean"] for item in diagnostic_rows)
+        if diagnostic_rows
+        else 0.0
+    )
+    constraint_guided_pair_reject_hi_lo_mode_violation_mean = (
+        mean(item["constraint_guided_pair_reject_hi_lo_mode_violation_mean"] for item in diagnostic_rows)
+        if diagnostic_rows
+        else 0.0
+    )
+    constraint_guided_pair_reject_hi_mode_switch_violation_mean = (
+        mean(item["constraint_guided_pair_reject_hi_mode_switch_violation_mean"] for item in diagnostic_rows)
+        if diagnostic_rows
+        else 0.0
+    )
+    constraint_guided_pair_reject_lo_mode_violation_mean = (
+        mean(item["constraint_guided_pair_reject_lo_mode_violation_mean"] for item in diagnostic_rows)
+        if diagnostic_rows
+        else 0.0
+    )
+    constraint_guided_pair_reject_budget_floor_violation_mean = (
+        mean(item["constraint_guided_pair_reject_budget_floor_violation_mean"] for item in diagnostic_rows)
+        if diagnostic_rows
+        else 0.0
+    )
+    constraint_guided_pair_reject_unknown_mean = (
+        mean(item["constraint_guided_pair_reject_unknown_mean"] for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    valid_ranked_pair_to_single_increase_ratio = valid_ranked_pair_count_mean / max(1.0, valid_increase_count_mean)
 
+    # 先计算 baseline_total_events 对应的事件分组，后续所有推荐逻辑都依赖该变量。
+    # 这里必须放在 recommended_for_dqn / recommended_for_constraint_guided_pair_dqn 之前，
+    # 否则在某些分支中会出现 event_group 未定义错误。
     event_group = _event_group(
         baseline_total_events_mean,
         low_event_threshold=config.low_event_threshold,
@@ -657,27 +1286,71 @@ def scan_one_taskset_seed_budget_scale(
     )
     slack_group = _slack_group(safety_margin_min_p05)
 
+    # 在推荐逻辑之前统一计算 headroom 分组指标，保证所有分支都可用且口径一致。
     increase_headroom_group = _increase_headroom_group(valid_increase_count_mean)
     decrease_headroom_group = _decrease_headroom_group(valid_decrease_count_mean)
     balanced_headroom_group = _balanced_headroom_group(valid_increase_count_mean, valid_decrease_count_mean)
 
-    recommended_for_dqn = (
-        baseline_deadline_misses_sum == 0.0
+    recommended_for_constraint_guided_pair_dqn = (
+        config.enable_constraint_guided_pair_diagnostic
+        and baseline_deadline_misses_sum == 0.0
         and event_group == "medium_event"
-        and valid_increase_count_mean >= 3.0
-        and valid_decrease_count_mean >= 3.0
-        and increase_decrease_balance >= 0.2
+        and valid_constraint_guided_pair_count_mean >= config.constraint_guided_pair_min_valid_count
     )
+    # constraint-guided 诊断关闭时给出显式默认原因，便于后续 CSV 解释。
+    if not config.enable_constraint_guided_pair_diagnostic:
+        constraint_guided_pair_not_recommended_reason = "constraint_guided_pair_diagnostic_disabled"
+    elif not recommended_for_constraint_guided_pair_dqn:
+        cgp_reasons: list[str] = []
+        if baseline_deadline_misses_sum > 0.0:
+            cgp_reasons.append("deadline_misses")
+        if valid_constraint_guided_pair_count_mean < config.constraint_guided_pair_min_valid_count:
+            cgp_reasons.append("low_valid_constraint_guided_pair_headroom")
+        if event_group == "low_event":
+            cgp_reasons.append("too_few_baseline_events")
+        elif event_group == "high_event":
+            cgp_reasons.append("too_many_baseline_events")
+        constraint_guided_pair_not_recommended_reason = ";".join(cgp_reasons)
+    else:
+        constraint_guided_pair_not_recommended_reason = ""
+
+    if config.enable_ranked_pair_diagnostic:
+        recommended_for_dqn = (
+            baseline_deadline_misses_sum == 0.0
+            and event_group == "medium_event"
+            and valid_ranked_pair_count_mean >= config.ranked_pair_min_valid_count
+            and valid_decrease_count_mean >= 3.0
+        )
+    else:
+        recommended_for_dqn = (
+            baseline_deadline_misses_sum == 0.0
+            and event_group == "medium_event"
+            and valid_increase_count_mean >= 3.0
+            and valid_decrease_count_mean >= 3.0
+            and increase_decrease_balance >= 0.2
+        )
 
     not_recommended_reason = ""
     if not recommended_for_dqn:
-        not_recommended_reason = _build_not_recommended_reason(
-            baseline_deadline_misses_sum=baseline_deadline_misses_sum,
-            event_group=event_group,
-            valid_increase_count_mean=valid_increase_count_mean,
-            valid_decrease_count_mean=valid_decrease_count_mean,
-            increase_decrease_balance=increase_decrease_balance,
-        )
+        if config.enable_ranked_pair_diagnostic:
+            reasons: list[str] = []
+            if baseline_deadline_misses_sum > 0.0:
+                reasons.append("deadline_misses")
+            if event_group == "low_event":
+                reasons.append("too_few_baseline_events")
+            elif event_group == "high_event":
+                reasons.append("too_many_baseline_events")
+            if valid_ranked_pair_count_mean < config.ranked_pair_min_valid_count:
+                reasons.append("reject_fast_ranked_pair_headroom")
+            not_recommended_reason = ";".join(reasons)
+        else:
+            not_recommended_reason = _build_not_recommended_reason(
+                baseline_deadline_misses_sum=baseline_deadline_misses_sum,
+                event_group=event_group,
+                valid_increase_count_mean=valid_increase_count_mean,
+                valid_decrease_count_mean=valid_decrease_count_mean,
+                increase_decrease_balance=increase_decrease_balance,
+            )
 
     diagnostic_mode_changes_mean = mean(item["diagnostic_mode_changes"] for item in diagnostic_rows) if diagnostic_rows else 0.0
     diagnostic_lo_cancellations_mean = mean(item["diagnostic_lo_cancellations"] for item in diagnostic_rows) if diagnostic_rows else 0.0
@@ -690,6 +1363,27 @@ def scan_one_taskset_seed_budget_scale(
 
     row: dict[str, Any] = {
         "fixed_taskset_seed": taskset_seed,
+        "candidate_seed": taskset_seed,
+        "manifest_path": config.taskset_manifest or "",
+        "manifest_row_index": (
+            int(float(manifest_row.get("__manifest_row_index", "-1"))) if manifest_row else -1
+        ),
+        "source_generation_strategy": (
+            str(manifest_row.get("generation_strategy", "two_stage_from_paper_exact"))
+            if config.taskset_manifest is not None
+            else ""
+        ),
+        "source_manifest_fast_total_events": (
+            float(manifest_row.get("fast_baseline_total_events_mean", 0.0)) if manifest_row else 0.0
+        ),
+        "source_manifest_fast_valid_constraint_guided_pair_count": (
+            float(manifest_row.get("fast_valid_constraint_guided_pair_count_mean", 0.0)) if manifest_row else 0.0
+        ),
+        "source_manifest_recommended_for_constraint_guided_pair_dqn": (
+            _parse_bool_like(manifest_row.get("recommended_for_constraint_guided_pair_dqn", False))
+            if manifest_row
+            else False
+        ),
         "budget_scale": budget_scale,
         "budget_scaled_task_count": budget_scale_stats["budget_scaled_task_count"],
         "budget_scale_effective_mean": budget_scale_stats["budget_scale_effective_mean"],
@@ -728,6 +1422,33 @@ def scan_one_taskset_seed_budget_scale(
         "valid_increase_fraction_mean": valid_increase_count_mean / max(1.0, float(len(scaled_tasks_for_sched))),
         "valid_decrease_fraction_mean": valid_decrease_count_mean / max(1.0, float(len(scaled_tasks_for_sched))),
         "increase_decrease_balance": increase_decrease_balance,
+        "valid_ranked_pair_count_mean": valid_ranked_pair_count_mean,
+        "valid_ranked_pair_count_no_safety_mean": valid_ranked_pair_count_no_safety_mean,
+        "ranked_pair_candidate_count_mean": ranked_pair_candidate_count_mean,
+        "valid_ranked_pair_to_single_increase_ratio": valid_ranked_pair_to_single_increase_ratio,
+        "ranked_pair_reject_incremental_constraint_violation_mean": (
+            ranked_pair_reject_incremental_constraint_violation_mean
+        ),
+        "valid_constraint_guided_pair_count_mean": valid_constraint_guided_pair_count_mean,
+        "valid_constraint_guided_pair_count_no_safety_mean": valid_constraint_guided_pair_count_no_safety_mean,
+        "constraint_guided_pair_reject_incremental_constraint_violation_mean": (
+            constraint_guided_pair_reject_incremental_constraint_violation_mean
+        ),
+        "constraint_guided_pair_reject_hi_lo_mode_violation_mean": (
+            constraint_guided_pair_reject_hi_lo_mode_violation_mean
+        ),
+        "constraint_guided_pair_reject_hi_mode_switch_violation_mean": (
+            constraint_guided_pair_reject_hi_mode_switch_violation_mean
+        ),
+        "constraint_guided_pair_reject_lo_mode_violation_mean": (
+            constraint_guided_pair_reject_lo_mode_violation_mean
+        ),
+        "constraint_guided_pair_reject_budget_floor_violation_mean": (
+            constraint_guided_pair_reject_budget_floor_violation_mean
+        ),
+        "constraint_guided_pair_reject_unknown_mean": constraint_guided_pair_reject_unknown_mean,
+        "recommended_for_constraint_guided_pair_dqn": bool(recommended_for_constraint_guided_pair_dqn),
+        "constraint_guided_pair_not_recommended_reason": constraint_guided_pair_not_recommended_reason,
         "valid_increase_hi_count_mean": mean(item["valid_increase_hi_count_mean"] for item in diagnostic_rows) if diagnostic_rows else 0.0,
         "valid_increase_lo_count_mean": mean(item["valid_increase_lo_count_mean"] for item in diagnostic_rows) if diagnostic_rows else 0.0,
         "valid_decrease_hi_count_mean": mean(item["valid_decrease_hi_count_mean"] for item in diagnostic_rows) if diagnostic_rows else 0.0,
@@ -827,7 +1548,41 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learnable-lo-budget-rho-max", type=float, default=0.60)
     parser.add_argument("--automotive-num-runnables", type=int, default=150)
     parser.add_argument("--require-schedulable", action="store_true")
-    parser.add_argument("--fixed-taskset-seeds", type=str, required=True)
+    parser.add_argument("--fixed-taskset-seeds", type=str, default="")
+    parser.add_argument(
+        "--taskset-manifest",
+        type=str,
+        default=None,
+        help="CSV manifest from generate_learnable_tasksets.py. When set, seeds come from manifest.",
+    )
+    parser.add_argument(
+        "--manifest-seed-column",
+        type=str,
+        default="candidate_seed",
+        help="Seed column name in --taskset-manifest.",
+    )
+    parser.add_argument(
+        "--manifest-seed-limit",
+        type=int,
+        default=None,
+        help="Optional upper bound of selected manifest seeds.",
+    )
+    parser.add_argument(
+        "--manifest-filter-recommended",
+        action="store_true",
+        help="Only keep manifest rows recommended by known recommendation columns.",
+    )
+    parser.add_argument(
+        "--manifest-output-selected",
+        type=str,
+        default=None,
+        help="Optional output path for selected manifest rows.",
+    )
+    parser.add_argument(
+        "--manifest-strict-parameter-check",
+        action="store_true",
+        help="Fail when key CLI parameters differ from manifest parameters.",
+    )
     parser.add_argument("--budget-scales", type=str, default="1.0")
     parser.add_argument("--eval-seeds", type=str, default="")
     parser.add_argument("--seeds", dest="seeds", type=str, default="")
@@ -837,6 +1592,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--action-space", choices=["single", "pair", "triple"], default="single")
     parser.add_argument("--budget-increase-ratio", type=float, default=0.025)
     parser.add_argument("--budget-decrease-ratio", type=float, default=0.0125)
+    parser.add_argument("--enable-ranked-pair-diagnostic", action="store_true")
+    parser.add_argument("--ranked-pair-min-valid-count", type=float, default=2.0)
+    parser.add_argument("--ranked-pair-top-k-risk", type=int, default=3)
+    parser.add_argument("--ranked-pair-top-k-surplus", type=int, default=3)
+    parser.add_argument(
+        "--ranked-pair-decrease-mode",
+        type=str,
+        default="top2_surplus",
+        choices=["top1_surplus", "top2_surplus", "topk_surplus"],
+    )
+    parser.add_argument("--enable-constraint-guided-pair-diagnostic", action="store_true")
+    parser.add_argument("--constraint-guided-pair-min-valid-count", type=float, default=1.0)
+    parser.add_argument("--constraint-guided-pair-top-k-risk", type=int, default=3)
+    parser.add_argument("--constraint-guided-pair-top-k-decrease", type=int, default=4)
+    parser.add_argument("--constraint-guided-pair-prefer-lo", action="store_true")
     parser.add_argument("--include-explicit-noop", action="store_true")
     parser.add_argument("--budget-floor-ratio", type=float, default=0.9)
     parser.add_argument("--forbid-decreasing-hi-budgets", action="store_true")
@@ -865,25 +1635,53 @@ def main() -> None:
 
     args = build_parser().parse_args()
 
-    fixed_taskset_seeds = _parse_int_list_or_range(args.fixed_taskset_seeds)
     budget_scales = _parse_float_list(args.budget_scales)
     raw_eval_seeds = args.eval_seeds if args.eval_seeds.strip() else args.seeds
     eval_seeds = _parse_int_list_or_range(raw_eval_seeds)
+    manifest_rows_by_seed: dict[int, dict[str, str]] = {}
+
+    if args.taskset_manifest:
+        manifest_rows = _load_manifest_rows(
+            args.taskset_manifest,
+            seed_column=args.manifest_seed_column,
+            seed_limit=args.manifest_seed_limit,
+            filter_recommended=args.manifest_filter_recommended,
+        )
+        for index, row in enumerate(manifest_rows):
+            copied = dict(row)
+            copied["__manifest_row_index"] = str(index)
+            manifest_rows_by_seed[int(copied[args.manifest_seed_column])] = copied
+        fixed_taskset_seeds = list(manifest_rows_by_seed.keys())
+        _warn_or_raise_manifest_parameter_mismatch(args=args, manifest_rows=manifest_rows)
+        if args.manifest_output_selected:
+            _write_selected_manifest_rows(
+                args.manifest_output_selected,
+                [manifest_rows_by_seed[seed] for seed in fixed_taskset_seeds],
+            )
+    else:
+        fixed_taskset_seeds = _parse_int_list_or_range(args.fixed_taskset_seeds)
 
     if not fixed_taskset_seeds:
-        raise ValueError("--fixed-taskset-seeds 不能为空")
+        raise ValueError("--fixed-taskset-seeds 不能为空（或请提供 --taskset-manifest）")
     if not budget_scales:
         raise ValueError("--budget-scales 不能为空")
     if not eval_seeds:
         raise ValueError("--eval-seeds/--seeds 不能为空")
 
-    config = ScanConfig.from_args(args, eval_seeds, budget_scales)
+    config = ScanConfig.from_args(args, eval_seeds, budget_scales, manifest_rows_by_seed)
     scan_pairs = [(seed, scale) for seed in fixed_taskset_seeds for scale in budget_scales]
     rows = _run_parallel(scan_pairs, config, args.workers)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "fixed_taskset_seed",
+        "candidate_seed",
+        "manifest_path",
+        "manifest_row_index",
+        "source_generation_strategy",
+        "source_manifest_fast_total_events",
+        "source_manifest_fast_valid_constraint_guided_pair_count",
+        "source_manifest_recommended_for_constraint_guided_pair_dqn",
         "budget_scale",
         "budget_scaled_task_count",
         "budget_scale_effective_mean",
@@ -922,6 +1720,21 @@ def main() -> None:
         "valid_increase_fraction_mean",
         "valid_decrease_fraction_mean",
         "increase_decrease_balance",
+        "ranked_pair_candidate_count_mean",
+        "valid_ranked_pair_count_mean",
+        "valid_ranked_pair_count_no_safety_mean",
+        "valid_ranked_pair_to_single_increase_ratio",
+        "ranked_pair_reject_incremental_constraint_violation_mean",
+        "valid_constraint_guided_pair_count_mean",
+        "valid_constraint_guided_pair_count_no_safety_mean",
+        "constraint_guided_pair_reject_incremental_constraint_violation_mean",
+        "constraint_guided_pair_reject_hi_lo_mode_violation_mean",
+        "constraint_guided_pair_reject_hi_mode_switch_violation_mean",
+        "constraint_guided_pair_reject_lo_mode_violation_mean",
+        "constraint_guided_pair_reject_budget_floor_violation_mean",
+        "constraint_guided_pair_reject_unknown_mean",
+        "recommended_for_constraint_guided_pair_dqn",
+        "constraint_guided_pair_not_recommended_reason",
         "valid_increase_hi_count_mean",
         "valid_increase_lo_count_mean",
         "valid_decrease_hi_count_mean",
