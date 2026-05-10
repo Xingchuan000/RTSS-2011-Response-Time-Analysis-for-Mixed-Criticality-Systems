@@ -33,6 +33,51 @@ from amc_py.runtime_models import RuntimeConfig
 from amc_py.runtime_scenarios import ExecutionScenario
 
 
+@dataclass(frozen=True)
+class CandidateBudgetUpdateDiagnosis:
+    """候选预算更新诊断结果。
+
+    该结构用于为 constraint-guided pair 提供“拒绝原因 + 违反约束行”的可解释信息，
+    仅用于诊断，不改变环境原有动作执行语义。
+    """
+
+    accepted: bool
+    reason: str
+    normalized_reason: str
+    violated_row_index: int | None
+    violation_amount: float
+    lhs_value: float | None
+    bound_value: float | None
+    slack_value: float | None
+    row_coefficients: tuple[float, ...]
+    task_names: tuple[str, ...]
+
+
+def _normalize_candidate_reject_reason(reason: str) -> str:
+    """把带前缀细节的 reject reason 归一化到稳定类别。"""
+
+    text = str(reason or "unknown")
+    if text.startswith("hi_lo_mode_violation"):
+        return "hi_lo_mode_violation"
+    if text.startswith("hi_mode_switch_violation"):
+        return "hi_mode_switch_violation"
+    if text.startswith("lo_mode_violation"):
+        return "lo_mode_violation"
+    if text.startswith("budget_floor_violation"):
+        return "budget_floor_violation"
+    if text.startswith("budget_upper_bound_violation"):
+        return "budget_upper_bound_violation"
+    if text.startswith("no_effective_budget_change"):
+        return "no_effective_budget_change"
+    if text.startswith("decrease_hi_forbidden"):
+        return "decrease_hi_forbidden"
+    if text.startswith("incremental_constraint_violation"):
+        return "incremental_constraint_violation"
+    if text.startswith("valid"):
+        return "valid"
+    return text or "unknown"
+
+
 @dataclass(slots=True)
 class AmcBudgetEnv:
     """为 DQN 预集成准备的 AMC 预算环境。"""
@@ -177,6 +222,160 @@ class AmcBudgetEnv:
             if candidate_budget < floor_value:
                 return f"budget_floor_violation:{task_name}"
         return None
+
+    def check_candidate_budget_update(
+        self,
+        *,
+        new_budgets: dict[str, int],
+    ) -> tuple[bool, str]:
+        """检查候选预算向量在当前环境下是否可行。
+
+        返回值语义严格固定为 `(is_valid, reject_reason)`：
+        - `is_valid=True` 时 `reject_reason=="valid"`；
+        - `is_valid=False` 时 `reject_reason` 仅取以下之一：
+          `incremental_constraint_violation` / `budget_floor_violation`
+          / `budget_upper_bound_violation` / `no_effective_budget_change`
+          / `decrease_hi_forbidden` / `unknown`。
+
+        设计约束：
+        1. 只做计划内校验，不引入额外兜底规则；
+        2. 复用 `valid_action_mask` 与 `step` 的同一套硬约束语义；
+        3. 该方法用于 diagnostic-only 场景，不修改环境状态。
+        """
+
+        if self._engine is None:
+            raise RuntimeError("环境尚未 reset")
+
+        budget_before = dict(self._engine.runtime_budgets.budgets)
+        updates: dict[str, int] = {}
+        for task_name in self._task_names:
+            if task_name not in new_budgets:
+                return False, "unknown"
+            old_value = int(budget_before[task_name])
+            new_value = int(new_budgets[task_name])
+            if old_value != new_value:
+                updates[task_name] = new_value
+
+        if not updates:
+            return False, "no_effective_budget_change"
+
+        has_hi_decrease = False
+        for task_name, new_value in updates.items():
+            idx = self._task_index[task_name]
+            old_value = int(budget_before[task_name])
+            if new_value < old_value and self.ordered_tasks[idx].criticality is Criticality.HI:
+                has_hi_decrease = True
+                break
+        if self.forbid_decreasing_hi_budgets and has_hi_decrease:
+            return False, "decrease_hi_forbidden"
+
+        for task_name, new_value in updates.items():
+            idx = self._task_index[task_name]
+            upper_bound = int(self._task_upper_bounds[idx])
+            if new_value < 1 or new_value > upper_bound:
+                return False, "budget_upper_bound_violation"
+
+        floor_reject = self._budget_floor_violation(updates=updates)
+        if floor_reject is not None:
+            return False, "budget_floor_violation"
+
+        if not self.check_safety:
+            return True, "valid"
+
+        checker = self._ensure_checker()
+        report = checker.validate_candidate(dict(new_budgets))
+        if report.accepted:
+            return True, "valid"
+        # 这里严格按 safety checker 的 `report.reason` 前缀做映射，不再从 diagnostics 猜测。
+        # 目的：
+        # 1) 与计划文档保持一致；
+        # 2) 保留后续脚本对具体约束类型（HI/LO）做细分统计的能力；
+        # 3) 同时输出统一聚合口径 `incremental_constraint_violation`。
+        reason = str(report.reason)
+        if (
+            reason.startswith("hi_lo_mode_violation")
+            or reason.startswith("hi_mode_switch_violation")
+            or reason.startswith("lo_mode_violation")
+        ):
+            return False, "incremental_constraint_violation"
+        if reason:
+            return False, reason
+        return False, "unknown"
+
+    def diagnose_candidate_budget_update(
+        self,
+        *,
+        new_budgets: dict[str, int],
+    ) -> CandidateBudgetUpdateDiagnosis:
+        """诊断候选预算更新并返回最严重违反约束行的信息。"""
+
+        accepted, reason = self.check_candidate_budget_update(new_budgets=new_budgets)
+        normalized_reason = _normalize_candidate_reject_reason(reason)
+        task_names = tuple(task.name for task in self.ordered_tasks)
+        empty_coefficients = tuple(0.0 for _ in task_names)
+
+        if accepted:
+            return CandidateBudgetUpdateDiagnosis(
+                accepted=True,
+                reason="valid",
+                normalized_reason="valid",
+                violated_row_index=None,
+                violation_amount=0.0,
+                lhs_value=None,
+                bound_value=None,
+                slack_value=None,
+                row_coefficients=empty_coefficients,
+                task_names=task_names,
+            )
+
+        if self._engine is None:
+            raise RuntimeError("环境尚未 reset")
+        if self._safety_matrix_a is None or self._safety_bounds is None:
+            if not self.check_safety:
+                return CandidateBudgetUpdateDiagnosis(
+                    accepted=False,
+                    reason=reason,
+                    normalized_reason=normalized_reason,
+                    violated_row_index=None,
+                    violation_amount=0.0,
+                    lhs_value=None,
+                    bound_value=None,
+                    slack_value=None,
+                    row_coefficients=empty_coefficients,
+                    task_names=task_names,
+                )
+            checker = self._ensure_checker()
+            self._safety_matrix_a, self._safety_bounds = checker.build_linear_constraints()
+
+        assert self._safety_matrix_a is not None
+        assert self._safety_bounds is not None
+
+        budget_vector = np.array([float(new_budgets[name]) for name in self._task_names], dtype=np.float64)
+        lhs = self._safety_matrix_a @ budget_vector
+        violation = lhs - self._safety_bounds
+        worst_row = int(np.argmax(violation))
+        violation_amount = float(violation[worst_row])
+
+        current_vector = np.array(
+            [float(self._engine.runtime_budgets.budgets[name]) for name in self._task_names],
+            dtype=np.float64,
+        )
+        current_lhs = self._safety_matrix_a @ current_vector
+        slack = self._safety_bounds - current_lhs
+
+        violated_row_index: int | None = worst_row if violation_amount > 0.0 else None
+        return CandidateBudgetUpdateDiagnosis(
+            accepted=False,
+            reason=reason,
+            normalized_reason=normalized_reason,
+            violated_row_index=violated_row_index,
+            violation_amount=max(0.0, violation_amount),
+            lhs_value=float(lhs[worst_row]),
+            bound_value=float(self._safety_bounds[worst_row]),
+            slack_value=float(slack[worst_row]),
+            row_coefficients=tuple(float(x) for x in self._safety_matrix_a[worst_row, :]),
+            task_names=task_names,
+        )
 
     @property
     def action_log(self) -> list[dict[str, object]]:

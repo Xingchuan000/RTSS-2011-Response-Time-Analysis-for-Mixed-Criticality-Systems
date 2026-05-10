@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 import random
@@ -42,6 +43,10 @@ class LearnableGenerateConfig:
     learnable_fast_min_valid_increase: float
     learnable_fast_min_valid_decrease: float
     learnable_fast_min_balance: float
+    # fast baseline 的 LO cancellations 最小阈值：
+    # 若均值低于该阈值，说明运行过程中几乎没有 LO cancellation 信号，
+    # 这种样本对后续“预算调整影响 runtime 行为”的学习价值较低，应直接拒绝。
+    learnable_fast_min_lo_cancellations: float
     reward_mode: str
     action_space: str
     budget_increase_ratio: float
@@ -70,6 +75,18 @@ class LearnableGenerateConfig:
     learnable_relax_max_rounds: int
     learnable_relax_step_ratio: float
     learnable_relax_min_budget_floor_ratio: float | None
+    enable_ranked_pair_diagnostic: bool
+    ranked_pair_min_valid_count: float
+    ranked_pair_top_k_risk: int
+    ranked_pair_top_k_surplus: int
+    ranked_pair_decrease_mode: str
+    ranked_pair_include_single_controls: bool
+    enable_constraint_guided_pair_diagnostic: bool
+    constraint_guided_pair_min_valid_count: float
+    constraint_guided_pair_top_k_risk: int
+    constraint_guided_pair_top_k_decrease: int
+    constraint_guided_pair_prefer_lo: bool
+    learnable_selection_target: str
 
 
 def _rewrite_budgets_for_learnable_headroom(
@@ -256,6 +273,414 @@ def _count_valid_action_types(env: AmcBudgetEnv, mask: tuple[bool, ...]) -> tupl
     return valid_increase_count, valid_decrease_count, valid_noop_count
 
 
+def _extract_task_rank_features(env: AmcBudgetEnv, observation) -> list[dict[str, int | float | str | bool]]:
+    """提取 ranked-pair 诊断所需的逐任务特征。"""
+
+    if env.feature_config.observation_mode != "v11_full_10d":
+        raise ValueError("ranked_pair diagnostic 仅支持 v11_full_10d observation_mode")
+
+    task_features: list[dict[str, int | float | str | bool]] = []
+    vector = observation.state_vector
+    for idx, task in enumerate(env.ordered_tasks):
+        base = idx * 10
+        task_features.append(
+            {
+                "index": idx,
+                "name": task.name,
+                "is_hi": task.criticality is Criticality.HI,
+                "is_lo": task.criticality is not Criticality.HI,
+                "risk": float(vector[base + 5]),
+                "surplus": float(vector[base + 6]),
+                "period": float(task.period),
+                "priority_rank": idx,
+            }
+        )
+    return task_features
+
+
+def _sanitize_ranked_pair_candidate(candidate: dict[str, object]) -> dict[str, object] | None:
+    """按计划规则清洗 ranked-pair 候选。"""
+
+    inc = list(dict.fromkeys(int(idx) for idx in candidate["increase_indices"]))  # type: ignore[index]
+    dec = list(dict.fromkeys(int(idx) for idx in candidate["decrease_indices"]))  # type: ignore[index]
+    dec = [idx for idx in dec if idx not in inc]
+    if not inc or not dec:
+        return None
+    return {"name": str(candidate["name"]), "increase_indices": inc, "decrease_indices": dec}
+
+
+def _build_ranked_pair_candidates(
+    *,
+    env: AmcBudgetEnv,
+    observation,
+    top_k_risk: int,
+    top_k_surplus: int,
+    decrease_mode: str,
+    include_single_controls: bool,
+) -> list[dict[str, object]]:
+    """构建 ranked-pair 候选动作集合。"""
+
+    features = _extract_task_rank_features(env, observation)
+    risk_order = sorted(
+        features,
+        key=lambda f: (float(f["risk"]), 1 if bool(f["is_hi"]) else 0, -int(f["priority_rank"])),
+        reverse=True,
+    )
+    surplus_order = sorted(
+        features,
+        key=lambda f: (float(f["surplus"]), 1 if bool(f["is_lo"]) else 0, float(f["period"]), -float(f["risk"])),
+        reverse=True,
+    )
+    hi_risk_order = [f for f in risk_order if bool(f["is_hi"])]
+    lo_surplus_order = [f for f in surplus_order if bool(f["is_lo"])]
+
+    risk_top = risk_order[: max(1, top_k_risk)]
+    surplus_top = surplus_order[: max(1, top_k_surplus)]
+    hi_risk_top = hi_risk_order[: max(1, top_k_risk)]
+    lo_surplus_top = lo_surplus_order[: max(1, top_k_surplus)]
+
+    def _top_surplus_indices(pool: list[dict[str, int | float | str | bool]], count: int) -> list[int]:
+        return [int(item["index"]) for item in pool[:count]]
+
+    dec_count = 1 if decrease_mode == "top1_surplus" else 2
+    if decrease_mode == "topk_surplus":
+        dec_count = max(1, top_k_surplus)
+
+    candidates_raw: list[dict[str, object]] = []
+    if risk_top and surplus_top:
+        candidates_raw.append(
+            {
+                "name": "inc_toprisk_dec_topsurplus",
+                "increase_indices": [int(risk_top[0]["index"])],
+                "decrease_indices": _top_surplus_indices(surplus_top, 1),
+            }
+        )
+        candidates_raw.append(
+            {
+                "name": "inc_toprisk_dec_top2surplus",
+                "increase_indices": [int(risk_top[0]["index"])],
+                "decrease_indices": _top_surplus_indices(surplus_top, dec_count),
+            }
+        )
+    if hi_risk_top and lo_surplus_top:
+        candidates_raw.append(
+            {
+                "name": "inc_tophirisk_dec_toplosurplus",
+                "increase_indices": [int(hi_risk_top[0]["index"])],
+                "decrease_indices": _top_surplus_indices(lo_surplus_top, 1),
+            }
+        )
+        candidates_raw.append(
+            {
+                "name": "inc_tophirisk_dec_top2losurplus",
+                "increase_indices": [int(hi_risk_top[0]["index"])],
+                "decrease_indices": _top_surplus_indices(lo_surplus_top, dec_count),
+            }
+        )
+    if len(risk_top) >= 2 and surplus_top:
+        candidates_raw.append(
+            {
+                "name": "inc_top2risk_dec_top2surplus",
+                "increase_indices": [int(risk_top[0]["index"]), int(risk_top[1]["index"])],
+                "decrease_indices": _top_surplus_indices(surplus_top, dec_count),
+            }
+        )
+
+    if include_single_controls and risk_top and surplus_top:
+        candidates_raw.append(
+            {"name": "control_inc_toprisk", "increase_indices": [int(risk_top[0]["index"])], "decrease_indices": []}
+        )
+        candidates_raw.append(
+            {"name": "control_dec_topsurplus", "increase_indices": [], "decrease_indices": [int(surplus_top[0]["index"])]}
+        )
+
+    dedup: dict[tuple[str, tuple[int, ...], tuple[int, ...]], dict[str, object]] = {}
+    for raw in candidates_raw:
+        cleaned = _sanitize_ranked_pair_candidate(raw)
+        if cleaned is None:
+            continue
+        key = (
+            str(cleaned["name"]),
+            tuple(cleaned["increase_indices"]),  # type: ignore[arg-type]
+            tuple(cleaned["decrease_indices"]),  # type: ignore[arg-type]
+        )
+        dedup[key] = cleaned
+    return list(dedup.values())
+
+
+def _build_candidate_budget_update(
+    *,
+    env: AmcBudgetEnv,
+    candidate: dict[str, object],
+    budget_increase_ratio: float,
+    budget_decrease_ratio: float,
+) -> dict[str, int]:
+    """把 ranked-pair 候选转换为候选预算向量。"""
+
+    if env._engine is None:  # noqa: SLF001
+        raise RuntimeError("环境尚未 reset")
+    current = dict(env._engine.runtime_budgets.budgets)  # noqa: SLF001
+    new_budgets = dict(current)
+    for idx in candidate["increase_indices"]:  # type: ignore[index]
+        task = env.ordered_tasks[int(idx)]
+        name = task.name
+        old = int(new_budgets[name])
+        value = int(round(old * (1.0 + budget_increase_ratio)))
+        upper = int(task.c_hi) if task.criticality is Criticality.HI else int(task.deadline)
+        new_budgets[name] = max(1, min(value, upper))
+    for idx in candidate["decrease_indices"]:  # type: ignore[index]
+        task = env.ordered_tasks[int(idx)]
+        name = task.name
+        old = int(new_budgets[name])
+        value = int(round(old * (1.0 - budget_decrease_ratio)))
+        new_budgets[name] = max(1, value)
+    return new_budgets
+
+
+def _check_candidate_budget_update_no_safety(env: AmcBudgetEnv, new_budgets: dict[str, int]) -> tuple[bool, str]:
+    """仅做 no-safety 约束检查（不检查 incremental safety）。"""
+
+    original = env.check_safety
+    env.check_safety = False
+    try:
+        return env.check_candidate_budget_update(new_budgets=new_budgets)
+    finally:
+        env.check_safety = original
+
+
+def _diagnose_ranked_pair_candidates(env: AmcBudgetEnv, observation, cfg: LearnableGenerateConfig) -> dict[str, float]:
+    """执行 ranked-pair 候选诊断并返回统计字段。"""
+
+    candidates = _build_ranked_pair_candidates(
+        env=env,
+        observation=observation,
+        top_k_risk=cfg.ranked_pair_top_k_risk,
+        top_k_surplus=cfg.ranked_pair_top_k_surplus,
+        decrease_mode=cfg.ranked_pair_decrease_mode,
+        include_single_controls=cfg.ranked_pair_include_single_controls,
+    )
+    valid_count = 0
+    valid_no_safety_count = 0
+    reject_counts: Counter[str] = Counter()
+    reject_counts_no_safety: Counter[str] = Counter()
+    for candidate in candidates:
+        new_budgets = _build_candidate_budget_update(
+            env=env,
+            candidate=candidate,
+            budget_increase_ratio=cfg.budget_increase_ratio,
+            budget_decrease_ratio=cfg.budget_decrease_ratio,
+        )
+        ok_no_safety, reason_no_safety = _check_candidate_budget_update_no_safety(env, new_budgets)
+        if ok_no_safety:
+            valid_no_safety_count += 1
+        else:
+            reject_counts_no_safety[reason_no_safety] += 1
+        ok, reason = env.check_candidate_budget_update(new_budgets=new_budgets)
+        if ok:
+            valid_count += 1
+        else:
+            reject_counts[reason] += 1
+            # 当统一聚合原因为 incremental_constraint_violation 时，
+            # 额外读取 safety checker 的原始 reason，做更细粒度统计（HI/LO 约束分解）。
+            if reason == "incremental_constraint_violation":
+                fine_reason = env._ensure_checker().validate_candidate(new_budgets).reason  # noqa: SLF001
+                if isinstance(fine_reason, str):
+                    if fine_reason.startswith("hi_lo_mode_violation"):
+                        reject_counts["hi_lo_mode_violation"] += 1
+                    elif fine_reason.startswith("hi_mode_switch_violation"):
+                        reject_counts["hi_mode_switch_violation"] += 1
+                    elif fine_reason.startswith("lo_mode_violation"):
+                        reject_counts["lo_mode_violation"] += 1
+                    else:
+                        reject_counts["unknown"] += 1
+    return {
+        "ranked_pair_candidate_count": float(len(candidates)),
+        "valid_ranked_pair_count": float(valid_count),
+        "valid_ranked_pair_count_no_safety": float(valid_no_safety_count),
+        "ranked_pair_reject_incremental_constraint_violation": float(
+            reject_counts.get("incremental_constraint_violation", 0)
+        ),
+        "ranked_pair_reject_budget_floor_violation": float(reject_counts.get("budget_floor_violation", 0)),
+        "ranked_pair_reject_budget_upper_bound_violation": float(
+            reject_counts.get("budget_upper_bound_violation", 0)
+        ),
+        "ranked_pair_reject_no_effective_budget_change": float(reject_counts.get("no_effective_budget_change", 0)),
+        "ranked_pair_reject_decrease_hi_forbidden": float(reject_counts.get("decrease_hi_forbidden", 0)),
+        "ranked_pair_reject_unknown": float(reject_counts.get("unknown", 0)),
+        "ranked_pair_reject_hi_lo_mode_violation": float(reject_counts.get("hi_lo_mode_violation", 0)),
+        "ranked_pair_reject_hi_mode_switch_violation": float(reject_counts.get("hi_mode_switch_violation", 0)),
+        "ranked_pair_reject_lo_mode_violation": float(reject_counts.get("lo_mode_violation", 0)),
+        "ranked_pair_reject_incremental_constraint_violation_no_safety": float(
+            reject_counts_no_safety.get("incremental_constraint_violation", 0)
+        ),
+        "ranked_pair_reject_unknown_no_safety": float(reject_counts_no_safety.get("unknown", 0)),
+    }
+
+
+def _build_constraint_guided_increase_candidates(
+    *,
+    env: AmcBudgetEnv,
+    observation,
+    top_k_risk: int,
+) -> list[int]:
+    """按风险排序构造 increase 目标候选（包含 HI 优先子集）。"""
+
+    features = _extract_task_rank_features(env, observation)
+    risk_order = sorted(
+        features,
+        key=lambda f: (float(f["risk"]), 1 if bool(f["is_hi"]) else 0, -int(f["priority_rank"])),
+        reverse=True,
+    )
+    hi_risk_order = [f for f in risk_order if bool(f["is_hi"])]
+    merged = [int(item["index"]) for item in risk_order[: max(1, top_k_risk)]]
+    merged.extend(int(item["index"]) for item in hi_risk_order[: max(1, top_k_risk)])
+    # 去重且保持先后顺序。
+    return list(dict.fromkeys(merged))
+
+
+def _select_constraint_guided_decrease_targets(
+    *,
+    env: AmcBudgetEnv,
+    diagnosis,
+    increase_indices: set[int],
+    budgets: dict[str, int],
+    budget_floor_ratio: float,
+    top_k: int,
+    prefer_lo: bool,
+) -> list[int]:
+    """根据 violated row 系数挑选最能缓解约束违反的 decrease 目标。"""
+
+    if diagnosis.violated_row_index is None:
+        return []
+    candidates: list[tuple[float, int]] = []
+    for idx, task in enumerate(env.ordered_tasks):
+        if idx in increase_indices:
+            continue
+        current = int(budgets[task.name])
+        floor = max(1, int(round(float(task.c_lo) * budget_floor_ratio)))
+        possible_decrease = current - floor
+        if possible_decrease <= 0:
+            continue
+        coeff = max(0.0, float(diagnosis.row_coefficients[idx]))
+        if coeff <= 0.0:
+            continue
+        score = coeff * float(possible_decrease)
+        if prefer_lo and task.criticality is Criticality.LO:
+            score *= 1.25
+        candidates.append((score, idx))
+    candidates.sort(reverse=True)
+    return [idx for _, idx in candidates[: max(1, top_k)]]
+
+
+def _diagnose_constraint_guided_pair_candidates(env: AmcBudgetEnv, observation, cfg: LearnableGenerateConfig) -> dict[str, float]:
+    """执行 constraint-guided pair 诊断并返回统计字段。"""
+
+    if env._engine is None:  # noqa: SLF001
+        raise RuntimeError("环境尚未 reset")
+    current_budgets = dict(env._engine.runtime_budgets.budgets)  # noqa: SLF001
+    increase_candidates = _build_constraint_guided_increase_candidates(
+        env=env,
+        observation=observation,
+        top_k_risk=cfg.constraint_guided_pair_top_k_risk,
+    )
+    valid_count = 0
+    valid_no_safety_count = 0
+    reject_counts: Counter[str] = Counter()
+    candidate_count = 0
+
+    for inc_idx in increase_candidates:
+        task = env.ordered_tasks[int(inc_idx)]
+        inc_name = task.name
+        single_budgets = dict(current_budgets)
+        old_inc = int(single_budgets[inc_name])
+        inc_value = int(round(float(old_inc) * (1.0 + cfg.budget_increase_ratio)))
+        upper = int(task.c_hi) if task.criticality is Criticality.HI else int(task.deadline)
+        single_budgets[inc_name] = max(1, min(inc_value, upper))
+
+        diagnosis = env.diagnose_candidate_budget_update(new_budgets=single_budgets)
+        if diagnosis.accepted:
+            pair_budgets = single_budgets
+        else:
+            dec_indices = _select_constraint_guided_decrease_targets(
+                env=env,
+                diagnosis=diagnosis,
+                increase_indices={int(inc_idx)},
+                budgets=current_budgets,
+                budget_floor_ratio=cfg.budget_floor_ratio,
+                top_k=cfg.constraint_guided_pair_top_k_decrease,
+                prefer_lo=cfg.constraint_guided_pair_prefer_lo,
+            )
+            pair_budgets = dict(single_budgets)
+            for dec_idx in dec_indices:
+                dec_task = env.ordered_tasks[int(dec_idx)]
+                dec_name = dec_task.name
+                old_dec = int(pair_budgets[dec_name])
+                dec_value = int(round(float(old_dec) * (1.0 - cfg.budget_decrease_ratio)))
+                pair_budgets[dec_name] = max(1, dec_value)
+        candidate_count += 1
+        ok_no_safety, _reason_no_safety = _check_candidate_budget_update_no_safety(env, pair_budgets)
+        if ok_no_safety:
+            valid_no_safety_count += 1
+        ok, _reason = env.check_candidate_budget_update(new_budgets=pair_budgets)
+        pair_diagnosis = env.diagnose_candidate_budget_update(new_budgets=pair_budgets)
+        if ok:
+            valid_count += 1
+        else:
+            normalized = pair_diagnosis.normalized_reason
+            reject_counts[normalized] += 1
+            if normalized == "incremental_constraint_violation":
+                fine_reason = env._ensure_checker().validate_candidate(pair_budgets).reason  # noqa: SLF001
+                if isinstance(fine_reason, str):
+                    if fine_reason.startswith("hi_lo_mode_violation"):
+                        reject_counts["hi_lo_mode_violation"] += 1
+                    elif fine_reason.startswith("hi_mode_switch_violation"):
+                        reject_counts["hi_mode_switch_violation"] += 1
+                    elif fine_reason.startswith("lo_mode_violation"):
+                        reject_counts["lo_mode_violation"] += 1
+                    else:
+                        reject_counts["unknown"] += 1
+
+    known = {
+        "incremental_constraint_violation",
+        "hi_lo_mode_violation",
+        "hi_mode_switch_violation",
+        "lo_mode_violation",
+        "budget_floor_violation",
+        "budget_upper_bound_violation",
+        "no_effective_budget_change",
+    }
+    unknown_reject_count = float(
+        sum(count for reason, count in reject_counts.items() if reason not in known and not reason.startswith("hi_"))
+    )
+    return {
+        "constraint_guided_pair_candidate_count": float(candidate_count),
+        "valid_constraint_guided_pair_count": float(valid_count),
+        "valid_constraint_guided_pair_count_no_safety": float(valid_no_safety_count),
+        "constraint_guided_pair_reject_incremental_constraint_violation": float(
+            reject_counts.get("incremental_constraint_violation", 0)
+        ),
+        "constraint_guided_pair_reject_hi_lo_mode_violation": float(
+            reject_counts.get("hi_lo_mode_violation", 0)
+        ),
+        "constraint_guided_pair_reject_hi_mode_switch_violation": float(
+            reject_counts.get("hi_mode_switch_violation", 0)
+        ),
+        "constraint_guided_pair_reject_lo_mode_violation": float(
+            reject_counts.get("lo_mode_violation", 0)
+        ),
+        "constraint_guided_pair_reject_budget_floor_violation": float(
+            reject_counts.get("budget_floor_violation", 0)
+        ),
+        "constraint_guided_pair_reject_budget_upper_bound_violation": float(
+            reject_counts.get("budget_upper_bound_violation", 0)
+        ),
+        "constraint_guided_pair_reject_no_effective_budget_change": float(
+            reject_counts.get("no_effective_budget_change", 0)
+        ),
+        "constraint_guided_pair_reject_unknown": unknown_reject_count,
+    }
+
+
 def _diagnose_one_seed(
     *,
     ordered_tasks: list[Task],
@@ -289,7 +714,7 @@ def _diagnose_one_seed(
         mask_detail_mode="minimal",
         feature_config=feature_config,
     )
-    env.reset(seed=eval_seed)
+    obs = env.reset(seed=eval_seed)
     mask = _get_valid_action_mask(env)
     valid_increase_count, valid_decrease_count, valid_noop_count = _count_valid_action_types(env, mask)
     # 读取 safety-on 掩码拒绝原因统计，用于确认 mask 的主导瓶颈。
@@ -321,6 +746,13 @@ def _diagnose_one_seed(
         no_safety_env, no_safety_mask
     )
 
+    ranked_pair_stats: dict[str, float] = {}
+    if cfg.enable_ranked_pair_diagnostic:
+        ranked_pair_stats = _diagnose_ranked_pair_candidates(env, obs, cfg)
+    constraint_guided_pair_stats: dict[str, float] = {}
+    if cfg.enable_constraint_guided_pair_diagnostic:
+        constraint_guided_pair_stats = _diagnose_constraint_guided_pair_candidates(env, obs, cfg)
+
     return {
         "mode_changes": float(runtime_result.mode_change_count()),
         "lo_cancellations": float(runtime_result.lo_job_cancellation_count()),
@@ -340,6 +772,8 @@ def _diagnose_one_seed(
         # 这里先显式输出 0，保持诊断字段稳定，便于后续对齐。
         "mask_reject_budget_upper_bound_violation": 0.0,
         "mask_reject_decrease_hi_forbidden": float(reject_reason_counts.get("decrease_hi_forbidden", 0)),
+        **ranked_pair_stats,
+        **constraint_guided_pair_stats,
     }
 
 
@@ -567,6 +1001,28 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learnable-fast-min-valid-increase", type=float, default=2.0)
     parser.add_argument("--learnable-fast-min-valid-decrease", type=float, default=3.0)
     parser.add_argument("--learnable-fast-min-balance", type=float, default=0.12)
+    parser.add_argument("--learnable-fast-min-lo-cancellations", type=float, default=0.3)
+    parser.add_argument("--enable-ranked-pair-diagnostic", action="store_true")
+    parser.add_argument("--ranked-pair-min-valid-count", type=float, default=2.0)
+    parser.add_argument("--ranked-pair-top-k-risk", type=int, default=3)
+    parser.add_argument("--ranked-pair-top-k-surplus", type=int, default=3)
+    parser.add_argument(
+        "--ranked-pair-decrease-mode",
+        type=str,
+        default="top2_surplus",
+        choices=["top1_surplus", "top2_surplus", "topk_surplus"],
+    )
+    parser.add_argument("--ranked-pair-include-single-controls", action="store_true")
+    parser.add_argument("--enable-constraint-guided-pair-diagnostic", action="store_true")
+    parser.add_argument("--constraint-guided-pair-min-valid-count", type=float, default=1.0)
+    parser.add_argument("--constraint-guided-pair-top-k-risk", type=int, default=3)
+    parser.add_argument("--constraint-guided-pair-top-k-decrease", type=int, default=4)
+    parser.add_argument("--constraint-guided-pair-prefer-lo", action="store_true")
+    parser.add_argument(
+        "--learnable-selection-target",
+        choices=["single", "ranked_pair", "constraint_guided_pair"],
+        default="single",
+    )
     parser.add_argument(
         "--learnable-enable-safety-relaxation",
         action="store_true",
@@ -620,6 +1076,7 @@ def main() -> None:
         learnable_fast_min_valid_increase=args.learnable_fast_min_valid_increase,
         learnable_fast_min_valid_decrease=args.learnable_fast_min_valid_decrease,
         learnable_fast_min_balance=args.learnable_fast_min_balance,
+        learnable_fast_min_lo_cancellations=args.learnable_fast_min_lo_cancellations,
         reward_mode=args.reward_mode,
         action_space=args.action_space,
         budget_increase_ratio=args.budget_increase_ratio,
@@ -648,6 +1105,18 @@ def main() -> None:
         learnable_relax_max_rounds=args.learnable_relax_max_rounds,
         learnable_relax_step_ratio=args.learnable_relax_step_ratio,
         learnable_relax_min_budget_floor_ratio=args.learnable_relax_min_budget_floor_ratio,
+        enable_ranked_pair_diagnostic=args.enable_ranked_pair_diagnostic,
+        ranked_pair_min_valid_count=args.ranked_pair_min_valid_count,
+        ranked_pair_top_k_risk=args.ranked_pair_top_k_risk,
+        ranked_pair_top_k_surplus=args.ranked_pair_top_k_surplus,
+        ranked_pair_decrease_mode=args.ranked_pair_decrease_mode,
+        ranked_pair_include_single_controls=args.ranked_pair_include_single_controls,
+        enable_constraint_guided_pair_diagnostic=args.enable_constraint_guided_pair_diagnostic,
+        constraint_guided_pair_min_valid_count=args.constraint_guided_pair_min_valid_count,
+        constraint_guided_pair_top_k_risk=args.constraint_guided_pair_top_k_risk,
+        constraint_guided_pair_top_k_decrease=args.constraint_guided_pair_top_k_decrease,
+        constraint_guided_pair_prefer_lo=args.constraint_guided_pair_prefer_lo,
+        learnable_selection_target=args.learnable_selection_target,
     )
 
     feature_config = FeatureConfig(
@@ -913,15 +1382,149 @@ def main() -> None:
         fast_mask_reject_decrease_hi_forbidden_mean = mean(
             row["mask_reject_decrease_hi_forbidden"] for row in fast_rows
         )
+        fast_ranked_pair_candidate_count_mean = mean(
+            row.get("ranked_pair_candidate_count", 0.0) for row in fast_rows
+        )
+        fast_valid_ranked_pair_count_mean = mean(
+            row.get("valid_ranked_pair_count", 0.0) for row in fast_rows
+        )
+        fast_valid_ranked_pair_count_no_safety_mean = mean(
+            row.get("valid_ranked_pair_count_no_safety", 0.0) for row in fast_rows
+        )
+        fast_ranked_pair_reject_incremental_constraint_violation_mean = mean(
+            row.get("ranked_pair_reject_incremental_constraint_violation", 0.0) for row in fast_rows
+        )
+        fast_ranked_pair_reject_budget_floor_violation_mean = mean(
+            row.get("ranked_pair_reject_budget_floor_violation", 0.0) for row in fast_rows
+        )
+        fast_ranked_pair_reject_budget_upper_bound_violation_mean = mean(
+            row.get("ranked_pair_reject_budget_upper_bound_violation", 0.0) for row in fast_rows
+        )
+        fast_ranked_pair_reject_no_effective_budget_change_mean = mean(
+            row.get("ranked_pair_reject_no_effective_budget_change", 0.0) for row in fast_rows
+        )
+        fast_ranked_pair_reject_decrease_hi_forbidden_mean = mean(
+            row.get("ranked_pair_reject_decrease_hi_forbidden", 0.0) for row in fast_rows
+        )
+        fast_ranked_pair_reject_unknown_mean = mean(
+            row.get("ranked_pair_reject_unknown", 0.0) for row in fast_rows
+        )
+        fast_ranked_pair_reject_unknown_no_safety_mean = mean(
+            row.get("ranked_pair_reject_unknown_no_safety", 0.0) for row in fast_rows
+        )
+        fast_ranked_pair_reject_hi_lo_mode_violation_mean = mean(
+            row.get("ranked_pair_reject_hi_lo_mode_violation", 0.0) for row in fast_rows
+        )
+        fast_ranked_pair_reject_hi_mode_switch_violation_mean = mean(
+            row.get("ranked_pair_reject_hi_mode_switch_violation", 0.0) for row in fast_rows
+        )
+        fast_ranked_pair_reject_lo_mode_violation_mean = mean(
+            row.get("ranked_pair_reject_lo_mode_violation", 0.0) for row in fast_rows
+        )
+        fast_constraint_guided_pair_candidate_count_mean = mean(
+            row.get("constraint_guided_pair_candidate_count", 0.0) for row in fast_rows
+        )
+        fast_valid_constraint_guided_pair_count_mean = mean(
+            row.get("valid_constraint_guided_pair_count", 0.0) for row in fast_rows
+        )
+        fast_valid_constraint_guided_pair_count_no_safety_mean = mean(
+            row.get("valid_constraint_guided_pair_count_no_safety", 0.0) for row in fast_rows
+        )
+        fast_constraint_guided_pair_reject_incremental_constraint_violation_mean = mean(
+            row.get("constraint_guided_pair_reject_incremental_constraint_violation", 0.0) for row in fast_rows
+        )
+        fast_constraint_guided_pair_reject_hi_lo_mode_violation_mean = mean(
+            row.get("constraint_guided_pair_reject_hi_lo_mode_violation", 0.0) for row in fast_rows
+        )
+        fast_constraint_guided_pair_reject_hi_mode_switch_violation_mean = mean(
+            row.get("constraint_guided_pair_reject_hi_mode_switch_violation", 0.0) for row in fast_rows
+        )
+        fast_constraint_guided_pair_reject_lo_mode_violation_mean = mean(
+            row.get("constraint_guided_pair_reject_lo_mode_violation", 0.0) for row in fast_rows
+        )
+        fast_constraint_guided_pair_reject_budget_floor_violation_mean = mean(
+            row.get("constraint_guided_pair_reject_budget_floor_violation", 0.0) for row in fast_rows
+        )
+        fast_constraint_guided_pair_reject_budget_upper_bound_violation_mean = mean(
+            row.get("constraint_guided_pair_reject_budget_upper_bound_violation", 0.0) for row in fast_rows
+        )
+        fast_constraint_guided_pair_reject_no_effective_budget_change_mean = mean(
+            row.get("constraint_guided_pair_reject_no_effective_budget_change", 0.0) for row in fast_rows
+        )
+        fast_constraint_guided_pair_reject_unknown_mean = mean(
+            row.get("constraint_guided_pair_reject_unknown", 0.0) for row in fast_rows
+        )
         fast_balance = fast_valid_increase_count_mean / max(1.0, fast_valid_decrease_count_mean)
+        fast_valid_ranked_pair_to_single_increase_ratio = (
+            fast_valid_ranked_pair_count_mean / max(1.0, fast_valid_increase_count_mean)
+        )
 
-        fast_recommended_for_dqn = (
-            fast_deadline_misses_sum == 0.0
-            and cfg.learnable_fast_event_min <= fast_total_events_mean <= cfg.learnable_fast_event_max
-            and fast_valid_increase_count_mean >= cfg.learnable_fast_min_valid_increase
+        single_headroom_ok = (
+            fast_valid_increase_count_mean >= cfg.learnable_fast_min_valid_increase
             and fast_valid_decrease_count_mean >= cfg.learnable_fast_min_valid_decrease
             and fast_balance >= cfg.learnable_fast_min_balance
         )
+        ranked_pair_headroom_ok = (
+            cfg.enable_ranked_pair_diagnostic
+            and fast_valid_ranked_pair_count_mean >= cfg.ranked_pair_min_valid_count
+            and fast_valid_decrease_count_mean >= cfg.learnable_fast_min_valid_decrease
+        )
+        constraint_guided_pair_headroom_ok = (
+            cfg.enable_constraint_guided_pair_diagnostic
+            and fast_valid_constraint_guided_pair_count_mean >= cfg.constraint_guided_pair_min_valid_count
+            and fast_valid_decrease_count_mean >= cfg.learnable_fast_min_valid_decrease
+        )
+        if cfg.learnable_selection_target == "ranked_pair":
+            headroom_ok = ranked_pair_headroom_ok
+        elif cfg.learnable_selection_target == "constraint_guided_pair":
+            headroom_ok = constraint_guided_pair_headroom_ok
+        else:
+            headroom_ok = single_headroom_ok
+        fast_recommended_for_dqn = (
+            fast_deadline_misses_sum == 0.0
+            and cfg.learnable_fast_event_min <= fast_total_events_mean <= cfg.learnable_fast_event_max
+            # 新增筛选规则：LO cancellations 太低则不推荐，避免接受几乎无 cancellation 信号的任务集。
+            and fast_lo_cancellations_mean >= cfg.learnable_fast_min_lo_cancellations
+            and headroom_ok
+        )
+        recommended_for_ranked_pair_dqn = (
+            cfg.enable_ranked_pair_diagnostic
+            and fast_deadline_misses_sum == 0.0
+            and fast_valid_ranked_pair_count_mean >= cfg.ranked_pair_min_valid_count
+            and cfg.learnable_fast_event_min <= fast_total_events_mean <= cfg.learnable_fast_event_max
+            and fast_lo_cancellations_mean >= cfg.learnable_fast_min_lo_cancellations
+        )
+        recommended_for_constraint_guided_pair_dqn = (
+            cfg.enable_constraint_guided_pair_diagnostic
+            and fast_deadline_misses_sum == 0.0
+            and fast_valid_constraint_guided_pair_count_mean >= cfg.constraint_guided_pair_min_valid_count
+            and cfg.learnable_fast_event_min <= fast_total_events_mean <= cfg.learnable_fast_event_max
+            and fast_lo_cancellations_mean >= cfg.learnable_fast_min_lo_cancellations
+        )
+        ranked_pair_not_recommended_reason = ""
+        if cfg.enable_ranked_pair_diagnostic and not recommended_for_ranked_pair_dqn:
+            rp_reasons: list[str] = []
+            if fast_deadline_misses_sum > 0.0:
+                rp_reasons.append("reject_deadline_miss_count")
+            if fast_total_events_mean < cfg.learnable_fast_event_min or fast_total_events_mean > cfg.learnable_fast_event_max:
+                rp_reasons.append("reject_fast_event_count")
+            if fast_lo_cancellations_mean < cfg.learnable_fast_min_lo_cancellations:
+                rp_reasons.append("reject_fast_low_lo_cancellations")
+            if fast_valid_ranked_pair_count_mean < cfg.ranked_pair_min_valid_count:
+                rp_reasons.append("reject_fast_ranked_pair_headroom")
+            ranked_pair_not_recommended_reason = ";".join(rp_reasons)
+        constraint_guided_pair_not_recommended_reason = ""
+        if cfg.enable_constraint_guided_pair_diagnostic and not recommended_for_constraint_guided_pair_dqn:
+            cgp_reasons: list[str] = []
+            if fast_valid_constraint_guided_pair_count_mean < cfg.constraint_guided_pair_min_valid_count:
+                cgp_reasons.append("low_valid_constraint_guided_pair_headroom")
+            if fast_total_events_mean < cfg.learnable_fast_event_min:
+                cgp_reasons.append("too_few_fast_events")
+            if fast_total_events_mean > cfg.learnable_fast_event_max:
+                cgp_reasons.append("too_many_fast_events")
+            if fast_lo_cancellations_mean < cfg.learnable_fast_min_lo_cancellations:
+                cgp_reasons.append("reject_fast_low_lo_cancellations")
+            constraint_guided_pair_not_recommended_reason = ";".join(cgp_reasons)
         fast_not_recommended_reason = ""
         if not fast_recommended_for_dqn:
             reasons: list[str] = []
@@ -929,12 +1532,25 @@ def main() -> None:
                 reasons.append("reject_deadline_miss_count")
             if fast_total_events_mean < cfg.learnable_fast_event_min or fast_total_events_mean > cfg.learnable_fast_event_max:
                 reasons.append("reject_fast_event_count")
-            if (
-                fast_valid_increase_count_mean < cfg.learnable_fast_min_valid_increase
-                or fast_valid_decrease_count_mean < cfg.learnable_fast_min_valid_decrease
-                or fast_balance < cfg.learnable_fast_min_balance
-            ):
-                reasons.append("reject_fast_headroom")
+            if fast_lo_cancellations_mean < cfg.learnable_fast_min_lo_cancellations:
+                reasons.append("reject_fast_low_lo_cancellations")
+            if cfg.learnable_selection_target == "ranked_pair":
+                if fast_valid_ranked_pair_count_mean < cfg.ranked_pair_min_valid_count:
+                    reasons.append("reject_fast_ranked_pair_headroom")
+                if fast_valid_decrease_count_mean < cfg.learnable_fast_min_valid_decrease:
+                    reasons.append("reject_fast_headroom")
+            elif cfg.learnable_selection_target == "constraint_guided_pair":
+                if fast_valid_constraint_guided_pair_count_mean < cfg.constraint_guided_pair_min_valid_count:
+                    reasons.append("reject_fast_constraint_guided_pair_headroom")
+                if fast_valid_decrease_count_mean < cfg.learnable_fast_min_valid_decrease:
+                    reasons.append("reject_fast_headroom")
+            else:
+                if (
+                    fast_valid_increase_count_mean < cfg.learnable_fast_min_valid_increase
+                    or fast_valid_decrease_count_mean < cfg.learnable_fast_min_valid_decrease
+                    or fast_balance < cfg.learnable_fast_min_balance
+                ):
+                    reasons.append("reject_fast_headroom")
             fast_not_recommended_reason = ";".join(reasons)
 
         base_metadata = {
@@ -959,9 +1575,62 @@ def main() -> None:
                 fast_mask_reject_budget_upper_bound_violation_mean
             ),
             "fast_mask_reject_decrease_hi_forbidden_mean": fast_mask_reject_decrease_hi_forbidden_mean,
+            "fast_ranked_pair_candidate_count_mean": fast_ranked_pair_candidate_count_mean,
+            "fast_valid_ranked_pair_count_mean": fast_valid_ranked_pair_count_mean,
+            "fast_valid_ranked_pair_count_no_safety_mean": fast_valid_ranked_pair_count_no_safety_mean,
+            "fast_valid_ranked_pair_to_single_increase_ratio": fast_valid_ranked_pair_to_single_increase_ratio,
+            "fast_ranked_pair_reject_incremental_constraint_violation_mean": (
+                fast_ranked_pair_reject_incremental_constraint_violation_mean
+            ),
+            "fast_ranked_pair_reject_budget_floor_violation_mean": fast_ranked_pair_reject_budget_floor_violation_mean,
+            "fast_ranked_pair_reject_budget_upper_bound_violation_mean": (
+                fast_ranked_pair_reject_budget_upper_bound_violation_mean
+            ),
+            "fast_ranked_pair_reject_no_effective_budget_change_mean": (
+                fast_ranked_pair_reject_no_effective_budget_change_mean
+            ),
+            "fast_ranked_pair_reject_decrease_hi_forbidden_mean": fast_ranked_pair_reject_decrease_hi_forbidden_mean,
+            "fast_ranked_pair_reject_unknown_mean": fast_ranked_pair_reject_unknown_mean,
+            "fast_ranked_pair_reject_unknown_no_safety_mean": fast_ranked_pair_reject_unknown_no_safety_mean,
+            "fast_ranked_pair_reject_hi_lo_mode_violation_mean": fast_ranked_pair_reject_hi_lo_mode_violation_mean,
+            "fast_ranked_pair_reject_hi_mode_switch_violation_mean": (
+                fast_ranked_pair_reject_hi_mode_switch_violation_mean
+            ),
+            "fast_ranked_pair_reject_lo_mode_violation_mean": fast_ranked_pair_reject_lo_mode_violation_mean,
+            "fast_constraint_guided_pair_candidate_count_mean": fast_constraint_guided_pair_candidate_count_mean,
+            "fast_valid_constraint_guided_pair_count_mean": fast_valid_constraint_guided_pair_count_mean,
+            "fast_valid_constraint_guided_pair_count_no_safety_mean": (
+                fast_valid_constraint_guided_pair_count_no_safety_mean
+            ),
+            "fast_constraint_guided_pair_reject_incremental_constraint_violation_mean": (
+                fast_constraint_guided_pair_reject_incremental_constraint_violation_mean
+            ),
+            "fast_constraint_guided_pair_reject_hi_lo_mode_violation_mean": (
+                fast_constraint_guided_pair_reject_hi_lo_mode_violation_mean
+            ),
+            "fast_constraint_guided_pair_reject_hi_mode_switch_violation_mean": (
+                fast_constraint_guided_pair_reject_hi_mode_switch_violation_mean
+            ),
+            "fast_constraint_guided_pair_reject_lo_mode_violation_mean": (
+                fast_constraint_guided_pair_reject_lo_mode_violation_mean
+            ),
+            "fast_constraint_guided_pair_reject_budget_floor_violation_mean": (
+                fast_constraint_guided_pair_reject_budget_floor_violation_mean
+            ),
+            "fast_constraint_guided_pair_reject_budget_upper_bound_violation_mean": (
+                fast_constraint_guided_pair_reject_budget_upper_bound_violation_mean
+            ),
+            "fast_constraint_guided_pair_reject_no_effective_budget_change_mean": (
+                fast_constraint_guided_pair_reject_no_effective_budget_change_mean
+            ),
+            "fast_constraint_guided_pair_reject_unknown_mean": fast_constraint_guided_pair_reject_unknown_mean,
             "fast_increase_decrease_balance": fast_balance,
             "recommended_fast": fast_recommended_for_dqn,
             "fast_not_recommended_reason": fast_not_recommended_reason,
+            "recommended_for_ranked_pair_dqn": recommended_for_ranked_pair_dqn,
+            "ranked_pair_not_recommended_reason": ranked_pair_not_recommended_reason,
+            "recommended_for_constraint_guided_pair_dqn": recommended_for_constraint_guided_pair_dqn,
+            "constraint_guided_pair_not_recommended_reason": constraint_guided_pair_not_recommended_reason,
             "hi_budget_rho_min": cfg.learnable_hi_budget_rho_min,
             "hi_budget_rho_max": cfg.learnable_hi_budget_rho_max,
             "lo_budget_rho_min": cfg.learnable_lo_budget_rho_min,
@@ -972,6 +1641,7 @@ def main() -> None:
             "budget_increase_ratio": cfg.budget_increase_ratio,
             "budget_decrease_ratio": cfg.budget_decrease_ratio,
             "include_explicit_noop": cfg.include_explicit_noop,
+            "learnable_fast_min_lo_cancellations": cfg.learnable_fast_min_lo_cancellations,
             "require_schedulable": cfg.require_schedulable,
             **relaxation_metadata,
         }
@@ -985,7 +1655,19 @@ def main() -> None:
                 {
                     "taskset_id": -1,
                     "accepted": False,
-                    "reject_reason": fast_not_recommended_reason if fast_not_recommended_reason else "reject_fast_headroom",
+                    "reject_reason": (
+                        fast_not_recommended_reason
+                        if fast_not_recommended_reason
+                        else (
+                            "reject_fast_ranked_pair_headroom"
+                            if cfg.learnable_selection_target == "ranked_pair"
+                            else (
+                                "reject_fast_constraint_guided_pair_headroom"
+                                if cfg.learnable_selection_target == "constraint_guided_pair"
+                                else "reject_fast_headroom"
+                            )
+                        )
+                    ),
                     "error_message": "",
                     **base_metadata,
                 }
@@ -1030,15 +1712,45 @@ def main() -> None:
         "fast_mask_reject_budget_floor_violation_mean",
         "fast_mask_reject_budget_upper_bound_violation_mean",
         "fast_mask_reject_decrease_hi_forbidden_mean",
+        "fast_ranked_pair_candidate_count_mean",
+        "fast_valid_ranked_pair_count_mean",
+        "fast_valid_ranked_pair_count_no_safety_mean",
+        "fast_valid_ranked_pair_to_single_increase_ratio",
+        "fast_ranked_pair_reject_incremental_constraint_violation_mean",
+        "fast_ranked_pair_reject_budget_floor_violation_mean",
+        "fast_ranked_pair_reject_budget_upper_bound_violation_mean",
+        "fast_ranked_pair_reject_no_effective_budget_change_mean",
+        "fast_ranked_pair_reject_decrease_hi_forbidden_mean",
+        "fast_ranked_pair_reject_unknown_mean",
+        "fast_ranked_pair_reject_unknown_no_safety_mean",
+        "fast_ranked_pair_reject_hi_lo_mode_violation_mean",
+        "fast_ranked_pair_reject_hi_mode_switch_violation_mean",
+        "fast_ranked_pair_reject_lo_mode_violation_mean",
+        "fast_constraint_guided_pair_candidate_count_mean",
+        "fast_valid_constraint_guided_pair_count_mean",
+        "fast_valid_constraint_guided_pair_count_no_safety_mean",
+        "fast_constraint_guided_pair_reject_incremental_constraint_violation_mean",
+        "fast_constraint_guided_pair_reject_hi_lo_mode_violation_mean",
+        "fast_constraint_guided_pair_reject_hi_mode_switch_violation_mean",
+        "fast_constraint_guided_pair_reject_lo_mode_violation_mean",
+        "fast_constraint_guided_pair_reject_budget_floor_violation_mean",
+        "fast_constraint_guided_pair_reject_budget_upper_bound_violation_mean",
+        "fast_constraint_guided_pair_reject_no_effective_budget_change_mean",
+        "fast_constraint_guided_pair_reject_unknown_mean",
         "fast_increase_decrease_balance",
         "recommended_fast",
         "fast_not_recommended_reason",
+        "recommended_for_ranked_pair_dqn",
+        "ranked_pair_not_recommended_reason",
+        "recommended_for_constraint_guided_pair_dqn",
+        "constraint_guided_pair_not_recommended_reason",
         "budget_floor_ratio",
         "reward_mode",
         "action_space",
         "budget_increase_ratio",
         "budget_decrease_ratio",
         "include_explicit_noop",
+        "learnable_fast_min_lo_cancellations",
         "require_schedulable",
         "relaxation_enabled",
         "relaxation_success",
@@ -1088,9 +1800,39 @@ def main() -> None:
         "fast_mask_reject_budget_floor_violation_mean",
         "fast_mask_reject_budget_upper_bound_violation_mean",
         "fast_mask_reject_decrease_hi_forbidden_mean",
+        "fast_ranked_pair_candidate_count_mean",
+        "fast_valid_ranked_pair_count_mean",
+        "fast_valid_ranked_pair_count_no_safety_mean",
+        "fast_valid_ranked_pair_to_single_increase_ratio",
+        "fast_ranked_pair_reject_incremental_constraint_violation_mean",
+        "fast_ranked_pair_reject_budget_floor_violation_mean",
+        "fast_ranked_pair_reject_budget_upper_bound_violation_mean",
+        "fast_ranked_pair_reject_no_effective_budget_change_mean",
+        "fast_ranked_pair_reject_decrease_hi_forbidden_mean",
+        "fast_ranked_pair_reject_unknown_mean",
+        "fast_ranked_pair_reject_unknown_no_safety_mean",
+        "fast_ranked_pair_reject_hi_lo_mode_violation_mean",
+        "fast_ranked_pair_reject_hi_mode_switch_violation_mean",
+        "fast_ranked_pair_reject_lo_mode_violation_mean",
+        "fast_constraint_guided_pair_candidate_count_mean",
+        "fast_valid_constraint_guided_pair_count_mean",
+        "fast_valid_constraint_guided_pair_count_no_safety_mean",
+        "fast_constraint_guided_pair_reject_incremental_constraint_violation_mean",
+        "fast_constraint_guided_pair_reject_hi_lo_mode_violation_mean",
+        "fast_constraint_guided_pair_reject_hi_mode_switch_violation_mean",
+        "fast_constraint_guided_pair_reject_lo_mode_violation_mean",
+        "fast_constraint_guided_pair_reject_budget_floor_violation_mean",
+        "fast_constraint_guided_pair_reject_budget_upper_bound_violation_mean",
+        "fast_constraint_guided_pair_reject_no_effective_budget_change_mean",
+        "fast_constraint_guided_pair_reject_unknown_mean",
         "fast_increase_decrease_balance",
         "recommended_fast",
         "fast_not_recommended_reason",
+        "recommended_for_ranked_pair_dqn",
+        "ranked_pair_not_recommended_reason",
+        "recommended_for_constraint_guided_pair_dqn",
+        "constraint_guided_pair_not_recommended_reason",
+        "learnable_fast_min_lo_cancellations",
         "relaxation_enabled",
         "relaxation_success",
         "relaxation_rounds",
