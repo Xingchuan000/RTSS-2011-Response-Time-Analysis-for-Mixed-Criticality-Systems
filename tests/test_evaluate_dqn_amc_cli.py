@@ -328,3 +328,135 @@ def test_evaluate_cli_rejects_invalid_evaluation_workers(tmp_path: Path) -> None
         env=env,
     )
     assert result.returncode != 0
+
+
+def test_evaluate_cli_constraint_guided_pair_smoke_and_dim_mismatch(tmp_path: Path) -> None:
+    """constraint_guided_pair 模型可评估，且动作维度不匹配时应报错。"""
+
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    cg_train_dir = tmp_path / "cg_train"
+    single_train_dir = tmp_path / "single_train"
+    cg_eval_path = cg_train_dir / "eval_cg.csv"
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--workload",
+            "small",
+            "--episodes",
+            "1",
+            "--end-time",
+            "60",
+            "--agent-period",
+            "20",
+            "--observation-mode",
+            "v11_full_10d",
+            "--action-space",
+            "constraint_guided_pair",
+            "--constraint-guided-pair-top-k-risk",
+            "3",
+            "--constraint-guided-pair-top-k-decrease",
+            "5",
+            "--include-explicit-noop",
+            "--output-dir",
+            str(cg_train_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate_dqn_amc.py",
+            "--model",
+            str(cg_train_dir / "model_final.pt"),
+            "--seeds",
+            "0",
+            "--end-time",
+            "60",
+            "--agent-period",
+            "20",
+            "--observation-mode",
+            "v11_full_10d",
+            "--action-space",
+            "constraint_guided_pair",
+            "--constraint-guided-pair-top-k-risk",
+            "3",
+            "--constraint-guided-pair-top-k-decrease",
+            "5",
+            "--baselines",
+            "dqn_agent",
+            "--include-explicit-noop",
+            "--output",
+            str(cg_eval_path),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    assert cg_eval_path.exists()
+    rows = _read_csv_rows(cg_eval_path)
+    assert rows
+    dqn_rows = [row for row in rows if row.get("method") == "dqn_agent"]
+    assert dqn_rows
+    # bundled transfer 口径：constraint_guided_pair(alias) + explicit noop 下动作维度应为 4。
+    assert all(int(row["action_count"]) == 4 for row in dqn_rows)
+    assert all(row["action_space_type"] == "constraint_guided_transfer" for row in dqn_rows)
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--workload",
+            "small",
+            "--episodes",
+            "1",
+            "--end-time",
+            "60",
+            "--agent-period",
+            "20",
+            "--observation-mode",
+            "v11_full_10d",
+            "--action-space",
+            "single",
+            "--include-explicit-noop",
+            "--output-dir",
+            str(single_train_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    mismatch = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate_dqn_amc.py",
+            "--model",
+            str(single_train_dir / "model_final.pt"),
+            "--seeds",
+            "0",
+            "--end-time",
+            "60",
+            "--agent-period",
+            "20",
+            "--observation-mode",
+            "v11_full_10d",
+            "--action-space",
+            "constraint_guided_pair",
+            "--constraint-guided-pair-top-k-risk",
+            "3",
+            "--constraint-guided-pair-top-k-decrease",
+            "5",
+            "--baselines",
+            "dqn_agent",
+            "--include-explicit-noop",
+            "--output",
+            str(single_train_dir / "eval_mismatch.csv"),
+        ],
+        check=False,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    assert mismatch.returncode != 0

@@ -24,6 +24,10 @@ class BudgetAction:
     decrease_ratio: float = 0.05
     action_space_type: str = "triple"
     is_noop: bool = False
+    # constraint-guided transfer 固定槽位标记：
+    # 该类动作不会在动作空间阶段绑定具体任务索引，而是在环境中按当前状态动态解析。
+    is_constraint_guided_pair: bool = False
+    constraint_guided_increase_rank: int | None = None
 
 
 def action_violates_hi_decrease_guard(
@@ -59,6 +63,9 @@ def build_budget_action_space(
     budget_increase_ratio: float = 0.10,
     budget_decrease_ratio: float = 0.05,
     include_explicit_noop: bool = False,
+    constraint_guided_pair_top_k_risk: int = 3,
+    constraint_guided_pair_top_k_decrease: int = 5,
+    constraint_guided_pair_include_hi_risk_boost: bool = False,
 ) -> tuple[BudgetAction, ...]:
     """构建确定性动作空间。
 
@@ -68,7 +75,10 @@ def build_budget_action_space(
     - 可选 `include_explicit_noop` 追加显式 NoOp 动作。
     """
 
-    if action_space not in {"triple", "pair", "single"}:
+    if action_space == "constraint_guided_pair":
+        # 兼容 alias：外部仍可传旧名称，内部统一为 transfer 语义。
+        action_space = "constraint_guided_transfer"
+    if action_space not in {"triple", "pair", "single", "constraint_guided_transfer"}:
         raise ValueError(f"不支持的 action_space: {action_space}")
     if budget_increase_ratio <= 0.0:
         raise ValueError("budget_increase_ratio 必须为正数")
@@ -112,7 +122,7 @@ def build_budget_action_space(
                 )
             )
             action_id += 1
-    else:
+    elif action_space == "single":
         for increase_name in names:
             actions.append(
                 BudgetAction(
@@ -138,6 +148,32 @@ def build_budget_action_space(
                     increase_ratio=budget_increase_ratio,
                     decrease_ratio=budget_decrease_ratio,
                     action_space_type=action_space,
+                )
+            )
+            action_id += 1
+    else:
+        # constraint-guided transfer 采用“固定动作槽位 + 运行时动态映射”：
+        # - 动作空间中只记录 increase_rank（每个槽位对应一个 bundled transfer）；
+        # - decrease 目标集合由共享枚举器在当前观测下诊断得到；
+        # - 动作维度固定为 1(noop) + dynamic_slots，默认 dynamic_slots=top_k_risk。
+        dynamic_slots = (
+            2 * constraint_guided_pair_top_k_risk
+            if constraint_guided_pair_include_hi_risk_boost
+            else constraint_guided_pair_top_k_risk
+        )
+        for inc_rank in range(dynamic_slots):
+            actions.append(
+                BudgetAction(
+                    action_id=action_id,
+                    increase_task=None,
+                    decrease_tasks=(),
+                    increase_idx=None,
+                    decrease_indices=(),
+                    increase_ratio=budget_increase_ratio,
+                    decrease_ratio=budget_decrease_ratio,
+                    action_space_type=action_space,
+                    is_constraint_guided_pair=True,
+                    constraint_guided_increase_rank=inc_rank,
                 )
             )
             action_id += 1
@@ -167,6 +203,9 @@ def apply_budget_action_candidate(
     ordered_tasks: Sequence[Task],
 ) -> dict[str, int]:
     """将动作转换为候选更新，不直接改写原 BudgetState。"""
+
+    if action.is_constraint_guided_pair:
+        raise ValueError("constraint_guided_pair action must be resolved by AmcBudgetEnv before applying")
 
     if action.is_noop:
         return {}

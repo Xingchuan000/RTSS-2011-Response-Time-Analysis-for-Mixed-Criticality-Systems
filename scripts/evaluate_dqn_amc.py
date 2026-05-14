@@ -14,6 +14,7 @@ import torch
 from amc_py.dqn import (
     DqnBudgetAgent,
     build_automotive_experiment_config,
+    build_mc_fairgen_experiment_config,
     build_env_from_experiment_config,
     build_rtss11_experiment_config,
     build_small_nominal_experiment_config,
@@ -168,6 +169,11 @@ def _evaluate_dqn_once(
     agent_device: str | None = None,
     double_dqn: bool = True,
     max_q_diagnostic_samples: int = 1000,
+    constraint_guided_pair_top_k_risk: int = 3,
+    constraint_guided_pair_top_k_decrease: int = 5,
+    constraint_guided_pair_prefer_lo: bool = False,
+    constraint_guided_pair_include_hi_risk_boost: bool = False,
+    constraint_guided_pair_allow_increase_only_when_safe: bool = False,
 ) -> tuple[dict[str, int | float | str | bool], SimulationResult, list[dict[str, object]]]:
     """以评估模式运行一次 DQN agent。"""
 
@@ -186,6 +192,11 @@ def _evaluate_dqn_once(
         forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
         mask_detail_mode=mask_detail_mode,
         feature_config=feature_config,
+        constraint_guided_pair_top_k_risk=constraint_guided_pair_top_k_risk,
+        constraint_guided_pair_top_k_decrease=constraint_guided_pair_top_k_decrease,
+        constraint_guided_pair_prefer_lo=constraint_guided_pair_prefer_lo,
+        constraint_guided_pair_include_hi_risk_boost=constraint_guided_pair_include_hi_risk_boost,
+        constraint_guided_pair_allow_increase_only_when_safe=constraint_guided_pair_allow_increase_only_when_safe,
     )
     # 评估阶段既支持主进程串行加载，也支持并行 worker 中按需加载。
     # 并行 worker 会显式传入 `agent_device="cpu"`，避免子进程去占用 MPS/GPU。
@@ -643,6 +654,11 @@ def _evaluate_enabled_methods_for_seed(
     dqn_agent_device: str | None = None,
     double_dqn: bool = True,
     max_q_diagnostic_samples: int = 1000,
+    constraint_guided_pair_top_k_risk: int = 3,
+    constraint_guided_pair_top_k_decrease: int = 5,
+    constraint_guided_pair_prefer_lo: bool = False,
+    constraint_guided_pair_include_hi_risk_boost: bool = False,
+    constraint_guided_pair_allow_increase_only_when_safe: bool = False,
 ) -> tuple[list[dict[str, int | float | str | bool]], list[dict[str, object]]]:
     """评估单个 seed 下的所有启用方法。
 
@@ -1058,6 +1074,11 @@ def _evaluate_enabled_methods_for_seed(
             double_dqn=double_dqn,
             max_q_diagnostic_samples=max_q_diagnostic_samples,
             feature_config=feature_config,
+            constraint_guided_pair_top_k_risk=constraint_guided_pair_top_k_risk,
+            constraint_guided_pair_top_k_decrease=constraint_guided_pair_top_k_decrease,
+            constraint_guided_pair_prefer_lo=constraint_guided_pair_prefer_lo,
+            constraint_guided_pair_include_hi_risk_boost=constraint_guided_pair_include_hi_risk_boost,
+            constraint_guided_pair_allow_increase_only_when_safe=constraint_guided_pair_allow_increase_only_when_safe,
         )
         rows.append(dqn_row)
         deadline_miss_details.extend(
@@ -1101,6 +1122,11 @@ def _evaluate_seed_worker(
         set[str],
         bool,
         int,
+        int,
+        int,
+        bool,
+        bool,
+        bool,
     ],
 ) -> tuple[list[dict[str, int | float | str | bool]], list[dict[str, object]]]:
     """并行 worker：完成单个 seed 的全部评估方法。
@@ -1138,6 +1164,11 @@ def _evaluate_seed_worker(
         trace_method_set,
         double_dqn,
         max_q_diagnostic_samples,
+        constraint_guided_pair_top_k_risk,
+        constraint_guided_pair_top_k_decrease,
+        constraint_guided_pair_prefer_lo,
+        constraint_guided_pair_include_hi_risk_boost,
+        constraint_guided_pair_allow_increase_only_when_safe,
     ) = args_tuple
     return _evaluate_enabled_methods_for_seed(
         seed=seed,
@@ -1168,6 +1199,11 @@ def _evaluate_seed_worker(
         dqn_agent_device="cpu",
         double_dqn=double_dqn,
         max_q_diagnostic_samples=max_q_diagnostic_samples,
+        constraint_guided_pair_top_k_risk=constraint_guided_pair_top_k_risk,
+        constraint_guided_pair_top_k_decrease=constraint_guided_pair_top_k_decrease,
+        constraint_guided_pair_prefer_lo=constraint_guided_pair_prefer_lo,
+        constraint_guided_pair_include_hi_risk_boost=constraint_guided_pair_include_hi_risk_boost,
+        constraint_guided_pair_allow_increase_only_when_safe=constraint_guided_pair_allow_increase_only_when_safe,
     )
 
 
@@ -1175,7 +1211,7 @@ def build_parser() -> argparse.ArgumentParser:
     """构建正式评估 CLI 的参数解析器。"""
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--workload", choices=["small", "rtss11", "automotive"], default="small")
+    parser.add_argument("--workload", choices=["small", "rtss11", "automotive", "mc_fairgen"], default="small")
     parser.add_argument("--total-util", type=float, default=0.65)
     parser.add_argument("--num-tasks", type=int, default=20)
     parser.add_argument("--cf", type=float, default=2.0)
@@ -1218,9 +1254,22 @@ def build_parser() -> argparse.ArgumentParser:
         choices=list(available_reward_modes()),
         default="mendes",
     )
-    parser.add_argument("--action-space", choices=["triple", "pair", "single"], default="triple")
+    parser.add_argument(
+        "--action-space",
+        choices=["triple", "pair", "single", "constraint_guided_pair", "constraint_guided_transfer"],
+        default="triple",
+    )
     parser.add_argument("--budget-increase-ratio", type=float, default=0.10)
     parser.add_argument("--budget-decrease-ratio", type=float, default=0.05)
+    parser.add_argument("--constraint-guided-pair-top-k-risk", type=int, default=3)
+    parser.add_argument("--constraint-guided-pair-top-k-decrease", type=int, default=5)
+    parser.add_argument("--constraint-guided-pair-prefer-lo", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--constraint-guided-pair-include-hi-risk-boost", action="store_true")
+    parser.add_argument(
+        "--constraint-guided-pair-allow-increase-only-when-safe",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--include-explicit-noop", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
         "--noop-exploration-prob",
@@ -1273,6 +1322,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learnable-hi-budget-rho-max", type=float, default=0.65)
     parser.add_argument("--learnable-lo-budget-rho-min", type=float, default=0.35)
     parser.add_argument("--learnable-lo-budget-rho-max", type=float, default=0.60)
+    parser.add_argument("--mc-fairgen-mode", type=str, default="paper_learnable_headroom")
+    parser.add_argument("--mc-fairgen-num-tasks", type=int, default=16)
+    parser.add_argument("--mc-fairgen-hi-ratio", type=float, default=0.5)
+    parser.add_argument("--mc-fairgen-period-source", type=str, default="automotive")
+    parser.add_argument("--mc-fairgen-period-scale", type=int, default=100)
+    parser.add_argument("--mc-fairgen-u-hi-lo-min", type=float, default=0.20)
+    parser.add_argument("--mc-fairgen-u-hi-lo-max", type=float, default=0.35)
+    parser.add_argument("--mc-fairgen-u-hi-hi-min", type=float, default=0.45)
+    parser.add_argument("--mc-fairgen-u-hi-hi-max", type=float, default=0.70)
+    parser.add_argument("--mc-fairgen-u-lo-lo-min", type=float, default=0.35)
+    parser.add_argument("--mc-fairgen-u-lo-lo-max", type=float, default=0.60)
+    parser.add_argument("--mc-fairgen-hi-budget-rho-min", type=float, default=0.55)
+    parser.add_argument("--mc-fairgen-hi-budget-rho-max", type=float, default=0.75)
+    parser.add_argument("--mc-fairgen-lo-budget-rho-min", type=float, default=0.05)
+    parser.add_argument("--mc-fairgen-lo-budget-rho-max", type=float, default=0.25)
+    parser.add_argument("--mc-fairgen-hi-overrun-prob", type=float, default=0.08)
+    parser.add_argument("--mc-fairgen-lo-overrun-prob", type=float, default=0.40)
+    parser.add_argument("--mc-fairgen-hi-overrun-factor-min", type=float, default=1.02)
+    parser.add_argument("--mc-fairgen-hi-overrun-factor-max", type=float, default=1.25)
+    parser.add_argument("--mc-fairgen-lo-overrun-factor-min", type=float, default=1.05)
+    parser.add_argument("--mc-fairgen-lo-overrun-factor-max", type=float, default=1.80)
     parser.add_argument("--mask-detail-mode", choices=["minimal", "full"], default="minimal")
     parser.add_argument("--observation-mode", choices=["v10_basic", "v11_full_10d"], default="v10_basic")
     parser.add_argument("--ema-alpha", type=float, default=0.2)
@@ -1289,6 +1359,9 @@ def main() -> None:
     """运行正式 DQN 评估，并输出统一 CSV。"""
 
     args = build_parser().parse_args()
+    if args.action_space == "constraint_guided_pair":
+        # 兼容旧参数名：内部统一走 constraint_guided_transfer。
+        args.action_space = "constraint_guided_transfer"
     if args.evaluation_workers < 1:
         raise ValueError("--evaluation-workers 必须为正整数")
     if args.max_q_diagnostic_samples < 0:
@@ -1321,7 +1394,7 @@ def main() -> None:
             scenario_seed_offset=args.scenario_seed_offset,
             fixed_taskset_seed=args.fixed_taskset_seed,
         )
-    else:
+    elif args.workload == "automotive":
         experiment_config = build_automotive_experiment_config(
             num_runnables=args.automotive_num_runnables,
             mode=args.automotive_mode,
@@ -1336,6 +1409,38 @@ def main() -> None:
             learnable_lo_budget_rho_max=args.learnable_lo_budget_rho_max,
             budget_floor_ratio=args.budget_floor_ratio,
         )
+    elif args.workload == "mc_fairgen":
+        experiment_config = build_mc_fairgen_experiment_config(
+            mode=args.mc_fairgen_mode,
+            num_tasks=args.mc_fairgen_num_tasks,
+            hi_ratio=args.mc_fairgen_hi_ratio,
+            period_source=args.mc_fairgen_period_source,
+            period_scale=args.mc_fairgen_period_scale,
+            require_schedulable=args.require_schedulable,
+            scenario_seed_offset=args.scenario_seed_offset,
+            fixed_taskset_seed=args.fixed_taskset_seed,
+            u_hi_lo_min=args.mc_fairgen_u_hi_lo_min,
+            u_hi_lo_max=args.mc_fairgen_u_hi_lo_max,
+            u_hi_hi_min=args.mc_fairgen_u_hi_hi_min,
+            u_hi_hi_max=args.mc_fairgen_u_hi_hi_max,
+            u_lo_lo_min=args.mc_fairgen_u_lo_lo_min,
+            u_lo_lo_max=args.mc_fairgen_u_lo_lo_max,
+            hi_budget_rho_min=args.mc_fairgen_hi_budget_rho_min,
+            hi_budget_rho_max=args.mc_fairgen_hi_budget_rho_max,
+            lo_budget_rho_min=args.mc_fairgen_lo_budget_rho_min,
+            lo_budget_rho_max=args.mc_fairgen_lo_budget_rho_max,
+            hi_overrun_prob=args.mc_fairgen_hi_overrun_prob,
+            lo_overrun_prob=args.mc_fairgen_lo_overrun_prob,
+            hi_overrun_factor_min=args.mc_fairgen_hi_overrun_factor_min,
+            hi_overrun_factor_max=args.mc_fairgen_hi_overrun_factor_max,
+            lo_overrun_factor_min=args.mc_fairgen_lo_overrun_factor_min,
+            lo_overrun_factor_max=args.mc_fairgen_lo_overrun_factor_max,
+        )
+    else:
+        raise ValueError(f"unsupported workload: {args.workload}")
+    effective_num_tasks = (
+        args.mc_fairgen_num_tasks if args.workload == "mc_fairgen" else args.num_tasks
+    )
 
     enabled_methods = set(_parse_baselines(args.baselines))
     trace_seed_set = {int(s) for s in _parse_csv_set(args.trace_seeds)}
@@ -1355,7 +1460,7 @@ def main() -> None:
                 experiment_config=experiment_config,
                 workload=args.workload,
                 total_util=args.total_util,
-                num_tasks=args.num_tasks,
+                num_tasks=effective_num_tasks,
                 cf=args.cf,
                 cp=args.cp,
                 require_schedulable=args.require_schedulable,
@@ -1378,6 +1483,13 @@ def main() -> None:
                 trace_method_set=trace_method_set,
                 double_dqn=args.double_dqn,
                 max_q_diagnostic_samples=args.max_q_diagnostic_samples,
+                constraint_guided_pair_top_k_risk=args.constraint_guided_pair_top_k_risk,
+                constraint_guided_pair_top_k_decrease=args.constraint_guided_pair_top_k_decrease,
+                constraint_guided_pair_prefer_lo=args.constraint_guided_pair_prefer_lo,
+                constraint_guided_pair_include_hi_risk_boost=args.constraint_guided_pair_include_hi_risk_boost,
+                constraint_guided_pair_allow_increase_only_when_safe=(
+                    args.constraint_guided_pair_allow_increase_only_when_safe
+                ),
             )
             for seed in seeds
         ]
@@ -1390,7 +1502,7 @@ def main() -> None:
                 experiment_config,
                 args.workload,
                 args.total_util,
-                args.num_tasks,
+                effective_num_tasks,
                 args.cf,
                 args.cp,
                 args.require_schedulable,
@@ -1413,11 +1525,21 @@ def main() -> None:
                 trace_method_set,
                 args.double_dqn,
                 args.max_q_diagnostic_samples,
+                args.constraint_guided_pair_top_k_risk,
+                args.constraint_guided_pair_top_k_decrease,
+                args.constraint_guided_pair_prefer_lo,
+                args.constraint_guided_pair_include_hi_risk_boost,
+                args.constraint_guided_pair_allow_increase_only_when_safe,
             )
             for seed in seeds
         ]
-        with ProcessPoolExecutor(max_workers=args.evaluation_workers) as executor:
-            per_seed_results = list(executor.map(_evaluate_seed_worker, worker_args))
+        try:
+            with ProcessPoolExecutor(max_workers=args.evaluation_workers) as executor:
+                per_seed_results = list(executor.map(_evaluate_seed_worker, worker_args))
+        except PermissionError:
+            # 受限执行环境下可能禁止创建并行进程资源，此时回退到串行执行，
+            # 保持输出字段与统计口径一致，仅不使用并行加速。
+            per_seed_results = [_evaluate_seed_worker(item) for item in worker_args]
 
     for seed_rows, seed_deadline_miss_details in per_seed_results:
         rows.extend(seed_rows)

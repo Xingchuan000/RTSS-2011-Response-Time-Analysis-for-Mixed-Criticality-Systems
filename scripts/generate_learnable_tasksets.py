@@ -16,12 +16,22 @@ from pathlib import Path
 import random
 from statistics import mean
 
-from amc_py.dqn.experiment import build_automotive_experiment_config, resolve_experiment_bundle
+from amc_py.dqn.experiment import (
+    build_automotive_experiment_config,
+    build_mc_fairgen_experiment_config,
+    resolve_experiment_bundle,
+)
 from amc_py.event_runtime import simulate_ordered_taskset_event_driven
 from amc_py.experiments import evaluate_taskset
 from amc_py.models import Criticality, Task
 from amc_py.rl.env import AmcBudgetEnv
 from amc_py.rl.feature_config import FeatureConfig
+from amc_py.rl.constraint_guided_pair import (
+    build_constraint_guided_increase_candidates,
+    enumerate_constraint_guided_transfer_candidates,
+    extract_task_rank_features_from_v11,
+    select_constraint_guided_decrease_targets,
+)
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics
 
 
@@ -29,7 +39,29 @@ from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics
 class LearnableGenerateConfig:
     """learnable taskset 生成配置。"""
 
+    workload: str
     automotive_num_runnables: int
+    mc_fairgen_mode: str
+    mc_fairgen_num_tasks: int
+    mc_fairgen_hi_ratio: float
+    mc_fairgen_period_source: str
+    mc_fairgen_period_scale: int
+    mc_fairgen_u_hi_lo_min: float
+    mc_fairgen_u_hi_lo_max: float
+    mc_fairgen_u_hi_hi_min: float
+    mc_fairgen_u_hi_hi_max: float
+    mc_fairgen_u_lo_lo_min: float
+    mc_fairgen_u_lo_lo_max: float
+    mc_fairgen_hi_budget_rho_min: float
+    mc_fairgen_hi_budget_rho_max: float
+    mc_fairgen_lo_budget_rho_min: float
+    mc_fairgen_lo_budget_rho_max: float
+    mc_fairgen_hi_overrun_prob: float
+    mc_fairgen_lo_overrun_prob: float
+    mc_fairgen_hi_overrun_factor_min: float
+    mc_fairgen_hi_overrun_factor_max: float
+    mc_fairgen_lo_overrun_factor_min: float
+    mc_fairgen_lo_overrun_factor_max: float
     num_tasksets: int
     candidate_seed_start: int
     learnable_max_attempts: int
@@ -47,6 +79,7 @@ class LearnableGenerateConfig:
     # 若均值低于该阈值，说明运行过程中几乎没有 LO cancellation 信号，
     # 这种样本对后续“预算调整影响 runtime 行为”的学习价值较低，应直接拒绝。
     learnable_fast_min_lo_cancellations: float
+    learnable_fast_min_lo_cancellation_ratio: float
     reward_mode: str
     action_space: str
     budget_increase_ratio: float
@@ -278,21 +311,22 @@ def _extract_task_rank_features(env: AmcBudgetEnv, observation) -> list[dict[str
 
     if env.feature_config.observation_mode != "v11_full_10d":
         raise ValueError("ranked_pair diagnostic 仅支持 v11_full_10d observation_mode")
-
+    base_features = extract_task_rank_features_from_v11(
+        ordered_tasks=env.ordered_tasks,
+        observation_state_vector=observation.state_vector,
+    )
     task_features: list[dict[str, int | float | str | bool]] = []
-    vector = observation.state_vector
-    for idx, task in enumerate(env.ordered_tasks):
-        base = idx * 10
+    for item in base_features:
         task_features.append(
             {
-                "index": idx,
-                "name": task.name,
-                "is_hi": task.criticality is Criticality.HI,
-                "is_lo": task.criticality is not Criticality.HI,
-                "risk": float(vector[base + 5]),
-                "surplus": float(vector[base + 6]),
-                "period": float(task.period),
-                "priority_rank": idx,
+                "index": int(item["index"]),
+                "name": env.ordered_tasks[int(item["index"])].name,
+                "is_hi": bool(item["is_hi"]),
+                "is_lo": bool(item["is_lo"]),
+                "risk": float(item["risk"]),
+                "surplus": float(item["surplus"]),
+                "period": float(item["period"]),
+                "priority_rank": int(item["priority_rank"]),
             }
         )
     return task_features
@@ -525,17 +559,12 @@ def _build_constraint_guided_increase_candidates(
 ) -> list[int]:
     """按风险排序构造 increase 目标候选（包含 HI 优先子集）。"""
 
-    features = _extract_task_rank_features(env, observation)
-    risk_order = sorted(
-        features,
-        key=lambda f: (float(f["risk"]), 1 if bool(f["is_hi"]) else 0, -int(f["priority_rank"])),
-        reverse=True,
+    return build_constraint_guided_increase_candidates(
+        ordered_tasks=env.ordered_tasks,
+        observation_state_vector=observation.state_vector,
+        top_k_risk=top_k_risk,
+        include_hi_risk_boost=True,
     )
-    hi_risk_order = [f for f in risk_order if bool(f["is_hi"])]
-    merged = [int(item["index"]) for item in risk_order[: max(1, top_k_risk)]]
-    merged.extend(int(item["index"]) for item in hi_risk_order[: max(1, top_k_risk)])
-    # 去重且保持先后顺序。
-    return list(dict.fromkeys(merged))
 
 
 def _select_constraint_guided_decrease_targets(
@@ -552,24 +581,17 @@ def _select_constraint_guided_decrease_targets(
 
     if diagnosis.violated_row_index is None:
         return []
-    candidates: list[tuple[float, int]] = []
-    for idx, task in enumerate(env.ordered_tasks):
-        if idx in increase_indices:
-            continue
-        current = int(budgets[task.name])
-        floor = max(1, int(round(float(task.c_lo) * budget_floor_ratio)))
-        possible_decrease = current - floor
-        if possible_decrease <= 0:
-            continue
-        coeff = max(0.0, float(diagnosis.row_coefficients[idx]))
-        if coeff <= 0.0:
-            continue
-        score = coeff * float(possible_decrease)
-        if prefer_lo and task.criticality is Criticality.LO:
-            score *= 1.25
-        candidates.append((score, idx))
-    candidates.sort(reverse=True)
-    return [idx for _, idx in candidates[: max(1, top_k)]]
+    # 约束贡献评分逻辑统一复用 rl/constraint_guided_pair.py，避免脚本间实现漂移。
+    return select_constraint_guided_decrease_targets(
+        ordered_tasks=env.ordered_tasks,
+        row_coefficients=diagnosis.row_coefficients,
+        current_budgets=budgets,
+        initial_budgets=env._initial_budgets,  # noqa: SLF001
+        increase_indices=increase_indices,
+        budget_floor_ratio=budget_floor_ratio,
+        top_k=top_k,
+        prefer_lo=prefer_lo,
+    )
 
 
 def _diagnose_constraint_guided_pair_candidates(env: AmcBudgetEnv, observation, cfg: LearnableGenerateConfig) -> dict[str, float]:
@@ -578,67 +600,36 @@ def _diagnose_constraint_guided_pair_candidates(env: AmcBudgetEnv, observation, 
     if env._engine is None:  # noqa: SLF001
         raise RuntimeError("环境尚未 reset")
     current_budgets = dict(env._engine.runtime_budgets.budgets)  # noqa: SLF001
-    increase_candidates = _build_constraint_guided_increase_candidates(
-        env=env,
-        observation=observation,
+    candidates = enumerate_constraint_guided_transfer_candidates(
+        tasks=env.ordered_tasks,
+        current_budgets=current_budgets,
+        safety_checker=env._ensure_checker(),  # noqa: SLF001
+        runtime_features=env,
+        budget_increase_ratio=cfg.budget_increase_ratio,
+        budget_decrease_ratio=cfg.budget_decrease_ratio,
+        budget_floor_ratio=cfg.budget_floor_ratio,
         top_k_risk=cfg.constraint_guided_pair_top_k_risk,
+        top_k_decrease=cfg.constraint_guided_pair_top_k_decrease,
+        prefer_lo=cfg.constraint_guided_pair_prefer_lo,
+        validate_safety=True,
     )
-    valid_count = 0
-    valid_no_safety_count = 0
-    reject_counts: Counter[str] = Counter()
-    candidate_count = 0
-
-    for inc_idx in increase_candidates:
-        task = env.ordered_tasks[int(inc_idx)]
-        inc_name = task.name
-        single_budgets = dict(current_budgets)
-        old_inc = int(single_budgets[inc_name])
-        inc_value = int(round(float(old_inc) * (1.0 + cfg.budget_increase_ratio)))
-        upper = int(task.c_hi) if task.criticality is Criticality.HI else int(task.deadline)
-        single_budgets[inc_name] = max(1, min(inc_value, upper))
-
-        diagnosis = env.diagnose_candidate_budget_update(new_budgets=single_budgets)
-        if diagnosis.accepted:
-            pair_budgets = single_budgets
-        else:
-            dec_indices = _select_constraint_guided_decrease_targets(
-                env=env,
-                diagnosis=diagnosis,
-                increase_indices={int(inc_idx)},
-                budgets=current_budgets,
-                budget_floor_ratio=cfg.budget_floor_ratio,
-                top_k=cfg.constraint_guided_pair_top_k_decrease,
-                prefer_lo=cfg.constraint_guided_pair_prefer_lo,
-            )
-            pair_budgets = dict(single_budgets)
-            for dec_idx in dec_indices:
-                dec_task = env.ordered_tasks[int(dec_idx)]
-                dec_name = dec_task.name
-                old_dec = int(pair_budgets[dec_name])
-                dec_value = int(round(float(old_dec) * (1.0 - cfg.budget_decrease_ratio)))
-                pair_budgets[dec_name] = max(1, dec_value)
-        candidate_count += 1
-        ok_no_safety, _reason_no_safety = _check_candidate_budget_update_no_safety(env, pair_budgets)
-        if ok_no_safety:
-            valid_no_safety_count += 1
-        ok, _reason = env.check_candidate_budget_update(new_budgets=pair_budgets)
-        pair_diagnosis = env.diagnose_candidate_budget_update(new_budgets=pair_budgets)
-        if ok:
-            valid_count += 1
-        else:
-            normalized = pair_diagnosis.normalized_reason
-            reject_counts[normalized] += 1
-            if normalized == "incremental_constraint_violation":
-                fine_reason = env._ensure_checker().validate_candidate(pair_budgets).reason  # noqa: SLF001
-                if isinstance(fine_reason, str):
-                    if fine_reason.startswith("hi_lo_mode_violation"):
-                        reject_counts["hi_lo_mode_violation"] += 1
-                    elif fine_reason.startswith("hi_mode_switch_violation"):
-                        reject_counts["hi_mode_switch_violation"] += 1
-                    elif fine_reason.startswith("lo_mode_violation"):
-                        reject_counts["lo_mode_violation"] += 1
-                    else:
-                        reject_counts["unknown"] += 1
+    candidates_no_safety = enumerate_constraint_guided_transfer_candidates(
+        tasks=env.ordered_tasks,
+        current_budgets=current_budgets,
+        safety_checker=env._ensure_checker(),  # noqa: SLF001
+        runtime_features=env,
+        budget_increase_ratio=cfg.budget_increase_ratio,
+        budget_decrease_ratio=cfg.budget_decrease_ratio,
+        budget_floor_ratio=cfg.budget_floor_ratio,
+        top_k_risk=cfg.constraint_guided_pair_top_k_risk,
+        top_k_decrease=cfg.constraint_guided_pair_top_k_decrease,
+        prefer_lo=cfg.constraint_guided_pair_prefer_lo,
+        validate_safety=False,
+    )
+    valid_count = int(sum(1 for item in candidates if item.accepted))
+    valid_no_safety_count = int(sum(1 for item in candidates_no_safety if item.accepted))
+    reject_counts: Counter[str] = Counter(item.reject_reason or "unknown" for item in candidates if not item.accepted)
+    candidate_count = len(candidates)
 
     known = {
         "incremental_constraint_violation",
@@ -972,11 +963,83 @@ def _build_candidate_base_row(
     }
 
 
+def _build_generation_experiment_config(
+    *,
+    cfg: LearnableGenerateConfig,
+    candidate_seed: int,
+):
+    """按 workload 构建候选生成 experiment config。"""
+
+    if cfg.workload == "automotive":
+        return build_automotive_experiment_config(
+            num_runnables=cfg.automotive_num_runnables,
+            mode="paper_learnable_headroom",
+            require_schedulable=cfg.require_schedulable,
+            fixed_taskset_seed=candidate_seed,
+            learnable_target_budget_util_min=cfg.learnable_target_budget_util_min,
+            learnable_target_budget_util_max=cfg.learnable_target_budget_util_max,
+            learnable_hi_budget_rho_min=cfg.learnable_hi_budget_rho_min,
+            learnable_hi_budget_rho_max=cfg.learnable_hi_budget_rho_max,
+            learnable_lo_budget_rho_min=cfg.learnable_lo_budget_rho_min,
+            learnable_lo_budget_rho_max=cfg.learnable_lo_budget_rho_max,
+            budget_floor_ratio=cfg.budget_floor_ratio,
+        )
+    if cfg.workload == "mc_fairgen":
+        return build_mc_fairgen_experiment_config(
+            mode=cfg.mc_fairgen_mode,
+            num_tasks=cfg.mc_fairgen_num_tasks,
+            hi_ratio=cfg.mc_fairgen_hi_ratio,
+            period_source=cfg.mc_fairgen_period_source,
+            period_scale=cfg.mc_fairgen_period_scale,
+            require_schedulable=cfg.require_schedulable,
+            fixed_taskset_seed=candidate_seed,
+            u_hi_lo_min=cfg.mc_fairgen_u_hi_lo_min,
+            u_hi_lo_max=cfg.mc_fairgen_u_hi_lo_max,
+            u_hi_hi_min=cfg.mc_fairgen_u_hi_hi_min,
+            u_hi_hi_max=cfg.mc_fairgen_u_hi_hi_max,
+            u_lo_lo_min=cfg.mc_fairgen_u_lo_lo_min,
+            u_lo_lo_max=cfg.mc_fairgen_u_lo_lo_max,
+            hi_budget_rho_min=cfg.mc_fairgen_hi_budget_rho_min,
+            hi_budget_rho_max=cfg.mc_fairgen_hi_budget_rho_max,
+            lo_budget_rho_min=cfg.mc_fairgen_lo_budget_rho_min,
+            lo_budget_rho_max=cfg.mc_fairgen_lo_budget_rho_max,
+            hi_overrun_prob=cfg.mc_fairgen_hi_overrun_prob,
+            lo_overrun_prob=cfg.mc_fairgen_lo_overrun_prob,
+            hi_overrun_factor_min=cfg.mc_fairgen_hi_overrun_factor_min,
+            hi_overrun_factor_max=cfg.mc_fairgen_hi_overrun_factor_max,
+            lo_overrun_factor_min=cfg.mc_fairgen_lo_overrun_factor_min,
+            lo_overrun_factor_max=cfg.mc_fairgen_lo_overrun_factor_max,
+        )
+    raise ValueError(f"unsupported workload: {cfg.workload}")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """构建命令行参数。"""
 
     parser = argparse.ArgumentParser()
+    parser.add_argument("--workload", choices=["automotive", "mc_fairgen"], default="automotive")
     parser.add_argument("--automotive-num-runnables", type=int, choices=[150, 250], default=150)
+    parser.add_argument("--mc-fairgen-mode", type=str, default="paper_learnable_headroom")
+    parser.add_argument("--mc-fairgen-num-tasks", type=int, default=16)
+    parser.add_argument("--mc-fairgen-hi-ratio", type=float, default=0.5)
+    parser.add_argument("--mc-fairgen-period-source", type=str, default="automotive")
+    parser.add_argument("--mc-fairgen-period-scale", type=int, default=100)
+    parser.add_argument("--mc-fairgen-u-hi-lo-min", type=float, default=0.20)
+    parser.add_argument("--mc-fairgen-u-hi-lo-max", type=float, default=0.35)
+    parser.add_argument("--mc-fairgen-u-hi-hi-min", type=float, default=0.45)
+    parser.add_argument("--mc-fairgen-u-hi-hi-max", type=float, default=0.70)
+    parser.add_argument("--mc-fairgen-u-lo-lo-min", type=float, default=0.35)
+    parser.add_argument("--mc-fairgen-u-lo-lo-max", type=float, default=0.60)
+    parser.add_argument("--mc-fairgen-hi-budget-rho-min", type=float, default=0.55)
+    parser.add_argument("--mc-fairgen-hi-budget-rho-max", type=float, default=0.75)
+    parser.add_argument("--mc-fairgen-lo-budget-rho-min", type=float, default=0.05)
+    parser.add_argument("--mc-fairgen-lo-budget-rho-max", type=float, default=0.25)
+    parser.add_argument("--mc-fairgen-hi-overrun-prob", type=float, default=0.08)
+    parser.add_argument("--mc-fairgen-lo-overrun-prob", type=float, default=0.40)
+    parser.add_argument("--mc-fairgen-hi-overrun-factor-min", type=float, default=1.02)
+    parser.add_argument("--mc-fairgen-hi-overrun-factor-max", type=float, default=1.25)
+    parser.add_argument("--mc-fairgen-lo-overrun-factor-min", type=float, default=1.05)
+    parser.add_argument("--mc-fairgen-lo-overrun-factor-max", type=float, default=1.80)
     parser.add_argument(
         "--learnable-generation-strategy",
         choices=["two_stage_from_paper_exact", "direct"],
@@ -1002,6 +1065,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learnable-fast-min-valid-decrease", type=float, default=3.0)
     parser.add_argument("--learnable-fast-min-balance", type=float, default=0.12)
     parser.add_argument("--learnable-fast-min-lo-cancellations", type=float, default=0.3)
+    parser.add_argument("--learnable-fast-min-lo-cancellation-ratio", type=float, default=0.0)
     parser.add_argument("--enable-ranked-pair-diagnostic", action="store_true")
     parser.add_argument("--ranked-pair-min-valid-count", type=float, default=2.0)
     parser.add_argument("--ranked-pair-top-k-risk", type=int, default=3)
@@ -1020,7 +1084,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--constraint-guided-pair-prefer-lo", action="store_true")
     parser.add_argument(
         "--learnable-selection-target",
-        choices=["single", "ranked_pair", "constraint_guided_pair"],
+        choices=["single", "ranked_pair", "constraint_guided_pair", "constraint_guided_transfer"],
         default="single",
     )
     parser.add_argument(
@@ -1062,7 +1126,29 @@ def main() -> None:
 
     args = _build_parser().parse_args()
     cfg = LearnableGenerateConfig(
+        workload=args.workload,
         automotive_num_runnables=args.automotive_num_runnables,
+        mc_fairgen_mode=args.mc_fairgen_mode,
+        mc_fairgen_num_tasks=args.mc_fairgen_num_tasks,
+        mc_fairgen_hi_ratio=args.mc_fairgen_hi_ratio,
+        mc_fairgen_period_source=args.mc_fairgen_period_source,
+        mc_fairgen_period_scale=args.mc_fairgen_period_scale,
+        mc_fairgen_u_hi_lo_min=args.mc_fairgen_u_hi_lo_min,
+        mc_fairgen_u_hi_lo_max=args.mc_fairgen_u_hi_lo_max,
+        mc_fairgen_u_hi_hi_min=args.mc_fairgen_u_hi_hi_min,
+        mc_fairgen_u_hi_hi_max=args.mc_fairgen_u_hi_hi_max,
+        mc_fairgen_u_lo_lo_min=args.mc_fairgen_u_lo_lo_min,
+        mc_fairgen_u_lo_lo_max=args.mc_fairgen_u_lo_lo_max,
+        mc_fairgen_hi_budget_rho_min=args.mc_fairgen_hi_budget_rho_min,
+        mc_fairgen_hi_budget_rho_max=args.mc_fairgen_hi_budget_rho_max,
+        mc_fairgen_lo_budget_rho_min=args.mc_fairgen_lo_budget_rho_min,
+        mc_fairgen_lo_budget_rho_max=args.mc_fairgen_lo_budget_rho_max,
+        mc_fairgen_hi_overrun_prob=args.mc_fairgen_hi_overrun_prob,
+        mc_fairgen_lo_overrun_prob=args.mc_fairgen_lo_overrun_prob,
+        mc_fairgen_hi_overrun_factor_min=args.mc_fairgen_hi_overrun_factor_min,
+        mc_fairgen_hi_overrun_factor_max=args.mc_fairgen_hi_overrun_factor_max,
+        mc_fairgen_lo_overrun_factor_min=args.mc_fairgen_lo_overrun_factor_min,
+        mc_fairgen_lo_overrun_factor_max=args.mc_fairgen_lo_overrun_factor_max,
         num_tasksets=args.num_tasksets,
         candidate_seed_start=args.candidate_seed_start,
         learnable_max_attempts=args.learnable_max_attempts,
@@ -1077,6 +1163,7 @@ def main() -> None:
         learnable_fast_min_valid_decrease=args.learnable_fast_min_valid_decrease,
         learnable_fast_min_balance=args.learnable_fast_min_balance,
         learnable_fast_min_lo_cancellations=args.learnable_fast_min_lo_cancellations,
+        learnable_fast_min_lo_cancellation_ratio=args.learnable_fast_min_lo_cancellation_ratio,
         reward_mode=args.reward_mode,
         action_space=args.action_space,
         budget_increase_ratio=args.budget_increase_ratio,
@@ -1136,7 +1223,7 @@ def main() -> None:
     for attempt in range(cfg.learnable_max_attempts):
         candidate_seed = cfg.candidate_seed_start + attempt
         try:
-            if cfg.learnable_generation_strategy == "two_stage_from_paper_exact":
+            if cfg.workload == "automotive" and cfg.learnable_generation_strategy == "two_stage_from_paper_exact":
                 # two-stage: 先用 paper_exact+可调度筛选得到 base bundle，再做预算重写。
                 base_config = build_automotive_experiment_config(
                     num_runnables=cfg.automotive_num_runnables,
@@ -1154,20 +1241,8 @@ def main() -> None:
                 candidate_metadata = {"workload_metadata": rewritten_meta}
                 candidate_scenario = base_bundle.scenario
             else:
-                # 保留 direct 策略可选：直接使用 paper_learnable_headroom workload。
-                experiment_config = build_automotive_experiment_config(
-                    num_runnables=cfg.automotive_num_runnables,
-                    mode="paper_learnable_headroom",
-                    require_schedulable=cfg.require_schedulable,
-                    fixed_taskset_seed=candidate_seed,
-                    learnable_target_budget_util_min=cfg.learnable_target_budget_util_min,
-                    learnable_target_budget_util_max=cfg.learnable_target_budget_util_max,
-                    learnable_hi_budget_rho_min=cfg.learnable_hi_budget_rho_min,
-                    learnable_hi_budget_rho_max=cfg.learnable_hi_budget_rho_max,
-                    learnable_lo_budget_rho_min=cfg.learnable_lo_budget_rho_min,
-                    learnable_lo_budget_rho_max=cfg.learnable_lo_budget_rho_max,
-                    budget_floor_ratio=cfg.budget_floor_ratio,
-                )
+                # 其他路径直接按 workload provider 生成，不走 automotive two-stage 重写。
+                experiment_config = _build_generation_experiment_config(cfg=cfg, candidate_seed=candidate_seed)
                 bundle = resolve_experiment_bundle(experiment_config, seed=10_000 + candidate_seed)
                 ordered_tasks = list(bundle.ordered_tasks)
                 candidate_metadata = bundle.metadata
@@ -1299,9 +1374,13 @@ def main() -> None:
 
         try:
             fast_rows: list[dict[str, float]] = []
+            eval_experiment_config = _build_generation_experiment_config(
+                cfg=cfg,
+                candidate_seed=candidate_seed,
+            )
             for idx in range(cfg.learnable_fast_eval_seeds):
                 eval_seed = candidate_seed * 1000 + idx
-                if cfg.learnable_generation_strategy == "two_stage_from_paper_exact":
+                if cfg.workload == "automotive" and cfg.learnable_generation_strategy == "two_stage_from_paper_exact":
                     # two-stage 下场景来自 paper_exact base bundle（taskset 固定、scenario 随 eval_seed 变化）。
                     scenario_bundle = resolve_experiment_bundle(
                         build_automotive_experiment_config(
@@ -1315,7 +1394,9 @@ def main() -> None:
                     )
                     scenario = scenario_bundle.scenario
                 else:
-                    scenario = candidate_scenario
+                    # 关键修复：同一 candidate_seed 下，固定 taskset，eval_seed 只改变 scenario。
+                    eval_bundle = resolve_experiment_bundle(eval_experiment_config, eval_seed)
+                    scenario = eval_bundle.scenario
                 fast_rows.append(
                     _diagnose_one_seed(
                         ordered_tasks=ordered_tasks,
@@ -1361,6 +1442,7 @@ def main() -> None:
         fast_mode_changes_mean = mean(row["mode_changes"] for row in fast_rows)
         fast_lo_cancellations_mean = mean(row["lo_cancellations"] for row in fast_rows)
         fast_total_events_mean = mean(row["total_events"] for row in fast_rows)
+        fast_lo_cancellation_ratio_total = fast_lo_cancellations_mean / max(1.0, fast_total_events_mean)
         fast_deadline_misses_sum = sum(row["deadline_misses"] for row in fast_rows)
         fast_valid_increase_count_mean = mean(row["valid_increase_count"] for row in fast_rows)
         fast_valid_decrease_count_mean = mean(row["valid_decrease_count"] for row in fast_rows)
@@ -1485,6 +1567,7 @@ def main() -> None:
             and cfg.learnable_fast_event_min <= fast_total_events_mean <= cfg.learnable_fast_event_max
             # 新增筛选规则：LO cancellations 太低则不推荐，避免接受几乎无 cancellation 信号的任务集。
             and fast_lo_cancellations_mean >= cfg.learnable_fast_min_lo_cancellations
+            and fast_lo_cancellation_ratio_total >= cfg.learnable_fast_min_lo_cancellation_ratio
             and headroom_ok
         )
         recommended_for_ranked_pair_dqn = (
@@ -1493,6 +1576,7 @@ def main() -> None:
             and fast_valid_ranked_pair_count_mean >= cfg.ranked_pair_min_valid_count
             and cfg.learnable_fast_event_min <= fast_total_events_mean <= cfg.learnable_fast_event_max
             and fast_lo_cancellations_mean >= cfg.learnable_fast_min_lo_cancellations
+            and fast_lo_cancellation_ratio_total >= cfg.learnable_fast_min_lo_cancellation_ratio
         )
         recommended_for_constraint_guided_pair_dqn = (
             cfg.enable_constraint_guided_pair_diagnostic
@@ -1500,6 +1584,7 @@ def main() -> None:
             and fast_valid_constraint_guided_pair_count_mean >= cfg.constraint_guided_pair_min_valid_count
             and cfg.learnable_fast_event_min <= fast_total_events_mean <= cfg.learnable_fast_event_max
             and fast_lo_cancellations_mean >= cfg.learnable_fast_min_lo_cancellations
+            and fast_lo_cancellation_ratio_total >= cfg.learnable_fast_min_lo_cancellation_ratio
         )
         ranked_pair_not_recommended_reason = ""
         if cfg.enable_ranked_pair_diagnostic and not recommended_for_ranked_pair_dqn:
@@ -1510,6 +1595,8 @@ def main() -> None:
                 rp_reasons.append("reject_fast_event_count")
             if fast_lo_cancellations_mean < cfg.learnable_fast_min_lo_cancellations:
                 rp_reasons.append("reject_fast_low_lo_cancellations")
+            if fast_lo_cancellation_ratio_total < cfg.learnable_fast_min_lo_cancellation_ratio:
+                rp_reasons.append("reject_fast_low_lo_cancellation_ratio")
             if fast_valid_ranked_pair_count_mean < cfg.ranked_pair_min_valid_count:
                 rp_reasons.append("reject_fast_ranked_pair_headroom")
             ranked_pair_not_recommended_reason = ";".join(rp_reasons)
@@ -1524,6 +1611,8 @@ def main() -> None:
                 cgp_reasons.append("too_many_fast_events")
             if fast_lo_cancellations_mean < cfg.learnable_fast_min_lo_cancellations:
                 cgp_reasons.append("reject_fast_low_lo_cancellations")
+            if fast_lo_cancellation_ratio_total < cfg.learnable_fast_min_lo_cancellation_ratio:
+                cgp_reasons.append("reject_fast_low_lo_cancellation_ratio")
             constraint_guided_pair_not_recommended_reason = ";".join(cgp_reasons)
         fast_not_recommended_reason = ""
         if not fast_recommended_for_dqn:
@@ -1534,6 +1623,8 @@ def main() -> None:
                 reasons.append("reject_fast_event_count")
             if fast_lo_cancellations_mean < cfg.learnable_fast_min_lo_cancellations:
                 reasons.append("reject_fast_low_lo_cancellations")
+            if fast_lo_cancellation_ratio_total < cfg.learnable_fast_min_lo_cancellation_ratio:
+                reasons.append("reject_fast_low_lo_cancellation_ratio")
             if cfg.learnable_selection_target == "ranked_pair":
                 if fast_valid_ranked_pair_count_mean < cfg.ranked_pair_min_valid_count:
                     reasons.append("reject_fast_ranked_pair_headroom")
@@ -1555,11 +1646,57 @@ def main() -> None:
 
         base_metadata = {
             **base_row,
-            "automotive_mode": "paper_learnable_headroom",
+            "workload": cfg.workload,
+            "fixed_taskset_seed": candidate_seed,
+            "candidate_seed": candidate_seed,
+            "effective_taskset_seed": (
+                (candidate_metadata or {}).get("effective_taskset_seed")
+                if isinstance(candidate_metadata, dict)
+                else None
+            ),
+            "provider_attempts": (
+                (candidate_metadata or {}).get("attempts")
+                if isinstance(candidate_metadata, dict)
+                else None
+            ),
+            "scenario_seed_offset": 100000,
+            "automotive_mode": "paper_learnable_headroom" if cfg.workload == "automotive" else "",
+            "automotive_num_runnables": cfg.automotive_num_runnables if cfg.workload == "automotive" else 0,
+            "mc_fairgen_mode": cfg.mc_fairgen_mode if cfg.workload == "mc_fairgen" else "",
+            "mc_fairgen_num_tasks": cfg.mc_fairgen_num_tasks if cfg.workload == "mc_fairgen" else 0,
+            "mc_fairgen_hi_ratio": cfg.mc_fairgen_hi_ratio if cfg.workload == "mc_fairgen" else 0.0,
+            "mc_fairgen_period_source": cfg.mc_fairgen_period_source if cfg.workload == "mc_fairgen" else "",
+            "mc_fairgen_period_scale": cfg.mc_fairgen_period_scale if cfg.workload == "mc_fairgen" else 0,
+            "mc_fairgen_tick_ns": 10 if cfg.workload == "mc_fairgen" else 0,
+            "mc_fairgen_u_hi_lo_min": cfg.mc_fairgen_u_hi_lo_min if cfg.workload == "mc_fairgen" else 0.0,
+            "mc_fairgen_u_hi_lo_max": cfg.mc_fairgen_u_hi_lo_max if cfg.workload == "mc_fairgen" else 0.0,
+            "mc_fairgen_u_hi_hi_min": cfg.mc_fairgen_u_hi_hi_min if cfg.workload == "mc_fairgen" else 0.0,
+            "mc_fairgen_u_hi_hi_max": cfg.mc_fairgen_u_hi_hi_max if cfg.workload == "mc_fairgen" else 0.0,
+            "mc_fairgen_u_lo_lo_min": cfg.mc_fairgen_u_lo_lo_min if cfg.workload == "mc_fairgen" else 0.0,
+            "mc_fairgen_u_lo_lo_max": cfg.mc_fairgen_u_lo_lo_max if cfg.workload == "mc_fairgen" else 0.0,
+            "mc_fairgen_hi_budget_rho_min": cfg.mc_fairgen_hi_budget_rho_min if cfg.workload == "mc_fairgen" else 0.0,
+            "mc_fairgen_hi_budget_rho_max": cfg.mc_fairgen_hi_budget_rho_max if cfg.workload == "mc_fairgen" else 0.0,
+            "mc_fairgen_lo_budget_rho_min": cfg.mc_fairgen_lo_budget_rho_min if cfg.workload == "mc_fairgen" else 0.0,
+            "mc_fairgen_lo_budget_rho_max": cfg.mc_fairgen_lo_budget_rho_max if cfg.workload == "mc_fairgen" else 0.0,
+            "mc_fairgen_hi_overrun_prob": cfg.mc_fairgen_hi_overrun_prob if cfg.workload == "mc_fairgen" else 0.0,
+            "mc_fairgen_lo_overrun_prob": cfg.mc_fairgen_lo_overrun_prob if cfg.workload == "mc_fairgen" else 0.0,
+            "mc_fairgen_hi_overrun_factor_min": (
+                cfg.mc_fairgen_hi_overrun_factor_min if cfg.workload == "mc_fairgen" else 0.0
+            ),
+            "mc_fairgen_hi_overrun_factor_max": (
+                cfg.mc_fairgen_hi_overrun_factor_max if cfg.workload == "mc_fairgen" else 0.0
+            ),
+            "mc_fairgen_lo_overrun_factor_min": (
+                cfg.mc_fairgen_lo_overrun_factor_min if cfg.workload == "mc_fairgen" else 0.0
+            ),
+            "mc_fairgen_lo_overrun_factor_max": (
+                cfg.mc_fairgen_lo_overrun_factor_max if cfg.workload == "mc_fairgen" else 0.0
+            ),
             "generation_strategy": cfg.learnable_generation_strategy,
             "fast_baseline_mode_changes_mean": fast_mode_changes_mean,
             "fast_baseline_lo_cancellations_mean": fast_lo_cancellations_mean,
             "fast_baseline_total_events_mean": fast_total_events_mean,
+            "fast_baseline_lo_cancellation_ratio_total": fast_lo_cancellation_ratio_total,
             "fast_deadline_misses_sum": fast_deadline_misses_sum,
             "fast_valid_increase_count_mean": fast_valid_increase_count_mean,
             "fast_valid_decrease_count_mean": fast_valid_decrease_count_mean,
@@ -1599,6 +1736,7 @@ def main() -> None:
             "fast_ranked_pair_reject_lo_mode_violation_mean": fast_ranked_pair_reject_lo_mode_violation_mean,
             "fast_constraint_guided_pair_candidate_count_mean": fast_constraint_guided_pair_candidate_count_mean,
             "fast_valid_constraint_guided_pair_count_mean": fast_valid_constraint_guided_pair_count_mean,
+            "fast_valid_constraint_guided_transfer_count_mean": fast_valid_constraint_guided_pair_count_mean,
             "fast_valid_constraint_guided_pair_count_no_safety_mean": (
                 fast_valid_constraint_guided_pair_count_no_safety_mean
             ),
@@ -1630,7 +1768,9 @@ def main() -> None:
             "recommended_for_ranked_pair_dqn": recommended_for_ranked_pair_dqn,
             "ranked_pair_not_recommended_reason": ranked_pair_not_recommended_reason,
             "recommended_for_constraint_guided_pair_dqn": recommended_for_constraint_guided_pair_dqn,
+            "recommended_for_constraint_guided_transfer_dqn": recommended_for_constraint_guided_pair_dqn,
             "constraint_guided_pair_not_recommended_reason": constraint_guided_pair_not_recommended_reason,
+            "constraint_guided_transfer_not_recommended_reason": constraint_guided_pair_not_recommended_reason,
             "hi_budget_rho_min": cfg.learnable_hi_budget_rho_min,
             "hi_budget_rho_max": cfg.learnable_hi_budget_rho_max,
             "lo_budget_rho_min": cfg.learnable_lo_budget_rho_min,
@@ -1642,6 +1782,7 @@ def main() -> None:
             "budget_decrease_ratio": cfg.budget_decrease_ratio,
             "include_explicit_noop": cfg.include_explicit_noop,
             "learnable_fast_min_lo_cancellations": cfg.learnable_fast_min_lo_cancellations,
+            "learnable_fast_min_lo_cancellation_ratio": cfg.learnable_fast_min_lo_cancellation_ratio,
             "require_schedulable": cfg.require_schedulable,
             **relaxation_metadata,
         }
@@ -1682,7 +1823,35 @@ def main() -> None:
         "accepted",
         "reject_reason",
         "error_message",
+        "workload",
+        "fixed_taskset_seed",
+        "effective_taskset_seed",
+        "provider_attempts",
+        "scenario_seed_offset",
         "automotive_mode",
+        "automotive_num_runnables",
+        "mc_fairgen_mode",
+        "mc_fairgen_num_tasks",
+        "mc_fairgen_hi_ratio",
+        "mc_fairgen_period_source",
+        "mc_fairgen_period_scale",
+        "mc_fairgen_tick_ns",
+        "mc_fairgen_u_hi_lo_min",
+        "mc_fairgen_u_hi_lo_max",
+        "mc_fairgen_u_hi_hi_min",
+        "mc_fairgen_u_hi_hi_max",
+        "mc_fairgen_u_lo_lo_min",
+        "mc_fairgen_u_lo_lo_max",
+        "mc_fairgen_hi_budget_rho_min",
+        "mc_fairgen_hi_budget_rho_max",
+        "mc_fairgen_lo_budget_rho_min",
+        "mc_fairgen_lo_budget_rho_max",
+        "mc_fairgen_hi_overrun_prob",
+        "mc_fairgen_lo_overrun_prob",
+        "mc_fairgen_hi_overrun_factor_min",
+        "mc_fairgen_hi_overrun_factor_max",
+        "mc_fairgen_lo_overrun_factor_min",
+        "mc_fairgen_lo_overrun_factor_max",
         "num_tasks",
         "num_hi_tasks",
         "num_lo_tasks",
@@ -1701,6 +1870,7 @@ def main() -> None:
         "fast_baseline_mode_changes_mean",
         "fast_baseline_lo_cancellations_mean",
         "fast_baseline_total_events_mean",
+        "fast_baseline_lo_cancellation_ratio_total",
         "fast_deadline_misses_sum",
         "fast_valid_increase_count_mean",
         "fast_valid_decrease_count_mean",
@@ -1751,6 +1921,7 @@ def main() -> None:
         "budget_decrease_ratio",
         "include_explicit_noop",
         "learnable_fast_min_lo_cancellations",
+        "learnable_fast_min_lo_cancellation_ratio",
         "require_schedulable",
         "relaxation_enabled",
         "relaxation_success",
@@ -1778,6 +1949,35 @@ def main() -> None:
         "accepted",
         "reject_reason",
         "error_message",
+        "workload",
+        "fixed_taskset_seed",
+        "effective_taskset_seed",
+        "provider_attempts",
+        "scenario_seed_offset",
+        "automotive_mode",
+        "automotive_num_runnables",
+        "mc_fairgen_mode",
+        "mc_fairgen_num_tasks",
+        "mc_fairgen_hi_ratio",
+        "mc_fairgen_period_source",
+        "mc_fairgen_period_scale",
+        "mc_fairgen_tick_ns",
+        "mc_fairgen_u_hi_lo_min",
+        "mc_fairgen_u_hi_lo_max",
+        "mc_fairgen_u_hi_hi_min",
+        "mc_fairgen_u_hi_hi_max",
+        "mc_fairgen_u_lo_lo_min",
+        "mc_fairgen_u_lo_lo_max",
+        "mc_fairgen_hi_budget_rho_min",
+        "mc_fairgen_hi_budget_rho_max",
+        "mc_fairgen_lo_budget_rho_min",
+        "mc_fairgen_lo_budget_rho_max",
+        "mc_fairgen_hi_overrun_prob",
+        "mc_fairgen_lo_overrun_prob",
+        "mc_fairgen_hi_overrun_factor_min",
+        "mc_fairgen_hi_overrun_factor_max",
+        "mc_fairgen_lo_overrun_factor_min",
+        "mc_fairgen_lo_overrun_factor_max",
         "num_tasks",
         "num_hi_tasks",
         "num_lo_tasks",
@@ -1790,6 +1990,7 @@ def main() -> None:
         "static_hi_increase_reserve_count",
         "static_decrease_reserve_count",
         "fast_baseline_total_events_mean",
+        "fast_baseline_lo_cancellation_ratio_total",
         "fast_valid_increase_count_mean",
         "fast_valid_decrease_count_mean",
         "fast_valid_noop_count_mean",
@@ -1833,6 +2034,7 @@ def main() -> None:
         "recommended_for_constraint_guided_pair_dqn",
         "constraint_guided_pair_not_recommended_reason",
         "learnable_fast_min_lo_cancellations",
+        "learnable_fast_min_lo_cancellation_ratio",
         "relaxation_enabled",
         "relaxation_success",
         "relaxation_rounds",

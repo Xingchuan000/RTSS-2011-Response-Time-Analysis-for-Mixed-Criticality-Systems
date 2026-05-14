@@ -19,6 +19,11 @@ from amc_py.rl.actions import (
     apply_budget_action_candidate,
     build_budget_action_space,
 )
+from amc_py.rl.constraint_guided_pair import (
+    ConstraintGuidedResolvedAction,
+    ConstraintGuidedTransferCandidate,
+    enumerate_constraint_guided_transfer_candidates,
+)
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.rl.feature_state import RuntimeFeatureState
 from amc_py.rl.monitor import RuntimeMonitor
@@ -90,7 +95,13 @@ class AmcBudgetEnv:
     safety_checker: RuntimeBudgetSafetyChecker | None = None
     normalization_bounds: NormalizationBounds | None = None
     reward_mode: str = "mendes"
-    action_space: Literal["triple", "pair", "single"] = "triple"
+    action_space: Literal["triple", "pair", "single", "constraint_guided_pair", "constraint_guided_transfer"] = "triple"
+    # constraint-guided transfer 动作空间参数（支持旧名 constraint_guided_pair 作为 alias）。
+    constraint_guided_pair_top_k_risk: int = 3
+    constraint_guided_pair_top_k_decrease: int = 5
+    constraint_guided_pair_prefer_lo: bool = False
+    constraint_guided_pair_include_hi_risk_boost: bool = False
+    constraint_guided_pair_allow_increase_only_when_safe: bool = False
     mask_detail_mode: Literal["minimal", "full"] = "minimal"
     budget_increase_ratio: float = 0.10
     budget_decrease_ratio: float = 0.05
@@ -128,6 +139,10 @@ class AmcBudgetEnv:
     _reward_mode_config: RewardModeConfig = field(init=False, repr=False)
     # v11 运行时特征缓存（EMA/history/event window）。
     _feature_state: RuntimeFeatureState | None = field(init=False, default=None, repr=False)
+    _last_observation: AgentObservation | None = field(init=False, default=None, repr=False)
+    _last_constraint_guided_transfer_candidates: tuple[ConstraintGuidedTransferCandidate, ...] = field(
+        init=False, default=(), repr=False
+    )
 
     def __post_init__(self) -> None:
         """初始化固定动作空间。"""
@@ -137,12 +152,17 @@ class AmcBudgetEnv:
         # 这样 reward 计算方式可由配置文件驱动，而非写死在代码中。
         self._reward_mode_config = load_reward_mode_config(self.reward_mode)
 
+        if self.action_space == "constraint_guided_pair":
+            self.action_space = "constraint_guided_transfer"
         self._actions = build_budget_action_space(
             self.ordered_tasks,
             action_space=self.action_space,
             budget_increase_ratio=self.budget_increase_ratio,
             budget_decrease_ratio=self.budget_decrease_ratio,
             include_explicit_noop=self.include_explicit_noop,
+            constraint_guided_pair_top_k_risk=self.constraint_guided_pair_top_k_risk,
+            constraint_guided_pair_top_k_decrease=self.constraint_guided_pair_top_k_decrease,
+            constraint_guided_pair_include_hi_risk_boost=self.constraint_guided_pair_include_hi_risk_boost,
         )
         self._action_log = []
         self._mask_log = []
@@ -160,6 +180,109 @@ class AmcBudgetEnv:
         )
         # 记录环境初始预算，用于阶段 2 的预算变化归一化惩罚。
         self._initial_budgets = {task.name: task.c_lo for task in self.ordered_tasks}
+        self._last_observation = None
+
+    def _resolve_constraint_guided_pair_action(
+        self,
+        action: BudgetAction,
+        *,
+        check_safety: bool,
+    ) -> ConstraintGuidedResolvedAction:
+        """将 constraint-guided transfer 槽位动作解析为当前状态下可执行的 bundled 更新。"""
+
+        if self._engine is None:
+            raise RuntimeError("环境尚未 reset")
+        if self._last_observation is None:
+            return ConstraintGuidedResolvedAction(
+                valid=False,
+                reject_reason="constraint_guided_no_observation",
+                slot_id=action.action_id,
+                increase_rank=action.constraint_guided_increase_rank,
+                increase_idx=None,
+                decrease_indices=(),
+                updates={},
+                candidate_budgets=dict(self._engine.runtime_budgets.budgets),
+                single_increase_was_safe=False,
+                safety_checked=False,
+                diagnosis_reason=None,
+                violated_row_index=None,
+            )
+        if self.feature_config.observation_mode != "v11_full_10d":
+            return ConstraintGuidedResolvedAction(
+                valid=False,
+                reject_reason="constraint_guided_unsupported_observation_mode",
+                slot_id=action.action_id,
+                increase_rank=action.constraint_guided_increase_rank,
+                increase_idx=None,
+                decrease_indices=(),
+                updates={},
+                candidate_budgets=dict(self._engine.runtime_budgets.budgets),
+                single_increase_was_safe=False,
+                safety_checked=False,
+                diagnosis_reason=None,
+                violated_row_index=None,
+            )
+        candidates = enumerate_constraint_guided_transfer_candidates(
+            tasks=self.ordered_tasks,
+            current_budgets=self._engine.runtime_budgets.budgets,
+            safety_checker=self._ensure_checker() if check_safety else None,
+            runtime_features=self,
+            budget_increase_ratio=self.budget_increase_ratio,
+            budget_decrease_ratio=self.budget_decrease_ratio,
+            budget_floor_ratio=self.budget_floor_ratio,
+            top_k_risk=self.constraint_guided_pair_top_k_risk,
+            top_k_decrease=self.constraint_guided_pair_top_k_decrease,
+            prefer_lo=self.constraint_guided_pair_prefer_lo,
+            include_hi_risk_boost=self.constraint_guided_pair_include_hi_risk_boost,
+            validate_safety=check_safety,
+        )
+        self._last_constraint_guided_transfer_candidates = candidates
+        slot_index = int(action.constraint_guided_increase_rank or 0)
+        found = None
+        for candidate in candidates:
+            if candidate.slot_index == slot_index:
+                found = candidate
+                break
+        if found is None:
+            return ConstraintGuidedResolvedAction(
+                valid=False,
+                reject_reason="constraint_guided_no_increase_candidate",
+                slot_id=action.action_id,
+                increase_rank=slot_index,
+                increase_idx=None,
+                decrease_indices=(),
+                updates={},
+                candidate_budgets=dict(self._engine.runtime_budgets.budgets),
+                single_increase_was_safe=False,
+                safety_checked=False,
+                diagnosis_reason=None,
+                violated_row_index=None,
+            )
+        pair_budgets = dict(found.candidate_budgets)
+        valid = bool(found.accepted)
+        reason = found.reject_reason or "constraint_guided_transfer_rejected"
+        if valid:
+            updates = {
+                name: int(value)
+                for name, value in pair_budgets.items()
+                if int(value) != int(self._engine.runtime_budgets.budgets[name])
+            }
+        else:
+            updates = {}
+        return ConstraintGuidedResolvedAction(
+            valid=bool(valid),
+            reject_reason=None if valid else reason,
+            slot_id=action.action_id,
+            increase_rank=found.increase_rank,
+            increase_idx=found.increase_task_idx,
+            decrease_indices=found.decrease_task_indices,
+            updates=updates,
+            candidate_budgets=pair_budgets,
+            single_increase_was_safe=found.single_increase_accepted,
+            safety_checked=check_safety,
+            diagnosis_reason=None if valid else reason,
+            violated_row_index=found.violated_row_index,
+        )
 
     def _compute_normalized_budget_change(
         self,
@@ -406,6 +529,13 @@ class AmcBudgetEnv:
             "safety_rejected_actions": self._safety_rejected_actions,
             "action_space_type": self.action_space,
             "action_count": len(self._actions),
+            "constraint_guided_pair_top_k_risk": self.constraint_guided_pair_top_k_risk,
+            "constraint_guided_pair_top_k_decrease": self.constraint_guided_pair_top_k_decrease,
+            "constraint_guided_pair_prefer_lo": self.constraint_guided_pair_prefer_lo,
+            "constraint_guided_pair_include_hi_risk_boost": self.constraint_guided_pair_include_hi_risk_boost,
+            "constraint_guided_pair_allow_increase_only_when_safe": (
+                self.constraint_guided_pair_allow_increase_only_when_safe
+            ),
             "budget_increase_ratio": self.budget_increase_ratio,
             "budget_decrease_ratio": self.budget_decrease_ratio,
             "budget_floor_ratio": self.budget_floor_ratio,
@@ -442,6 +572,12 @@ class AmcBudgetEnv:
                 (int(self._mask_reject_reasons.get("budget_floor_violation", 0)) / (mask_checks * len(self._actions)))
                 if mask_checks > 0
                 else 0.0
+            ),
+            "masked_constraint_guided_no_increase_candidate_count": int(
+                self._mask_reject_reasons.get("constraint_guided_no_increase_candidate", 0)
+            ),
+            "masked_constraint_guided_no_decrease_candidate_count": int(
+                self._mask_reject_reasons.get("constraint_guided_no_decrease_candidate", 0)
             ),
         }
 
@@ -482,6 +618,46 @@ class AmcBudgetEnv:
         else:
             slack = None
         for action in self._actions:
+            # constraint-guided pair 动作槽位需要在当前观测下动态解析。
+            if action.is_constraint_guided_pair:
+                resolved = self._resolve_constraint_guided_pair_action(action, check_safety=self.check_safety)
+                mask.append(bool(resolved.valid))
+                if not resolved.valid and resolved.reject_reason is not None:
+                    reject_reason_counts[_normalize_candidate_reject_reason(resolved.reject_reason)] += 1
+                if self.mask_detail_mode == "minimal":
+                    mask_details.append(
+                        {
+                            "action_id": action.action_id,
+                            "valid": bool(resolved.valid),
+                            "reject_reason": resolved.reject_reason,
+                            "is_noop": False,
+                            "is_constraint_guided_pair": True,
+                            "increase_idx": resolved.increase_idx,
+                            "decrease_indices": tuple(resolved.decrease_indices),
+                            "single_increase_was_safe": resolved.single_increase_was_safe,
+                            "violated_row_index": resolved.violated_row_index,
+                        }
+                    )
+                else:
+                    mask_details.append(
+                        {
+                            "action_id": action.action_id,
+                            "valid": bool(resolved.valid),
+                            "reject_reason": resolved.reject_reason,
+                            "updates": dict(resolved.updates),
+                            "budget_before": budget_before,
+                            "candidate_budgets": dict(resolved.candidate_budgets),
+                            "is_noop": False,
+                            "is_constraint_guided_pair": True,
+                            "increase_idx": resolved.increase_idx,
+                            "decrease_indices": tuple(resolved.decrease_indices),
+                            "increase_rank": resolved.increase_rank,
+                            "single_increase_was_safe": resolved.single_increase_was_safe,
+                            "diagnosis_reason": resolved.diagnosis_reason,
+                            "violated_row_index": resolved.violated_row_index,
+                        }
+                    )
+                continue
             # 阶段 1 语义：显式 noop 必须始终合法。
             # 1) 不能再走“是否有效更新”的过滤；
             # 2) 不能再走预算安全检查；
@@ -852,7 +1028,7 @@ class AmcBudgetEnv:
             self._feature_state.last_seen_completion_count[task.name] = (
                 self._monitor.completed_job_count_by_task.get(task.name, 0)
             )
-        return build_observation(
+        observation = build_observation(
             time=self._engine.current_time,
             ordered_tasks=self.ordered_tasks,
             budget_state=self._engine.runtime_budgets,
@@ -862,6 +1038,8 @@ class AmcBudgetEnv:
             feature_config=self.feature_config,
             safety_margin_min=self._compute_current_safety_margin_min(),
         )
+        self._last_observation = observation
+        return observation
 
     def step(self, action_id: int | None) -> AgentStepResult:
         """执行一步动作并推进到下一次 agent 激活点。"""
@@ -907,6 +1085,30 @@ class AmcBudgetEnv:
                 self._selected_explicit_noop_actions += 1
                 updates = {}
                 candidate_budgets = dict(budget_before)
+            elif action.is_constraint_guided_pair:
+                # constraint-guided pair 由 env 在当前状态下动态解析，
+                # 解析过程不改运行时预算，只有解析成功且 valid=True 才真正 apply。
+                resolved = self._resolve_constraint_guided_pair_action(action, check_safety=self.check_safety)
+                accepted = bool(resolved.valid)
+                reject_reason = resolved.reject_reason
+                updates = dict(resolved.updates) if resolved.valid else {}
+                candidate_budgets = dict(resolved.candidate_budgets)
+                action_was_checked = bool(resolved.safety_checked)
+                if action_was_checked:
+                    self._safety_checked_actions += 1
+                if accepted:
+                    if action_was_checked:
+                        self._safety_accepted_actions += 1
+                    self._engine.apply_budget_updates(updates)
+                else:
+                    normalized_reject = _normalize_candidate_reject_reason(reject_reason or "unknown")
+                    if action_was_checked and normalized_reject in {
+                        "incremental_constraint_violation",
+                        "hi_lo_mode_violation",
+                        "hi_mode_switch_violation",
+                        "lo_mode_violation",
+                    }:
+                        self._safety_rejected_actions += 1
             else:
                 # 运行时执行路径与 mask 路径做同样判定：
                 # 即便调用方绕过了 valid_action_mask（例如手工传 action_id），
@@ -1132,6 +1334,7 @@ class AmcBudgetEnv:
             feature_config=self.feature_config,
             safety_margin_min=safety_margin_min,
         )
+        self._last_observation = observation
         info = {
             "time": current_time,
             "action_time": action_time,
