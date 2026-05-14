@@ -204,3 +204,47 @@ def test_train_cli_rejects_invalid_validation_workers(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode != 0
+
+
+def test_train_cli_constraint_guided_pair_smoke(tmp_path: Path) -> None:
+    """训练 CLI 应支持 constraint_guided_pair 并写入对应配置。"""
+
+    output_dir = tmp_path / "constraint_guided_pair_train"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--workload",
+            "small",
+            "--episodes",
+            "1",
+            "--end-time",
+            "60",
+            "--agent-period",
+            "20",
+            "--observation-mode",
+            "v11_full_10d",
+            "--action-space",
+            "constraint_guided_pair",
+            "--constraint-guided-pair-top-k-risk",
+            "3",
+            "--constraint-guided-pair-top-k-decrease",
+            "5",
+            "--include-explicit-noop",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    with (output_dir / "config.json").open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    assert payload["requested_action_space"] == "constraint_guided_pair"
+    assert payload["action_space"] == "constraint_guided_transfer"
+    assert payload["constraint_guided_pair_top_k_risk"] == 3
+    assert payload["constraint_guided_pair_top_k_decrease"] == 5
+    # bundled transfer 口径：top_k_risk=3 且开启 explicit noop 时动作维度应为 4。
+    assert payload["action_space_size"] == 4
+    assert (output_dir / "train_metrics.csv").exists()

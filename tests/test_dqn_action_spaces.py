@@ -91,3 +91,37 @@ def test_safety_mask_supports_triple_and_pair_action_space() -> None:
     pair_env.reset(seed=0)
     assert len(triple_env.valid_action_mask()) == triple_env.action_space_size
     assert len(pair_env.valid_action_mask()) == pair_env.action_space_size
+
+
+def test_constraint_guided_pair_action_count_matches_slot_formula() -> None:
+    """constraint_guided_pair 动作数应满足 top_k_risk * top_k_decrease + noop。"""
+
+    tasks = _tasks(6)
+    actions = build_budget_action_space(
+        tasks,
+        action_space="constraint_guided_pair",
+        constraint_guided_pair_top_k_risk=3,
+        constraint_guided_pair_top_k_decrease=5,
+        include_explicit_noop=True,
+    )
+    assert len(actions) == 16
+    assert actions[-1].is_noop is True
+    assert actions[0].is_constraint_guided_pair is True
+
+
+def test_constraint_guided_pair_cannot_apply_before_runtime_resolution() -> None:
+    """constraint_guided_pair 槽位必须先在 env 中解析，不能直接套用候选更新函数。"""
+
+    tasks = _tasks(6)
+    budget = BudgetState.from_tasks(tasks)
+    action = build_budget_action_space(
+        tasks,
+        action_space="constraint_guided_pair",
+        constraint_guided_pair_top_k_risk=1,
+        constraint_guided_pair_top_k_decrease=1,
+    )[0]
+    try:
+        _ = apply_budget_action_candidate(action=action, budget_state=budget, ordered_tasks=tasks)
+        assert False, "预期抛出 ValueError"
+    except ValueError as exc:
+        assert "constraint_guided_pair action must be resolved by AmcBudgetEnv before applying" in str(exc)

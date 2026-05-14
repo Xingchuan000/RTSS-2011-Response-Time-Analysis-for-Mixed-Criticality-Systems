@@ -220,7 +220,7 @@ conda run -n amc-repro python scripts/run_small_experiment.py
 
 ## 12. Constraint-Guided Pair 诊断使用说明
 
-`scripts/generate_learnable_tasksets.py` 已新增 constraint-guided pair diagnostic（仅诊断，不改变训练 action space）：
+`scripts/generate_learnable_tasksets.py` 已新增 constraint-guided pair diagnostic：
 
 - `--enable-constraint-guided-pair-diagnostic`：开启 constraint-guided pair 诊断。
 - `--constraint-guided-pair-min-valid-count`：`fast_valid_constraint_guided_pair_count_mean` 的最小通过阈值，默认 `1.0`。
@@ -294,6 +294,73 @@ conda run -n amc-repro python scripts/run_pre_dqn_runtime_baselines.py --end-tim
 ```
 
 相关文档：`docs/pre_dqn_runtime_interface.md`。
+
+### 12.1 constraint_guided_transfer 动作空间（Step1~Step7）使用说明
+
+本次实现把训练/评估/scan/generator 的 constraint-guided 语义统一为 `constraint_guided_transfer`（`constraint_guided_pair` 仅保留 alias）。
+
+- 新增模块：`amc_py/rl/constraint_guided_pair.py`
+  - `extract_task_rank_features_from_v11(...)`
+  - `build_constraint_guided_increase_candidates(...)`
+  - `select_constraint_guided_decrease_targets(...)`
+  - `apply_single_increase_candidate(...)`
+  - `apply_pair_candidate(...)`
+- 动作空间扩展：`amc_py/rl/actions.py::build_budget_action_space(...)`
+  - 新增正式 `action_space="constraint_guided_transfer"`，`constraint_guided_pair` 自动路由到该语义
+  - 固定槽位数 = `top_k_risk`（不是 `top_k_risk * top_k_decrease`）
+  - 动作数 = `1(noop) + top_k_risk`，默认是 `4`
+- 环境配置扩展：`amc_py/rl/env.py::AmcBudgetEnv`
+  - `action_space` 新增 `constraint_guided_pair`
+  - 新增字段：
+    - `constraint_guided_pair_top_k_risk`
+    - `constraint_guided_pair_top_k_decrease`
+    - `constraint_guided_pair_prefer_lo`
+    - `constraint_guided_pair_include_hi_risk_boost`
+    - `constraint_guided_pair_allow_increase_only_when_safe`
+- 训练/评估 CLI 扩展：
+  - `scripts/train_dqn_amc.py --action-space` 支持 `constraint_guided_transfer` 与 `constraint_guided_pair`
+  - `scripts/evaluate_dqn_amc.py --action-space` 支持 `constraint_guided_transfer` 与 `constraint_guided_pair`
+  - `--constraint-guided-pair-allow-increase-only-when-safe` 默认改为 `False`
+
+注意事项：
+
+- `constraint_guided_pair` 槽位动作是“动态解析动作”，不能直接调用 `apply_budget_action_candidate(...)` 执行；
+- 该函数在收到 `is_constraint_guided_pair=True` 动作时会抛出 `ValueError`，这是计划要求的保护逻辑。
+
+最小训练命令示例（仅示例动作空间参数）：
+
+```bash
+conda run -n amc-repro python scripts/train_dqn_amc.py \
+  --workload small_stress \
+  --episodes 2 \
+  --validation-seeds 0 \
+  --action-space constraint_guided_transfer \
+  --include-explicit-noop
+```
+
+最小评估命令示例（需与训练动作空间保持一致）：
+
+```bash
+conda run -n amc-repro python scripts/evaluate_dqn_amc.py \
+  --workload small_stress \
+  --dqn-model outputs/dqn_amc/model_best.pt \
+  --seeds 0 \
+  --action-space constraint_guided_transfer \
+  --include-explicit-noop
+```
+
+Step6~Step10 额外参数说明（训练/评估同名参数）：
+
+- `--constraint-guided-pair-top-k-risk`：固定 risk 槽位数，默认 `3`
+- `--constraint-guided-pair-top-k-decrease`：每个 risk 槽位下的 decrease 槽位数，默认 `5`
+- `--constraint-guided-pair-prefer-lo / --no-constraint-guided-pair-prefer-lo`：decrease 目标是否偏向 LO，默认关闭
+- `--constraint-guided-pair-include-hi-risk-boost`：是否启用“全任务 top-k + HI top-k”并集候选，默认关闭
+- `--constraint-guided-pair-allow-increase-only-when-safe / --no-constraint-guided-pair-allow-increase-only-when-safe`：single increase 安全时是否允许直接执行 increase-only，默认开启
+
+动作维度计算公式：
+
+- `action_space_size = top_k_risk * top_k_decrease + (include_explicit_noop ? 1 : 0)`
+- 例如默认参数 + 显式 noop：`3 * 5 + 1 = 16`
 
 ## 12. DQN 训练、评估与绘图
 
@@ -932,3 +999,172 @@ print(len(obs.state_vector), step_result.reward, step_result.done)
 ```
 
 如果后续要把正式 DQN 训练入口切到 automotive workload，只需要把当前 small stress experiment config 替换为 `build_automotive_experiment_config(...)` 返回的配置对象，不需要重写 DQN agent。
+
+## 13. MC-FairGen Workload（Step1-3）使用说明
+
+已新增独立 workload 文件：`amc_py/workloads/mc_fairgen.py`，用于生成面向 LO cancellation 学习信号的 mixed-criticality 任务集。
+
+### 13.1 当前实现范围（仅 Step1-3）
+
+当前已实现：
+- `MCFairGenWorkloadConfig` 与严格参数校验（非法字段直接 `ValueError`）。
+- `uunifast_discard` 固定总 utilization 拆分。
+- MC-FairGen 风格任务构造：
+  - HI 任务：`c_lo` 为初始预算，`c_hi` 为 HI 上界；
+  - LO 任务：强制 `c_hi == c_lo`。
+- `build_mc_fairgen_execution_scenario`：
+  - HI 任务小概率 overrun（不超过 `c_hi`）；
+  - LO 任务高概率 overrun（允许 `actual_cost > c_lo`）。
+- `build_mc_fairgen_normalization_bounds`：覆盖 HI 上界与 LO overrun 上界。
+- `MCFairGenWorkloadProvider`：可直接产出 `WorkloadBundle`。
+
+### 13.2 最小调用示例
+
+```python
+from amc_py.workloads.mc_fairgen import (
+    MCFairGenWorkloadConfig,
+    build_mc_fairgen_execution_scenario,
+    build_mc_fairgen_workload,
+)
+
+config = MCFairGenWorkloadConfig(seed=0)
+workload = build_mc_fairgen_workload(config)
+scenario = build_mc_fairgen_execution_scenario(workload, scenario_seed=123)
+
+print(len(workload.tasks))
+print(workload.metadata)
+print(scenario.actual_cost_for(workload.tasks[0], 0))
+```
+
+### 13.3 运行定向测试
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python -m pytest tests/test_mc_fairgen_workload.py -q
+```
+
+该测试文件覆盖：配置校验、period 采样、UUniFast 总和约束、HI/LO 任务语义、metadata 字段、scenario 约束与 LO over-budget 信号。
+
+### 13.4 Step4-6 新增接入说明
+
+本次继续完成了 Step4-6：
+- Step4：`MCFairGenWorkloadProvider` 已补齐可调度筛选元数据、`workload_family` 元数据、`__all__` 导出。
+- Step5：`amc_py/dqn/experiment.py` 新增 `build_mc_fairgen_experiment_config(...)`，并可通过 `build_experiment_config(name="mc_fairgen", ...)` 解析。
+- Step6：训练/评估 CLI 都支持 `--workload mc_fairgen`。
+
+训练脚本新增参数（`scripts/train_dqn_amc.py`）：
+- `--workload mc_fairgen`
+- `--mc-fairgen-mode`
+- `--mc-fairgen-num-tasks`
+- `--mc-fairgen-hi-ratio`
+- `--mc-fairgen-period-source`
+- `--mc-fairgen-period-scale`
+- `--mc-fairgen-u-hi-lo-min/--mc-fairgen-u-hi-lo-max`
+- `--mc-fairgen-u-hi-hi-min/--mc-fairgen-u-hi-hi-max`
+- `--mc-fairgen-u-lo-lo-min/--mc-fairgen-u-lo-lo-max`
+- `--mc-fairgen-hi-budget-rho-min/--mc-fairgen-hi-budget-rho-max`
+- `--mc-fairgen-lo-budget-rho-min/--mc-fairgen-lo-budget-rho-max`
+- `--mc-fairgen-hi-overrun-prob/--mc-fairgen-lo-overrun-prob`
+- `--mc-fairgen-hi-overrun-factor-min/--mc-fairgen-hi-overrun-factor-max`
+- `--mc-fairgen-lo-overrun-factor-min/--mc-fairgen-lo-overrun-factor-max`
+
+评估脚本新增同名参数（`scripts/evaluate_dqn_amc.py`），确保训练与评估配置口径一致。
+
+最小训练 smoke 示例：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/train_dqn_amc.py \
+  --workload mc_fairgen \
+  --mc-fairgen-mode paper_learnable_headroom \
+  --episodes 1 \
+  --end-time 200 \
+  --validate-every 1 \
+  --validation-seeds 0 \
+  --validation-end-time 200
+```
+
+### 13.5 Step7-8 新增接入说明
+
+已完成以下脚本的 `mc_fairgen` 接入：
+- `scripts/scan_taskset_headroom.py`
+- `scripts/generate_learnable_tasksets.py`
+
+`scan_taskset_headroom.py` 新增能力：
+- `--workload automotive|mc_fairgen`
+- 支持全套 `--mc-fairgen-*` 参数
+- 新增输出列 `baseline_lo_cancellation_ratio_total`
+- 当 `workload=mc_fairgen` 时，不再走 automotive 的 two-stage manifest 重写路径
+
+`generate_learnable_tasksets.py` 新增能力：
+- `--workload automotive|mc_fairgen`
+- 支持全套 `--mc-fairgen-*` 参数
+- 新增阈值 `--learnable-fast-min-lo-cancellation-ratio`
+- 当 `workload=mc_fairgen` 时，生成逻辑使用 `mc_fairgen` provider，不走 `paper_exact -> rewrite` two-stage
+
+最小 smoke（scan）：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/scan_taskset_headroom.py \
+  --workload mc_fairgen \
+  --mc-fairgen-mode paper_learnable_headroom \
+  --mc-fairgen-num-tasks 16 \
+  --mc-fairgen-hi-ratio 0.5 \
+  --budget-scales 1.00 \
+  --fixed-taskset-seeds 0 \
+  --seeds 200:201 \
+  --end-time 50000 \
+  --agent-period 10000 \
+  --reward-mode interval_v1 \
+  --action-space single \
+  --budget-increase-ratio 0.02 \
+  --budget-decrease-ratio 0.0125 \
+  --include-explicit-noop \
+  --budget-floor-ratio 0.9 \
+  --observation-mode v11_full_10d \
+  --enable-constraint-guided-pair-diagnostic \
+  --output outputs/taskset_slack_scan/smoke_mc_fairgen_scan.csv
+```
+
+最小 smoke（generate）：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/generate_learnable_tasksets.py \
+  --workload mc_fairgen \
+  --mc-fairgen-mode paper_learnable_headroom \
+  --mc-fairgen-num-tasks 16 \
+  --mc-fairgen-hi-ratio 0.5 \
+  --num-tasksets 1 \
+  --candidate-seed-start 0 \
+  --learnable-max-attempts 3 \
+  --learnable-fast-end-time 50000 \
+  --learnable-fast-eval-seeds 1 \
+  --learnable-fast-min-lo-cancellation-ratio 0.0 \
+  --output-manifest outputs/tasksets/smoke_mc_fairgen_manifest.csv \
+  --output-rejections outputs/tasksets/smoke_mc_fairgen_rejections.csv
+```
+
+### 13.6 MC-FairGen 修复版说明（seed/日志/manifest）
+
+本次按修复计划补齐了以下关键行为：
+- `scripts/generate_learnable_tasksets.py`：同一 `candidate_seed` 下，`learnable_fast_eval_seeds` 会固定 taskset、仅变化 scenario（不再复用同一个 scenario）。
+- `scripts/train_dqn_amc.py` 与 `scripts/evaluate_dqn_amc.py`：`num_tasks` 按实际 workload 生效；`mc_fairgen_*` 参数写入配置输出。
+- `scripts/generate_learnable_tasksets.py`：manifest/rejections 补齐 `mc_fairgen_*` 复现字段与 `fast_baseline_lo_cancellation_ratio_total`。
+- `scripts/scan_taskset_headroom.py`：manifest roundtrip 时支持读取 `mc_fairgen` 参数并复现；输出包含 `baseline_lo_cancellation_ratio_total`。
+
+新增回归测试：
+- `tests/test_mc_fairgen_generator.py`
+- `tests/test_mc_fairgen_cli_smoke.py`
+
+推荐验证命令：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python -m pytest \
+  tests/test_mc_fairgen_workload.py \
+  tests/test_mc_fairgen_experiment.py \
+  tests/test_mc_fairgen_generator.py \
+  tests/test_mc_fairgen_cli_smoke.py -q
+```

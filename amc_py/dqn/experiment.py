@@ -197,6 +197,80 @@ def build_automotive_experiment_config(
     )
 
 
+def build_mc_fairgen_experiment_config(
+    *,
+    mode: str = "paper_learnable_headroom",
+    num_tasks: int = 16,
+    hi_ratio: float = 0.5,
+    period_source: str = "automotive",
+    period_scale: int = 100,
+    tick_ns: int = 10,
+    require_schedulable: bool = False,
+    check_safety: bool = True,
+    max_attempts: int = 100,
+    scenario_seed_offset: int = 100000,
+    fixed_taskset_seed: int | None = None,
+    u_hi_lo_min: float = 0.20,
+    u_hi_lo_max: float = 0.35,
+    u_hi_hi_min: float = 0.45,
+    u_hi_hi_max: float = 0.70,
+    u_lo_lo_min: float = 0.35,
+    u_lo_lo_max: float = 0.60,
+    hi_budget_rho_min: float = 0.55,
+    hi_budget_rho_max: float = 0.75,
+    lo_budget_rho_min: float = 0.05,
+    lo_budget_rho_max: float = 0.25,
+    hi_overrun_prob: float = 0.08,
+    lo_overrun_prob: float = 0.40,
+    hi_overrun_factor_min: float = 1.02,
+    hi_overrun_factor_max: float = 1.25,
+    lo_overrun_factor_min: float = 1.05,
+    lo_overrun_factor_max: float = 1.80,
+) -> ExperimentConfig:
+    """构造可直接接入训练/评估流程的 mc_fairgen experiment 配置。"""
+
+    from amc_py.workloads.mc_fairgen import (
+        MCFairGenWorkloadConfig,
+        MCFairGenWorkloadProvider,
+    )
+
+    provider = MCFairGenWorkloadProvider(
+        MCFairGenWorkloadConfig(
+            mode=mode,  # type: ignore[arg-type]
+            num_tasks=num_tasks,
+            hi_ratio=hi_ratio,
+            period_source=period_source,
+            period_scale=period_scale,
+            tick_ns=tick_ns,
+            require_schedulable=require_schedulable,
+            max_attempts=max_attempts,
+            u_hi_lo_min=u_hi_lo_min,
+            u_hi_lo_max=u_hi_lo_max,
+            u_hi_hi_min=u_hi_hi_min,
+            u_hi_hi_max=u_hi_hi_max,
+            u_lo_lo_min=u_lo_lo_min,
+            u_lo_lo_max=u_lo_lo_max,
+            hi_budget_rho_min=hi_budget_rho_min,
+            hi_budget_rho_max=hi_budget_rho_max,
+            lo_budget_rho_min=lo_budget_rho_min,
+            lo_budget_rho_max=lo_budget_rho_max,
+            hi_overrun_prob=hi_overrun_prob,
+            lo_overrun_prob=lo_overrun_prob,
+            hi_overrun_factor_min=hi_overrun_factor_min,
+            hi_overrun_factor_max=hi_overrun_factor_max,
+            lo_overrun_factor_min=lo_overrun_factor_min,
+            lo_overrun_factor_max=lo_overrun_factor_max,
+        ),
+        fixed_taskset_seed=fixed_taskset_seed,
+        scenario_seed_offset=scenario_seed_offset,
+    )
+    return ExperimentConfig(
+        name=f"mc_fairgen_{mode}_{num_tasks}",
+        workload_provider=provider,
+        check_safety=check_safety,
+    )
+
+
 def build_experiment_config(name: str, **kwargs) -> ExperimentConfig:
     """按统一字符串名称选择 experiment builder。"""
 
@@ -208,6 +282,8 @@ def build_experiment_config(name: str, **kwargs) -> ExperimentConfig:
         return build_rtss11_experiment_config(**kwargs)
     if name == "automotive":
         return build_automotive_experiment_config(**kwargs)
+    if name == "mc_fairgen":
+        return build_mc_fairgen_experiment_config(**kwargs)
     raise ValueError(f"unsupported workload/experiment name: {name}")
 
 
@@ -292,6 +368,11 @@ def build_env_from_experiment_config(
     forbid_decreasing_hi_budgets: bool = False,
     mask_detail_mode: str = "minimal",
     feature_config: FeatureConfig | None = None,
+    constraint_guided_pair_top_k_risk: int = 3,
+    constraint_guided_pair_top_k_decrease: int = 5,
+    constraint_guided_pair_prefer_lo: bool = False,
+    constraint_guided_pair_include_hi_risk_boost: bool = False,
+    constraint_guided_pair_allow_increase_only_when_safe: bool = True,
 ) -> AmcBudgetEnv:
     """根据实验配置构造 `AmcBudgetEnv`，供训练与评估入口复用。"""
 
@@ -312,6 +393,11 @@ def build_env_from_experiment_config(
         forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
         mask_detail_mode=mask_detail_mode,
         feature_config=FeatureConfig() if feature_config is None else feature_config,
+        constraint_guided_pair_top_k_risk=constraint_guided_pair_top_k_risk,
+        constraint_guided_pair_top_k_decrease=constraint_guided_pair_top_k_decrease,
+        constraint_guided_pair_prefer_lo=constraint_guided_pair_prefer_lo,
+        constraint_guided_pair_include_hi_risk_boost=constraint_guided_pair_include_hi_risk_boost,
+        constraint_guided_pair_allow_increase_only_when_safe=constraint_guided_pair_allow_increase_only_when_safe,
     )
 
 
