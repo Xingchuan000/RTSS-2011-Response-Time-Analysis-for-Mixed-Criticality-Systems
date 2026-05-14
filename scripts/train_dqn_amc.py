@@ -74,6 +74,14 @@ STEP_LOG_FIELDNAMES = [
     "budget_change_penalty_value",
     "budget_drift_mean",
     "budget_drift_penalty_value",
+    "lo_pressure_mean",
+    "lo_pressure_max",
+    "lo_near_cancel_rate",
+    "hi_mode_pressure_mean",
+    "lo_pressure_penalty_value",
+    "lo_pressure_max_penalty_value",
+    "lo_near_cancel_penalty_value",
+    "hi_mode_pressure_penalty_value",
     "reward_after_regularization",
     "workload",
     "total_util",
@@ -1433,6 +1441,20 @@ def main() -> None:
                         "budget_change_penalty_value": float(result.info.get("budget_change_penalty_value", 0.0)),
                         "budget_drift_mean": float(result.info.get("budget_drift_mean", 0.0)),
                         "budget_drift_penalty_value": float(result.info.get("budget_drift_penalty_value", 0.0)),
+                        "lo_pressure_mean": float(result.info.get("lo_pressure_mean", 0.0)),
+                        "lo_pressure_max": float(result.info.get("lo_pressure_max", 0.0)),
+                        "lo_near_cancel_rate": float(result.info.get("lo_near_cancel_rate", 0.0)),
+                        "hi_mode_pressure_mean": float(result.info.get("hi_mode_pressure_mean", 0.0)),
+                        "lo_pressure_penalty_value": float(result.info.get("lo_pressure_penalty_value", 0.0)),
+                        "lo_pressure_max_penalty_value": float(
+                            result.info.get("lo_pressure_max_penalty_value", 0.0)
+                        ),
+                        "lo_near_cancel_penalty_value": float(
+                            result.info.get("lo_near_cancel_penalty_value", 0.0)
+                        ),
+                        "hi_mode_pressure_penalty_value": float(
+                            result.info.get("hi_mode_pressure_penalty_value", 0.0)
+                        ),
                         "reward_after_regularization": float(result.info.get("reward_after_regularization", 0.0)),
                         "workload": args.workload,
                         "total_util": args.total_util,
