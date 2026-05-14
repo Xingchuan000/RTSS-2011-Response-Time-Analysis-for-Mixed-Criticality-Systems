@@ -322,6 +322,142 @@ class AmcBudgetEnv:
             drift_total += max(0.0, 1.0 - current_budget / initial_budget)
         return drift_total / float(len(self._task_names))
 
+    def _compute_lo_pressure_mean(
+        self,
+        *,
+        budgets: dict[str, int],
+        threshold: float,
+    ) -> float:
+        """计算 LO task 的 cancellation pressure 均值。
+
+        定义：
+        pressure_i = max(0, estimated_exec / budget_i - threshold)
+
+        其中 estimated_exec 使用 max(recent_execution, ema_cost)：
+        - recent_execution：反映最近一次真实运行样本的瞬时风险；
+        - ema_cost：反映更平滑的长期执行成本趋势；
+        - 取 max 可减少“风险被低估”的概率。
+        """
+
+        if self._feature_state is None:
+            return 0.0
+
+        pressures: list[float] = []
+        for task in self.ordered_tasks:
+            if task.criticality is not Criticality.LO:
+                continue
+            task_name = task.name
+            # 预算分母做下界保护，避免除零并与项目其它比值计算口径一致。
+            budget = max(1.0, float(budgets[task_name]))
+            recent_exec = float(self._monitor.recent_execution.get(task_name, 0.0))
+            ema_exec = float(self._feature_state.ema_cost.get(task_name, float(task.c_lo)))
+            estimated_exec = max(recent_exec, ema_exec)
+            pressure = max(0.0, estimated_exec / budget - float(threshold))
+            pressures.append(pressure)
+
+        if not pressures:
+            return 0.0
+        return float(sum(pressures) / len(pressures))
+
+    def _compute_lo_pressure_stats(
+        self,
+        *,
+        budgets: dict[str, int],
+        pressure_threshold: float,
+        near_cancel_threshold: float,
+    ) -> dict[str, float]:
+        """计算 LO task 的 dense risk 指标集合。
+
+        返回三个互补指标：
+        - lo_pressure_mean：所有 LO pressure 的平均值，反映总体风险水平；
+        - lo_pressure_max：所有 LO pressure 的最大值，专门捕捉“最危险任务”；
+        - lo_near_cancel_rate：estimated_exec / budget 超过 near_cancel_threshold 的 LO 任务比例。
+
+        指标定义：
+        pressure_i = max(0, estimated_exec / budget_i - pressure_threshold)
+        estimated_exec = max(recent_execution, ema_cost)
+        """
+
+        if self._feature_state is None:
+            return {
+                "lo_pressure_mean": 0.0,
+                "lo_pressure_max": 0.0,
+                "lo_near_cancel_rate": 0.0,
+            }
+
+        pressures: list[float] = []
+        near_cancel_count = 0
+        lo_count = 0
+
+        for task in self.ordered_tasks:
+            if task.criticality is not Criticality.LO:
+                continue
+
+            lo_count += 1
+            task_name = task.name
+            # 与现有 pressure 计算一致：budget 分母做下界保护，避免除零和数值放大。
+            budget = max(1.0, float(budgets[task_name]))
+            recent_exec = float(self._monitor.recent_execution.get(task_name, 0.0))
+            ema_exec = float(self._feature_state.ema_cost.get(task_name, float(task.c_lo)))
+            # 取 max 以避免瞬时低估执行风险，保持 reward shaping 的保守性。
+            estimated_exec = max(recent_exec, ema_exec)
+
+            ratio = estimated_exec / budget
+            pressure = max(0.0, ratio - float(pressure_threshold))
+            pressures.append(pressure)
+
+            if ratio > float(near_cancel_threshold):
+                near_cancel_count += 1
+
+        if lo_count == 0:
+            return {
+                "lo_pressure_mean": 0.0,
+                "lo_pressure_max": 0.0,
+                "lo_near_cancel_rate": 0.0,
+            }
+
+        return {
+            "lo_pressure_mean": float(sum(pressures) / len(pressures)) if pressures else 0.0,
+            "lo_pressure_max": float(max(pressures)) if pressures else 0.0,
+            "lo_near_cancel_rate": float(near_cancel_count / lo_count),
+        }
+
+    def _compute_hi_mode_pressure_mean(
+        self,
+        *,
+        budgets: dict[str, int],
+        threshold: float,
+    ) -> float:
+        """计算 HI task 的 mode-change pressure 均值。
+
+        定义：
+        pressure_i = max(0, estimated_exec / current_lo_mode_budget_i - threshold)
+
+        说明：
+        - current_lo_mode_budget_i 即当前步骤 action 生效后的预算；
+        - 为了与 LO pressure 一致，这里同样使用 max(recent_execution, ema_cost) 估计执行风险。
+        """
+
+        if self._feature_state is None:
+            return 0.0
+
+        pressures: list[float] = []
+        for task in self.ordered_tasks:
+            if task.criticality is not Criticality.HI:
+                continue
+            task_name = task.name
+            # 预算分母做下界保护，避免除零并与项目其它比值计算口径一致。
+            budget = max(1.0, float(budgets[task_name]))
+            recent_exec = float(self._monitor.recent_execution.get(task_name, 0.0))
+            ema_exec = float(self._feature_state.ema_cost.get(task_name, float(task.c_lo)))
+            estimated_exec = max(recent_exec, ema_exec)
+            pressure = max(0.0, estimated_exec / budget - float(threshold))
+            pressures.append(pressure)
+
+        if not pressures:
+            return 0.0
+        return float(sum(pressures) / len(pressures))
+
     def _budget_floor_violation(
         self,
         *,
@@ -1250,6 +1386,13 @@ class AmcBudgetEnv:
         noop_bonus = float(reward_parameters.get("noop_bonus", 0.0))
         budget_change_penalty = float(reward_parameters.get("budget_change_penalty", 0.0))
         budget_drift_penalty = float(reward_parameters.get("budget_drift_penalty", 0.0))
+        lo_pressure_penalty = float(reward_parameters.get("lo_pressure_penalty", 0.0))
+        lo_pressure_threshold = float(reward_parameters.get("lo_pressure_threshold", 0.8))
+        lo_pressure_max_penalty = float(reward_parameters.get("lo_pressure_max_penalty", 0.0))
+        lo_near_cancel_penalty = float(reward_parameters.get("lo_near_cancel_penalty", 0.0))
+        lo_near_cancel_threshold = float(reward_parameters.get("lo_near_cancel_threshold", 0.9))
+        hi_mode_pressure_penalty = float(reward_parameters.get("hi_mode_pressure_penalty", 0.0))
+        hi_mode_pressure_threshold = float(reward_parameters.get("hi_mode_pressure_threshold", 0.8))
         noop_bonus_if_noop = noop_bonus if is_explicit_noop_action else 0.0
         budget_change_penalty_value = budget_change_penalty * budget_change_norm
         budget_drift_mean = self._compute_budget_drift_mean(
@@ -1257,6 +1400,23 @@ class AmcBudgetEnv:
             initial_budgets=self._initial_budgets,
         )
         budget_drift_penalty_value = budget_drift_penalty * budget_drift_mean
+        # 这里明确使用 action 生效后的 budget_after，让 shaping 反映“当前动作导致的即时风险状态”。
+        lo_pressure_stats = self._compute_lo_pressure_stats(
+            budgets=budget_after,
+            pressure_threshold=lo_pressure_threshold,
+            near_cancel_threshold=lo_near_cancel_threshold,
+        )
+        lo_pressure_mean = float(lo_pressure_stats["lo_pressure_mean"])
+        lo_pressure_max = float(lo_pressure_stats["lo_pressure_max"])
+        lo_near_cancel_rate = float(lo_pressure_stats["lo_near_cancel_rate"])
+        hi_mode_pressure_mean = self._compute_hi_mode_pressure_mean(
+            budgets=budget_after,
+            threshold=hi_mode_pressure_threshold,
+        )
+        lo_pressure_penalty_value = lo_pressure_penalty * lo_pressure_mean
+        lo_pressure_max_penalty_value = lo_pressure_max_penalty * lo_pressure_max
+        lo_near_cancel_penalty_value = lo_near_cancel_penalty * lo_near_cancel_rate
+        hi_mode_pressure_penalty_value = hi_mode_pressure_penalty * hi_mode_pressure_mean
         # interval 公式分量（用于日志拆分）：
         # - lo/hi/job_start 保留 event 分量并叠加 interval 分量，兼容旧 reward mode 的日志语义；
         # - mode change 惩罚明确使用按 job 归一化后的 mode_change_per_job；
@@ -1279,6 +1439,21 @@ class AmcBudgetEnv:
             "budget_change_norm": float(budget_change_norm),
             "budget_drift_penalty": float(budget_drift_penalty),
             "budget_drift_mean": float(budget_drift_mean),
+            "lo_pressure_mean": float(lo_pressure_mean),
+            "lo_pressure_max": float(lo_pressure_max),
+            "lo_near_cancel_rate": float(lo_near_cancel_rate),
+            "hi_mode_pressure_mean": float(hi_mode_pressure_mean),
+            "lo_pressure_penalty": float(lo_pressure_penalty),
+            "lo_pressure_max_penalty": float(lo_pressure_max_penalty),
+            "lo_near_cancel_penalty": float(lo_near_cancel_penalty),
+            "hi_mode_pressure_penalty": float(hi_mode_pressure_penalty),
+            "lo_pressure_threshold": float(lo_pressure_threshold),
+            "lo_near_cancel_threshold": float(lo_near_cancel_threshold),
+            "hi_mode_pressure_threshold": float(hi_mode_pressure_threshold),
+            "lo_pressure_penalty_value": float(lo_pressure_penalty_value),
+            "lo_pressure_max_penalty_value": float(lo_pressure_max_penalty_value),
+            "lo_near_cancel_penalty_value": float(lo_near_cancel_penalty_value),
+            "hi_mode_pressure_penalty_value": float(hi_mode_pressure_penalty_value),
             "is_explicit_noop_action": bool(is_explicit_noop_action),
             "event_job_start_reward": float(event_job_start_reward),
             "event_lo_overrun_reward": float(event_lo_overrun_reward),
@@ -1386,6 +1561,14 @@ class AmcBudgetEnv:
             "budget_change_penalty_value": budget_change_penalty_value,
             "budget_drift_mean": budget_drift_mean,
             "budget_drift_penalty_value": budget_drift_penalty_value,
+            "lo_pressure_mean": lo_pressure_mean,
+            "lo_pressure_max": lo_pressure_max,
+            "lo_near_cancel_rate": lo_near_cancel_rate,
+            "hi_mode_pressure_mean": hi_mode_pressure_mean,
+            "lo_pressure_penalty_value": lo_pressure_penalty_value,
+            "lo_pressure_max_penalty_value": lo_pressure_max_penalty_value,
+            "lo_near_cancel_penalty_value": lo_near_cancel_penalty_value,
+            "hi_mode_pressure_penalty_value": hi_mode_pressure_penalty_value,
             "reward_after_regularization": reward,
             "step_reward_job_start": step_reward_job_start,
             "step_reward_lo_overrun": step_reward_lo_overrun,

@@ -954,7 +954,104 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/plot_dqn_trainin
 - epsilon 是否按预期衰减
 - agent 是否频繁选择被屏蔽动作或只能 NoOp
 
-### 12.8 automotive workload 用法
+### 12.8 `interval_v3_dense_B` 使用说明（Step1 Dense Reward）
+
+新增 reward mode 配置文件：
+
+- `configs/reward_modes/interval_v3_dense_B.json`
+
+该模式在原 interval reward 基础上新增两项 pressure 惩罚：
+
+- `lo_pressure_penalty * lo_pressure_mean`
+- `hi_mode_pressure_penalty * hi_mode_pressure_mean`
+
+其中 pressure 计算口径为（按任务取均值）：
+
+- `pressure_i = max(0, estimated_exec / budget_i - threshold)`
+- `estimated_exec = max(recent_execution, ema_cost)`
+
+运行方式（仅切换 reward mode，其余参数保持 v3 baseline 一致）：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+python scripts/train_dqn_amc.py \
+  --workload mc_fairgen \
+  --action-space single \
+  --budget-increase-ratio 0.025 \
+  --budget-decrease-ratio 0.015 \
+  --include-explicit-noop \
+  --budget-floor-ratio 0.9 \
+  --agent-period 50000 \
+  --episodes 120 \
+  --end-time 1000000 \
+  --validation-end-time 1000000 \
+  --reward-mode interval_v3_dense_B \
+  --save-best-by pareto_relative_score
+```
+
+`train_log.csv` 新增以下字段用于观测 dense reward 实际生效强度：
+
+- `lo_pressure_mean`
+- `hi_mode_pressure_mean`
+- `lo_pressure_penalty_value`
+- `hi_mode_pressure_penalty_value`
+
+### 12.9 `interval_v3_dense_LO_guard` 使用说明（Step2 Dense Reward）
+
+新增 reward mode 配置文件：
+
+- `configs/reward_modes/interval_v3_dense_LO_guard.json`
+
+该模式在 `interval_v3_dense_B` 基础上，额外引入两个专门针对 LO 局部高风险的惩罚项：
+
+- `lo_pressure_max_penalty * lo_pressure_max`
+- `lo_near_cancel_penalty * lo_near_cancel_rate`
+
+完整 reward 公式为：
+
+- `original_interval_reward`
+- `- lo_pressure_penalty * lo_pressure_mean`
+- `- lo_pressure_max_penalty * lo_pressure_max`
+- `- lo_near_cancel_penalty * lo_near_cancel_rate`
+- `- hi_mode_pressure_penalty * hi_mode_pressure_mean`
+
+其中新增指标定义如下：
+
+- `lo_pressure_max`：所有 LO task 的 pressure 最大值，用于捕捉最危险任务；
+- `lo_near_cancel_rate`：`estimated_exec / budget > lo_near_cancel_threshold` 的 LO 任务比例；
+- `estimated_exec = max(recent_execution, ema_cost)`，用于避免低估风险。
+
+运行方式（仅切换 reward mode，其余参数保持 v3 baseline 一致）：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+python scripts/train_dqn_amc.py \
+  --workload mc_fairgen \
+  --action-space single \
+  --budget-increase-ratio 0.025 \
+  --budget-decrease-ratio 0.015 \
+  --include-explicit-noop \
+  --budget-floor-ratio 0.9 \
+  --agent-period 50000 \
+  --episodes 120 \
+  --end-time 1000000 \
+  --validation-end-time 1000000 \
+  --reward-mode interval_v3_dense_LO_guard \
+  --save-best-by pareto_relative_score
+```
+
+`train_log.csv` 中与该模式直接相关的字段包括：
+
+- `lo_pressure_mean`
+- `lo_pressure_max`
+- `lo_near_cancel_rate`
+- `hi_mode_pressure_mean`
+- `lo_pressure_penalty_value`
+- `lo_pressure_max_penalty_value`
+- `lo_near_cancel_penalty_value`
+- `hi_mode_pressure_penalty_value`
+
+### 12.10 automotive workload 用法
 
 当前仓库已经提供 automotive workload 生成器：
 

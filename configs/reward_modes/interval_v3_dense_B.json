@@ -1,0 +1,24 @@
+{
+  "event_weights": {
+    "job_start": 0.0,
+    "lo_overrun": 0.0,
+    "hi_overrun": 0.0
+  },
+  "reward_parameters": {
+    "job_start_weight": 0.0,
+    "lo_overrun_penalty": 2.0,
+    "hi_overrun_penalty": 3.5,
+    "mode_change_penalty": 8.0,
+    "lo_cancellation_penalty": 2.0,
+    "deadline_miss_penalty": 100.0,
+    "invalid_action_penalty": 10.0,
+    "budget_change_penalty": 0.0,
+    "budget_drift_penalty": 0.0,
+    "noop_bonus": 0.0,
+    "lo_pressure_penalty": 1.0,
+    "lo_pressure_threshold": 0.8,
+    "hi_mode_pressure_penalty": 1.0,
+    "hi_mode_pressure_threshold": 0.8
+  },
+  "step_reward_formula": "job_start_weight * delta_job_start - lo_overrun_penalty * lo_overrun_rate - hi_overrun_penalty * hi_overrun_rate - mode_change_penalty * mode_change_per_job - lo_cancellation_penalty * lo_cancellation_rate - deadline_miss_penalty * deadline_miss_rate - invalid_action_penalty * invalid_action - budget_change_penalty * budget_change_norm - budget_drift_penalty * budget_drift_mean - lo_pressure_penalty * lo_pressure_mean - hi_mode_pressure_penalty * hi_mode_pressure_mean + noop_bonus * is_explicit_noop_action"
+}
