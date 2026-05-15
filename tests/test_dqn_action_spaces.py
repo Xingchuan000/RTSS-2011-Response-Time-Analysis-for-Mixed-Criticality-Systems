@@ -22,6 +22,17 @@ def _tasks(n: int = 20) -> list[Task]:
     return tasks
 
 
+def _anchor_tasks() -> list[Task]:
+    """构造包含 mc_lo_2 的最小任务集，用于 anchor 动作测试。"""
+
+    return [
+        Task("mc_hi_0", 20, 20, 2, 3, Criticality.HI),
+        Task("mc_lo_1", 24, 24, 2, 2, Criticality.LO),
+        Task("mc_lo_2", 28, 28, 2, 2, Criticality.LO),
+        Task("mc_lo_3", 32, 32, 2, 2, Criticality.LO),
+    ]
+
+
 def test_action_count_for_n20_triple_and_pair() -> None:
     """n=20 时 triple/pair 动作数应符合公式。"""
 
@@ -94,7 +105,7 @@ def test_safety_mask_supports_triple_and_pair_action_space() -> None:
 
 
 def test_constraint_guided_pair_action_count_matches_slot_formula() -> None:
-    """constraint_guided_pair 动作数应满足 top_k_risk * top_k_decrease + noop。"""
+    """constraint_guided_pair 动作数应满足 dynamic_slots + 可选显式 noop。"""
 
     tasks = _tasks(6)
     actions = build_budget_action_space(
@@ -104,7 +115,7 @@ def test_constraint_guided_pair_action_count_matches_slot_formula() -> None:
         constraint_guided_pair_top_k_decrease=5,
         include_explicit_noop=True,
     )
-    assert len(actions) == 16
+    assert len(actions) == 4
     assert actions[-1].is_noop is True
     assert actions[0].is_constraint_guided_pair is True
 
@@ -125,3 +136,62 @@ def test_constraint_guided_pair_cannot_apply_before_runtime_resolution() -> None
         assert False, "预期抛出 ValueError"
     except ValueError as exc:
         assert "constraint_guided_pair action must be resolved by AmcBudgetEnv before applying" in str(exc)
+
+
+def test_residual_ranked_action_count_and_slots_match_v2_design() -> None:
+    """residual_ranked 动作槽位应固定为 15 个，并满足设计分布。"""
+
+    tasks = _tasks(6)
+    actions = build_budget_action_space(tasks, action_space="residual_ranked")
+    assert len(actions) == 15
+    assert [action.action_id for action in actions] == list(range(15))
+    assert actions[0].is_noop is True
+    assert actions[0].residual_action_type == "noop"
+    transfer_count = sum(
+        1
+        for action in actions
+        if action.residual_action_type in {
+            "transfer_to_lo_risk_from_global_low",
+            "transfer_to_lo_risk_from_lo_low",
+            "transfer_to_lo_risk_from_global_low2",
+        }
+    )
+    assert transfer_count == 6
+
+
+def test_residual_anchor_mc_lo_2_action_space_contains_direct_anchor_slot() -> None:
+    """residual_anchor_mc_lo_2 应固定为 5 槽位：noop + anchor + 3 个 safe increase。"""
+
+    actions = build_budget_action_space(_anchor_tasks(), action_space="residual_anchor_mc_lo_2")
+    assert len(actions) == 5
+    assert [a.action_id for a in actions] == [0, 1, 2, 3, 4]
+    assert actions[0].residual_action_type == "noop"
+    anchor = actions[1]
+    assert anchor.residual_action_type == "direct_safe_increase_anchor"
+    assert anchor.increase_task == "mc_lo_2"
+    assert anchor.increase_idx is not None
+    assert [actions[2].residual_rank, actions[3].residual_rank, actions[4].residual_rank] == [0, 1, 2]
+    assert all(actions[idx].residual_action_type == "safe_increase_lo_risk" for idx in (2, 3, 4))
+
+
+def test_residual_anchor_mc_lo_2_anchor_step_only_increases_mc_lo_2() -> None:
+    """anchor 槽位执行后应仅增加 mc_lo_2，且不带 decrease。"""
+
+    env = AmcBudgetEnv(
+        ordered_tasks=_anchor_tasks(),
+        scenario=make_nominal_scenario(),
+        runtime_config=RuntimeConfig(end_time=50, semantics=RuntimeSemantics.AMC_PLUS),
+        agent_period=10,
+        action_space="residual_anchor_mc_lo_2",
+        mask_detail_mode="full",
+    )
+    env.reset(seed=0)
+    mask = env.valid_action_mask()
+    assert mask[1] is True
+
+    step = env.step(1)
+    assert step.done is False
+    assert step.info["accepted"] is True
+    assert step.info["residual_action_type"] == "direct_safe_increase_anchor"
+    assert step.info["residual_resolved_increase_task"] == "mc_lo_2"
+    assert tuple(step.info["residual_resolved_decrease_tasks"]) == ()

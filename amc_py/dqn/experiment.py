@@ -373,6 +373,11 @@ def build_env_from_experiment_config(
     constraint_guided_pair_prefer_lo: bool = False,
     constraint_guided_pair_include_hi_risk_boost: bool = False,
     constraint_guided_pair_allow_increase_only_when_safe: bool = True,
+    enable_residual_safety_fallback: bool = False,
+    residual_guard_hi_pressure_delta_limit: float = 0.03,
+    residual_guard_hi_pressure_abs_limit: float = 0.30,
+    residual_guard_reject_decrease_pressure_threshold: float = 0.05,
+    residual_guard_use_hi_pressure_max: bool = False,
 ) -> AmcBudgetEnv:
     """根据实验配置构造 `AmcBudgetEnv`，供训练与评估入口复用。"""
 
@@ -398,6 +403,11 @@ def build_env_from_experiment_config(
         constraint_guided_pair_prefer_lo=constraint_guided_pair_prefer_lo,
         constraint_guided_pair_include_hi_risk_boost=constraint_guided_pair_include_hi_risk_boost,
         constraint_guided_pair_allow_increase_only_when_safe=constraint_guided_pair_allow_increase_only_when_safe,
+        enable_residual_safety_fallback=enable_residual_safety_fallback,
+        residual_guard_hi_pressure_delta_limit=residual_guard_hi_pressure_delta_limit,
+        residual_guard_hi_pressure_abs_limit=residual_guard_hi_pressure_abs_limit,
+        residual_guard_reject_decrease_pressure_threshold=residual_guard_reject_decrease_pressure_threshold,
+        residual_guard_use_hi_pressure_max=residual_guard_use_hi_pressure_max,
     )
 
 
