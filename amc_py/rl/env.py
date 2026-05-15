@@ -95,7 +95,16 @@ class AmcBudgetEnv:
     safety_checker: RuntimeBudgetSafetyChecker | None = None
     normalization_bounds: NormalizationBounds | None = None
     reward_mode: str = "mendes"
-    action_space: Literal["triple", "pair", "single", "constraint_guided_pair", "constraint_guided_transfer"] = "triple"
+    action_space: Literal[
+        "triple",
+        "pair",
+        "single",
+        "constraint_guided_pair",
+        "constraint_guided_transfer",
+        "residual_ranked",
+        "residual_safe_ranked",
+        "residual_anchor_mc_lo_2",
+    ] = "triple"
     # constraint-guided transfer 动作空间参数（支持旧名 constraint_guided_pair 作为 alias）。
     constraint_guided_pair_top_k_risk: int = 3
     constraint_guided_pair_top_k_decrease: int = 5
@@ -108,6 +117,11 @@ class AmcBudgetEnv:
     include_explicit_noop: bool = False
     budget_floor_ratio: float = 0.0
     forbid_decreasing_hi_budgets: bool = False
+    enable_residual_safety_fallback: bool = False
+    residual_guard_hi_pressure_delta_limit: float = 0.03
+    residual_guard_hi_pressure_abs_limit: float = 0.30
+    residual_guard_reject_decrease_pressure_threshold: float = 0.05
+    residual_guard_use_hi_pressure_max: bool = False
     # v11 特征配置。默认保持 v10_basic，确保旧实验行为不变。
     feature_config: FeatureConfig = field(default_factory=FeatureConfig)
     _actions: tuple[BudgetAction, ...] = field(init=False, repr=False)
@@ -121,6 +135,7 @@ class AmcBudgetEnv:
     _safety_checked_actions: int = field(init=False, default=0, repr=False)
     _safety_accepted_actions: int = field(init=False, default=0, repr=False)
     _safety_rejected_actions: int = field(init=False, default=0, repr=False)
+    _residual_guard_rejected_actions: int = field(init=False, default=0, repr=False)
     _selected_invalid_mask_actions: int = field(init=False, default=0, repr=False)
     _selected_explicit_noop_actions: int = field(init=False, default=0, repr=False)
     _no_safe_action_steps: int = field(init=False, default=0, repr=False)
@@ -137,6 +152,10 @@ class AmcBudgetEnv:
     _safety_matrix_a: np.ndarray | None = field(init=False, default=None, repr=False)
     _safety_bounds: np.ndarray | None = field(init=False, default=None, repr=False)
     _reward_mode_config: RewardModeConfig = field(init=False, repr=False)
+    # 动作空间名称缓存：
+    # - `action_space` 可能在初始化时经过 alias 归一化（例如 constraint_guided_pair -> transfer）；
+    # - 将最终名称固化到 `action_space_name`，供 step/info 日志稳定读取。
+    action_space_name: str = field(init=False, repr=False, default="unknown")
     # v11 运行时特征缓存（EMA/history/event window）。
     _feature_state: RuntimeFeatureState | None = field(init=False, default=None, repr=False)
     _last_observation: AgentObservation | None = field(init=False, default=None, repr=False)
@@ -154,6 +173,8 @@ class AmcBudgetEnv:
 
         if self.action_space == "constraint_guided_pair":
             self.action_space = "constraint_guided_transfer"
+        # 保存归一化后的动作空间名称，供日志与下游 CSV 使用。
+        self.action_space_name = str(self.action_space)
         self._actions = build_budget_action_space(
             self.ordered_tasks,
             action_space=self.action_space,
@@ -306,6 +327,500 @@ class AmcBudgetEnv:
             normalized_total += abs(float(candidate_budgets[task_id]) - float(budget_before[task_id])) / denominator
         return normalized_total
 
+    def _resolve_residual_ranked_action(
+        self,
+        action: BudgetAction,
+        *,
+        budget_state: BudgetState,
+    ) -> tuple[dict[str, int], dict[str, int], str | None, BudgetAction | None]:
+        """将 residual_ranked 槽位动作解析为具体预算更新。
+
+        返回：
+        - updates
+        - candidate_budgets
+        - reject_reason
+        - concrete_action
+        """
+
+        budget_before = dict(budget_state.budgets)
+        if action.is_noop or action.residual_action_type == "noop":
+            return {}, dict(budget_before), None, action
+
+        concrete: BudgetAction | None = None
+        if action.residual_action_type == "increase_lo_risk":
+            increase_idx, reject_reason = self._select_residual_increase_target(
+                budgets=budget_before,
+                criticality=Criticality.LO,
+                rank=int(action.residual_rank or 0),
+            )
+            if reject_reason is not None or increase_idx is None:
+                return {}, dict(budget_before), reject_reason or "residual_rank_no_lo_target", None
+            concrete = self._make_residual_concrete_action(
+                slot_action=action,
+                increase_idx=increase_idx,
+                decrease_indices=(),
+            )
+        elif action.residual_action_type == "decrease_lowest_risk":
+            decrease_indices, reject_reason = self._select_residual_decrease_targets(
+                budgets=budget_before,
+                pool="global_low_risk",
+                start_rank=int(action.residual_rank or 0),
+                count=1,
+                allow_hi_decrease=not self.forbid_decreasing_hi_budgets,
+            )
+            if reject_reason is not None:
+                return {}, dict(budget_before), reject_reason, None
+            concrete = self._make_residual_concrete_action(
+                slot_action=action,
+                increase_idx=None,
+                decrease_indices=decrease_indices,
+            )
+        elif action.residual_action_type == "decrease_lo_lowest_risk":
+            decrease_indices, reject_reason = self._select_residual_decrease_targets(
+                budgets=budget_before,
+                pool="lo_low_risk",
+                start_rank=int(action.residual_rank or 0),
+                count=1,
+                allow_hi_decrease=not self.forbid_decreasing_hi_budgets,
+            )
+            if reject_reason is not None:
+                return {}, dict(budget_before), reject_reason, None
+            concrete = self._make_residual_concrete_action(
+                slot_action=action,
+                increase_idx=None,
+                decrease_indices=decrease_indices,
+            )
+        elif action.residual_action_type in {
+            "transfer_to_lo_risk_from_global_low",
+            "transfer_to_lo_risk_from_lo_low",
+            "transfer_to_lo_risk_from_global_low2",
+        }:
+            increase_idx, reject_reason = self._select_residual_increase_target(
+                budgets=budget_before,
+                criticality=Criticality.LO,
+                rank=int(action.residual_rank or 0),
+            )
+            if reject_reason is not None or increase_idx is None:
+                return {}, dict(budget_before), reject_reason or "residual_rank_no_lo_target", None
+            if action.residual_action_type == "transfer_to_lo_risk_from_lo_low":
+                decrease_pool = "lo_low_risk"
+            else:
+                decrease_pool = "global_low_risk"
+            decrease_indices, reject_reason = self._select_residual_decrease_targets(
+                budgets=budget_before,
+                pool=decrease_pool,
+                start_rank=int(action.residual_decrease_rank or 0),
+                count=int(action.residual_decrease_count or 1),
+                exclude_indices={increase_idx},
+                allow_hi_decrease=not self.forbid_decreasing_hi_budgets,
+            )
+            if reject_reason is not None:
+                return {}, dict(budget_before), reject_reason, None
+            concrete = self._make_residual_concrete_action(
+                slot_action=action,
+                increase_idx=increase_idx,
+                decrease_indices=decrease_indices,
+            )
+        else:
+            return {}, dict(budget_before), f"unknown_residual_action_type:{action.residual_action_type}", None
+
+        if concrete is None:
+            return {}, dict(budget_before), "residual_concrete_action_missing", None
+        updates = apply_budget_action_candidate(
+            action=concrete,
+            budget_state=budget_state,
+            ordered_tasks=self.ordered_tasks,
+        )
+        candidate_budgets = merge_budget_candidate(budget_state, updates)
+        return (updates, candidate_budgets, None, concrete)
+
+    def _select_residual_increase_target(
+        self,
+        *,
+        budgets: dict[str, int],
+        criticality: Criticality,
+        rank: int,
+    ) -> tuple[int | None, str | None]:
+        """按风险排名选择 residual increase 目标。"""
+
+        ranked = self._rank_task_indices_by_risk(
+            budgets=budgets,
+            criticality=criticality,
+            descending=True,
+        )
+        if rank >= len(ranked):
+            return None, f"residual_rank_no_{criticality.name.lower()}_target"
+        return ranked[rank], None
+
+    def _select_residual_decrease_targets(
+        self,
+        *,
+        budgets: dict[str, int],
+        pool: str,
+        start_rank: int,
+        count: int,
+        exclude_indices: set[int] | None = None,
+        allow_hi_decrease: bool = True,
+    ) -> tuple[tuple[int, ...], str | None]:
+        """按低风险池选择 residual decrease 目标集合。"""
+
+        chosen_exclusions = exclude_indices or set()
+        if pool == "global_low_risk":
+            ranked = self._rank_task_indices_by_risk(budgets=budgets, criticality=None, descending=False)
+        elif pool == "lo_low_risk":
+            ranked = self._rank_task_indices_by_risk(
+                budgets=budgets,
+                criticality=Criticality.LO,
+                descending=False,
+            )
+        elif pool == "hi_low_risk":
+            ranked = self._rank_task_indices_by_risk(
+                budgets=budgets,
+                criticality=Criticality.HI,
+                descending=False,
+            )
+        else:
+            return (), f"unknown_residual_decrease_pool:{pool}"
+
+        filtered = [idx for idx in ranked if idx not in chosen_exclusions]
+        # 当策略配置禁止降低 HI 预算时，global/lo 池在 residual 解析阶段就提前排除 HI，
+        # 避免动作在解析后才因 decrease_hi_forbidden 大量失效，提升 transfer 槽位可用率。
+        if not allow_hi_decrease:
+            filtered = [
+                idx
+                for idx in filtered
+                if self.ordered_tasks[idx].criticality is not Criticality.HI
+            ]
+        selected = tuple(filtered[start_rank : start_rank + count])
+        if len(selected) < count:
+            return (), f"residual_rank_no_decrease_target:{pool}"
+        return selected, None
+
+    def _budget_candidate_reject_reason(
+        self,
+        *,
+        action: BudgetAction | None,
+        updates: dict[str, int],
+        budget_before: dict[str, int],
+        candidate_budgets: dict[str, int],
+        hi_pressure_threshold: float,
+        lo_pressure_threshold: float,
+    ) -> str | None:
+        """统一预算候选的拒绝原因判定。
+
+        这个函数的目的只有一个：把“一个候选预算更新是否可接受”的判定收敛到单点，
+        让 safe residual 的 resolver、mask、step 三条路径共用同一套语义，减少偏差。
+        """
+
+        if action is not None and action_violates_hi_decrease_guard(
+            action=action,
+            ordered_tasks=self.ordered_tasks,
+            forbid_decreasing_hi_budgets=self.forbid_decreasing_hi_budgets,
+        ):
+            return "decrease_hi_forbidden"
+
+        residual_guard_reason = self._residual_safety_guard_reject_reason(
+            action=action,
+            budget_before=budget_before,
+            candidate_budgets=candidate_budgets,
+            hi_pressure_threshold=hi_pressure_threshold,
+            lo_pressure_threshold=lo_pressure_threshold,
+        )
+        if residual_guard_reason is not None:
+            return residual_guard_reason
+
+        floor_reject_reason = self._budget_floor_violation(updates=updates)
+        if floor_reject_reason is not None:
+            return floor_reject_reason
+
+        if self.check_safety:
+            report = self._ensure_checker().validate_candidate(candidate_budgets)
+            if not report.accepted:
+                return report.reason
+        return None
+
+    def _resolve_residual_safe_ranked_action(
+        self,
+        action: BudgetAction,
+        budget_before: dict[str, int],
+        *,
+        hi_pressure_threshold: float,
+        lo_pressure_threshold: float,
+    ) -> tuple[dict[str, int], dict[str, int], str | None, BudgetAction | None]:
+        """把 safe residual 槽位动作解析为“第 k 个安全候选”。
+
+        关键语义：
+        1. 先按 LO 风险排序生成 increase 候选；
+        2. 再组合 decrease 候选形成 concrete action；
+        3. 逐个执行 guard/checker 过滤，只保留真正可执行候选；
+        4. rank-k 选第 k 个安全候选，而不是第 k 个原始风险候选。
+        """
+
+        if action.is_noop or action.residual_action_type == "noop":
+            return {}, dict(budget_before), None, action
+        is_anchor_action = action.residual_action_type == "direct_safe_increase_anchor"
+        if not ((action.residual_action_type or "").startswith("safe_") or is_anchor_action):
+            return {}, dict(budget_before), f"unsupported_safe_action_type:{action.residual_action_type}", None
+
+        if is_anchor_action:
+            if action.increase_idx is None:
+                return {}, dict(budget_before), "residual_anchor_missing_increase_idx", None
+            inc_ranked = [int(action.increase_idx)]
+        else:
+            inc_ranked = self._rank_task_indices_by_risk(
+                budgets=budget_before,
+                criticality=Criticality.LO,
+                descending=True,
+            )
+            if not inc_ranked:
+                return {}, dict(budget_before), "residual_safe_no_candidate", None
+
+        safe_candidates: list[tuple[float, float, int, dict[str, int], dict[str, int], BudgetAction]] = []
+
+        for increase_idx in inc_ranked:
+            decrease_combos: list[tuple[int, ...]] = [()]
+            if action.residual_action_type == "safe_transfer_global_low_to_lo_risk":
+                dec, reason = self._select_residual_decrease_targets(
+                    budgets=budget_before,
+                    pool="global_low_risk",
+                    start_rank=int(action.residual_decrease_rank or 0),
+                    count=int(action.residual_decrease_count or 1),
+                    exclude_indices={increase_idx},
+                    allow_hi_decrease=not self.forbid_decreasing_hi_budgets,
+                )
+                if reason is None:
+                    decrease_combos = [dec]
+                else:
+                    decrease_combos = []
+            elif action.residual_action_type == "safe_transfer_lo_low_to_lo_risk":
+                dec, reason = self._select_residual_decrease_targets(
+                    budgets=budget_before,
+                    pool="lo_low_risk",
+                    start_rank=int(action.residual_decrease_rank or 0),
+                    count=int(action.residual_decrease_count or 1),
+                    exclude_indices={increase_idx},
+                    allow_hi_decrease=not self.forbid_decreasing_hi_budgets,
+                )
+                if reason is None:
+                    decrease_combos = [dec]
+                else:
+                    decrease_combos = []
+            elif action.residual_action_type == "safe_transfer_global_low2_to_lo_risk":
+                dec, reason = self._select_residual_decrease_targets(
+                    budgets=budget_before,
+                    pool="global_low_risk",
+                    start_rank=int(action.residual_decrease_rank or 0),
+                    count=int(action.residual_decrease_count or 2),
+                    exclude_indices={increase_idx},
+                    allow_hi_decrease=not self.forbid_decreasing_hi_budgets,
+                )
+                if reason is None:
+                    decrease_combos = [dec]
+                else:
+                    decrease_combos = []
+            elif action.residual_action_type in {"safe_increase_lo_risk", "direct_safe_increase_anchor"}:
+                decrease_combos = [()]
+            else:
+                return {}, dict(budget_before), f"unknown_safe_action_type:{action.residual_action_type}", None
+
+            for dec_indices in decrease_combos:
+                concrete = self._make_residual_concrete_action(
+                    slot_action=action,
+                    increase_idx=increase_idx,
+                    decrease_indices=tuple(dec_indices),
+                )
+                updates = apply_budget_action_candidate(
+                    action=concrete,
+                    budget_state=self._engine.runtime_budgets,  # type: ignore[arg-type]
+                    ordered_tasks=self.ordered_tasks,
+                )
+                candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)  # type: ignore[arg-type]
+                reject_reason = self._budget_candidate_reject_reason(
+                    action=concrete,
+                    updates=updates,
+                    budget_before=budget_before,
+                    candidate_budgets=candidate_budgets,
+                    hi_pressure_threshold=hi_pressure_threshold,
+                    lo_pressure_threshold=lo_pressure_threshold,
+                )
+                if reject_reason is not None:
+                    continue
+
+                inc_risk = self._task_exec_budget_ratio(task_index=increase_idx, budgets=budget_before)
+                if dec_indices:
+                    dec_risk = min(
+                        self._task_exec_budget_ratio(task_index=idx, budgets=budget_before) for idx in dec_indices
+                    )
+                else:
+                    dec_risk = 0.0
+                safe_candidates.append((inc_risk, dec_risk, increase_idx, updates, candidate_budgets, concrete))
+
+        if not safe_candidates:
+            return {}, dict(budget_before), "residual_safe_no_candidate", None
+
+        safe_candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+        rank = int(action.residual_rank or 0)
+        if rank >= len(safe_candidates):
+            return {}, dict(budget_before), "residual_safe_rank_out_of_range", None
+
+        selected = safe_candidates[rank]
+        return selected[3], selected[4], None, selected[5]
+
+    def _rank_lo_utility_increase_candidates(
+        self,
+        *,
+        budgets: dict[str, int],
+    ) -> list[int]:
+        """按“提升收益潜力”对 LO increase 候选排序（高分在前）。"""
+
+        scored: list[tuple[float, int]] = []
+        for idx, task in enumerate(self.ordered_tasks):
+            if task.criticality is not Criticality.LO:
+                continue
+            current = float(budgets[task.name])
+            initial = float(self._initial_budgets.get(task.name, current))
+            # 正向漂移惩罚：预算已经被加过很多的任务，后续增配优先级下调。
+            positive_drift = max(0.0, current / max(initial, 1.0) - 1.0)
+            pressure = self._task_exec_budget_ratio(task_index=idx, budgets=budgets)
+            score = pressure - 0.25 * positive_drift
+            scored.append((score, idx))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [idx for _, idx in scored]
+
+    def _rank_lo_redundant_decrease_candidates(
+        self,
+        *,
+        budgets: dict[str, int],
+    ) -> list[int]:
+        """按“冗余可回收性”对 LO decrease 候选排序（高分在前）。"""
+
+        scored: list[tuple[float, int]] = []
+        for idx, task in enumerate(self.ordered_tasks):
+            if task.criticality is not Criticality.LO:
+                continue
+            current = float(budgets[task.name])
+            initial = float(self._initial_budgets.get(task.name, current))
+            # 仅回收超出初始预算的部分，避免训练初期就压缩 baseline。
+            if current <= initial:
+                continue
+            pressure = self._task_exec_budget_ratio(task_index=idx, budgets=budgets)
+            positive_drift = max(0.0, current / max(initial, 1.0) - 1.0)
+            redundancy_score = positive_drift + max(0.0, 1.0 - pressure)
+            scored.append((redundancy_score, idx))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [idx for _, idx in scored]
+
+    def _resolve_residual_safe_adjust_action(
+        self,
+        action: BudgetAction,
+        budget_before: dict[str, int],
+        *,
+        hi_pressure_threshold: float,
+        lo_pressure_threshold: float,
+    ) -> tuple[dict[str, int], dict[str, int], str | None, BudgetAction | None]:
+        """把 residual_safe_adjust_15a 槽位动作解析为具体 increase/decrease 动作。"""
+
+        if action.is_noop or action.residual_action_type == "noop":
+            return {}, dict(budget_before), None, action
+
+        action_type = action.residual_action_type or ""
+        if action_type == "safe_increase_lo_utility":
+            ranked_candidates = self._rank_lo_utility_increase_candidates(budgets=budget_before)
+            safe_candidates: list[tuple[int, dict[str, int], dict[str, int], BudgetAction]] = []
+            for increase_idx in ranked_candidates:
+                concrete = self._make_residual_concrete_action(
+                    slot_action=action,
+                    increase_idx=increase_idx,
+                    decrease_indices=(),
+                )
+                updates = apply_budget_action_candidate(
+                    action=concrete,
+                    budget_state=self._engine.runtime_budgets,  # type: ignore[arg-type]
+                    ordered_tasks=self.ordered_tasks,
+                )
+                candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)  # type: ignore[arg-type]
+                reject_reason = self._budget_candidate_reject_reason(
+                    action=concrete,
+                    updates=updates,
+                    budget_before=budget_before,
+                    candidate_budgets=candidate_budgets,
+                    hi_pressure_threshold=hi_pressure_threshold,
+                    lo_pressure_threshold=lo_pressure_threshold,
+                )
+                if reject_reason is None:
+                    safe_candidates.append((increase_idx, updates, candidate_budgets, concrete))
+            if not safe_candidates:
+                return {}, dict(budget_before), "residual_safe_adjust_no_candidate", None
+            rank = int(action.residual_rank or 0)
+            if rank >= len(safe_candidates):
+                return {}, dict(budget_before), "residual_safe_adjust_rank_out_of_range", None
+            selected = safe_candidates[rank]
+            return selected[1], selected[2], None, selected[3]
+
+        if action_type == "safe_decrease_lo_redundant":
+            ranked_candidates = self._rank_lo_redundant_decrease_candidates(budgets=budget_before)
+            safe_candidates: list[tuple[int, dict[str, int], dict[str, int], BudgetAction]] = []
+            for decrease_idx in ranked_candidates:
+                concrete = self._make_residual_concrete_action(
+                    slot_action=action,
+                    increase_idx=None,
+                    decrease_indices=(decrease_idx,),
+                )
+                updates = apply_budget_action_candidate(
+                    action=concrete,
+                    budget_state=self._engine.runtime_budgets,  # type: ignore[arg-type]
+                    ordered_tasks=self.ordered_tasks,
+                )
+                candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)  # type: ignore[arg-type]
+                reject_reason = self._budget_candidate_reject_reason(
+                    action=concrete,
+                    updates=updates,
+                    budget_before=budget_before,
+                    candidate_budgets=candidate_budgets,
+                    hi_pressure_threshold=hi_pressure_threshold,
+                    lo_pressure_threshold=lo_pressure_threshold,
+                )
+                if reject_reason is None:
+                    safe_candidates.append((decrease_idx, updates, candidate_budgets, concrete))
+            if not safe_candidates:
+                return {}, dict(budget_before), "residual_safe_adjust_no_candidate", None
+            rank = int(action.residual_rank or 0)
+            if rank >= len(safe_candidates):
+                return {}, dict(budget_before), "residual_safe_adjust_rank_out_of_range", None
+            selected = safe_candidates[rank]
+            return selected[1], selected[2], None, selected[3]
+
+        return {}, dict(budget_before), f"unsupported_safe_adjust_action_type:{action.residual_action_type}", None
+
+    def _make_residual_concrete_action(
+        self,
+        *,
+        slot_action: BudgetAction,
+        increase_idx: int | None,
+        decrease_indices: tuple[int, ...],
+    ) -> BudgetAction:
+        """根据 residual 槽位动作和解析索引构造 concrete action。"""
+
+        increase_task = self.ordered_tasks[increase_idx].name if increase_idx is not None else None
+        decrease_tasks = tuple(self.ordered_tasks[idx].name for idx in decrease_indices)
+        return BudgetAction(
+            action_id=slot_action.action_id,
+            increase_task=increase_task,
+            decrease_tasks=decrease_tasks,
+            increase_idx=increase_idx,
+            decrease_indices=decrease_indices,
+            increase_ratio=slot_action.increase_ratio,
+            decrease_ratio=slot_action.decrease_ratio,
+            action_space_type=slot_action.action_space_type,
+            is_noop=slot_action.is_noop,
+            is_residual_ranked=True,
+            residual_action_type=slot_action.residual_action_type,
+            residual_rank=slot_action.residual_rank,
+            residual_decrease_rank=slot_action.residual_decrease_rank,
+            residual_decrease_count=slot_action.residual_decrease_count,
+            residual_decrease_pool=slot_action.residual_decrease_pool,
+        )
+
     def _compute_budget_drift_mean(self, *, budgets: dict[str, int], initial_budgets: dict[str, int]) -> float:
         """计算预算漂移惩罚项中的平均欠配比值。
 
@@ -422,24 +937,27 @@ class AmcBudgetEnv:
             "lo_near_cancel_rate": float(near_cancel_count / lo_count),
         }
 
-    def _compute_hi_mode_pressure_mean(
+    def _compute_hi_mode_pressure_stats(
         self,
         *,
         budgets: dict[str, int],
         threshold: float,
-    ) -> float:
-        """计算 HI task 的 mode-change pressure 均值。
+    ) -> dict[str, float]:
+        """计算 HI 任务 mode 风险统计量（均值 + 最大值）。
+
+        返回字段：
+        - hi_mode_pressure_mean
+        - hi_mode_pressure_max
 
         定义：
-        pressure_i = max(0, estimated_exec / current_lo_mode_budget_i - threshold)
-
-        说明：
-        - current_lo_mode_budget_i 即当前步骤 action 生效后的预算；
-        - 为了与 LO pressure 一致，这里同样使用 max(recent_execution, ema_cost) 估计执行风险。
+        pressure_i = max(0, estimated_exec / budget_i - threshold)
         """
 
         if self._feature_state is None:
-            return 0.0
+            return {
+                "hi_mode_pressure_mean": 0.0,
+                "hi_mode_pressure_max": 0.0,
+            }
 
         pressures: list[float] = []
         for task in self.ordered_tasks:
@@ -455,8 +973,122 @@ class AmcBudgetEnv:
             pressures.append(pressure)
 
         if not pressures:
+            return {
+                "hi_mode_pressure_mean": 0.0,
+                "hi_mode_pressure_max": 0.0,
+            }
+        return {
+            "hi_mode_pressure_mean": float(sum(pressures) / len(pressures)),
+            "hi_mode_pressure_max": float(max(pressures)),
+        }
+
+    def _compute_hi_mode_pressure_mean(
+        self,
+        *,
+        budgets: dict[str, int],
+        threshold: float,
+    ) -> float:
+        """计算 HI task 的 mode-change pressure 均值。"""
+
+        stats = self._compute_hi_mode_pressure_stats(budgets=budgets, threshold=threshold)
+        return float(stats["hi_mode_pressure_mean"])
+
+    def _compute_task_pressure(
+        self,
+        *,
+        task_index: int,
+        budgets: dict[str, int],
+        threshold: float,
+    ) -> float:
+        """计算单个任务 pressure，用于 residual safety guard。"""
+
+        if self._feature_state is None:
             return 0.0
-        return float(sum(pressures) / len(pressures))
+        task = self.ordered_tasks[task_index]
+        budget = max(1.0, float(budgets[task.name]))
+        recent_exec = float(self._monitor.recent_execution.get(task.name, 0.0))
+        ema_exec = float(self._feature_state.ema_cost.get(task.name, float(task.c_lo)))
+        estimated_exec = max(recent_exec, ema_exec)
+        return float(max(0.0, estimated_exec / budget - float(threshold)))
+
+    def _task_exec_budget_ratio(
+        self,
+        *,
+        task_index: int,
+        budgets: dict[str, int],
+    ) -> float:
+        """计算任务执行开销与预算比值，用于 residual 风险排序。"""
+
+        if self._feature_state is None:
+            return 0.0
+        task = self.ordered_tasks[task_index]
+        budget = max(1.0, float(budgets[task.name]))
+        recent_exec = float(self._monitor.recent_execution.get(task.name, 0.0))
+        ema_exec = float(self._feature_state.ema_cost.get(task.name, float(task.c_lo)))
+        estimated_exec = max(recent_exec, ema_exec)
+        return float(estimated_exec / budget)
+
+    def _rank_task_indices_by_risk(
+        self,
+        *,
+        budgets: dict[str, int],
+        criticality: Criticality | None = None,
+        descending: bool = True,
+    ) -> list[int]:
+        """按风险从高到低/低到高排序任务索引。"""
+
+        indices: list[int] = []
+        for idx, task in enumerate(self.ordered_tasks):
+            if criticality is not None and task.criticality is not criticality:
+                continue
+            indices.append(idx)
+        return sorted(
+            indices,
+            key=lambda idx: self._task_exec_budget_ratio(task_index=idx, budgets=budgets),
+            reverse=descending,
+        )
+
+    def _residual_safety_guard_reject_reason(
+        self,
+        *,
+        action: BudgetAction | None,
+        budget_before: dict[str, int],
+        candidate_budgets: dict[str, int],
+        hi_pressure_threshold: float,
+        lo_pressure_threshold: float,
+    ) -> str | None:
+        """判断 residual action 是否需要 fallback。"""
+
+        if not self.enable_residual_safety_fallback:
+            return None
+        if action is None or action.is_noop:
+            return None
+        hi_before_stats = self._compute_hi_mode_pressure_stats(
+            budgets=budget_before,
+            threshold=hi_pressure_threshold,
+        )
+        hi_after_stats = self._compute_hi_mode_pressure_stats(
+            budgets=candidate_budgets,
+            threshold=hi_pressure_threshold,
+        )
+        hi_key = "hi_mode_pressure_max" if self.residual_guard_use_hi_pressure_max else "hi_mode_pressure_mean"
+        hi_before = float(hi_before_stats[hi_key])
+        hi_after = float(hi_after_stats[hi_key])
+        if hi_after > hi_before + float(self.residual_guard_hi_pressure_delta_limit):
+            return "residual_guard_hi_pressure_delta"
+        if hi_after > float(self.residual_guard_hi_pressure_abs_limit):
+            return "residual_guard_hi_pressure_abs"
+        for dec_idx in action.decrease_indices:
+            task = self.ordered_tasks[dec_idx]
+            threshold = hi_pressure_threshold if task.criticality is Criticality.HI else lo_pressure_threshold
+            dec_pressure = self._compute_task_pressure(
+                task_index=dec_idx,
+                budgets=budget_before,
+                threshold=threshold,
+            )
+            if dec_pressure > float(self.residual_guard_reject_decrease_pressure_threshold):
+                return "residual_guard_decrease_risky_task"
+        return None
 
     def _budget_floor_violation(
         self,
@@ -791,6 +1423,131 @@ class AmcBudgetEnv:
                             "single_increase_was_safe": resolved.single_increase_was_safe,
                             "diagnosis_reason": resolved.diagnosis_reason,
                             "violated_row_index": resolved.violated_row_index,
+                        }
+                    )
+                continue
+            # residual_ranked 在 mask 阶段复用 resolver，确保“槽位语义 -> concrete action”与 step 完全一致。
+            if action.is_residual_ranked:
+                is_safe_adjust_action = action.action_space_type == "residual_safe_adjust_15a"
+                is_safe_residual_action = (
+                    (action.residual_action_type or "").startswith("safe_")
+                    or action.residual_action_type == "direct_safe_increase_anchor"
+                )
+                if is_safe_adjust_action:
+                    updates, candidate_budgets, resolve_reject_reason, concrete_action = (
+                        self._resolve_residual_safe_adjust_action(
+                            action,
+                            budget_before=budget_before,
+                            hi_pressure_threshold=float(
+                                self._reward_mode_config.reward_parameters.get("hi_mode_pressure_threshold", 0.8)
+                            ),
+                            lo_pressure_threshold=float(
+                                self._reward_mode_config.reward_parameters.get("lo_pressure_threshold", 0.8)
+                            ),
+                        )
+                    )
+                elif is_safe_residual_action:
+                    updates, candidate_budgets, resolve_reject_reason, concrete_action = (
+                        self._resolve_residual_safe_ranked_action(
+                            action,
+                            budget_before=budget_before,
+                            hi_pressure_threshold=float(
+                                self._reward_mode_config.reward_parameters.get("hi_mode_pressure_threshold", 0.8)
+                            ),
+                            lo_pressure_threshold=float(
+                                self._reward_mode_config.reward_parameters.get("lo_pressure_threshold", 0.8)
+                            ),
+                        )
+                    )
+                else:
+                    updates, candidate_budgets, resolve_reject_reason, concrete_action = self._resolve_residual_ranked_action(
+                        action,
+                        budget_state=self._engine.runtime_budgets,
+                    )
+                valid = resolve_reject_reason is None
+                reject_reason = resolve_reject_reason
+                if valid and concrete_action is not None and not is_safe_residual_action:
+                    if action_violates_hi_decrease_guard(
+                        action=concrete_action,
+                        ordered_tasks=self.ordered_tasks,
+                        forbid_decreasing_hi_budgets=self.forbid_decreasing_hi_budgets,
+                    ):
+                        valid = False
+                        reject_reason = "decrease_hi_forbidden"
+                # residual safety guard 前移到 mask：
+                # 这样 DQN 在采样阶段就看不到“step 必拒绝”的 residual 动作，
+                # 避免 replay 中混入 mask 通过但 step reject 的不一致样本。
+                if valid and concrete_action is not None and not is_safe_residual_action:
+                    residual_guard_reason = self._residual_safety_guard_reject_reason(
+                        action=concrete_action,
+                        budget_before=budget_before,
+                        candidate_budgets=candidate_budgets,
+                        hi_pressure_threshold=float(
+                            self._reward_mode_config.reward_parameters.get("hi_mode_pressure_threshold", 0.8)
+                        ),
+                        lo_pressure_threshold=float(
+                            self._reward_mode_config.reward_parameters.get("lo_pressure_threshold", 0.8)
+                        ),
+                    )
+                    if residual_guard_reason is not None:
+                        valid = False
+                        reject_reason = residual_guard_reason
+                mask.append(valid)
+                if not valid and reject_reason is not None:
+                    reject_reason_counts[_normalize_candidate_reject_reason(reject_reason)] += 1
+                if self.mask_detail_mode == "minimal":
+                    mask_details.append(
+                        {
+                            "action_id": action.action_id,
+                            "valid": valid,
+                            "reject_reason": reject_reason,
+                            "is_noop": bool(action.residual_action_type == "noop"),
+                            "is_residual_ranked": True,
+                            "residual_action_type": action.residual_action_type,
+                            "residual_rank": action.residual_rank,
+                            "resolved_increase_task": concrete_action.increase_task if concrete_action else None,
+                            "resolved_decrease_tasks": (
+                                tuple(concrete_action.decrease_tasks) if concrete_action else ()
+                            ),
+                            "increase_idx": concrete_action.increase_idx if concrete_action else None,
+                            "decrease_indices": (
+                                tuple(concrete_action.decrease_indices) if concrete_action else ()
+                            ),
+                            "safe_candidate": bool(
+                                resolve_reject_reason is None and is_safe_residual_action
+                            ),
+                            "safe_reject_reason": resolve_reject_reason
+                            if is_safe_residual_action
+                            else None,
+                        }
+                    )
+                else:
+                    mask_details.append(
+                        {
+                            "action_id": action.action_id,
+                            "valid": valid,
+                            "reject_reason": reject_reason,
+                            "updates": dict(updates),
+                            "budget_before": budget_before,
+                            "candidate_budgets": dict(candidate_budgets),
+                            "is_noop": bool(action.residual_action_type == "noop"),
+                            "is_residual_ranked": True,
+                            "residual_action_type": action.residual_action_type,
+                            "residual_rank": action.residual_rank,
+                            "resolved_increase_task": concrete_action.increase_task if concrete_action else None,
+                            "resolved_decrease_tasks": (
+                                tuple(concrete_action.decrease_tasks) if concrete_action else ()
+                            ),
+                            "increase_idx": concrete_action.increase_idx if concrete_action else None,
+                            "decrease_indices": (
+                                tuple(concrete_action.decrease_indices) if concrete_action else ()
+                            ),
+                            "safe_candidate": bool(
+                                resolve_reject_reason is None and is_safe_residual_action
+                            ),
+                            "safe_reject_reason": resolve_reject_reason
+                            if is_safe_residual_action
+                            else None,
                         }
                     )
                 continue
@@ -1141,6 +1898,7 @@ class AmcBudgetEnv:
         self._safety_checked_actions = 0
         self._safety_accepted_actions = 0
         self._safety_rejected_actions = 0
+        self._residual_guard_rejected_actions = 0
         self._selected_invalid_mask_actions = 0
         self._selected_explicit_noop_actions = 0
         self._no_safe_action_steps = 0
@@ -1197,6 +1955,10 @@ class AmcBudgetEnv:
         selected_action_was_mask_valid = action_id is None
         action_was_checked = False
         is_explicit_noop_action = False
+        resolved_increase_task: str | None = None
+        resolved_decrease_tasks: tuple[str, ...] = ()
+        resolved_increase_idx: int | None = None
+        resolved_decrease_indices: tuple[int, ...] = ()
 
         if action_id is not None:
             if action_id < 0 or action_id >= len(self._actions):
@@ -1208,6 +1970,12 @@ class AmcBudgetEnv:
                 if not selected_action_was_mask_valid:
                     self._selected_invalid_mask_actions += 1
             action = self._actions[action_id]
+            # 对静态动作空间（single/pair/triple）提前写入 resolved 目标，
+            # 让 validation policy logging 在非 residual 空间下也能输出具体任务信息。
+            resolved_increase_task = action.increase_task
+            resolved_decrease_tasks = tuple(action.decrease_tasks)
+            resolved_increase_idx = action.increase_idx
+            resolved_decrease_indices = tuple(action.decrease_indices)
             if action.is_noop:
                 # 显式 noop 的执行语义是“主动接受但不改预算”：
                 # - 不做 safety check；
@@ -1245,6 +2013,116 @@ class AmcBudgetEnv:
                         "lo_mode_violation",
                     }:
                         self._safety_rejected_actions += 1
+            elif action.is_residual_ranked:
+                is_safe_adjust_action = action.action_space_type == "residual_safe_adjust_15a"
+                is_safe_residual_action = (
+                    (action.residual_action_type or "").startswith("safe_")
+                    or action.residual_action_type == "direct_safe_increase_anchor"
+                )
+                if is_safe_adjust_action:
+                    (
+                        updates,
+                        candidate_budgets,
+                        resolve_reject_reason,
+                        concrete_action,
+                    ) = self._resolve_residual_safe_adjust_action(
+                        action,
+                        budget_before=budget_before,
+                        hi_pressure_threshold=float(
+                            self._reward_mode_config.reward_parameters.get("hi_mode_pressure_threshold", 0.8)
+                        ),
+                        lo_pressure_threshold=float(
+                            self._reward_mode_config.reward_parameters.get("lo_pressure_threshold", 0.8)
+                        ),
+                    )
+                elif is_safe_residual_action:
+                    (
+                        updates,
+                        candidate_budgets,
+                        resolve_reject_reason,
+                        concrete_action,
+                    ) = self._resolve_residual_safe_ranked_action(
+                        action,
+                        budget_before=budget_before,
+                        hi_pressure_threshold=float(
+                            self._reward_mode_config.reward_parameters.get("hi_mode_pressure_threshold", 0.8)
+                        ),
+                        lo_pressure_threshold=float(
+                            self._reward_mode_config.reward_parameters.get("lo_pressure_threshold", 0.8)
+                        ),
+                    )
+                else:
+                    (
+                        updates,
+                        candidate_budgets,
+                        resolve_reject_reason,
+                        concrete_action,
+                    ) = self._resolve_residual_ranked_action(
+                        action,
+                        budget_state=self._engine.runtime_budgets,
+                    )
+                resolved_increase_task = concrete_action.increase_task if concrete_action is not None else None
+                resolved_decrease_tasks = tuple(concrete_action.decrease_tasks) if concrete_action is not None else ()
+                resolved_increase_idx = concrete_action.increase_idx if concrete_action is not None else None
+                resolved_decrease_indices = (
+                    tuple(concrete_action.decrease_indices) if concrete_action is not None else ()
+                )
+                if resolve_reject_reason is not None:
+                    accepted = False
+                    reject_reason = resolve_reject_reason
+                    updates = {}
+                    candidate_budgets = dict(budget_before)
+                else:
+                    if concrete_action is None:
+                        accepted = False
+                        reject_reason = "residual_concrete_action_missing"
+                        updates = {}
+                        candidate_budgets = dict(budget_before)
+                    elif is_safe_residual_action:
+                        accepted = True
+                    else:
+                        residual_guard_reason = self._residual_safety_guard_reject_reason(
+                            action=concrete_action,
+                            budget_before=budget_before,
+                            candidate_budgets=candidate_budgets,
+                            hi_pressure_threshold=float(
+                                self._reward_mode_config.reward_parameters.get("hi_mode_pressure_threshold", 0.8)
+                            ),
+                            lo_pressure_threshold=float(
+                                self._reward_mode_config.reward_parameters.get("lo_pressure_threshold", 0.8)
+                            ),
+                        )
+                        if residual_guard_reason is not None:
+                            accepted = False
+                            reject_reason = residual_guard_reason
+                            updates = {}
+                            candidate_budgets = dict(budget_before)
+                            action_was_checked = True
+                            self._residual_guard_rejected_actions += 1
+                        else:
+                            floor_reject_reason = self._budget_floor_violation(updates=updates)
+                            if floor_reject_reason is not None:
+                                accepted = False
+                                reject_reason = floor_reject_reason
+                            elif self.check_safety:
+                                action_was_checked = True
+                                self._safety_checked_actions += 1
+                                report = self._ensure_checker().validate_candidate(candidate_budgets)
+                                accepted = report.accepted
+                                if not accepted:
+                                    reject_reason = report.reason
+                                    reject_diagnostics = report.diagnostics
+                                    self._safety_rejected_actions += 1
+                                else:
+                                    self._safety_accepted_actions += 1
+                            else:
+                                accepted = True
+                # residual_ranked 分支在动作被接受后，必须显式把 updates 应用到 runtime budget。
+                # 否则会出现日志显示 accepted=True，但预算状态实际未变化的问题。
+                if accepted:
+                    self._engine.apply_budget_updates(updates)
+                elif is_safe_residual_action and reject_reason is not None:
+                    reject_reason = f"safe_mask_step_mismatch:{reject_reason}"
             else:
                 # 运行时执行路径与 mask 路径做同样判定：
                 # 即便调用方绕过了 valid_action_mask（例如手工传 action_id），
@@ -1265,25 +2143,44 @@ class AmcBudgetEnv:
                         ordered_tasks=self.ordered_tasks,
                     )
                     candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
-                    # step() 的 floor 兜底与 mask 路径必须保持同一语义：
-                    # 即便调用方绕过了 valid_action_mask，这里也要拒绝任何会跌破 floor 的动作。
-                    floor_reject_reason = self._budget_floor_violation(updates=updates)
-                    if floor_reject_reason is not None:
+                    residual_guard_reason = self._residual_safety_guard_reject_reason(
+                        action=action,
+                        budget_before=budget_before,
+                        candidate_budgets=candidate_budgets,
+                        hi_pressure_threshold=float(
+                            self._reward_mode_config.reward_parameters.get("hi_mode_pressure_threshold", 0.8)
+                        ),
+                        lo_pressure_threshold=float(
+                            self._reward_mode_config.reward_parameters.get("lo_pressure_threshold", 0.8)
+                        ),
+                    )
+                    if residual_guard_reason is not None:
                         accepted = False
-                        reject_reason = floor_reject_reason
-                    elif self.check_safety:
+                        reject_reason = residual_guard_reason
+                        updates = {}
+                        candidate_budgets = dict(budget_before)
                         action_was_checked = True
-                        self._safety_checked_actions += 1
-                        report = self._ensure_checker().validate_candidate(candidate_budgets)
-                        accepted = report.accepted
-                        if not accepted:
-                            reject_reason = report.reason
-                            reject_diagnostics = report.diagnostics
-                            self._safety_rejected_actions += 1
-                        else:
-                            self._safety_accepted_actions += 1
+                        self._residual_guard_rejected_actions += 1
                     else:
-                        accepted = True
+                        # step() 的 floor 兜底与 mask 路径必须保持同一语义：
+                        # 即便调用方绕过了 valid_action_mask，这里也要拒绝任何会跌破 floor 的动作。
+                        floor_reject_reason = self._budget_floor_violation(updates=updates)
+                        if floor_reject_reason is not None:
+                            accepted = False
+                            reject_reason = floor_reject_reason
+                        elif self.check_safety:
+                            action_was_checked = True
+                            self._safety_checked_actions += 1
+                            report = self._ensure_checker().validate_candidate(candidate_budgets)
+                            accepted = report.accepted
+                            if not accepted:
+                                reject_reason = report.reason
+                                reject_diagnostics = report.diagnostics
+                                self._safety_rejected_actions += 1
+                            else:
+                                self._safety_accepted_actions += 1
+                        else:
+                            accepted = True
                 if accepted:
                     self._engine.apply_budget_updates(updates)
         else:
@@ -1514,6 +2411,8 @@ class AmcBudgetEnv:
             "time": current_time,
             "action_time": action_time,
             "action_id": action_id,
+            # 统一写入动作空间名称，便于 validation 侧跨 action_space 做日志聚合。
+            "action_space": getattr(self, "action_space_name", "unknown"),
             "accepted": accepted,
             # 统一输出 is_noop，明确区分：
             # - 显式 noop：action_id 为具体编号且 is_noop=True；
@@ -1535,6 +2434,33 @@ class AmcBudgetEnv:
             "selected_action_was_mask_valid": selected_action_was_mask_valid,
             "reject_reason": reject_reason,
             "reject_diagnostics": list(reject_diagnostics),
+            "residual_guard_enabled": bool(self.enable_residual_safety_fallback),
+            "residual_guard_rejected": bool(reject_reason and str(reject_reason).startswith("residual_guard_")),
+            "residual_guard_rejected_actions": int(self._residual_guard_rejected_actions),
+            "residual_guard_hi_pressure_delta_limit": float(self.residual_guard_hi_pressure_delta_limit),
+            "residual_guard_hi_pressure_abs_limit": float(self.residual_guard_hi_pressure_abs_limit),
+            "residual_action_type": (
+                getattr(action, "residual_action_type", None) if action_id is not None else None
+            ),
+            "residual_rank": getattr(action, "residual_rank", None) if action_id is not None else None,
+            "residual_decrease_rank": (
+                getattr(action, "residual_decrease_rank", None) if action_id is not None else None
+            ),
+            "residual_decrease_count": (
+                getattr(action, "residual_decrease_count", None) if action_id is not None else None
+            ),
+            "residual_decrease_pool": (
+                getattr(action, "residual_decrease_pool", None) if action_id is not None else None
+            ),
+            # 兼容通用字段命名：validation 统计统一读这组 key，无需区分 residual/非 residual 分支。
+            "resolved_increase_task": resolved_increase_task,
+            "resolved_decrease_tasks": tuple(resolved_decrease_tasks),
+            "increase_idx": resolved_increase_idx,
+            "decrease_indices": tuple(resolved_decrease_indices),
+            "residual_resolved_increase_task": resolved_increase_task,
+            "residual_resolved_decrease_tasks": tuple(resolved_decrease_tasks),
+            "residual_resolved_increase_idx": resolved_increase_idx,
+            "residual_resolved_decrease_indices": tuple(resolved_decrease_indices),
             "mode_changes": mode_changes,
             "lo_cancellations": lo_cancellations,
             "deadline_misses": deadline_misses,

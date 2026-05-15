@@ -28,6 +28,19 @@ class BudgetAction:
     # 该类动作不会在动作空间阶段绑定具体任务索引，而是在环境中按当前状态动态解析。
     is_constraint_guided_pair: bool = False
     constraint_guided_increase_rank: int | None = None
+    # residual_ranked 固定槽位标记：
+    # - 动作空间只定义语义槽位，不在构建时绑定具体 task；
+    # - 具体目标任务在 env.step() 中按当前风险排序动态解析。
+    is_residual_ranked: bool = False
+    residual_action_type: str | None = None
+    residual_rank: int | None = None
+    # residual transfer 动作的 decrease 端参数：
+    # - residual_decrease_rank：decrease 池内起始 rank；
+    # - residual_decrease_count：一次动作要降低多少个任务预算；
+    # - residual_decrease_pool：decrease 目标池（如 global_low_risk / lo_low_risk）。
+    residual_decrease_rank: int | None = None
+    residual_decrease_count: int = 1
+    residual_decrease_pool: str | None = None
 
 
 def action_violates_hi_decrease_guard(
@@ -72,13 +85,27 @@ def build_budget_action_space(
     - `triple`: 增加 1 个任务预算，降低 2 个任务预算；
     - `pair`: 增加 1 个任务预算，降低 1 个任务预算；
     - `single`: 只增加或只降低 1 个任务预算；
-    - 可选 `include_explicit_noop` 追加显式 NoOp 动作。
+    - `residual_ranked`: 固定 residual action 槽位，运行时按风险排序动态解析目标任务；
+    - `residual_safe_ranked`: safe residual 槽位，运行时先过滤安全候选再按 rank 选择；
+    - `residual_anchor_mc_lo_2`: 在 residual_safe_ranked 基础上加入 direct safe increase mc_lo_2 anchor；
+    - `residual_safe_adjust_15a`: 解耦的 safe increase/decrease 槽位；
+      0 noop，1-8 safe increase utility rank，9-14 safe decrease redundant rank；
+    - 可选 `include_explicit_noop` 追加显式 NoOp 动作（`residual_ranked` 内部已自带 noop）。
     """
 
     if action_space == "constraint_guided_pair":
         # 兼容 alias：外部仍可传旧名称，内部统一为 transfer 语义。
         action_space = "constraint_guided_transfer"
-    if action_space not in {"triple", "pair", "single", "constraint_guided_transfer"}:
+    if action_space not in {
+        "triple",
+        "pair",
+        "single",
+        "constraint_guided_transfer",
+        "residual_ranked",
+        "residual_safe_ranked",
+        "residual_anchor_mc_lo_2",
+        "residual_safe_adjust_15a",
+    }:
         raise ValueError(f"不支持的 action_space: {action_space}")
     if budget_increase_ratio <= 0.0:
         raise ValueError("budget_increase_ratio 必须为正数")
@@ -151,7 +178,7 @@ def build_budget_action_space(
                 )
             )
             action_id += 1
-    else:
+    elif action_space == "constraint_guided_transfer":
         # constraint-guided transfer 采用“固定动作槽位 + 运行时动态映射”：
         # - 动作空间中只记录 increase_rank（每个槽位对应一个 bundled transfer）；
         # - decrease 目标集合由共享枚举器在当前观测下诊断得到；
@@ -178,7 +205,241 @@ def build_budget_action_space(
             )
             action_id += 1
 
-    if include_explicit_noop:
+    elif action_space == "residual_ranked":
+        # residual_ranked 固定 15 个语义槽位：
+        # - 目标是优先增强 LO 风险任务的可调性，并提供可学习的 transfer 语义；
+        # - 槽位不绑定具体任务，具体 increase/decrease 目标在 env 中按实时风险解析。
+        def _append_residual_action(
+            *,
+            residual_action_type: str,
+            residual_rank: int | None = None,
+            residual_decrease_rank: int | None = None,
+            residual_decrease_count: int = 1,
+            residual_decrease_pool: str | None = None,
+            is_noop: bool = False,
+        ) -> None:
+            nonlocal action_id
+            actions.append(
+                BudgetAction(
+                    action_id=action_id,
+                    increase_task=None,
+                    decrease_tasks=(),
+                    increase_idx=None,
+                    decrease_indices=(),
+                    increase_ratio=budget_increase_ratio,
+                    decrease_ratio=budget_decrease_ratio,
+                    action_space_type=action_space,
+                    is_noop=is_noop,
+                    is_residual_ranked=True,
+                    residual_action_type=residual_action_type,
+                    residual_rank=residual_rank,
+                    residual_decrease_rank=residual_decrease_rank,
+                    residual_decrease_count=residual_decrease_count,
+                    residual_decrease_pool=residual_decrease_pool,
+                )
+            )
+            action_id += 1
+
+        _append_residual_action(residual_action_type="noop", is_noop=True)
+
+        for rank in range(4):
+            _append_residual_action(
+                residual_action_type="increase_lo_risk",
+                residual_rank=rank,
+            )
+
+        for rank in range(2):
+            _append_residual_action(
+                residual_action_type="decrease_lowest_risk",
+                residual_rank=rank,
+            )
+
+        for rank in range(2):
+            _append_residual_action(
+                residual_action_type="decrease_lo_lowest_risk",
+                residual_rank=rank,
+            )
+
+        for rank in range(3):
+            _append_residual_action(
+                residual_action_type="transfer_to_lo_risk_from_global_low",
+                residual_rank=rank,
+                residual_decrease_rank=0,
+                residual_decrease_count=1,
+                residual_decrease_pool="global_low_risk",
+            )
+
+        for rank in range(2):
+            _append_residual_action(
+                residual_action_type="transfer_to_lo_risk_from_lo_low",
+                residual_rank=rank,
+                residual_decrease_rank=0,
+                residual_decrease_count=1,
+                residual_decrease_pool="lo_low_risk",
+            )
+
+        _append_residual_action(
+            residual_action_type="transfer_to_lo_risk_from_global_low2",
+            residual_rank=0,
+            residual_decrease_rank=0,
+            residual_decrease_count=2,
+            residual_decrease_pool="global_low_risk",
+        )
+    elif action_space in {"residual_safe_ranked", "residual_anchor_mc_lo_2"}:
+        # residual_safe_ranked 固定 15 个 safe 槽位：
+        # - 移除 pure decrease 动作；
+        # - increase/transfer 的具体目标在 env 中通过“安全候选过滤”后再按 rank 选择。
+        # residual_anchor_mc_lo_2 采用最小 5 槽位：
+        # 0 noop
+        # 1 direct_safe_increase_anchor(mc_lo_2)
+        # 2..4 safe_increase_lo_risk(rank=0..2)
+        def _append_residual_safe_action(
+            *,
+            residual_action_type: str,
+            residual_rank: int | None = None,
+            residual_decrease_rank: int | None = None,
+            residual_decrease_count: int = 1,
+            residual_decrease_pool: str | None = None,
+            increase_task: str | None = None,
+            increase_idx: int | None = None,
+            is_noop: bool = False,
+        ) -> None:
+            nonlocal action_id
+            actions.append(
+                BudgetAction(
+                    action_id=action_id,
+                    increase_task=increase_task,
+                    decrease_tasks=(),
+                    increase_idx=increase_idx,
+                    decrease_indices=(),
+                    increase_ratio=budget_increase_ratio,
+                    decrease_ratio=budget_decrease_ratio,
+                    action_space_type=action_space,
+                    is_noop=is_noop,
+                    is_residual_ranked=True,
+                    residual_action_type=residual_action_type,
+                    residual_rank=residual_rank,
+                    residual_decrease_rank=residual_decrease_rank,
+                    residual_decrease_count=residual_decrease_count,
+                    residual_decrease_pool=residual_decrease_pool,
+                )
+            )
+            action_id += 1
+
+        _append_residual_safe_action(residual_action_type="noop", is_noop=True)
+
+        if action_space == "residual_anchor_mc_lo_2":
+            anchor_name = "mc_lo_2"
+            if anchor_name not in name_to_index:
+                raise ValueError(
+                    "residual_anchor_mc_lo_2 requires task named 'mc_lo_2', "
+                    f"but available tasks are: {names}"
+                )
+            _append_residual_safe_action(
+                residual_action_type="direct_safe_increase_anchor",
+                residual_rank=None,
+                increase_task=anchor_name,
+                increase_idx=name_to_index[anchor_name],
+            )
+            for rank in range(3):
+                _append_residual_safe_action(
+                    residual_action_type="safe_increase_lo_risk",
+                    residual_rank=rank,
+                )
+            assert len(actions) == 5
+            assert actions[0].is_noop
+            return tuple(actions)
+        else:
+            safe_increase_ranks = range(4)
+
+        for rank in safe_increase_ranks:
+            _append_residual_safe_action(
+                residual_action_type="safe_increase_lo_risk",
+                residual_rank=rank,
+            )
+
+        for rank in range(4):
+            _append_residual_safe_action(
+                residual_action_type="safe_transfer_global_low_to_lo_risk",
+                residual_rank=rank,
+                residual_decrease_rank=0,
+                residual_decrease_count=1,
+                residual_decrease_pool="global_low_risk",
+            )
+
+        for rank in range(4):
+            _append_residual_safe_action(
+                residual_action_type="safe_transfer_lo_low_to_lo_risk",
+                residual_rank=rank,
+                residual_decrease_rank=0,
+                residual_decrease_count=1,
+                residual_decrease_pool="lo_low_risk",
+            )
+
+        for rank in range(2):
+            _append_residual_safe_action(
+                residual_action_type="safe_transfer_global_low2_to_lo_risk",
+                residual_rank=rank,
+                residual_decrease_rank=0,
+                residual_decrease_count=2,
+                residual_decrease_pool="global_low_risk",
+            )
+        assert len(actions) == 15
+        assert actions[0].is_noop
+    elif action_space == "residual_safe_adjust_15a":
+        # residual_safe_adjust_15a 固定 15 个语义槽位：
+        # 0 noop；
+        # 1..8  安全增加：按 utility 排序选择第 k 个 LO 任务；
+        # 9..14 安全降低：按 redundant 排序选择第 k 个 LO 任务。
+        # 该空间不包含 transfer，不绑定固定 task-name anchor。
+        def _append_adjust_action(
+            *,
+            residual_action_type: str,
+            residual_rank: int | None = None,
+            is_noop: bool = False,
+        ) -> None:
+            nonlocal action_id
+            actions.append(
+                BudgetAction(
+                    action_id=action_id,
+                    increase_task=None,
+                    decrease_tasks=(),
+                    increase_idx=None,
+                    decrease_indices=(),
+                    increase_ratio=budget_increase_ratio,
+                    decrease_ratio=budget_decrease_ratio,
+                    action_space_type=action_space,
+                    is_noop=is_noop,
+                    is_residual_ranked=True,
+                    residual_action_type=residual_action_type,
+                    residual_rank=residual_rank,
+                )
+            )
+            action_id += 1
+
+        _append_adjust_action(residual_action_type="noop", is_noop=True)
+
+        for rank in range(8):
+            _append_adjust_action(
+                residual_action_type="safe_increase_lo_utility",
+                residual_rank=rank,
+            )
+
+        for rank in range(6):
+            _append_adjust_action(
+                residual_action_type="safe_decrease_lo_redundant",
+                residual_rank=rank,
+            )
+
+        assert len(actions) == 15
+        assert actions[0].is_noop
+
+    if include_explicit_noop and action_space not in {
+        "residual_ranked",
+        "residual_safe_ranked",
+        "residual_anchor_mc_lo_2",
+        "residual_safe_adjust_15a",
+    }:
         actions.append(
             BudgetAction(
                 action_id=action_id,
@@ -234,3 +495,37 @@ def apply_budget_action_candidate(
         candidate[dec_name] = max(1, dec_value)
 
     return candidate
+
+
+def describe_budget_action(action: BudgetAction) -> str:
+    """把离散预算动作转换为可读字符串，便于写入分析型 CSV。
+
+    设计目标：
+    1. 输出稳定、可机读：同一动作在不同运行中描述字符串保持一致；
+    2. residual_ranked 动作要包含关键槽位参数，便于离线分析“策略到底用了哪一类动作”；
+    3. 不引入额外兜底推断逻辑，只按动作对象中已有字段直接拼接。
+    """
+
+    if action.is_noop:
+        return "noop"
+
+    if action.action_space_type in {
+        "residual_ranked",
+        "residual_safe_ranked",
+        "residual_anchor_mc_lo_2",
+        "residual_safe_adjust_15a",
+    }:
+        parts: list[str] = [action.residual_action_type or "unknown"]
+        if action.increase_task is not None:
+            parts.append(f"anchor={action.increase_task}")
+        if action.residual_rank is not None:
+            parts.append(f"inc_rank={action.residual_rank}")
+        if action.residual_decrease_pool is not None:
+            parts.append(f"dec_pool={action.residual_decrease_pool}")
+        if action.residual_decrease_rank is not None:
+            parts.append(f"dec_rank={action.residual_decrease_rank}")
+        if action.residual_decrease_count is not None:
+            parts.append(f"dec_count={action.residual_decrease_count}")
+        return "|".join(parts)
+
+    return action.action_space_type

@@ -12,8 +12,8 @@
     "lo_cancellation_penalty": 2.0,
     "deadline_miss_penalty": 100.0,
     "invalid_action_penalty": 10.0,
-    "budget_change_penalty": 0.0,
-    "budget_drift_penalty": 0.0,
+    "budget_change_penalty": 0.00,
+    "budget_drift_penalty": 0.00,
     "noop_bonus": 0.0
   },
   "step_reward_formula": "job_start_weight * delta_job_start - lo_overrun_penalty * lo_overrun_rate - hi_overrun_penalty * hi_overrun_rate - mode_change_penalty * mode_change_per_job - lo_cancellation_penalty * lo_cancellation_rate - deadline_miss_penalty * deadline_miss_rate - invalid_action_penalty * invalid_action - budget_change_penalty * budget_change_norm - budget_drift_penalty * budget_drift_mean + noop_bonus * is_explicit_noop_action"

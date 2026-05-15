@@ -362,6 +362,257 @@ Step6~Step10 额外参数说明（训练/评估同名参数）：
 - `action_space_size = top_k_risk * top_k_decrease + (include_explicit_noop ? 1 : 0)`
 - 例如默认参数 + 显式 noop：`3 * 5 + 1 = 16`
 
+### 11.x Residual Correction（两阶段实现）
+
+本次实现新增了文档 `AMCRTB_residual_correction_两阶段实现计划.md` 对应的两阶段能力：
+
+- Step 1：保留原 action space，在执行前增加 residual safety fallback。
+- Step 2：新增 `residual_ranked` action space，让 DQN 学习 AMCRTB 基线上的小幅修正。
+
+#### 1) Step 1：Residual Safety Fallback
+
+训练 CLI 新增参数：
+
+- `--enable-residual-safety-fallback / --no-enable-residual-safety-fallback`
+- `--residual-guard-hi-pressure-delta-limit`（默认 `0.03`）
+- `--residual-guard-hi-pressure-abs-limit`（默认 `0.30`）
+- `--residual-guard-reject-decrease-pressure-threshold`（默认 `0.05`）
+- `--residual-guard-use-hi-pressure-max / --no-residual-guard-use-hi-pressure-max`（默认关闭，使用 mean）
+
+开启后，动作执行会先做 residual guard：
+
+- 若 HI 风险增量超阈值，拒绝动作；
+- 若 HI 风险绝对值超阈值，拒绝动作；
+- 若 decrease 命中高 pressure 任务，拒绝动作；
+- 被拒绝动作按 fallback=NoOp 处理，并在 `train_log.csv` 中记录 `residual_guard_*` 字段。
+
+Step 1 示例（`single`）：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/train_dqn_amc.py \
+  --workload mc_fairgen \
+  --action-space single \
+  --budget-increase-ratio 0.025 \
+  --budget-decrease-ratio 0.015 \
+  --include-explicit-noop \
+  --budget-floor-ratio 0.9 \
+  --agent-period 50000 \
+  --episodes 120 \
+  --end-time 1000000 \
+  --validation-end-time 1000000 \
+  --reward-mode interval_v3_dense_B \
+  --save-best-by pareto_relative_score \
+  --enable-residual-safety-fallback \
+  --residual-guard-hi-pressure-delta-limit 0.03 \
+  --residual-guard-hi-pressure-abs-limit 0.30 \
+  --residual-guard-reject-decrease-pressure-threshold 0.05
+```
+
+#### 2) Step 2：Residual Ranked Action Space
+
+`--action-space` 新增：
+
+- `residual_ranked`
+- `residual_safe_ranked`
+- `residual_safe_adjust_15a`
+
+该动作空间固定 15 个槽位（`action_id=0..14`）：
+
+- `0`: `noop`
+- `1..4`: `increase_lo_risk(rank=0..3)`
+- `5..6`: `decrease_lowest_risk(rank=0..1)`
+- `7..8`: `decrease_lo_lowest_risk(rank=0..1)`
+- `9..11`: `transfer_to_lo_risk_from_global_low(rank=0..2, decrease_pool=global_low_risk, decrease_count=1)`
+- `12..13`: `transfer_to_lo_risk_from_lo_low(rank=0..1, decrease_pool=lo_low_risk, decrease_count=1)`
+- `14`: `transfer_to_lo_risk_from_global_low2(rank=0, decrease_pool=global_low_risk, decrease_count=2)`
+
+说明：
+
+- `residual_ranked` 内部已经包含 noop，不需要再传 `--include-explicit-noop`。
+- 训练日志会输出 residual 槽位的 concrete 解析结果，关键字段包括：
+  - `residual_action_type`
+  - `residual_rank`
+  - `residual_resolved_increase_task`
+  - `residual_resolved_decrease_tasks`
+  - `residual_resolved_increase_idx`
+  - `residual_resolved_decrease_indices`
+- residual safety guard 已改为基于 `concrete action` 执行，因此 transfer / decrease 动作会按真实 decrease 目标检查风险。
+
+Residual 动作槽位诊断脚本：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/diagnose_residual_ranked_actions.py
+```
+
+输出包含以下摘要字段，可快速核验动作空间是否按计划生效：
+
+- `action_space=residual_ranked`
+- `action_count=15`
+- `transfer_action_count=6`
+- `noop_count=1`
+- `all_action_ids_contiguous=True`
+
+Step 2 示例（`residual_ranked`）：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/train_dqn_amc.py \
+  --workload mc_fairgen \
+  --action-space residual_ranked \
+  --budget-increase-ratio 0.025 \
+  --budget-decrease-ratio 0.015 \
+  --budget-floor-ratio 0.9 \
+  --agent-period 50000 \
+  --episodes 120 \
+  --end-time 1000000 \
+  --validation-end-time 1000000 \
+  --reward-mode interval_v3_dense_B \
+  --save-best-by pareto_relative_score \
+  --enable-residual-safety-fallback \
+  --residual-guard-hi-pressure-delta-limit 0.03 \
+  --residual-guard-hi-pressure-abs-limit 0.30 \
+  --residual-guard-reject-decrease-pressure-threshold 0.05 \
+  --log-validation-policy-actions
+```
+
+#### 3) Step 3：Residual Safe Ranked Action Space
+
+`residual_safe_ranked` 是在 `residual_ranked` 基础上的安全版 15 槽位动作空间，目标是避免策略退化到 pure decrease：
+
+- `0`: `noop`
+- `1..4`: `safe_increase_lo_risk(rank=0..3)`
+- `5..8`: `safe_transfer_global_low_to_lo_risk(rank=0..3, decrease_pool=global_low_risk, decrease_count=1)`
+- `9..12`: `safe_transfer_lo_low_to_lo_risk(rank=0..3, decrease_pool=lo_low_risk, decrease_count=1)`
+- `13..14`: `safe_transfer_global_low2_to_lo_risk(rank=0..1, decrease_pool=global_low_risk, decrease_count=2)`
+
+实现语义（严格按计划）：
+
+- 不包含任何 pure decrease 动作；
+- `safe_*` 动作在环境中先枚举 concrete candidates，再执行 residual guard + checker 过滤；
+- `residual_rank=k` 表示第 `k` 个“安全可执行候选”；
+- `valid_action_mask()` 与 `step()` 复用同一 safe 解析逻辑，mask 详情会记录：
+  - `safe_candidate`
+  - `safe_reject_reason`
+  - `resolved_increase_task`
+  - `resolved_decrease_tasks`
+  - `increase_idx`
+  - `decrease_indices`
+
+`residual_safe_ranked` 训练示例：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/train_dqn_amc.py \
+  --workload mc_fairgen \
+  --action-space residual_safe_ranked \
+  --budget-increase-ratio 0.025 \
+  --budget-decrease-ratio 0.015 \
+  --budget-floor-ratio 0.9 \
+  --forbid-decreasing-hi-budgets \
+  --enable-residual-safety-fallback \
+  --log-validation-policy-actions
+```
+
+Residual 动作诊断脚本（支持 safe space 与 HI 降预算约束）：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/diagnose_residual_ranked_actions.py \
+  --action-space residual_safe_ranked \
+  --forbid-decreasing-hi-budgets
+```
+
+脚本会输出以下关键摘要字段用于快速验收：
+
+- `action_count=15`
+- `safe_adjust_increase_action_count=4`
+- `guarded_decrease_action_count=0`
+- `transfer_action_count>=6`
+- `all_action_ids_contiguous=True`
+
+#### 4) Step 4：Residual Safe Adjust 15A Action Space
+
+`residual_safe_adjust_15a` 是不使用 transfer、同时保留 safe increase/safe decrease 的 15 槽位动作空间：
+
+- `0`: `noop`
+- `1..8`: `safe_increase_lo_utility(rank=0..7)`
+- `9..14`: `safe_decrease_lo_redundant(rank=0..5)`
+
+实现语义：
+
+- 不使用固定 task-name anchor；
+- 不使用 transfer；
+- decrease 仅作用于 LO 任务；
+- decrease 候选先按 redundant 评分排序，再统一走 `_budget_candidate_reject_reason(...)` 安全检查；
+- `valid_action_mask()` 和 `step()` 使用同一解析器，避免 mask/执行语义不一致。
+
+训练示例：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/train_dqn_amc.py \
+  --workload mc_fairgen \
+  --action-space residual_safe_adjust_15a \
+  --budget-increase-ratio 0.025 \
+  --budget-decrease-ratio 0.015 \
+  --budget-floor-ratio 0.9 \
+  --forbid-decreasing-hi-budgets \
+  --enable-residual-safety-fallback \
+  --log-validation-policy-actions
+```
+
+诊断示例：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/diagnose_residual_ranked_actions.py \
+  --action-space residual_safe_adjust_15a \
+  --forbid-decreasing-hi-budgets
+```
+
+诊断输出重点：
+
+- `action_count=15`
+- `safe_adjust_increase_action_count=8`
+- `guarded_decrease_action_count=6`
+- `transfer_action_count=0`
+
+`--log-validation-policy-actions` 使用说明：
+
+- 该开关默认关闭；开启后会在每个 validation checkpoint 记录并聚合策略动作分布。
+- 会在 `validation_metrics.csv` 追加以下 JSON 聚合列：
+  - `policy_action_definitions_json`
+  - `policy_action_hist_json`
+  - `policy_action_accepted_hist_json`
+  - `policy_action_rejected_hist_json`
+  - `policy_action_type_hist_json`
+  - `policy_resolved_increase_task_hist_json`
+  - `policy_resolved_decrease_task_hist_json`
+  - `policy_action_reward_sum_json`
+  - `policy_action_lo_delta_sum_json`
+  - `policy_action_mode_delta_sum_json`
+- 会额外输出长表文件 `validation_policy_actions.csv`，字段如下：
+  - `episode`
+  - `action_id`
+  - `action_name`
+  - `action_type`
+  - `count`
+  - `accepted_count`
+  - `rejected_count`
+  - `accepted_rate`
+  - `reward_sum`
+  - `reward_mean`
+  - `lo_delta_sum`
+  - `lo_delta_mean`
+  - `mode_delta_sum`
+  - `mode_delta_mean`
+  - `resolved_increase_task`
+  - `resolved_decrease_task`
+  - `resolved_increase_tasks_json`
+  - `resolved_decrease_tasks_json`
+
 ## 12. DQN 训练、评估与绘图
 
 当前仓库已经包含最小 DQN 接入、正式 DQN CLI、训练诊断绘图脚本，以及可接入的 automotive workload 生成器。

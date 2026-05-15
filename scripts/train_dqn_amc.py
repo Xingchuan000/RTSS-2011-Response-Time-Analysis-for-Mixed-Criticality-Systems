@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
@@ -28,6 +28,7 @@ from amc_py.dqn import (
 )
 from amc_py.event_runtime import simulate_ordered_taskset_event_driven
 from amc_py.models import Task
+from amc_py.rl.actions import describe_budget_action
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.rl.reward_config import available_reward_modes, load_reward_mode_config
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationResult
@@ -46,6 +47,15 @@ STEP_LOG_FIELDNAMES = [
     "accepted",
     "rejected",
     "reject_reason",
+    "residual_guard_enabled",
+    "residual_guard_rejected",
+    "residual_guard_rejected_actions",
+    "residual_guard_hi_pressure_delta_limit",
+    "residual_guard_hi_pressure_abs_limit",
+    "residual_action_type",
+    "residual_rank",
+    "residual_resolved_increase_task",
+    "residual_resolved_decrease_tasks",
     "valid_action_count",
     "masked_action_count",
     "noop_due_to_no_valid_action",
@@ -107,6 +117,20 @@ NOOP_Q_DIAGNOSTIC_FIELDNAMES = [
     "noop_valid_rate",
     "noop_q_sample_count",
 ]
+
+
+def _merge_counter_json(rows: list[dict[str, int | float | None]], field: str) -> dict[str, float]:
+    """把多行中的 JSON 计数字段聚合为单个字典。"""
+
+    merged: Counter[str] = Counter()
+    for row in rows:
+        raw = row.get(field)
+        if not raw:
+            continue
+        data = json.loads(str(raw))
+        for key, value in data.items():
+            merged[str(key)] += float(value)
+    return dict(sorted(merged.items()))
 
 
 def _parse_hidden_layers(raw_value: str | None) -> tuple[int, ...] | None:
@@ -340,6 +364,12 @@ def _evaluate_agent_on_validation_seed(
     constraint_guided_pair_prefer_lo: bool,
     constraint_guided_pair_include_hi_risk_boost: bool,
     constraint_guided_pair_allow_increase_only_when_safe: bool,
+    enable_residual_safety_fallback: bool,
+    residual_guard_hi_pressure_delta_limit: float,
+    residual_guard_hi_pressure_abs_limit: float,
+    residual_guard_reject_decrease_pressure_threshold: float,
+    residual_guard_use_hi_pressure_max: bool,
+    log_validation_policy_actions: bool,
 ) -> dict[str, int | float | None]:
     """评估一个 validation seed，并返回该 seed 的完整 DQN 指标。
 
@@ -371,6 +401,11 @@ def _evaluate_agent_on_validation_seed(
         constraint_guided_pair_prefer_lo=constraint_guided_pair_prefer_lo,
         constraint_guided_pair_include_hi_risk_boost=constraint_guided_pair_include_hi_risk_boost,
         constraint_guided_pair_allow_increase_only_when_safe=constraint_guided_pair_allow_increase_only_when_safe,
+        enable_residual_safety_fallback=enable_residual_safety_fallback,
+        residual_guard_hi_pressure_delta_limit=residual_guard_hi_pressure_delta_limit,
+        residual_guard_hi_pressure_abs_limit=residual_guard_hi_pressure_abs_limit,
+        residual_guard_reject_decrease_pressure_threshold=residual_guard_reject_decrease_pressure_threshold,
+        residual_guard_use_hi_pressure_max=residual_guard_use_hi_pressure_max,
     )
     obs = env.reset(seed=seed)
     done = False
@@ -392,6 +427,15 @@ def _evaluate_agent_on_validation_seed(
     # 这里不改变 agent 的动作选择，只额外记录 policy network 当时实际看到的输入。
     diagnostic_states: list[tuple[float, ...]] = []
     diagnostic_valid_masks: list[tuple[bool, ...]] = []
+    validation_action_counter: Counter[int] = Counter()
+    validation_action_accepted_counter: Counter[int] = Counter()
+    validation_action_rejected_counter: Counter[int] = Counter()
+    validation_action_type_counter: Counter[str] = Counter()
+    validation_resolved_increase_task_counter: Counter[str] = Counter()
+    validation_resolved_decrease_task_counter: Counter[str] = Counter()
+    validation_action_reward_sum: defaultdict[int, float] = defaultdict(float)
+    validation_action_lo_delta_sum: defaultdict[int, float] = defaultdict(float)
+    validation_action_mode_delta_sum: defaultdict[int, float] = defaultdict(float)
 
     while not done:
         # step_count 明确定义为“完成了多少次 agent 决策循环”，
@@ -411,6 +455,30 @@ def _evaluate_agent_on_validation_seed(
         selected_action_count += int(action_id is not None)
         result = env.step(action_id)
         total_reward += result.reward
+        if log_validation_policy_actions and action_id is not None:
+            action_key = int(action_id)
+            validation_action_counter[action_key] += 1
+            accepted = bool(result.info.get("accepted", False))
+            if accepted:
+                validation_action_accepted_counter[action_key] += 1
+            else:
+                validation_action_rejected_counter[action_key] += 1
+            action_meta = env._actions[action_key]
+            if bool(getattr(action_meta, "is_noop", False)):
+                action_type = "noop"
+            elif getattr(action_meta, "residual_action_type", None):
+                action_type = str(action_meta.residual_action_type)
+            else:
+                action_type = str(action_meta.action_space_type)
+            validation_action_type_counter[f"{action_key}:{action_type}"] += 1
+            resolved_increase_task = result.info.get("resolved_increase_task")
+            if resolved_increase_task is not None:
+                validation_resolved_increase_task_counter[f"{action_key}:{resolved_increase_task}"] += 1
+            for task_name in (result.info.get("resolved_decrease_tasks") or ()):
+                validation_resolved_decrease_task_counter[f"{action_key}:{task_name}"] += 1
+            validation_action_reward_sum[action_key] += float(result.reward)
+            validation_action_lo_delta_sum[action_key] += float(result.info.get("delta_lo_cancellations", 0.0))
+            validation_action_mode_delta_sum[action_key] += float(result.info.get("delta_mode_changes", 0.0))
 
         is_noop = bool(result.info.get("is_noop", False))
         if is_noop:
@@ -453,6 +521,57 @@ def _evaluate_agent_on_validation_seed(
         "state_dim": int(last_info.get("state_dim", len(obs.state_vector))),
     }
     row.update(_noop_q_diagnostics_to_row(agent, diagnostic_states, diagnostic_valid_masks))
+    if log_validation_policy_actions:
+        action_definitions = {
+            str(action.action_id): describe_budget_action(action)
+            for action in env._actions
+        }
+        row["validation_action_definitions_json"] = json.dumps(action_definitions, ensure_ascii=False, sort_keys=True)
+        row["validation_action_hist_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_action_counter.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_accepted_hist_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_action_accepted_counter.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_rejected_hist_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_action_rejected_counter.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_type_hist_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_action_type_counter.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_resolved_increase_task_hist_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_resolved_increase_task_counter.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_resolved_decrease_task_hist_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_resolved_decrease_task_counter.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_reward_sum_json"] = json.dumps(
+            {str(k): float(v) for k, v in validation_action_reward_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_lo_delta_sum_json"] = json.dumps(
+            {str(k): float(v) for k, v in validation_action_lo_delta_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_mode_delta_sum_json"] = json.dumps(
+            {str(k): float(v) for k, v in validation_action_mode_delta_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
     return row
 
 
@@ -476,6 +595,12 @@ def _run_dqn_validation_seed_worker(
         int,
         int,
         bool,
+        bool,
+        bool,
+        bool,
+        float,
+        float,
+        float,
         bool,
         bool,
     ],
@@ -508,6 +633,12 @@ def _run_dqn_validation_seed_worker(
         constraint_guided_pair_prefer_lo,
         constraint_guided_pair_include_hi_risk_boost,
         constraint_guided_pair_allow_increase_only_when_safe,
+        enable_residual_safety_fallback,
+        residual_guard_hi_pressure_delta_limit,
+        residual_guard_hi_pressure_abs_limit,
+        residual_guard_reject_decrease_pressure_threshold,
+        residual_guard_use_hi_pressure_max,
+        log_validation_policy_actions,
     ) = args_tuple
     agent = DqnBudgetAgent.load(Path(model_path), device="cpu")
     return _evaluate_agent_on_validation_seed(
@@ -531,6 +662,12 @@ def _run_dqn_validation_seed_worker(
         constraint_guided_pair_prefer_lo=constraint_guided_pair_prefer_lo,
         constraint_guided_pair_include_hi_risk_boost=constraint_guided_pair_include_hi_risk_boost,
         constraint_guided_pair_allow_increase_only_when_safe=constraint_guided_pair_allow_increase_only_when_safe,
+        enable_residual_safety_fallback=enable_residual_safety_fallback,
+        residual_guard_hi_pressure_delta_limit=residual_guard_hi_pressure_delta_limit,
+        residual_guard_hi_pressure_abs_limit=residual_guard_hi_pressure_abs_limit,
+        residual_guard_reject_decrease_pressure_threshold=residual_guard_reject_decrease_pressure_threshold,
+        residual_guard_use_hi_pressure_max=residual_guard_use_hi_pressure_max,
+        log_validation_policy_actions=log_validation_policy_actions,
     )
 
 
@@ -625,6 +762,12 @@ def _run_validation(
     constraint_guided_pair_prefer_lo: bool = False,
     constraint_guided_pair_include_hi_risk_boost: bool = False,
     constraint_guided_pair_allow_increase_only_when_safe: bool = False,
+    enable_residual_safety_fallback: bool = False,
+    residual_guard_hi_pressure_delta_limit: float = 0.03,
+    residual_guard_hi_pressure_abs_limit: float = 0.30,
+    residual_guard_reject_decrease_pressure_threshold: float = 0.05,
+    residual_guard_use_hi_pressure_max: bool = False,
+    log_validation_policy_actions: bool = False,
 ) -> tuple[dict[str, int | float | None], dict[str, float], bool]:
     """在验证集上评估当前 agent，并返回聚合指标。"""
 
@@ -681,6 +824,14 @@ def _run_validation(
                 constraint_guided_pair_prefer_lo=constraint_guided_pair_prefer_lo,
                 constraint_guided_pair_include_hi_risk_boost=constraint_guided_pair_include_hi_risk_boost,
                 constraint_guided_pair_allow_increase_only_when_safe=constraint_guided_pair_allow_increase_only_when_safe,
+                enable_residual_safety_fallback=enable_residual_safety_fallback,
+                residual_guard_hi_pressure_delta_limit=residual_guard_hi_pressure_delta_limit,
+                residual_guard_hi_pressure_abs_limit=residual_guard_hi_pressure_abs_limit,
+                residual_guard_reject_decrease_pressure_threshold=(
+                    residual_guard_reject_decrease_pressure_threshold
+                ),
+                residual_guard_use_hi_pressure_max=residual_guard_use_hi_pressure_max,
+                log_validation_policy_actions=log_validation_policy_actions,
             )
             for seed in validation_seeds
         ]
@@ -711,6 +862,12 @@ def _run_validation(
                     constraint_guided_pair_prefer_lo,
                     constraint_guided_pair_include_hi_risk_boost,
                     constraint_guided_pair_allow_increase_only_when_safe,
+                    enable_residual_safety_fallback,
+                    residual_guard_hi_pressure_delta_limit,
+                    residual_guard_hi_pressure_abs_limit,
+                    residual_guard_reject_decrease_pressure_threshold,
+                    residual_guard_use_hi_pressure_max,
+                    log_validation_policy_actions,
                 )
                 for seed in validation_seeds
             ]
@@ -759,6 +916,39 @@ def _run_validation(
             validation_row[fieldname] = sum(int(row[fieldname] or 0) for row in dqn_rows)
         else:
             validation_row[fieldname] = _mean_optional_metric(dqn_rows, fieldname)
+    if log_validation_policy_actions:
+        validation_row["policy_action_definitions_json"] = str(dqn_rows[0]["validation_action_definitions_json"])
+        validation_row["policy_action_hist_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_hist_json"), ensure_ascii=False, sort_keys=True
+        )
+        validation_row["policy_action_accepted_hist_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_accepted_hist_json"), ensure_ascii=False, sort_keys=True
+        )
+        validation_row["policy_action_rejected_hist_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_rejected_hist_json"), ensure_ascii=False, sort_keys=True
+        )
+        validation_row["policy_action_type_hist_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_type_hist_json"), ensure_ascii=False, sort_keys=True
+        )
+        validation_row["policy_resolved_increase_task_hist_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_resolved_increase_task_hist_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_resolved_decrease_task_hist_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_resolved_decrease_task_hist_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_reward_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_reward_sum_json"), ensure_ascii=False, sort_keys=True
+        )
+        validation_row["policy_action_lo_delta_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_lo_delta_sum_json"), ensure_ascii=False, sort_keys=True
+        )
+        validation_row["policy_action_mode_delta_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_mode_delta_sum_json"), ensure_ascii=False, sort_keys=True
+        )
     return validation_row, baseline_cache, used_baseline_cache
 
 
@@ -1043,6 +1233,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--validate-every", type=int, default=50)
     parser.add_argument("--validation-end-time", type=int, default=10000)
     parser.add_argument(
+        "--log-validation-policy-actions",
+        action="store_true",
+        help="Log per-checkpoint validation policy action histogram and resolved residual targets.",
+    )
+    parser.add_argument(
         "--validation-workers",
         type=int,
         default=1,
@@ -1077,7 +1272,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--action-space",
-        choices=["triple", "pair", "single", "constraint_guided_pair", "constraint_guided_transfer"],
+        choices=[
+            "triple",
+            "pair",
+            "single",
+            "constraint_guided_pair",
+            "constraint_guided_transfer",
+            "residual_ranked",
+            "residual_safe_ranked",
+            "residual_anchor_mc_lo_2",
+            "residual_safe_adjust_15a",
+        ],
         default="triple",
     )
     parser.add_argument("--budget-increase-ratio", type=float, default=0.10)
@@ -1092,6 +1297,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
     )
     parser.add_argument("--include-explicit-noop", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--enable-residual-safety-fallback",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable residual safety fallback: reject DQN budget actions that increase HI mode risk.",
+    )
+    parser.add_argument("--residual-guard-hi-pressure-delta-limit", type=float, default=0.03)
+    parser.add_argument("--residual-guard-hi-pressure-abs-limit", type=float, default=0.30)
+    parser.add_argument("--residual-guard-reject-decrease-pressure-threshold", type=float, default=0.05)
+    parser.add_argument(
+        "--residual-guard-use-hi-pressure-max",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument(
         "--budget-floor-ratio",
         type=float,
@@ -1217,6 +1436,13 @@ def main() -> None:
         constraint_guided_pair_allow_increase_only_when_safe=(
             args.constraint_guided_pair_allow_increase_only_when_safe
         ),
+        enable_residual_safety_fallback=args.enable_residual_safety_fallback,
+        residual_guard_hi_pressure_delta_limit=args.residual_guard_hi_pressure_delta_limit,
+        residual_guard_hi_pressure_abs_limit=args.residual_guard_hi_pressure_abs_limit,
+        residual_guard_reject_decrease_pressure_threshold=(
+            args.residual_guard_reject_decrease_pressure_threshold
+        ),
+        residual_guard_use_hi_pressure_max=args.residual_guard_use_hi_pressure_max,
     )
     initial_obs = initial_env.reset(seed=initial_seed)
     agent = DqnBudgetAgent(
@@ -1283,6 +1509,13 @@ def main() -> None:
             constraint_guided_pair_allow_increase_only_when_safe=(
                 args.constraint_guided_pair_allow_increase_only_when_safe
             ),
+            enable_residual_safety_fallback=args.enable_residual_safety_fallback,
+            residual_guard_hi_pressure_delta_limit=args.residual_guard_hi_pressure_delta_limit,
+            residual_guard_hi_pressure_abs_limit=args.residual_guard_hi_pressure_abs_limit,
+            residual_guard_reject_decrease_pressure_threshold=(
+                args.residual_guard_reject_decrease_pressure_threshold
+            ),
+            residual_guard_use_hi_pressure_max=args.residual_guard_use_hi_pressure_max,
         )
         bundle = resolve_experiment_bundle(experiment_config, episode_seed)
         obs = env.reset(seed=episode_seed)
@@ -1411,6 +1644,23 @@ def main() -> None:
                         "rejected": rejected,
                         "reject_reason": (
                             "no_valid_action" if action_id is None else str(result.info.get("reject_reason", ""))
+                        ),
+                        "residual_guard_enabled": bool(result.info.get("residual_guard_enabled", False)),
+                        "residual_guard_rejected": bool(result.info.get("residual_guard_rejected", False)),
+                        "residual_guard_rejected_actions": int(
+                            result.info.get("residual_guard_rejected_actions", 0)
+                        ),
+                        "residual_guard_hi_pressure_delta_limit": float(
+                            result.info.get("residual_guard_hi_pressure_delta_limit", 0.0)
+                        ),
+                        "residual_guard_hi_pressure_abs_limit": float(
+                            result.info.get("residual_guard_hi_pressure_abs_limit", 0.0)
+                        ),
+                        "residual_action_type": result.info.get("residual_action_type", ""),
+                        "residual_rank": "" if result.info.get("residual_rank") is None else int(result.info.get("residual_rank", 0)),
+                        "residual_resolved_increase_task": result.info.get("residual_resolved_increase_task", ""),
+                        "residual_resolved_decrease_tasks": str(
+                            result.info.get("residual_resolved_decrease_tasks", ())
                         ),
                         "valid_action_count": valid_action_count,
                         "masked_action_count": masked_action_count,
@@ -1629,6 +1879,14 @@ def main() -> None:
                 constraint_guided_pair_allow_increase_only_when_safe=(
                     args.constraint_guided_pair_allow_increase_only_when_safe
                 ),
+                enable_residual_safety_fallback=args.enable_residual_safety_fallback,
+                residual_guard_hi_pressure_delta_limit=args.residual_guard_hi_pressure_delta_limit,
+                residual_guard_hi_pressure_abs_limit=args.residual_guard_hi_pressure_abs_limit,
+                residual_guard_reject_decrease_pressure_threshold=(
+                    args.residual_guard_reject_decrease_pressure_threshold
+                ),
+                residual_guard_use_hi_pressure_max=args.residual_guard_use_hi_pressure_max,
+                log_validation_policy_actions=args.log_validation_policy_actions,
             )
             if used_baseline_cache:
                 print("Using cached baseline validation metrics")
@@ -1745,6 +2003,7 @@ def main() -> None:
     action_hist_path = output_dir / "train_action_histogram.csv"
     validation_metrics_path = output_dir / "validation_metrics.csv"
     validation_unified_summary_path = output_dir / "validation_unified_summary.csv"
+    validation_policy_actions_path = output_dir / "validation_policy_actions.csv"
     model_path = output_dir / "model_final.pt"
     config_path = output_dir / "config.json"
 
@@ -1873,10 +2132,124 @@ def main() -> None:
             "is_pareto_valid",
         ]
         validation_fieldnames.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
+        if args.log_validation_policy_actions:
+            validation_fieldnames.extend(
+                [
+                    "policy_action_definitions_json",
+                    "policy_action_hist_json",
+                    "policy_action_accepted_hist_json",
+                    "policy_action_rejected_hist_json",
+                    "policy_action_type_hist_json",
+                    "policy_resolved_increase_task_hist_json",
+                    "policy_resolved_decrease_task_hist_json",
+                    "policy_action_reward_sum_json",
+                    "policy_action_lo_delta_sum_json",
+                    "policy_action_mode_delta_sum_json",
+                ]
+            )
         with validation_metrics_path.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=validation_fieldnames)
             writer.writeheader()
             writer.writerows(validation_rows)
+        if args.log_validation_policy_actions:
+            policy_rows: list[dict[str, int | float | str]] = []
+            for validation_row in validation_rows:
+                episode = int(validation_row["episode"])
+                definitions = json.loads(str(validation_row["policy_action_definitions_json"]))
+                hist = json.loads(str(validation_row["policy_action_hist_json"]))
+                accepted_hist = json.loads(str(validation_row["policy_action_accepted_hist_json"]))
+                rejected_hist = json.loads(str(validation_row["policy_action_rejected_hist_json"]))
+                reward_sum_hist = json.loads(str(validation_row["policy_action_reward_sum_json"]))
+                lo_delta_sum_hist = json.loads(str(validation_row["policy_action_lo_delta_sum_json"]))
+                mode_delta_sum_hist = json.loads(str(validation_row["policy_action_mode_delta_sum_json"]))
+                increase_hist = json.loads(str(validation_row["policy_resolved_increase_task_hist_json"]))
+                decrease_hist = json.loads(str(validation_row["policy_resolved_decrease_task_hist_json"]))
+                for action_id_text, action_name in sorted(definitions.items(), key=lambda item: int(item[0])):
+                    action_id = int(action_id_text)
+                    count = int(hist.get(action_id_text, 0))
+                    accepted_count = int(accepted_hist.get(action_id_text, 0))
+                    rejected_count = int(rejected_hist.get(action_id_text, 0))
+                    reward_sum = float(reward_sum_hist.get(action_id_text, 0.0))
+                    lo_delta_sum = float(lo_delta_sum_hist.get(action_id_text, 0.0))
+                    mode_delta_sum = float(mode_delta_sum_hist.get(action_id_text, 0.0))
+                    action_type = "noop" if action_name == "noop" else action_name.split("|", maxsplit=1)[0]
+                    resolved_increase_tasks = {
+                        key.split(":", maxsplit=1)[1]: int(value)
+                        for key, value in increase_hist.items()
+                        if key.startswith(f"{action_id_text}:")
+                    }
+                    resolved_decrease_tasks = {
+                        key.split(":", maxsplit=1)[1]: int(value)
+                        for key, value in decrease_hist.items()
+                        if key.startswith(f"{action_id_text}:")
+                    }
+                    # 兼容 single action space 的可读列：
+                    # - increase 取出现次数最多的 resolved 任务；
+                    # - decrease 取出现次数最多的 resolved 任务。
+                    resolved_increase_task = ""
+                    if resolved_increase_tasks:
+                        resolved_increase_task = max(
+                            resolved_increase_tasks.items(),
+                            key=lambda item: (item[1], item[0]),
+                        )[0]
+                    resolved_decrease_task = ""
+                    if resolved_decrease_tasks:
+                        resolved_decrease_task = max(
+                            resolved_decrease_tasks.items(),
+                            key=lambda item: (item[1], item[0]),
+                        )[0]
+                    policy_rows.append(
+                        {
+                            "episode": episode,
+                            "action_id": action_id,
+                            "action_name": str(action_name),
+                            "action_type": action_type,
+                            "count": count,
+                            "accepted_count": accepted_count,
+                            "rejected_count": rejected_count,
+                            "accepted_rate": (float(accepted_count) / float(count)) if count > 0 else 0.0,
+                            "reward_sum": reward_sum,
+                            "reward_mean": (reward_sum / float(count)) if count > 0 else 0.0,
+                            "lo_delta_sum": lo_delta_sum,
+                            "lo_delta_mean": (lo_delta_sum / float(count)) if count > 0 else 0.0,
+                            "mode_delta_sum": mode_delta_sum,
+                            "mode_delta_mean": (mode_delta_sum / float(count)) if count > 0 else 0.0,
+                            "resolved_increase_task": resolved_increase_task,
+                            "resolved_decrease_task": resolved_decrease_task,
+                            "resolved_increase_tasks_json": json.dumps(
+                                resolved_increase_tasks, ensure_ascii=False, sort_keys=True
+                            ),
+                            "resolved_decrease_tasks_json": json.dumps(
+                                resolved_decrease_tasks, ensure_ascii=False, sort_keys=True
+                            ),
+                        }
+                    )
+            with validation_policy_actions_path.open("w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=[
+                        "episode",
+                        "action_id",
+                        "action_name",
+                        "action_type",
+                        "count",
+                        "accepted_count",
+                        "rejected_count",
+                        "accepted_rate",
+                        "reward_sum",
+                        "reward_mean",
+                        "lo_delta_sum",
+                        "lo_delta_mean",
+                        "mode_delta_sum",
+                        "mode_delta_mean",
+                        "resolved_increase_task",
+                        "resolved_decrease_task",
+                        "resolved_increase_tasks_json",
+                        "resolved_decrease_tasks_json",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerows(policy_rows)
         # 阶段 0/1 统一 summary：保持与评估脚本一致的核心字段命名，便于直接横向对比。
         validation_unified_summary_rows = _build_validation_unified_summary_rows(validation_rows)
         validation_unified_summary_fields = [
@@ -2039,6 +2412,13 @@ def main() -> None:
         "constraint_guided_pair_allow_increase_only_when_safe": (
             args.constraint_guided_pair_allow_increase_only_when_safe
         ),
+        "enable_residual_safety_fallback": args.enable_residual_safety_fallback,
+        "residual_guard_hi_pressure_delta_limit": args.residual_guard_hi_pressure_delta_limit,
+        "residual_guard_hi_pressure_abs_limit": args.residual_guard_hi_pressure_abs_limit,
+        "residual_guard_reject_decrease_pressure_threshold": (
+            args.residual_guard_reject_decrease_pressure_threshold
+        ),
+        "residual_guard_use_hi_pressure_max": args.residual_guard_use_hi_pressure_max,
         "budget_increase_ratio": args.budget_increase_ratio,
         "budget_decrease_ratio": args.budget_decrease_ratio,
         "budget_floor_ratio": args.budget_floor_ratio,
