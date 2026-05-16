@@ -10,8 +10,21 @@ from amc_py.models import Criticality, Task
 from amc_py.rl.feature_config import (
     OBSERVATION_MODE_V10_BASIC,
     OBSERVATION_MODE_V11_FULL_10D,
+    OBSERVATION_MODE_V11_LITE_6D,
+    OBSERVATION_MODE_V11_NO_MAX_9D,
+    OBSERVATION_MODE_V11_NO_PRIORITY_9D,
+    OBSERVATION_MODE_V11_NO_RISK_9D,
+    OBSERVATION_MODE_V11_NO_RISK_NO_UTIL_8D,
+    OBSERVATION_MODE_V11_NO_UTIL_9D,
     OBSERVATION_MODE_V12_FULL_14D,
     FeatureConfig,
+    V11_LITE_PER_TASK_FEATURE_NAMES,
+    V11_NO_MAX_PER_TASK_FEATURE_NAMES,
+    V11_NO_PRIORITY_PER_TASK_FEATURE_NAMES,
+    V11_NO_RISK_NO_UTIL_PER_TASK_FEATURE_NAMES,
+    V11_NO_RISK_PER_TASK_FEATURE_NAMES,
+    V11_NO_UTIL_PER_TASK_FEATURE_NAMES,
+    V11_PER_TASK_FEATURE_NAMES,
 )
 from amc_py.rl.feature_state import RuntimeFeatureState
 from amc_py.rl.monitor import RuntimeMonitor
@@ -117,10 +130,44 @@ def build_v11_full_10d_observation(
 ) -> AgentObservation:
     """按 v11_full_10d 语义构建观测（每任务 10 维 + 全局 8 维）。
 
+    该函数保留对外语义不变，内部复用 v11-family 公共 helper，
+    这样新增消融模式只改变“选择哪些特征、按什么顺序输出”，
+    不会复制或偏移原始 v11 的特征计算逻辑。
+    """
+
+    return _build_v11_family_observation(
+        time=time,
+        ordered_tasks=ordered_tasks,
+        budget_state=budget_state,
+        monitor=monitor,
+        bounds=bounds,
+        feature_state=feature_state,
+        feature_config=feature_config,
+        safety_margin_min=safety_margin_min,
+        per_task_feature_names=V11_PER_TASK_FEATURE_NAMES,
+    )
+
+
+def _build_v11_family_observation(
+    *,
+    time: int,
+    ordered_tasks: Sequence[Task],
+    budget_state: BudgetState,
+    monitor: RuntimeMonitor,
+    bounds: NormalizationBounds | None = None,
+    feature_state: RuntimeFeatureState,
+    feature_config: FeatureConfig,
+    safety_margin_min: float,
+    per_task_feature_names: tuple[str, ...],
+) -> AgentObservation:
+    """构建 v11-family observation。
+
     重要语义约束：
     - 任务顺序严格使用 ordered_tasks，不做动态重排；
     - 只读取当前已有统计量，不使用未来信息；
-    - 所有输出特征都裁剪到 [0, 1]。
+    - 所有输出特征都裁剪到 [0, 1]；
+    - 不同模式之间只允许通过 `per_task_feature_names` 控制输出子集与顺序，
+      不允许重新发明一套计算逻辑，避免同名特征在不同模式里语义漂移。
     """
 
     active_bounds = bounds or build_default_normalization_bounds(ordered_tasks)
@@ -185,21 +232,24 @@ def build_v11_full_10d_observation(
         ema_cost_norm = _normalize(ema_cost, lo, hi)
         max_cost_k_norm = _normalize(max_cost_k, lo, hi)
 
-        # 每任务特征顺序必须严格固定为文档定义顺序。
-        state_values.extend(
-            [
-                budget_norm,
-                recent_cost_norm,
-                ema_cost_norm,
-                max_cost_k_norm,
-                _clip01(overrun_ema),
-                risk,
-                surplus,
-                is_hi,
-                _clip01(priority_norm),
-                _clip01(util_budget),
-            ]
-        )
+        # 先把 v11 全量基础特征全部算出来，再按 mode 对应的特征名元组固定切片。
+        # 这样可以保证：
+        # 1. full / no_risk / no_util / lite 使用同一套底层语义；
+        # 2. feature order 可通过显式名称元组稳定约束；
+        # 3. 新模式不会把旧模式的公式悄悄改掉。
+        features = {
+            "budget_norm": budget_norm,
+            "recent_cost_norm": recent_cost_norm,
+            "ema_cost_norm": ema_cost_norm,
+            "max_cost_k_norm": max_cost_k_norm,
+            "overrun_ema": _clip01(overrun_ema),
+            "risk": risk,
+            "surplus": surplus,
+            "criticality": is_hi,
+            "priority_norm": _clip01(priority_norm),
+            "util_budget": _clip01(util_budget),
+        }
+        state_values.extend(float(features[name]) for name in per_task_feature_names)
 
         raw_budgets[task_name] = int(budget)
         raw_recent_costs[task_name] = int(recent_cost)
@@ -227,6 +277,182 @@ def build_v11_full_10d_observation(
         state_vector=tuple(float(v) for v in state_values),
         raw_budgets=raw_budgets,
         raw_recent_costs=raw_recent_costs,
+    )
+
+
+def build_v11_no_risk_9d_observation(
+    *,
+    time: int,
+    ordered_tasks: Sequence[Task],
+    budget_state: BudgetState,
+    monitor: RuntimeMonitor,
+    bounds: NormalizationBounds | None = None,
+    feature_state: RuntimeFeatureState,
+    feature_config: FeatureConfig,
+    safety_margin_min: float = 1.0,
+) -> AgentObservation:
+    """按 v11_no_risk_9d 语义构建观测。
+
+    该模式只从 v11_full_10d 中移除 risk，其他特征值与顺序必须保持可追溯。
+    """
+
+    return _build_v11_family_observation(
+        time=time,
+        ordered_tasks=ordered_tasks,
+        budget_state=budget_state,
+        monitor=monitor,
+        bounds=bounds,
+        feature_state=feature_state,
+        feature_config=feature_config,
+        safety_margin_min=safety_margin_min,
+        per_task_feature_names=V11_NO_RISK_PER_TASK_FEATURE_NAMES,
+    )
+
+
+def build_v11_no_util_9d_observation(
+    *,
+    time: int,
+    ordered_tasks: Sequence[Task],
+    budget_state: BudgetState,
+    monitor: RuntimeMonitor,
+    bounds: NormalizationBounds | None = None,
+    feature_state: RuntimeFeatureState,
+    feature_config: FeatureConfig,
+    safety_margin_min: float = 1.0,
+) -> AgentObservation:
+    """按 v11_no_util_9d 语义构建观测。
+
+    该模式只从 v11_full_10d 中移除 util_budget，单独观察预算利用率特征是否有益。
+    """
+
+    return _build_v11_family_observation(
+        time=time,
+        ordered_tasks=ordered_tasks,
+        budget_state=budget_state,
+        monitor=monitor,
+        bounds=bounds,
+        feature_state=feature_state,
+        feature_config=feature_config,
+        safety_margin_min=safety_margin_min,
+        per_task_feature_names=V11_NO_UTIL_PER_TASK_FEATURE_NAMES,
+    )
+
+
+def build_v11_no_max_9d_observation(
+    *,
+    time: int,
+    ordered_tasks: Sequence[Task],
+    budget_state: BudgetState,
+    monitor: RuntimeMonitor,
+    bounds: NormalizationBounds | None = None,
+    feature_state: RuntimeFeatureState,
+    feature_config: FeatureConfig,
+    safety_margin_min: float = 1.0,
+) -> AgentObservation:
+    """按 v11_no_max_9d 语义构建观测。
+
+    该模式只移除 max_cost_k_norm，用于检验历史峰值特征是否会带来冗余。
+    """
+
+    return _build_v11_family_observation(
+        time=time,
+        ordered_tasks=ordered_tasks,
+        budget_state=budget_state,
+        monitor=monitor,
+        bounds=bounds,
+        feature_state=feature_state,
+        feature_config=feature_config,
+        safety_margin_min=safety_margin_min,
+        per_task_feature_names=V11_NO_MAX_PER_TASK_FEATURE_NAMES,
+    )
+
+
+def build_v11_no_priority_9d_observation(
+    *,
+    time: int,
+    ordered_tasks: Sequence[Task],
+    budget_state: BudgetState,
+    monitor: RuntimeMonitor,
+    bounds: NormalizationBounds | None = None,
+    feature_state: RuntimeFeatureState,
+    feature_config: FeatureConfig,
+    safety_margin_min: float = 1.0,
+) -> AgentObservation:
+    """按 v11_no_priority_9d 语义构建观测。
+
+    该模式只移除 priority_norm，用于观察静态优先级提示是否会诱导错误偏置。
+    """
+
+    return _build_v11_family_observation(
+        time=time,
+        ordered_tasks=ordered_tasks,
+        budget_state=budget_state,
+        monitor=monitor,
+        bounds=bounds,
+        feature_state=feature_state,
+        feature_config=feature_config,
+        safety_margin_min=safety_margin_min,
+        per_task_feature_names=V11_NO_PRIORITY_PER_TASK_FEATURE_NAMES,
+    )
+
+
+def build_v11_no_risk_no_util_8d_observation(
+    *,
+    time: int,
+    ordered_tasks: Sequence[Task],
+    budget_state: BudgetState,
+    monitor: RuntimeMonitor,
+    bounds: NormalizationBounds | None = None,
+    feature_state: RuntimeFeatureState,
+    feature_config: FeatureConfig,
+    safety_margin_min: float = 1.0,
+) -> AgentObservation:
+    """按 v11_no_risk_no_util_8d 语义构建观测。
+
+    该模式从 v11_full_10d 中依次移除 risk 与 util_budget，
+    用于验证 util_budget 是否会引入不必要偏置。
+    """
+
+    return _build_v11_family_observation(
+        time=time,
+        ordered_tasks=ordered_tasks,
+        budget_state=budget_state,
+        monitor=monitor,
+        bounds=bounds,
+        feature_state=feature_state,
+        feature_config=feature_config,
+        safety_margin_min=safety_margin_min,
+        per_task_feature_names=V11_NO_RISK_NO_UTIL_PER_TASK_FEATURE_NAMES,
+    )
+
+
+def build_v11_lite_6d_observation(
+    *,
+    time: int,
+    ordered_tasks: Sequence[Task],
+    budget_state: BudgetState,
+    monitor: RuntimeMonitor,
+    bounds: NormalizationBounds | None = None,
+    feature_state: RuntimeFeatureState,
+    feature_config: FeatureConfig,
+    safety_margin_min: float = 1.0,
+) -> AgentObservation:
+    """按 v11_lite_6d 语义构建观测。
+
+    该模式只保留最基础、最直接的预算压力与关键级特征，
+    便于做更紧凑的 observation 消融比较。
+    """
+
+    return _build_v11_family_observation(
+        time=time,
+        ordered_tasks=ordered_tasks,
+        budget_state=budget_state,
+        monitor=monitor,
+        bounds=bounds,
+        feature_state=feature_state,
+        feature_config=feature_config,
+        safety_margin_min=safety_margin_min,
+        per_task_feature_names=V11_LITE_PER_TASK_FEATURE_NAMES,
     )
 
 
@@ -379,7 +605,7 @@ def build_observation(
 
     兼容性要求：
     - 旧调用方不传 feature_state/feature_config 时，默认走 v10_basic；
-    - v11_full_10d 模式必须显式提供 feature_state，否则直接报错。
+    - v11/v12 family 模式必须显式提供 feature_state，否则直接报错。
     """
 
     if feature_config is None or feature_config.observation_mode == OBSERVATION_MODE_V10_BASIC:
@@ -394,6 +620,84 @@ def build_observation(
         if feature_state is None:
             raise ValueError("v11_full_10d 模式要求传入 feature_state")
         return build_v11_full_10d_observation(
+            time=time,
+            ordered_tasks=ordered_tasks,
+            budget_state=budget_state,
+            monitor=monitor,
+            bounds=bounds,
+            feature_state=feature_state,
+            feature_config=feature_config,
+            safety_margin_min=safety_margin_min,
+        )
+    if feature_config.observation_mode == OBSERVATION_MODE_V11_NO_RISK_9D:
+        if feature_state is None:
+            raise ValueError("v11_no_risk_9d 模式要求传入 feature_state")
+        return build_v11_no_risk_9d_observation(
+            time=time,
+            ordered_tasks=ordered_tasks,
+            budget_state=budget_state,
+            monitor=monitor,
+            bounds=bounds,
+            feature_state=feature_state,
+            feature_config=feature_config,
+            safety_margin_min=safety_margin_min,
+        )
+    if feature_config.observation_mode == OBSERVATION_MODE_V11_NO_UTIL_9D:
+        if feature_state is None:
+            raise ValueError("v11_no_util_9d 模式要求传入 feature_state")
+        return build_v11_no_util_9d_observation(
+            time=time,
+            ordered_tasks=ordered_tasks,
+            budget_state=budget_state,
+            monitor=monitor,
+            bounds=bounds,
+            feature_state=feature_state,
+            feature_config=feature_config,
+            safety_margin_min=safety_margin_min,
+        )
+    if feature_config.observation_mode == OBSERVATION_MODE_V11_NO_MAX_9D:
+        if feature_state is None:
+            raise ValueError("v11_no_max_9d 模式要求传入 feature_state")
+        return build_v11_no_max_9d_observation(
+            time=time,
+            ordered_tasks=ordered_tasks,
+            budget_state=budget_state,
+            monitor=monitor,
+            bounds=bounds,
+            feature_state=feature_state,
+            feature_config=feature_config,
+            safety_margin_min=safety_margin_min,
+        )
+    if feature_config.observation_mode == OBSERVATION_MODE_V11_NO_PRIORITY_9D:
+        if feature_state is None:
+            raise ValueError("v11_no_priority_9d 模式要求传入 feature_state")
+        return build_v11_no_priority_9d_observation(
+            time=time,
+            ordered_tasks=ordered_tasks,
+            budget_state=budget_state,
+            monitor=monitor,
+            bounds=bounds,
+            feature_state=feature_state,
+            feature_config=feature_config,
+            safety_margin_min=safety_margin_min,
+        )
+    if feature_config.observation_mode == OBSERVATION_MODE_V11_NO_RISK_NO_UTIL_8D:
+        if feature_state is None:
+            raise ValueError("v11_no_risk_no_util_8d 模式要求传入 feature_state")
+        return build_v11_no_risk_no_util_8d_observation(
+            time=time,
+            ordered_tasks=ordered_tasks,
+            budget_state=budget_state,
+            monitor=monitor,
+            bounds=bounds,
+            feature_state=feature_state,
+            feature_config=feature_config,
+            safety_margin_min=safety_margin_min,
+        )
+    if feature_config.observation_mode == OBSERVATION_MODE_V11_LITE_6D:
+        if feature_state is None:
+            raise ValueError("v11_lite_6d 模式要求传入 feature_state")
+        return build_v11_lite_6d_observation(
             time=time,
             ordered_tasks=ordered_tasks,
             budget_state=budget_state,

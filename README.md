@@ -885,13 +885,105 @@ conda run -n amc-repro env PYTHONPATH=. python scripts/generate_learnable_taskse
 - `--learnable-hi-budget-rho-min/max`
 - `--learnable-lo-budget-rho-min/max`
 
-### 12.0 v11 observation（per-task 10d + global 8d）配置
+### 12.0 v11/v12 observation 配置与使用说明
 
 当前训练/评估 CLI 已支持通过参数启用：
 
 - `--observation-mode v10_basic`（默认，旧模式，`state_dim = 2 * n_tasks`）
 - `--observation-mode v11_full_10d`（新模式，`state_dim = 10 * n_tasks + 8`）
+- `--observation-mode v11_no_risk_9d`（v11 消融模式，`state_dim = 9 * n_tasks + 8`）
+- `--observation-mode v11_no_util_9d`（v11 消融模式，`state_dim = 9 * n_tasks + 8`）
+- `--observation-mode v11_no_max_9d`（v11 消融模式，`state_dim = 9 * n_tasks + 8`）
+- `--observation-mode v11_no_priority_9d`（v11 消融模式，`state_dim = 9 * n_tasks + 8`）
+- `--observation-mode v11_no_risk_no_util_8d`（v11 消融模式，`state_dim = 8 * n_tasks + 8`）
+- `--observation-mode v11_lite_6d`（v11 紧凑模式，`state_dim = 6 * n_tasks + 8`）
 - `--observation-mode v12_full_14d`（新模式，`state_dim = 14 * n_tasks + 8`）
+
+所有新增 v11 消融模式都复用了 `v11_full_10d` 的同一套底层特征计算逻辑，
+区别只在于“保留哪些 per-task 特征，以及按什么固定顺序拼接”，因此可直接做同口径对比。
+
+`v11_full_10d` 的每任务 10 维顺序为：
+
+1. `budget_norm`
+2. `recent_cost_norm`
+3. `ema_cost_norm`
+4. `max_cost_k_norm`
+5. `overrun_ema`
+6. `risk`
+7. `surplus`
+8. `criticality`
+9. `priority_norm`
+10. `util_budget`
+
+新增模式的每任务特征顺序如下：
+
+- `v11_no_risk_9d`
+  - `budget_norm`
+  - `recent_cost_norm`
+  - `ema_cost_norm`
+  - `max_cost_k_norm`
+  - `overrun_ema`
+  - `surplus`
+  - `criticality`
+  - `priority_norm`
+  - `util_budget`
+- `v11_no_util_9d`
+  - `budget_norm`
+  - `recent_cost_norm`
+  - `ema_cost_norm`
+  - `max_cost_k_norm`
+  - `overrun_ema`
+  - `risk`
+  - `surplus`
+  - `criticality`
+  - `priority_norm`
+- `v11_no_max_9d`
+  - `budget_norm`
+  - `recent_cost_norm`
+  - `ema_cost_norm`
+  - `overrun_ema`
+  - `risk`
+  - `surplus`
+  - `criticality`
+  - `priority_norm`
+  - `util_budget`
+- `v11_no_priority_9d`
+  - `budget_norm`
+  - `recent_cost_norm`
+  - `ema_cost_norm`
+  - `max_cost_k_norm`
+  - `overrun_ema`
+  - `risk`
+  - `surplus`
+  - `criticality`
+  - `util_budget`
+- `v11_no_risk_no_util_8d`
+  - `budget_norm`
+  - `recent_cost_norm`
+  - `ema_cost_norm`
+  - `max_cost_k_norm`
+  - `overrun_ema`
+  - `surplus`
+  - `criticality`
+  - `priority_norm`
+- `v11_lite_6d`
+  - `budget_norm`
+  - `recent_cost_norm`
+  - `ema_cost_norm`
+  - `overrun_ema`
+  - `surplus`
+  - `criticality`
+
+以上这些 v11-family 模式都保留相同的全局 8 维：
+
+1. `total_budget_util`
+2. `hi_budget_util`
+3. `lo_budget_util`
+4. `recent_mode_change_rate`
+5. `recent_lo_cancel_rate`
+6. `recent_hi_overrun_rate`
+7. `recent_lo_overrun_rate`
+8. `safety_margin_min`
 
 `v12_full_14d` 在 `v11_full_10d` 的每任务 10 维特征后，追加以下 4 个特征（顺序固定）：
 
@@ -934,6 +1026,33 @@ conda run -n amc-repro python scripts/train_dqn_amc.py \
   --risk-max-scale 3.0 \
   --include-safety-margin
 ```
+
+v11 消融训练示例：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/train_dqn_amc.py \
+  --episodes 2 \
+  --workload small \
+  --scenario stress \
+  --action-space single \
+  --observation-mode v11_no_risk_9d \
+  --ema-alpha 0.2 \
+  --overrun-ema-alpha 0.1 \
+  --history-k 8 \
+  --event-window 10 \
+  --max-cost-weight 0.7 \
+  --risk-max-scale 3.0 \
+  --include-safety-margin
+```
+
+如果要切换到其它消融模式，只需要替换 `--observation-mode`：
+
+- `v11_no_util_9d`
+- `v11_no_max_9d`
+- `v11_no_priority_9d`
+- `v11_no_risk_no_util_8d`
+- `v11_lite_6d`
 
 评估示例（需与训练期 observation 配置保持一致）：
 
@@ -980,7 +1099,7 @@ conda run -n amc-repro python scripts/train_dqn_amc.py \
 - 评估 CSV：`observation_mode`、`state_dim`
 - 训练配置快照 `config.json`：`observation_mode` 与 `feature_config`
 
-### 12.0.1 阶段 8 测试（v11 observation）
+### 12.0.1 observation 测试与冒烟验证
 
 新增测试文件：
 
@@ -992,8 +1111,10 @@ conda run -n amc-repro python scripts/train_dqn_amc.py \
 2. `v11_full_10d` 长度为 `10 * n_tasks + 8`
 3. `v11_full_10d` 所有特征值在 `[0, 1]`
 4. `step` 后 `v11_full_10d` 维度保持正确
-5. `feature_state` 在 step 后存在且任务键集合保持一致
-6. event window 长度不超过 `event_window`
+5. 所有新增 v11 消融模式维度正确
+6. 所有新增 v11 消融模式的特征值均位于 `[0, 1]`
+7. `feature_state` 在 step 后存在且任务键集合保持一致
+8. event window 长度不超过 `event_window`
 
 运行命令：
 
@@ -1002,7 +1123,7 @@ cd /Users/x1ngchuan/Documents/AMC
 conda run -n amc-repro python -m pytest -q tests/test_v11_observation.py
 ```
 
-新增 v12 冒烟脚本：
+新增 observation 全模式冒烟脚本：
 
 - `scripts/smoke_test_v12_observation.py`
 
@@ -1018,7 +1139,36 @@ PYTHONPATH=. python scripts/smoke_test_v12_observation.py
 ```text
 v10_basic: PASS
 v11_full_10d: PASS
+v11_no_risk_9d: PASS
+v11_no_util_9d: PASS
+v11_no_max_9d: PASS
+v11_no_priority_9d: PASS
+v11_no_risk_no_util_8d: PASS
+v11_lite_6d: PASS
 v12_full_14d: PASS
+```
+
+新增 v11 消融顺序校验脚本：
+
+- `scripts/smoke_test_v11_lite_feature_order.py`
+
+运行方式：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/smoke_test_v11_lite_feature_order.py
+```
+
+该脚本会验证所有新增模式是否严格等于 `v11_full_10d` 删除指定列后的结果，
+并同时确认全局 8 维未发生漂移。预期输出：
+
+```text
+v11_no_risk_9d feature order: PASS
+v11_no_util_9d feature order: PASS
+v11_no_max_9d feature order: PASS
+v11_no_priority_9d feature order: PASS
+v11_no_risk_no_util_8d feature order: PASS
+v11_lite_6d feature order: PASS
 ```
 
 ### 12.1 运行前说明

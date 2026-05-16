@@ -1,0 +1,22 @@
+{
+  "save_best_by": "pareto_relative_score",
+  "selection_metric": "pareto_relative_score",
+  "relative_score_alpha": 1.0,
+  "require_better_than_baseline_for_best": false,
+  "best_validation_episode": 100,
+  "best_relative_score": -0.04966641957005191,
+  "dqn_lo_cancellations_mean": 170.93333333333334,
+  "baseline_lo_cancellations_mean": 179.86666666666667,
+  "dqn_mode_changes_mean": 165.96666666666667,
+  "baseline_mode_changes_mean": 165.96666666666667,
+  "normalized_delta_lo_cancellations": -0.04966641957005191,
+  "normalized_delta_mode_changes": 0.0,
+  "raw_delta_lo_cancellations_mean": -8.933333333333337,
+  "raw_delta_mode_changes_mean": 0.0,
+  "best_model_is_better_than_baseline": true,
+  "reward_mode": "interval_v1",
+  "reward_definition": "interval_v1: paper=event_job_start_reward + event_lo_overrun_reward + event_hi_overrun_reward; step=job_start_weight * delta_job_start - lo_overrun_penalty * lo_overrun_rate - hi_overrun_penalty * hi_overrun_rate - mode_change_penalty * mode_change_per_job - lo_cancellation_penalty * lo_cancellation_rate - deadline_miss_penalty * deadline_miss_rate - invalid_action_penalty * invalid_action - budget_change_penalty * budget_change_norm - budget_drift_penalty * budget_drift_mean + noop_bonus * is_explicit_noop_action; interval_v1: job_start=+0, lo_overrun=+0, hi_overrun=+0; params={'job_start_weight': 0.0, 'lo_overrun_penalty': 2.0, 'hi_overrun_penalty': 3.5, 'mode_change_penalty': 8.0, 'lo_cancellation_penalty': 2.0, 'deadline_miss_penalty': 100.0, 'invalid_action_penalty': 10.0, 'budget_change_penalty': 0.0, 'budget_drift_penalty': 0.0, 'noop_bonus': 0.0}",
+  "double_dqn": true,
+  "note": "model_best.pt is the best available checkpoint on validation, but it may still be worse than baseline.",
+  "selection_reason": "Best checkpoint selected by configured criterion. For relative_score / pareto_relative_score, validation uses normalized deltas against baseline."
+}
