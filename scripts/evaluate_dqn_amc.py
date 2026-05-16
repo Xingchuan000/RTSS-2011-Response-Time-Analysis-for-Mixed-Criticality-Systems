@@ -1344,7 +1344,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mc-fairgen-lo-overrun-factor-min", type=float, default=1.05)
     parser.add_argument("--mc-fairgen-lo-overrun-factor-max", type=float, default=1.80)
     parser.add_argument("--mask-detail-mode", choices=["minimal", "full"], default="minimal")
-    parser.add_argument("--observation-mode", choices=["v10_basic", "v11_full_10d"], default="v10_basic")
+    parser.add_argument(
+        "--observation-mode",
+        choices=["v10_basic", "v11_full_10d", "v12_full_14d"],
+        default="v10_basic",
+    )
     parser.add_argument("--ema-alpha", type=float, default=0.2)
     parser.add_argument("--overrun-ema-alpha", type=float, default=0.1)
     parser.add_argument("--history-k", type=int, default=8)

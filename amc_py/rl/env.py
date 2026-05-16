@@ -24,7 +24,10 @@ from amc_py.rl.constraint_guided_pair import (
     ConstraintGuidedTransferCandidate,
     enumerate_constraint_guided_transfer_candidates,
 )
-from amc_py.rl.feature_config import FeatureConfig
+from amc_py.rl.feature_config import (
+    OBSERVATION_MODE_V12_FULL_14D,
+    FeatureConfig,
+)
 from amc_py.rl.feature_state import RuntimeFeatureState
 from amc_py.rl.monitor import RuntimeMonitor
 from amc_py.rl.observation import NormalizationBounds, build_observation
@@ -228,7 +231,7 @@ class AmcBudgetEnv:
                 diagnosis_reason=None,
                 violated_row_index=None,
             )
-        if self.feature_config.observation_mode != "v11_full_10d":
+        if self.feature_config.observation_mode not in {"v11_full_10d", OBSERVATION_MODE_V12_FULL_14D}:
             return ConstraintGuidedResolvedAction(
                 valid=False,
                 reject_reason="constraint_guided_unsupported_observation_mode",
@@ -1844,6 +1847,16 @@ class AmcBudgetEnv:
             last_seen_completion_count = feature_state.last_seen_completion_count.get(task_name, 0)
 
             feature_state.init_task(task_name, init_cost=float(task.c_lo))
+            # task_cancel_ema 使用 overrun 事件作为 cancellation pressure proxy：
+            # 该统计与 completion 新样本无关，因此必须每个 step 都更新，避免漏掉纯 overrun 事件。
+            current_overrun_count = self._monitor.overrun_count_by_task.get(task_name, 0)
+            last_seen_overrun_count = feature_state.last_seen_overrun_count.get(task_name, 0)
+            overrun_event_flag = 1.0 if current_overrun_count > last_seen_overrun_count else 0.0
+            old_cancel_ema = feature_state.task_cancel_ema.get(task_name, 0.0)
+            feature_state.task_cancel_ema[task_name] = (
+                cfg.overrun_ema_alpha * overrun_event_flag + (1.0 - cfg.overrun_ema_alpha) * old_cancel_ema
+            )
+            feature_state.last_seen_overrun_count[task_name] = current_overrun_count
             if current_completion_count <= last_seen_completion_count:
                 # 没有新样本：跳过该任务的 EMA/history 更新，避免重复采样污染。
                 continue
@@ -1871,6 +1884,31 @@ class AmcBudgetEnv:
             lo_overruns=delta_lo_overrun,
             job_starts=delta_job_start,
         )
+
+    def _compute_safe_inc_possible_by_task(self) -> dict[str, bool]:
+        """计算每个任务在当前预算下执行 single increase 后是否可通过既有安全检查。"""
+
+        if self._engine is None:
+            return {task.name: False for task in self.ordered_tasks}
+        if not self.check_safety:
+            return {task.name: True for task in self.ordered_tasks}
+
+        result: dict[str, bool] = {}
+        before = dict(self._engine.runtime_budgets.budgets)
+        for task in self.ordered_tasks:
+            task_name = task.name
+            current = int(before[task_name])
+            candidate = int(math.ceil(current * (1.0 + self.budget_increase_ratio)))
+            upper = int(self._task_upper_bounds[self._task_index[task_name]])
+            candidate = min(candidate, upper)
+            if candidate <= current:
+                result[task_name] = False
+                continue
+            new_budgets = dict(before)
+            new_budgets[task_name] = candidate
+            diag = self.diagnose_candidate_budget_update(new_budgets=new_budgets)
+            result[task_name] = bool(diag.accepted)
+        return result
 
     def reset(self, seed: int | None = None) -> AgentObservation:  # noqa: ARG002
         """重置环境并返回初始观测。"""
@@ -1922,6 +1960,15 @@ class AmcBudgetEnv:
             self._feature_state.last_seen_completion_count[task.name] = (
                 self._monitor.completed_job_count_by_task.get(task.name, 0)
             )
+            self._feature_state.last_seen_overrun_count[task.name] = self._monitor.overrun_count_by_task.get(
+                task.name,
+                0,
+            )
+        safe_inc_possible_by_task = (
+            self._compute_safe_inc_possible_by_task()
+            if self.feature_config.observation_mode == OBSERVATION_MODE_V12_FULL_14D
+            else None
+        )
         observation = build_observation(
             time=self._engine.current_time,
             ordered_tasks=self.ordered_tasks,
@@ -1931,6 +1978,8 @@ class AmcBudgetEnv:
             feature_state=self._feature_state,
             feature_config=self.feature_config,
             safety_margin_min=self._compute_current_safety_margin_min(),
+            initial_budgets=self._initial_budgets,
+            safe_inc_possible_by_task=safe_inc_possible_by_task,
         )
         self._last_observation = observation
         return observation
@@ -2395,6 +2444,11 @@ class AmcBudgetEnv:
             delta_lo_overrun=delta_lo_overrun,
         )
         safety_margin_min = self._compute_current_safety_margin_min()
+        safe_inc_possible_by_task = (
+            self._compute_safe_inc_possible_by_task()
+            if self.feature_config.observation_mode == OBSERVATION_MODE_V12_FULL_14D
+            else None
+        )
 
         observation = build_observation(
             time=current_time,
@@ -2405,6 +2459,8 @@ class AmcBudgetEnv:
             feature_state=self._feature_state,
             feature_config=self.feature_config,
             safety_margin_min=safety_margin_min,
+            initial_budgets=self._initial_budgets,
+            safe_inc_possible_by_task=safe_inc_possible_by_task,
         )
         self._last_observation = observation
         info = {

@@ -43,6 +43,10 @@ class RuntimeFeatureState:
     # 只有当 monitor 的当前计数 > 这里记录的 last_seen 计数时，
     # 才说明该任务在当前 step 区间内出现了新样本，允许更新 EMA/history。
     last_seen_completion_count: dict[str, int] = field(default_factory=dict)
+    # 每任务取消/超限压力 EMA（v12 使用 task-level overrun 事件作为 proxy）。
+    task_cancel_ema: dict[str, float] = field(default_factory=dict)
+    # 每任务上一次读取的 overrun 计数，用于检测“本 step 是否出现新 overrun 事件”。
+    last_seen_overrun_count: dict[str, int] = field(default_factory=dict)
 
     # 以下五个窗口按 step 同步追加：同一索引代表同一时间片的统计。
     window_mode_changes: deque[int] = field(default_factory=deque)
@@ -69,6 +73,10 @@ class RuntimeFeatureState:
             self.cost_history[task_name] = deque(maxlen=self.history_k)
         if task_name not in self.last_seen_completion_count:
             self.last_seen_completion_count[task_name] = 0
+        if task_name not in self.task_cancel_ema:
+            self.task_cancel_ema[task_name] = 0.0
+        if task_name not in self.last_seen_overrun_count:
+            self.last_seen_overrun_count[task_name] = 0
 
     def append_event_window(
         self,
