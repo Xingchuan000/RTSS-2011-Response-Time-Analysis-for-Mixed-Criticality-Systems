@@ -1324,8 +1324,29 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py
   `pareto_relative_score = relative_score + 10 * max(0, relative_delta_mode_changes) + 10 * max(0, relative_delta_lo_cancellations)`
 - 解释：
   - 如果两个 delta 都 `<= 0`（不劣于 baseline），该策略退化为 `relative_score` 比较；
-  - 如果某一维劣于 baseline，不会硬性淘汰，而是增加惩罚（更温和）。
+- 如果某一维劣于 baseline，不会硬性淘汰，而是增加惩罚（更温和）。
 - 同样要求 `deadline_misses_sum == 0`。
+
+6. `--save-best-by conservative_qos`
+- 目标：在 `HI` 安全前提下，优先最小化 `lc_service_loss_mean`。
+- 约束：`hi_deadline_misses_sum == 0` 且 `mode_changes_mean <= baseline_mode_changes_mean`。
+- 并列时继续比较：`min_lc_service_mean` 越大越好，`budget_adjust_count_mean` 越小越好，episode 越早越好。
+
+7. `--save-best-by qos_stable`
+- 目标：在 `HI` 安全前提下，按新的 QoS 稳定标准选择 best。
+- 约束：`hi_deadline_misses_sum == 0` 且 `mode_changes_mean <= baseline_mode_changes_mean * (1 + --qos-stable-mode-delta)`。
+- 默认 `--qos-stable-mode-delta 0.05`，即允许 mode change 相对 baseline 最多增加 5%。
+
+8. `--save-best-by qos_best`
+- 目标：只要求 `HI` 安全，然后按 `lc_service_loss_mean -> min_lc_service_mean -> mode_changes_mean -> budget_adjust_count_mean -> episode` 排序。
+- 约束：`hi_deadline_misses_sum == 0`。
+
+新增参数：
+
+- `--qos-stable-mode-delta`：控制 `qos_stable` 的 mode-change 放宽比例，默认 `0.05`。
+- `--save-all-best-types`：除主 `model_best.pt` 外，额外输出
+  `model_best_conservative_qos.pt`、`model_best_qos_stable.pt`、`model_best_qos_best.pt`
+  以及对应 metadata JSON。若某类型没有合格 checkpoint，只会写 `found_valid_checkpoint=false` 的 metadata，不会伪造 best 模型。
 
 常用示例：
 
@@ -1334,6 +1355,49 @@ cd /Users/x1ngchuan/Documents/AMC
 KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py \
   --save-best-by pareto_relative_score \
   --relative-score-alpha 1.0
+```
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py \
+  --save-best-by qos_stable \
+  --qos-stable-mode-delta 0.05 \
+  --save-all-best-types
+```
+
+新的 validation / 选模输出说明：
+
+- `validation_metrics.csv` 新增：
+  `released_lo_jobs_mean`、`cancelled_lo_jobs_mean`、`completed_lo_jobs_mean`、
+  `lo_deadline_misses_sum`、`hi_deadline_misses_sum`、
+  `lc_service_loss_mean`、`lc_qos_mean`、`min_lc_service_mean`、
+  `budget_adjust_count_mean`、`mean_abs_budget_change_mean`、
+  `baseline_lc_service_loss_mean`、`relative_lc_loss_reduction`、`mode_change_delta_ratio`。
+- `validation_unified_summary.csv` 新增：
+  `qos_stable_valid_delta000`、`qos_stable_valid_delta005`、`qos_stable_valid_delta010`、
+  `best_candidate_rank_key`、`dqn_lc_service_loss_mean`、`dqn_lc_qos_mean` 等字段。
+- `best_model_metadata.json` 以及额外的 `best_model_metadata_*.json` 会明确记录：
+  `best_type`、`found_valid_checkpoint`、`hi_deadline_misses_sum`、
+  `lc_service_loss_mean`、`relative_lc_loss_reduction`、`mode_change_delta_ratio`。
+
+对已有训练目录重新按新规则选模：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/select_qos_best_from_validation.py \
+  --run-dir outputs/dqn_amc \
+  --qos-stable-mode-delta 0.05
+```
+
+对多个训练目录比较新 best：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/compare_dqn_training_runs.py \
+  --runs outputs/run_a,outputs/run_b \
+  --best-type qos_stable \
+  --qos-stable-mode-delta 0.05 \
+  --output outputs/qos_compare.csv
 ```
 
 配置参考文件：
@@ -1359,6 +1423,20 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/evaluate_dqn_amc
 输出文件：
 
 - `outputs/dqn_amc/eval_summary.csv`
+- `outputs/dqn_amc/eval_summary_unified_summary.csv`
+
+评估明细 CSV 现已统一输出以下 QoS 字段，baseline / noop / random / heuristic / dqn 全部同口径：
+
+- `released_lo_jobs`
+- `cancelled_lo_jobs`
+- `completed_lo_jobs`
+- `lo_deadline_misses`
+- `hi_deadline_misses`
+- `lc_service_loss`
+- `lc_qos`
+- `min_lc_service`
+- `budget_adjust_count`
+- `mean_abs_budget_change`
 
 ### 12.6 训练诊断绘图
 

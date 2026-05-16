@@ -60,6 +60,8 @@ def summarize(input_path: Path, output_path: Path, baseline_method: str = "amc_p
         mode_changes = [_to_float(row, "mode_changes") for row in group_rows]
         lo_cancellations = [_to_float(row, "lo_cancellations") for row in group_rows]
         deadline_misses = [_to_float(row, "deadline_misses") for row in group_rows]
+        lc_service_loss = [_to_float(row, "lc_service_loss") for row in group_rows]
+        lc_qos = [_to_float(row, "lc_qos") for row in group_rows]
         accepted_actions = [_to_float(row, "accepted_actions") for row in group_rows]
         rejected_actions = [_to_float(row, "rejected_actions") for row in group_rows]
         rejection_rate = [_to_float(row, "rejection_rate") for row in group_rows]
@@ -76,6 +78,8 @@ def summarize(input_path: Path, output_path: Path, baseline_method: str = "amc_p
                 "lo_cancellations_mean": mean(lo_cancellations),
                 "lo_cancellations_median": median(lo_cancellations),
                 "deadline_misses_sum": sum(deadline_misses),
+                "lc_service_loss_mean": mean(lc_service_loss),
+                "lc_qos_mean": mean(lc_qos),
                 "accepted_actions_mean": mean(accepted_actions),
                 "rejected_actions_mean": mean(rejected_actions),
                 "rejection_rate_mean": mean(rejection_rate),
@@ -94,6 +98,8 @@ def summarize(input_path: Path, output_path: Path, baseline_method: str = "amc_p
         "lo_cancellations_mean",
         "lo_cancellations_median",
         "deadline_misses_sum",
+        "lc_service_loss_mean",
+        "lc_qos_mean",
         "accepted_actions_mean",
         "rejected_actions_mean",
         "rejection_rate_mean",
@@ -117,6 +123,7 @@ def summarize(input_path: Path, output_path: Path, baseline_method: str = "amc_p
 
         baseline_mode = float(baseline_row["mode_changes_mean"])
         baseline_lo_cancel = float(baseline_row["lo_cancellations_mean"])
+        baseline_lc_loss = float(baseline_row["lc_service_loss_mean"])
 
         for row in rows_of_group:
             method = str(row["method"])
@@ -125,12 +132,17 @@ def summarize(input_path: Path, output_path: Path, baseline_method: str = "amc_p
 
             method_mode = float(row["mode_changes_mean"])
             method_lo_cancel = float(row["lo_cancellations_mean"])
+            method_lc_loss = float(row["lc_service_loss_mean"])
 
             mode_ratio_type, mode_ratio = _safe_ratio(baseline_mode, method_mode)
             lo_ratio_type, lo_ratio = _safe_ratio(baseline_lo_cancel, method_lo_cancel)
+            lc_loss_ratio_type, lc_loss_ratio = _safe_ratio(baseline_lc_loss, method_lc_loss)
 
             mode_ratio_value = "inf" if mode_ratio_type == "inf" else ("nan" if math.isnan(mode_ratio) else mode_ratio)
             lo_ratio_value = "inf" if lo_ratio_type == "inf" else ("nan" if math.isnan(lo_ratio) else lo_ratio)
+            lc_loss_ratio_value = (
+                "inf" if lc_loss_ratio_type == "inf" else ("nan" if math.isnan(lc_loss_ratio) else lc_loss_ratio)
+            )
 
             improvement_rows.extend(
                 [
@@ -143,6 +155,16 @@ def summarize(input_path: Path, output_path: Path, baseline_method: str = "amc_p
                         "ratio": mode_ratio_value,
                         "delta": method_mode - baseline_mode,
                         "is_better_than_baseline": (method_mode - baseline_mode) < 0,
+                    },
+                    {
+                        "workload": workload,
+                        "total_util": total_util,
+                        "metric": "lc_service_loss",
+                        "baseline_method": baseline_method,
+                        "method": method,
+                        "ratio": lc_loss_ratio_value,
+                        "delta": method_lc_loss - baseline_lc_loss,
+                        "is_better_than_baseline": (method_lc_loss - baseline_lc_loss) < 0,
                     },
                     {
                         "workload": workload,

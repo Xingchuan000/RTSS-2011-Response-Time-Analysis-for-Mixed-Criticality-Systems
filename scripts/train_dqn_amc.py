@@ -27,6 +27,18 @@ from amc_py.dqn import (
     resolve_experiment_bundle,
 )
 from amc_py.event_runtime import simulate_ordered_taskset_event_driven
+from amc_py.metrics import (
+    compute_service_quality_metrics,
+    mean_optional as mean_optional_service_metric,
+    safe_relative_reduction,
+    service_metrics_to_row,
+)
+from amc_py.model_selection import (
+    is_conservative_qos_valid,
+    is_qos_best_valid,
+    is_qos_stable_valid,
+    qos_sort_key,
+)
 from amc_py.models import Task
 from amc_py.rl.actions import describe_budget_action
 from amc_py.rl.feature_config import FeatureConfig
@@ -117,6 +129,118 @@ NOOP_Q_DIAGNOSTIC_FIELDNAMES = [
     "noop_valid_rate",
     "noop_q_sample_count",
 ]
+
+QOS_VALIDATION_FIELDNAMES = [
+    "released_lo_jobs_mean",
+    "cancelled_lo_jobs_mean",
+    "completed_lo_jobs_mean",
+    "lo_deadline_misses_sum",
+    "hi_deadline_misses_sum",
+    "lc_service_loss_mean",
+    "lc_qos_mean",
+    "min_lc_service_mean",
+    "budget_adjust_count_mean",
+    "mean_abs_budget_change_mean",
+    "baseline_released_lo_jobs_mean",
+    "baseline_lc_service_loss_mean",
+    "baseline_lc_qos_mean",
+    "baseline_min_lc_service_mean",
+    "baseline_hi_deadline_misses_sum",
+    "relative_lc_loss_reduction",
+    "lc_service_loss_delta_mean",
+    "lc_qos_delta_mean",
+    "mode_change_delta_ratio",
+]
+
+
+def _qos_validation_metadata_row(
+    row: dict[str, int | float | None],
+    *,
+    qos_stable_mode_delta: float,
+) -> dict[str, object]:
+    """从 validation row 派生 QoS 选模元数据字段。"""
+
+    metadata: dict[str, object] = {
+        "hi_deadline_misses_sum": int(float(row.get("hi_deadline_misses_sum", row.get("deadline_misses_sum", 0)) or 0)),
+        "lc_service_loss_mean": float(row["lc_service_loss_mean"]),
+        "baseline_lc_service_loss_mean": float(row["baseline_lc_service_loss_mean"]),
+        "lc_qos_mean": float(row["lc_qos_mean"]),
+        "baseline_lc_qos_mean": float(row["baseline_lc_qos_mean"]),
+        "relative_lc_loss_reduction": row.get("relative_lc_loss_reduction"),
+        "min_lc_service_mean": row.get("min_lc_service_mean"),
+        "mode_change_delta_ratio": float(row["mode_change_delta_ratio"]),
+        "budget_adjust_count_mean": float(row["budget_adjust_count_mean"]),
+        "mean_abs_budget_change_mean": row.get("mean_abs_budget_change_mean"),
+        "is_conservative_qos_valid": is_conservative_qos_valid(row),
+        "is_qos_stable_valid": is_qos_stable_valid(row, delta=qos_stable_mode_delta),
+        "is_qos_best_valid": is_qos_best_valid(row),
+    }
+    return metadata
+
+
+def _build_best_metadata(
+    *,
+    save_best_by: str,
+    reward_mode: str,
+    reward_definition: str,
+    double_dqn: bool,
+    relative_score_alpha: float,
+    require_better_than_baseline_for_best: bool,
+    qos_stable_mode_delta: float,
+    best_type: str,
+    best_row: dict[str, int | float | None] | None,
+) -> dict[str, object]:
+    """构建 best checkpoint metadata。"""
+
+    if best_row is None:
+        return {
+            "save_best_by": save_best_by,
+            "best_type": best_type,
+            "selection_metric": best_type,
+            "relative_score_alpha": relative_score_alpha,
+            "require_better_than_baseline_for_best": require_better_than_baseline_for_best,
+            "qos_stable_mode_delta": qos_stable_mode_delta,
+            "reward_mode": reward_mode,
+            "reward_definition": reward_definition,
+            "double_dqn": double_dqn,
+            "found_valid_checkpoint": False,
+            "reason": "No checkpoint satisfied HI safety and mode stability constraints.",
+        }
+    best_relative_score = float(best_row.get("relative_score", 0.0))
+    best_delta_mode = float(best_row.get("relative_delta_mode_changes", 0.0))
+    best_delta_lo = float(best_row.get("relative_delta_lo_cancellations", 0.0))
+    best_raw_delta_mode = float(
+        best_row.get("raw_delta_mode_changes", best_row.get("dqn_mode_changes_delta_mean", 0.0))
+    )
+    best_raw_delta_lo = float(
+        best_row.get("raw_delta_lo_cancellations", best_row.get("dqn_lo_cancellations_delta_mean", 0.0))
+    )
+    metadata: dict[str, object] = {
+        "save_best_by": save_best_by,
+        "best_type": best_type,
+        "selection_metric": best_type if best_type != "primary" else save_best_by,
+        "relative_score_alpha": relative_score_alpha,
+        "require_better_than_baseline_for_best": require_better_than_baseline_for_best,
+        "qos_stable_mode_delta": qos_stable_mode_delta,
+        "best_validation_episode": int(best_row["episode"]),
+        "best_relative_score": best_relative_score,
+        "dqn_lo_cancellations_mean": float(best_row["lo_cancellations_mean"]),
+        "baseline_lo_cancellations_mean": float(best_row["baseline_lo_cancellations_mean"]),
+        "dqn_mode_changes_mean": float(best_row["mode_changes_mean"]),
+        "baseline_mode_changes_mean": float(best_row["baseline_mode_changes_mean"]),
+        "normalized_delta_lo_cancellations": best_delta_lo,
+        "normalized_delta_mode_changes": best_delta_mode,
+        "raw_delta_lo_cancellations_mean": best_raw_delta_lo,
+        "raw_delta_mode_changes_mean": best_raw_delta_mode,
+        "best_model_is_better_than_baseline": best_relative_score < 0.0,
+        "reward_mode": reward_mode,
+        "reward_definition": reward_definition,
+        "double_dqn": double_dqn,
+        "found_valid_checkpoint": True,
+        "selection_reason": "Best checkpoint selected by configured criterion.",
+    }
+    metadata.update(_qos_validation_metadata_row(best_row, qos_stable_mode_delta=qos_stable_mode_delta))
+    return metadata
 
 
 def _merge_counter_json(rows: list[dict[str, int | float | None]], field: str) -> dict[str, float]:
@@ -316,7 +440,7 @@ def _trace_rows_from_runtime(result: SimulationResult) -> list[dict]:
     return rows
 
 
-def _run_baseline_validation_seed_worker(args_tuple: tuple[ExperimentConfig, int, int]) -> dict[str, int]:
+def _run_baseline_validation_seed_worker(args_tuple: tuple[ExperimentConfig, int, int]) -> dict[str, int | float | None]:
     """运行单个 validation seed 的 AMC+ baseline 仿真。
 
     这里必须使用模块顶层函数，而不能把逻辑写成 `_run_validation()` 的内部闭包。
@@ -334,11 +458,13 @@ def _run_baseline_validation_seed_worker(args_tuple: tuple[ExperimentConfig, int
             semantics=RuntimeSemantics.AMC_PLUS,
         ),
     )
+    baseline_service_metrics = compute_service_quality_metrics(baseline_result)
     # worker 只返回单个 seed 的原始计数，主进程统一负责做均值聚合，
     # 这样可以保证串行路径和并行路径共用同一套聚合口径。
     return {
         "mode_changes": baseline_result.mode_change_count(),
         "lo_cancellations": baseline_result.lo_job_cancellation_count(),
+        **service_metrics_to_row(baseline_service_metrics),
     }
 
 
@@ -496,6 +622,8 @@ def _evaluate_agent_on_validation_seed(
         done = result.done
         last_info = result.info
 
+    runtime_result = env._engine.finish() if env._engine is not None else SimulationResult()
+    service_metrics = compute_service_quality_metrics(runtime_result)
     debug_stats = env.debug_statistics()
     row = {
         "mode_changes": int(last_info.get("mode_changes", 0)),
@@ -519,6 +647,7 @@ def _evaluate_agent_on_validation_seed(
         "reward": float(total_reward),
         "observation_mode": str(last_info.get("observation_mode", feature_config.observation_mode)),
         "state_dim": int(last_info.get("state_dim", len(obs.state_vector))),
+        **service_metrics_to_row(service_metrics),
     }
     row.update(_noop_q_diagnostics_to_row(agent, diagnostic_states, diagnostic_valid_masks))
     if log_validation_policy_actions:
@@ -768,7 +897,7 @@ def _run_validation(
     residual_guard_reject_decrease_pressure_threshold: float = 0.05,
     residual_guard_use_hi_pressure_max: bool = False,
     log_validation_policy_actions: bool = False,
-) -> tuple[dict[str, int | float | None], dict[str, float], bool]:
+) -> tuple[dict[str, int | float | None], dict[str, int | float | None], bool]:
     """在验证集上评估当前 agent，并返回聚合指标。"""
 
     used_baseline_cache = baseline_cache is not None
@@ -797,6 +926,25 @@ def _run_validation(
             "baseline_mode_changes_mean": sum(row["mode_changes"] for row in baseline_rows) / len(validation_seeds),
             "baseline_lo_cancellations_mean": (
                 sum(row["lo_cancellations"] for row in baseline_rows) / len(validation_seeds)
+            ),
+            "baseline_released_lo_jobs_mean": (
+                sum(float(row["released_lo_jobs"]) for row in baseline_rows) / len(validation_seeds)
+            ),
+            "baseline_lc_service_loss_mean": (
+                sum(float(row["lc_service_loss"]) for row in baseline_rows) / len(validation_seeds)
+            ),
+            "baseline_lc_qos_mean": (
+                sum(float(row["lc_qos"]) for row in baseline_rows) / len(validation_seeds)
+            ),
+            "baseline_min_lc_service_mean": mean_optional_service_metric(baseline_rows, "min_lc_service"),
+            "baseline_hi_deadline_misses_sum": sum(int(float(row["hi_deadline_misses"])) for row in baseline_rows),
+            "baseline_lo_deadline_misses_sum": sum(int(float(row["lo_deadline_misses"])) for row in baseline_rows),
+            "baseline_budget_adjust_count_mean": (
+                sum(float(row["budget_adjust_count"]) for row in baseline_rows) / len(validation_seeds)
+            ),
+            "baseline_mean_abs_budget_change_mean": mean_optional_service_metric(
+                baseline_rows,
+                "mean_abs_budget_change",
             ),
         }
 
@@ -881,8 +1029,13 @@ def _run_validation(
     seed_count = len(validation_seeds)
     baseline_mode_changes_mean = float(baseline_cache["baseline_mode_changes_mean"])
     baseline_lo_cancellations_mean = float(baseline_cache["baseline_lo_cancellations_mean"])
+    baseline_lc_service_loss_mean = float(baseline_cache["baseline_lc_service_loss_mean"])
+    baseline_lc_qos_mean = float(baseline_cache["baseline_lc_qos_mean"])
     mode_delta_sum = sum(row["mode_changes"] for row in dqn_rows) - baseline_mode_changes_mean * seed_count
     cancel_delta_sum = sum(row["lo_cancellations"] for row in dqn_rows) - baseline_lo_cancellations_mean * seed_count
+    released_lo_jobs_mean = sum(float(row["released_lo_jobs"]) for row in dqn_rows) / seed_count
+    lc_service_loss_mean = sum(float(row["lc_service_loss"]) for row in dqn_rows) / seed_count
+    lc_qos_mean = sum(float(row["lc_qos"]) for row in dqn_rows) / seed_count
     validation_row = {
         "validation_seed_count": seed_count,
         "deadline_misses_sum": sum(int(row["deadline_misses"]) for row in dqn_rows),
@@ -908,6 +1061,27 @@ def _run_validation(
         "reward_mean": sum(row["reward"] for row in dqn_rows) / seed_count,
         "observation_mode": str(feature_config.observation_mode),
         "state_dim_mean": sum(row["state_dim"] for row in dqn_rows) / seed_count,
+        "released_lo_jobs_mean": released_lo_jobs_mean,
+        "cancelled_lo_jobs_mean": sum(float(row["cancelled_lo_jobs"]) for row in dqn_rows) / seed_count,
+        "completed_lo_jobs_mean": sum(float(row["completed_lo_jobs"]) for row in dqn_rows) / seed_count,
+        "lo_deadline_misses_sum": sum(int(float(row["lo_deadline_misses"])) for row in dqn_rows),
+        "hi_deadline_misses_sum": sum(int(float(row["hi_deadline_misses"])) for row in dqn_rows),
+        "lc_service_loss_mean": lc_service_loss_mean,
+        "lc_qos_mean": lc_qos_mean,
+        "min_lc_service_mean": mean_optional_service_metric(dqn_rows, "min_lc_service"),
+        "budget_adjust_count_mean": sum(float(row["budget_adjust_count"]) for row in dqn_rows) / seed_count,
+        "mean_abs_budget_change_mean": mean_optional_service_metric(dqn_rows, "mean_abs_budget_change"),
+        "baseline_released_lo_jobs_mean": float(baseline_cache["baseline_released_lo_jobs_mean"]),
+        "baseline_lc_service_loss_mean": baseline_lc_service_loss_mean,
+        "baseline_lc_qos_mean": baseline_lc_qos_mean,
+        "baseline_min_lc_service_mean": baseline_cache["baseline_min_lc_service_mean"],
+        "baseline_hi_deadline_misses_sum": int(float(baseline_cache["baseline_hi_deadline_misses_sum"])),
+        "relative_lc_loss_reduction": safe_relative_reduction(baseline_lc_service_loss_mean, lc_service_loss_mean),
+        "lc_service_loss_delta_mean": lc_service_loss_mean - baseline_lc_service_loss_mean,
+        "lc_qos_delta_mean": lc_qos_mean - baseline_lc_qos_mean,
+        "mode_change_delta_ratio": (
+            (sum(row["mode_changes"] for row in dqn_rows) / seed_count) - baseline_mode_changes_mean
+        ) / max(1.0, baseline_mode_changes_mean),
     }
     # validation 输出采用文档第 6 节的字段名，数值为各 validation seed 诊断结果的均值；
     # `noop_q_sample_count` 代表实际参与 Q 诊断的状态样本总数，便于核对采样是否达到上限。
@@ -959,11 +1133,13 @@ def _is_better_validation_row(
     save_best_by: str,
     relative_score_alpha: float = 1.0,
     require_better_than_baseline_for_best: bool = False,
+    qos_stable_mode_delta: float = 0.05,
 ) -> bool:
     """判断候选验证结果是否优于当前 best。"""
 
-    if int(candidate_row["deadline_misses_sum"]) != 0:
-        return False
+    if save_best_by in {"lo_cancellations", "mode_changes", "reward", "relative_score", "pareto_relative_score"}:
+        if int(candidate_row["deadline_misses_sum"]) != 0:
+            return False
     use_lo_cancellations_gate = save_best_by == "lo_cancellations"
     if best_row is None:
         if use_lo_cancellations_gate:
@@ -971,7 +1147,7 @@ def _is_better_validation_row(
                 candidate_row["baseline_mode_changes_mean"]
             )
         return True
-    if int(best_row["deadline_misses_sum"]) != 0:
+    if save_best_by in {"lo_cancellations", "mode_changes", "reward", "relative_score", "pareto_relative_score"} and int(best_row["deadline_misses_sum"]) != 0:
         return True
     if use_lo_cancellations_gate:
         candidate_mode_ok = float(candidate_row["mode_changes_mean"]) <= float(
@@ -986,6 +1162,24 @@ def _is_better_validation_row(
     if save_best_by == "reward":
         # 阶段 3：reward 指标方向应为“越大越好”，与 cancellation/mode-change 相反。
         return float(candidate_row["reward_mean"]) > float(best_row["reward_mean"])
+    if save_best_by == "qos_stable":
+        if not is_qos_stable_valid(candidate_row, delta=qos_stable_mode_delta):
+            return False
+        if best_row is None or not is_qos_stable_valid(best_row, delta=qos_stable_mode_delta):
+            return True
+        return qos_sort_key(candidate_row) < qos_sort_key(best_row)
+    if save_best_by == "conservative_qos":
+        if not is_conservative_qos_valid(candidate_row):
+            return False
+        if best_row is None or not is_conservative_qos_valid(best_row):
+            return True
+        return qos_sort_key(candidate_row) < qos_sort_key(best_row)
+    if save_best_by == "qos_best":
+        if not is_qos_best_valid(candidate_row):
+            return False
+        if best_row is None or not is_qos_best_valid(best_row):
+            return True
+        return qos_sort_key(candidate_row) < qos_sort_key(best_row)
     if save_best_by == "relative_score":
         # relative_score 越小越好，<0 表示综合优于 baseline。
         # 本轮要求：即便 relative_score>=0，也要保留“验证集里最好的那个”checkpoint。
@@ -1055,6 +1249,10 @@ def _build_validation_unified_summary_rows(
         baseline_lo_cancellations_mean = float(row["baseline_lo_cancellations_mean"])
         dqn_mode_changes_mean = float(row["mode_changes_mean"])
         dqn_lo_cancellations_mean = float(row["lo_cancellations_mean"])
+        baseline_lc_service_loss_mean = float(row["baseline_lc_service_loss_mean"])
+        baseline_lc_qos_mean = float(row["baseline_lc_qos_mean"])
+        dqn_lc_service_loss_mean = float(row["lc_service_loss_mean"])
+        dqn_lc_qos_mean = float(row["lc_qos_mean"])
         mode_change_ratio: float | str
         lo_cancellation_ratio: float | str
         if dqn_mode_changes_mean == 0.0:
@@ -1072,8 +1270,12 @@ def _build_validation_unified_summary_rows(
                 "validation_seed_count": int(row["validation_seed_count"]),
                 "baseline_mode_changes_mean": baseline_mode_changes_mean,
                 "baseline_lo_cancellations_mean": baseline_lo_cancellations_mean,
+                "baseline_lc_service_loss_mean": baseline_lc_service_loss_mean,
+                "baseline_lc_qos_mean": baseline_lc_qos_mean,
                 "dqn_mode_changes_mean": dqn_mode_changes_mean,
                 "dqn_lo_cancellations_mean": dqn_lo_cancellations_mean,
+                "dqn_lc_service_loss_mean": dqn_lc_service_loss_mean,
+                "dqn_lc_qos_mean": dqn_lc_qos_mean,
                 # 这三列用于与文档要求一致地直观看到“相对 baseline 的差值与综合得分”。
                 "relative_score": float(row["relative_score"]),
                 "relative_score_alpha": float(row["relative_score_alpha"]),
@@ -1090,6 +1292,16 @@ def _build_validation_unified_summary_rows(
                 "lo_cancellations_delta_vs_baseline": float(row["dqn_lo_cancellations_delta_mean"]),
                 "mode_change_ratio": mode_change_ratio,
                 "lo_cancellation_ratio": lo_cancellation_ratio,
+                "relative_lc_loss_reduction": row.get("relative_lc_loss_reduction"),
+                "lc_service_loss_delta_mean": float(row["lc_service_loss_delta_mean"]),
+                "lc_qos_delta_mean": float(row["lc_qos_delta_mean"]),
+                "min_lc_service_mean": row.get("min_lc_service_mean"),
+                "mode_change_delta_ratio": float(row["mode_change_delta_ratio"]),
+                "hi_deadline_misses_sum": int(float(row["hi_deadline_misses_sum"])),
+                "qos_stable_valid_delta000": is_qos_stable_valid(row, 0.00),
+                "qos_stable_valid_delta005": is_qos_stable_valid(row, 0.05),
+                "qos_stable_valid_delta010": is_qos_stable_valid(row, 0.10),
+                "best_candidate_rank_key": str(qos_sort_key(row)),
                 "accepted_action_count_mean": float(row["accepted_actions_mean"]),
                 "rejected_action_count_mean": float(row["rejected_actions_mean"]),
                 "noop_action_count_mean": float(row["noop_actions_mean"]),
@@ -1251,9 +1463,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--save-best-by",
-        choices=["lo_cancellations", "mode_changes", "reward", "relative_score", "pareto_relative_score"],
+        choices=[
+            "lo_cancellations",
+            "mode_changes",
+            "reward",
+            "relative_score",
+            "pareto_relative_score",
+            "qos_stable",
+            "conservative_qos",
+            "qos_best",
+        ],
         default="mode_changes",
     )
+    parser.add_argument("--qos-stable-mode-delta", type=float, default=0.05)
+    parser.add_argument("--save-all-best-types", action="store_true")
     parser.add_argument(
         "--reward-mode",
         choices=list(available_reward_modes()),
@@ -1492,7 +1715,12 @@ def main() -> None:
     model_best_path = output_dir / "model_best.pt"
     best_model_metadata_path = output_dir / "best_model_metadata.json"
     best_model_saved = False
-    baseline_validation_cache: dict[str, float] | None = None
+    best_rows_by_type: dict[str, dict[str, int | float | None] | None] = {
+        "conservative_qos": None,
+        "qos_stable": None,
+        "qos_best": None,
+    }
+    baseline_validation_cache: dict[str, int | float | None] | None = None
     # `pareto_relative_score` 两阶段选模状态：
     # - False：尚未见到任何 Pareto-valid checkpoint，允许 fallback 到软分数；
     # - True ：已经见到至少一个 Pareto-valid checkpoint，后续仅在 Pareto-valid 集合内比较。
@@ -1987,6 +2215,7 @@ def main() -> None:
                             save_best_by="pareto_relative_score",
                             relative_score_alpha=args.relative_score_alpha,
                             require_better_than_baseline_for_best=args.require_better_than_baseline_for_best,
+                            qos_stable_mode_delta=args.qos_stable_mode_delta,
                         )
                     else:
                         # 已见到 Pareto-valid 后，非 Pareto-valid 候选直接丢弃，不参与 best 竞争。
@@ -1998,12 +2227,26 @@ def main() -> None:
                     save_best_by=args.save_best_by,
                     relative_score_alpha=args.relative_score_alpha,
                     require_better_than_baseline_for_best=args.require_better_than_baseline_for_best,
+                    qos_stable_mode_delta=args.qos_stable_mode_delta,
                 )
 
             if should_update_best:
                 best_validation_row = validation_row
                 agent.save(model_best_path)
                 best_model_saved = True
+            if args.save_all_best_types:
+                for best_type in ("conservative_qos", "qos_stable", "qos_best"):
+                    should_update_aux_best = _is_better_validation_row(
+                        candidate_row=validation_row,
+                        best_row=best_rows_by_type[best_type],
+                        save_best_by=best_type,
+                        relative_score_alpha=args.relative_score_alpha,
+                        require_better_than_baseline_for_best=args.require_better_than_baseline_for_best,
+                        qos_stable_mode_delta=args.qos_stable_mode_delta,
+                    )
+                    if should_update_aux_best:
+                        best_rows_by_type[best_type] = validation_row
+                        agent.save(output_dir / f"model_best_{best_type}.pt")
             print(
                 {
                     "episode": episode + 1,
@@ -2136,6 +2379,10 @@ def main() -> None:
             "reward_mean",
             "observation_mode",
             "state_dim_mean",
+        ]
+        validation_fieldnames.extend(QOS_VALIDATION_FIELDNAMES)
+        validation_fieldnames.extend(
+            [
             "relative_score_alpha",
             "raw_delta_lo_cancellations",
             "raw_delta_mode_changes",
@@ -2144,7 +2391,8 @@ def main() -> None:
             "relative_score",
             "is_better_than_baseline",
             "is_pareto_valid",
-        ]
+            ]
+        )
         validation_fieldnames.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
         if args.log_validation_policy_actions:
             validation_fieldnames.extend(
@@ -2271,8 +2519,12 @@ def main() -> None:
             "validation_seed_count",
             "baseline_mode_changes_mean",
             "baseline_lo_cancellations_mean",
+            "baseline_lc_service_loss_mean",
+            "baseline_lc_qos_mean",
             "dqn_mode_changes_mean",
             "dqn_lo_cancellations_mean",
+            "dqn_lc_service_loss_mean",
+            "dqn_lc_qos_mean",
             "relative_score",
             "relative_score_alpha",
             "relative_delta_mode_changes",
@@ -2284,6 +2536,16 @@ def main() -> None:
             "lo_cancellations_delta_vs_baseline",
             "mode_change_ratio",
             "lo_cancellation_ratio",
+            "relative_lc_loss_reduction",
+            "lc_service_loss_delta_mean",
+            "lc_qos_delta_mean",
+            "min_lc_service_mean",
+            "mode_change_delta_ratio",
+            "hi_deadline_misses_sum",
+            "qos_stable_valid_delta000",
+            "qos_stable_valid_delta005",
+            "qos_stable_valid_delta010",
+            "best_candidate_rank_key",
             "accepted_action_count_mean",
             "rejected_action_count_mean",
             "noop_action_count_mean",
@@ -2302,65 +2564,42 @@ def main() -> None:
 
     agent.save(model_path)
     if validation_rows:
-        if best_validation_row is None:
-            best_validation_row = validation_rows[-1]
-        best_relative_score = float(best_validation_row.get("relative_score", 0.0))
-        best_delta_mode = float(best_validation_row.get("relative_delta_mode_changes", 0.0))
-        best_delta_lo = float(best_validation_row.get("relative_delta_lo_cancellations", 0.0))
-        best_raw_delta_mode = float(
-            best_validation_row.get(
-                "raw_delta_mode_changes",
-                best_validation_row.get("dqn_mode_changes_delta_mean", 0.0),
-            )
+        best_model_metadata = _build_best_metadata(
+            save_best_by=args.save_best_by,
+            reward_mode=args.reward_mode,
+            reward_definition=reward_mode_config.describe(),
+            double_dqn=args.double_dqn,
+            relative_score_alpha=args.relative_score_alpha,
+            require_better_than_baseline_for_best=args.require_better_than_baseline_for_best,
+            qos_stable_mode_delta=args.qos_stable_mode_delta,
+            best_type=args.save_best_by,
+            best_row=best_validation_row,
         )
-        best_raw_delta_lo = float(
-            best_validation_row.get(
-                "raw_delta_lo_cancellations",
-                best_validation_row.get("dqn_lo_cancellations_delta_mean", 0.0),
-            )
-        )
-        best_model_metadata = {
-            "save_best_by": args.save_best_by,
-            "selection_metric": (
-                "relative_score"
-                if args.save_best_by == "relative_score"
-                else (
-                    "pareto_relative_score"
-                    if args.save_best_by == "pareto_relative_score"
-                    else args.save_best_by
-                )
-            ),
-            "relative_score_alpha": args.relative_score_alpha,
-            "require_better_than_baseline_for_best": args.require_better_than_baseline_for_best,
-            "best_validation_episode": int(best_validation_row["episode"]),
-            "best_relative_score": best_relative_score,
-            "dqn_lo_cancellations_mean": float(best_validation_row["lo_cancellations_mean"]),
-            "baseline_lo_cancellations_mean": float(best_validation_row["baseline_lo_cancellations_mean"]),
-            "dqn_mode_changes_mean": float(best_validation_row["mode_changes_mean"]),
-            "baseline_mode_changes_mean": float(best_validation_row["baseline_mode_changes_mean"]),
-            "normalized_delta_lo_cancellations": best_delta_lo,
-            "normalized_delta_mode_changes": best_delta_mode,
-            "raw_delta_lo_cancellations_mean": best_raw_delta_lo,
-            "raw_delta_mode_changes_mean": best_raw_delta_mode,
-            "best_model_is_better_than_baseline": best_relative_score < 0.0,
-            "reward_mode": args.reward_mode,
-            "reward_definition": reward_mode_config.describe(),
-            "double_dqn": args.double_dqn,
-            "note": (
-                "model_best.pt is the best available checkpoint on validation, but it may still be worse than baseline."
-            ),
-            "selection_reason": (
-                "Best checkpoint selected by configured criterion. "
-                "For relative_score / pareto_relative_score, validation uses normalized deltas against baseline."
-            ),
-        }
         with best_model_metadata_path.open("w", encoding="utf-8") as f:
             json.dump(best_model_metadata, f, ensure_ascii=False, indent=2)
-        if best_relative_score >= 0.0:
+        if best_validation_row is None:
+            print(f"WARNING: No valid checkpoint found for save_best_by={args.save_best_by}.")
+        elif float(best_validation_row.get("relative_score", 0.0)) >= 0.0:
             # 文档要求：即使当前 best 仍劣于 baseline，也必须保留 best checkpoint。
             # 因此这里只打印提示，不中断、不回滚、不跳过保存。
             print("WARNING: Best available checkpoint is still worse than baseline on validation.")
             print("Saved anyway for trend analysis: model_best.pt")
+        if args.save_all_best_types:
+            for best_type in ("conservative_qos", "qos_stable", "qos_best"):
+                metadata_path = output_dir / f"best_model_metadata_{best_type}.json"
+                metadata = _build_best_metadata(
+                    save_best_by=args.save_best_by,
+                    reward_mode=args.reward_mode,
+                    reward_definition=reward_mode_config.describe(),
+                    double_dqn=args.double_dqn,
+                    relative_score_alpha=args.relative_score_alpha,
+                    require_better_than_baseline_for_best=args.require_better_than_baseline_for_best,
+                    qos_stable_mode_delta=args.qos_stable_mode_delta,
+                    best_type=best_type,
+                    best_row=best_rows_by_type[best_type],
+                )
+                with metadata_path.open("w", encoding="utf-8") as f:
+                    json.dump(metadata, f, ensure_ascii=False, indent=2)
     config_payload = {
         "dqn_config": asdict(config),
         "workload": args.workload,
@@ -2408,6 +2647,8 @@ def main() -> None:
         "validation_workers": args.validation_workers,
         "max_q_diagnostic_samples": args.max_q_diagnostic_samples,
         "save_best_by": args.save_best_by,
+        "qos_stable_mode_delta": args.qos_stable_mode_delta,
+        "save_all_best_types": args.save_all_best_types,
         "relative_score_alpha": args.relative_score_alpha,
         "relative_score_normalization": "baseline_mean_denominator",
         "reward_mode": args.reward_mode,
