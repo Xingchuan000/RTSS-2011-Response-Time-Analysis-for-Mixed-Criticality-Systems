@@ -17,7 +17,7 @@ from .experiment import (
     build_small_stress_experiment_config,
     resolve_experiment_bundle,
 )
-from .network import DqnNetwork
+from .network import DqnNetwork, TaskwiseDqnNetwork
 from .replay import ReplayBuffer
 from .types import Transition
 
@@ -29,6 +29,7 @@ __all__ = [
     "ExperimentConfig",
     "Rtss11TasksetBundle",
     "DqnNetwork",
+    "TaskwiseDqnNetwork",
     "ReplayBuffer",
     "Transition",
     "build_automotive_experiment_config",

@@ -12,7 +12,7 @@ from torch import nn
 from torch.optim import Adam
 
 from amc_py.dqn.config import DqnConfig
-from amc_py.dqn.network import DqnNetwork
+from amc_py.dqn.network import DqnNetwork, TaskwiseDqnNetwork
 from amc_py.dqn.replay import ReplayBuffer
 from amc_py.dqn.types import Transition
 
@@ -112,15 +112,15 @@ class DqnBudgetAgent:
         torch.manual_seed(network_seed)
         # 回放池采样使用单独 replay_seed，避免与探索随机流互相污染。
         self.replay_buffer = ReplayBuffer(capacity=config.replay_capacity, seed=replay_seed)
-        self.policy_network = DqnNetwork(
-            input_dim=observation_dim,
-            output_dim=action_dim,
-            hidden_layers=self.hidden_layers,
+        self.policy_network = self._build_network(
+            observation_dim=observation_dim,
+            action_dim=action_dim,
+            noop_action_id=noop_action_id,
         ).to(self.device)
-        self.target_network = DqnNetwork(
-            input_dim=observation_dim,
-            output_dim=action_dim,
-            hidden_layers=self.hidden_layers,
+        self.target_network = self._build_network(
+            observation_dim=observation_dim,
+            action_dim=action_dim,
+            noop_action_id=noop_action_id,
         ).to(self.device)
         self.target_network.load_state_dict(self.policy_network.state_dict())
         self.target_network.eval()
@@ -139,6 +139,75 @@ class DqnBudgetAgent:
         # - exploration_noop_action_count：上述探索动作中，显式 noop 被选中的次数。
         self.exploration_action_count = 0
         self.exploration_noop_action_count = 0
+
+    def _build_network(
+        self,
+        *,
+        observation_dim: int,
+        action_dim: int,
+        noop_action_id: int | None,
+    ) -> nn.Module:
+        """按配置构造具体网络实例。
+
+        这里把所有 taskwise 结构约束集中在一起校验，避免训练脚本、load 逻辑、
+        以及后续评估路径各自维护一套重复判断而产生漂移。
+        """
+
+        if self.config.network_arch == "mlp":
+            return DqnNetwork(
+                input_dim=observation_dim,
+                output_dim=action_dim,
+                hidden_layers=self.hidden_layers,
+            )
+        if self.config.network_arch != "taskwise":
+            raise ValueError(f"不支持的 network_arch: {self.config.network_arch}")
+
+        if self.config.task_count is None:
+            raise ValueError("taskwise network requires config.task_count")
+        if self.config.per_task_feature_dim is None:
+            raise ValueError("taskwise network requires config.per_task_feature_dim")
+        if self.config.global_feature_dim is None:
+            raise ValueError("taskwise network requires config.global_feature_dim")
+        if self.config.taskwise_use_task_embedding and self.config.taskwise_task_embedding_dim <= 0:
+            raise ValueError("taskwise network requires positive taskwise_task_embedding_dim")
+        if noop_action_id is None:
+            raise ValueError("taskwise network requires explicit noop_action_id")
+
+        task_count = int(self.config.task_count)
+        per_task_feature_dim = int(self.config.per_task_feature_dim)
+        global_feature_dim = int(self.config.global_feature_dim)
+        expected_observation_dim = task_count * per_task_feature_dim + global_feature_dim
+        expected_action_dim = 2 * task_count + 1
+        expected_noop_action_id = 2 * task_count
+
+        if observation_dim != expected_observation_dim:
+            raise ValueError(
+                "taskwise network requires observation_dim == "
+                "task_count * per_task_feature_dim + global_feature_dim, "
+                f"收到 observation_dim={observation_dim}, expected={expected_observation_dim}"
+            )
+        if action_dim != expected_action_dim:
+            raise ValueError(
+                "taskwise network requires action_dim == 2 * task_count + 1, "
+                f"收到 action_dim={action_dim}, expected={expected_action_dim}"
+            )
+        if noop_action_id != expected_noop_action_id:
+            raise ValueError(
+                "taskwise network requires noop_action_id == 2 * task_count, "
+                f"收到 noop_action_id={noop_action_id}, expected={expected_noop_action_id}"
+            )
+
+        return TaskwiseDqnNetwork(
+            task_count=task_count,
+            per_task_feature_dim=per_task_feature_dim,
+            global_feature_dim=global_feature_dim,
+            action_dim=action_dim,
+            noop_action_id=noop_action_id,
+            use_task_embedding=self.config.taskwise_use_task_embedding,
+            task_embedding_dim=self.config.taskwise_task_embedding_dim,
+            use_action_bias=self.config.taskwise_use_action_bias,
+            action_bias_init=self.config.taskwise_action_bias_init,
+        )
 
     def _compute_epsilon(self) -> float:
         """按线性衰减规则计算当前 epsilon。"""
@@ -398,6 +467,14 @@ class DqnBudgetAgent:
                 "action_dim": self.action_dim,
                 "hidden_layers": self.hidden_layers,
                 "noop_action_id": self.noop_action_id,
+                "network_arch": self.config.network_arch,
+                "task_count": self.config.task_count,
+                "per_task_feature_dim": self.config.per_task_feature_dim,
+                "global_feature_dim": self.config.global_feature_dim,
+                "taskwise_use_task_embedding": self.config.taskwise_use_task_embedding,
+                "taskwise_task_embedding_dim": self.config.taskwise_task_embedding_dim,
+                "taskwise_use_action_bias": self.config.taskwise_use_action_bias,
+                "taskwise_action_bias_init": self.config.taskwise_action_bias_init,
                 "double_dqn": self.double_dqn,
                 "optimization_steps": self.optimization_steps,
                 "epsilon_step": self.epsilon_step,

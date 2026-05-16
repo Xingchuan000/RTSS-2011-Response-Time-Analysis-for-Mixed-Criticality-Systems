@@ -248,3 +248,87 @@ def test_train_cli_constraint_guided_pair_smoke(tmp_path: Path) -> None:
     # bundled transfer 口径：top_k_risk=3 且开启 explicit noop 时动作维度应为 4。
     assert payload["action_space_size"] == 4
     assert (output_dir / "train_metrics.csv").exists()
+
+
+def test_train_cli_taskwise_v2_writes_config_fields(tmp_path: Path) -> None:
+    """taskwise-v2 训练应写出新配置字段，并能完成最小训练。"""
+
+    output_dir = tmp_path / "taskwise_v2_train"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--workload",
+            "mc_fairgen",
+            "--mc-fairgen-mode",
+            "paper_learnable_headroom",
+            "--mc-fairgen-num-tasks",
+            "12",
+            "--mc-fairgen-hi-ratio",
+            "0.5",
+            "--mc-fairgen-period-source",
+            "automotive",
+            "--fixed-taskset-seed",
+            "409",
+            "--train-seed-mode",
+            "per-episode",
+            "--episodes",
+            "1",
+            "--end-time",
+            "100000",
+            "--agent-period",
+            "50000",
+            "--validation-seeds",
+            "200:201",
+            "--validate-every",
+            "1",
+            "--validation-end-time",
+            "100000",
+            "--validation-workers",
+            "1",
+            "--checkpoint",
+            "1",
+            "--save-best-by",
+            "pareto_relative_score",
+            "--reward-mode",
+            "interval_v1",
+            "--action-space",
+            "single",
+            "--budget-increase-ratio",
+            "0.025",
+            "--budget-decrease-ratio",
+            "0.015",
+            "--include-explicit-noop",
+            "--budget-floor-ratio",
+            "0.9",
+            "--observation-mode",
+            "v11_full_10d",
+            "--network-arch",
+            "taskwise",
+            "--taskwise-use-task-embedding",
+            "--taskwise-task-embedding-dim",
+            "8",
+            "--taskwise-use-action-bias",
+            "--taskwise-action-bias-init",
+            "0.0",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+
+    with (output_dir / "config.json").open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    assert payload["network_arch"] == "taskwise"
+    assert payload["taskwise_use_task_embedding"] is True
+    assert payload["taskwise_task_embedding_dim"] == 8
+    assert payload["taskwise_use_action_bias"] is True
+    assert payload["taskwise_action_bias_init"] == 0.0
+    assert payload["taskwise_config"]["taskwise_use_task_embedding"] is True
+    assert payload["taskwise_config"]["taskwise_task_embedding_dim"] == 8
+    assert payload["taskwise_config"]["taskwise_use_action_bias"] is True
+    assert payload["taskwise_config"]["taskwise_action_bias_init"] == 0.0
+    assert (output_dir / "model_best.pt").exists()

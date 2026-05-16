@@ -29,7 +29,12 @@ from amc_py.dqn import (
 from amc_py.event_runtime import simulate_ordered_taskset_event_driven
 from amc_py.models import Task
 from amc_py.rl.actions import describe_budget_action
-from amc_py.rl.feature_config import FeatureConfig
+from amc_py.rl.feature_config import (
+    OBSERVATION_MODE_V11_FULL_10D,
+    FeatureConfig,
+    V11_GLOBAL_FEATURE_DIM,
+    V11_PER_TASK_FEATURE_DIM,
+)
 from amc_py.rl.reward_config import available_reward_modes, load_reward_mode_config
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationResult
 
@@ -208,6 +213,72 @@ def _get_noop_action_id(env) -> int | None:
         if bool(getattr(action, "is_noop", False)):
             return int(action.action_id)
     return None
+
+
+def _build_taskwise_config(
+    *,
+    network_arch: str,
+    action_space: str,
+    include_explicit_noop: bool,
+    observation_mode: str,
+    task_count: int,
+    action_space_size: int,
+    noop_action_id: int | None,
+    taskwise_use_task_embedding: bool,
+    taskwise_task_embedding_dim: int,
+    taskwise_use_action_bias: bool,
+) -> dict[str, int | None]:
+    """根据当前训练入口上下文解析 taskwise 所需的结构参数。
+
+    第一版不支持任何“尽力而为”的兼容逻辑：
+    - 不是 taskwise 时直接返回空参数；
+    - 是 taskwise 但组合不匹配时立刻报错；
+    - 只有完全命中 `single + explicit noop + v11_full_10d` 才允许继续。
+    """
+
+    if network_arch == "mlp":
+        if taskwise_use_task_embedding or taskwise_use_action_bias:
+            raise ValueError(
+                "taskwise v2 参数仅支持与 --network-arch taskwise 一起使用，"
+                "当前 network_arch=mlp"
+            )
+        return {
+            "task_count": None,
+            "per_task_feature_dim": None,
+            "global_feature_dim": None,
+        }
+    if network_arch != "taskwise":
+        raise ValueError(f"不支持的 network_arch: {network_arch}")
+    if task_count <= 0:
+        raise ValueError("taskwise network requires task_count > 0")
+    if taskwise_use_task_embedding and taskwise_task_embedding_dim <= 0:
+        raise ValueError("taskwise network requires taskwise_task_embedding_dim > 0")
+    if (
+        action_space != "single"
+        or not include_explicit_noop
+        or observation_mode != OBSERVATION_MODE_V11_FULL_10D
+    ):
+        raise ValueError(
+            "taskwise network currently supports only "
+            "action_space=single, include_explicit_noop=True, observation_mode=v11_full_10d"
+        )
+    expected_action_dim = 2 * task_count + 1
+    expected_noop_action_id = 2 * task_count
+    if action_space_size != expected_action_dim:
+        raise ValueError(
+            "taskwise network expects single action order with explicit noop: "
+            f"expected action_space_size={expected_action_dim}, got {action_space_size}"
+        )
+    if noop_action_id != expected_noop_action_id:
+        raise ValueError(
+            "taskwise network expects explicit noop at the last action slot: "
+            f"expected noop_action_id={expected_noop_action_id}, got {noop_action_id}"
+        )
+    return {
+        "task_count": task_count,
+        "per_task_feature_dim": V11_PER_TASK_FEATURE_DIM,
+        "global_feature_dim": V11_GLOBAL_FEATURE_DIM,
+    }
 
 
 def _noop_q_diagnostics_to_row(agent: DqnBudgetAgent, states: list[tuple[float, ...]], masks: list[tuple[bool, ...]]) -> dict[str, float | int | None]:
@@ -1131,6 +1202,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--replay-capacity", type=int, default=10000)
     parser.add_argument("--min-replay-size", type=int, default=500)
     parser.add_argument("--hidden-layers", type=str, default="128,128")
+    parser.add_argument("--network-arch", choices=["mlp", "taskwise"], default="mlp")
+    parser.add_argument(
+        "--taskwise-use-task-embedding",
+        action="store_true",
+        help="Enable taskwise-v2 task id embedding for each fixed task slot.",
+    )
+    parser.add_argument(
+        "--taskwise-task-embedding-dim",
+        type=int,
+        default=8,
+        help="Embedding dimension used when --taskwise-use-task-embedding is enabled.",
+    )
+    parser.add_argument(
+        "--taskwise-use-action-bias",
+        action="store_true",
+        help="Enable taskwise-v2 per-action learnable bias over the fixed single action slots.",
+    )
+    parser.add_argument(
+        "--taskwise-action-bias-init",
+        type=float,
+        default=0.0,
+        help="Initialization value for taskwise-v2 action bias when enabled.",
+    )
     parser.add_argument("--learning-rate", type=float, default=5e-5)
     parser.add_argument("--gamma", type=float, default=0.99)
     # 稳定性修改 C：默认 target network 更新频率改为 5（优化步为单位）。
@@ -1399,33 +1493,6 @@ def main() -> None:
     )
     validation_seeds = _parse_seed_spec(args.validation_seeds)
 
-    hidden_layers = _parse_hidden_layers(args.hidden_layers)
-    # 阶段 0：显式拆分 DQN 侧随机源，保证同配置可复现且可追踪。
-    # - network_seed:     只用于网络初始化；
-    # - exploration_seed: 只用于 epsilon-greedy 探索；
-    # - replay_seed:      只用于 replay 抽样。
-    network_seed = args.seed if args.network_seed is None else int(args.network_seed)
-    exploration_seed = args.seed if args.exploration_seed is None else int(args.exploration_seed)
-    replay_seed = args.seed if args.replay_seed is None else int(args.replay_seed)
-    config = DqnConfig(
-        gamma=args.gamma,
-        learning_rate=args.learning_rate,
-        batch_size=args.batch_size,
-        replay_capacity=args.replay_capacity,
-        min_replay_size=args.min_replay_size,
-        target_update_freq=args.target_update_freq,
-        grad_clip_norm=args.grad_clip_norm,
-        epsilon_start=args.epsilon_start,
-        epsilon_end=args.epsilon_end,
-        epsilon_decay_steps=args.epsilon_decay_steps,
-        noop_exploration_prob=args.noop_exploration_prob,
-        hidden_layers=hidden_layers,
-        seed=args.seed,
-        network_seed=network_seed,
-        exploration_seed=exploration_seed,
-        replay_seed=replay_seed,
-    )
-
     initial_seed = episode_seed_schedule[0]
     initial_bundle = resolve_experiment_bundle(experiment_config, initial_seed)
     initial_env = build_env_from_experiment_config(
@@ -1459,11 +1526,58 @@ def main() -> None:
         residual_guard_use_hi_pressure_max=args.residual_guard_use_hi_pressure_max,
     )
     initial_obs = initial_env.reset(seed=initial_seed)
+    hidden_layers = _parse_hidden_layers(args.hidden_layers)
+    # 阶段 0：显式拆分 DQN 侧随机源，保证同配置可复现且可追踪。
+    # - network_seed:     只用于网络初始化；
+    # - exploration_seed: 只用于 epsilon-greedy 探索；
+    # - replay_seed:      只用于 replay 抽样。
+    network_seed = args.seed if args.network_seed is None else int(args.network_seed)
+    exploration_seed = args.seed if args.exploration_seed is None else int(args.exploration_seed)
+    replay_seed = args.seed if args.replay_seed is None else int(args.replay_seed)
+    noop_action_id = _get_noop_action_id(initial_env)
+    taskwise_config = _build_taskwise_config(
+        network_arch=args.network_arch,
+        action_space=args.action_space,
+        include_explicit_noop=args.include_explicit_noop,
+        observation_mode=args.observation_mode,
+        task_count=len(initial_bundle.ordered_tasks),
+        action_space_size=initial_env.action_space_size,
+        noop_action_id=noop_action_id,
+        taskwise_use_task_embedding=args.taskwise_use_task_embedding,
+        taskwise_task_embedding_dim=args.taskwise_task_embedding_dim,
+        taskwise_use_action_bias=args.taskwise_use_action_bias,
+    )
+    config = DqnConfig(
+        gamma=args.gamma,
+        learning_rate=args.learning_rate,
+        batch_size=args.batch_size,
+        replay_capacity=args.replay_capacity,
+        min_replay_size=args.min_replay_size,
+        target_update_freq=args.target_update_freq,
+        grad_clip_norm=args.grad_clip_norm,
+        epsilon_start=args.epsilon_start,
+        epsilon_end=args.epsilon_end,
+        epsilon_decay_steps=args.epsilon_decay_steps,
+        noop_exploration_prob=args.noop_exploration_prob,
+        hidden_layers=hidden_layers,
+        network_arch=args.network_arch,
+        task_count=taskwise_config["task_count"],
+        per_task_feature_dim=taskwise_config["per_task_feature_dim"],
+        global_feature_dim=taskwise_config["global_feature_dim"],
+        taskwise_use_task_embedding=args.taskwise_use_task_embedding,
+        taskwise_task_embedding_dim=args.taskwise_task_embedding_dim,
+        taskwise_use_action_bias=args.taskwise_use_action_bias,
+        taskwise_action_bias_init=args.taskwise_action_bias_init,
+        seed=args.seed,
+        network_seed=network_seed,
+        exploration_seed=exploration_seed,
+        replay_seed=replay_seed,
+    )
     agent = DqnBudgetAgent(
         observation_dim=len(initial_obs.state_vector),
         action_dim=initial_env.action_space_size,
         config=config,
-        noop_action_id=_get_noop_action_id(initial_env),
+        noop_action_id=noop_action_id,
         hidden_layers=hidden_layers,
         double_dqn=args.double_dqn,
     )
@@ -2413,6 +2527,11 @@ def main() -> None:
         "reward_mode": args.reward_mode,
         "reward_definition": reward_mode_config.describe(),
         "double_dqn": args.double_dqn,
+        "network_arch": args.network_arch,
+        "taskwise_use_task_embedding": args.taskwise_use_task_embedding,
+        "taskwise_task_embedding_dim": args.taskwise_task_embedding_dim,
+        "taskwise_use_action_bias": args.taskwise_use_action_bias,
+        "taskwise_action_bias_init": args.taskwise_action_bias_init,
         "requested_action_space": requested_action_space,
         "action_space": args.action_space,
         "constraint_guided_transfer_top_k_risk": args.constraint_guided_pair_top_k_risk,
@@ -2464,6 +2583,19 @@ def main() -> None:
         },
         "action_space_size": initial_env.action_space_size,
         "observation_dim": len(initial_obs.state_vector),
+        "taskwise_config": (
+            {
+                "task_count": config.task_count,
+                "per_task_feature_dim": config.per_task_feature_dim,
+                "global_feature_dim": config.global_feature_dim,
+                "taskwise_use_task_embedding": config.taskwise_use_task_embedding,
+                "taskwise_task_embedding_dim": config.taskwise_task_embedding_dim,
+                "taskwise_use_action_bias": config.taskwise_use_action_bias,
+                "taskwise_action_bias_init": config.taskwise_action_bias_init,
+            }
+            if args.network_arch == "taskwise"
+            else None
+        ),
         "tasks": _serialize_tasks(list(initial_bundle.ordered_tasks)),
         "runtime_config": {
             "end_time": args.end_time,

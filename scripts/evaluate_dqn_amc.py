@@ -1228,6 +1228,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--require-schedulable", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument(
+        "--taskwise-use-task-embedding",
+        action="store_true",
+        help=(
+            "CLI compatibility flag for taskwise-v2 checkpoints. "
+            "Network structure is still restored from checkpoint metadata."
+        ),
+    )
+    parser.add_argument(
+        "--taskwise-task-embedding-dim",
+        type=int,
+        default=8,
+        help="CLI compatibility flag for taskwise-v2 checkpoints.",
+    )
+    parser.add_argument(
+        "--taskwise-use-action-bias",
+        action="store_true",
+        help="CLI compatibility flag for taskwise-v2 checkpoints.",
+    )
+    parser.add_argument(
+        "--taskwise-action-bias-init",
+        type=float,
+        default=0.0,
+        help="CLI compatibility flag for taskwise-v2 checkpoints.",
+    )
     parser.add_argument("--seeds", type=str, default="0")
     parser.add_argument(
         "--evaluation-workers",
@@ -1380,6 +1405,8 @@ def main() -> None:
         raise ValueError("--evaluation-workers 必须为正整数")
     if args.max_q_diagnostic_samples < 0:
         raise ValueError("--max-q-diagnostic-samples 必须为非负整数")
+    if args.taskwise_use_task_embedding and args.taskwise_task_embedding_dim <= 0:
+        raise ValueError("--taskwise-task-embedding-dim 必须为正整数")
     if args.budget_floor_ratio < 0.0 or args.budget_floor_ratio > 1.0:
         raise ValueError("--budget-floor-ratio must be in [0, 1]")
     feature_config = FeatureConfig(

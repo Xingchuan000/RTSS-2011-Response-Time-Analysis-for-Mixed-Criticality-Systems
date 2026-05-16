@@ -1283,6 +1283,7 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py
 - `--checkpoint`
 - `--scenario`
 - `--save-best-by`
+- `--network-arch`
 
 输出文件：
 
@@ -1290,6 +1291,234 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py
 - `outputs/dqn_amc/model_final.pt`
 - `outputs/dqn_amc/config.json`
 - `outputs/dqn_amc/checkpoints/model_episode_XXXX.pt`（当 `--checkpoint > 0` 时）
+
+### 12.4.2 Taskwise DQN 使用说明
+
+本次新增 `taskwise` Q 网络，用于显式利用 `single` 动作与任务编号的一一对应关系。
+在此基础上，现已支持 `taskwise-v2` 的两个可选增强能力：
+
+- `task_id_embedding`：为每个固定任务槽位增加可学习 embedding；
+- `action_bias`：为每个固定动作槽位增加可学习 bias。
+
+当前实现边界严格如下：
+
+- 只支持 `--network-arch taskwise`
+- 只支持 `--action-space single`
+- 只支持 `--include-explicit-noop`
+- 只支持 `--observation-mode v11_full_10d`
+
+不支持以下组合：
+
+- `triple / pair / constraint_guided_transfer / residual_*`
+- 不带 `--include-explicit-noop` 的 `single`
+- `v10_basic`
+- `v12_full_14d`
+- `v11_no_*` 与 `v11_lite_6d`
+
+如果传入不支持的组合，训练脚本会直接抛出 `ValueError`，不会静默回退到 MLP。
+
+#### Taskwise-v2 新增参数
+
+训练脚本 `scripts/train_dqn_amc.py` 新增以下参数：
+
+- `--taskwise-use-task-embedding`
+- `--taskwise-task-embedding-dim 8`
+- `--taskwise-use-action-bias`
+- `--taskwise-action-bias-init 0.0`
+
+默认值说明：
+
+- `taskwise_use_task_embedding = False`
+- `taskwise_task_embedding_dim = 8`
+- `taskwise_use_action_bias = False`
+- `taskwise_action_bias_init = 0.0`
+
+因此：
+
+- 不传这四个参数时，`taskwise` 仍保持第一版行为；
+- 显式打开其中一个或两个开关时，才进入 `taskwise-v2`。
+
+`taskwise` 模式下，训练脚本会自动把以下信息写入 `config.json`：
+
+- `network_arch`
+- `taskwise_use_task_embedding`
+- `taskwise_task_embedding_dim`
+- `taskwise_use_action_bias`
+- `taskwise_action_bias_init`
+- `dqn_config.task_count`
+- `dqn_config.per_task_feature_dim`
+- `dqn_config.global_feature_dim`
+- `taskwise_config`
+
+最小 taskwise smoke 训练命令：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/train_dqn_amc.py \
+  --workload mc_fairgen \
+  --mc-fairgen-mode paper_learnable_headroom \
+  --mc-fairgen-num-tasks 12 \
+  --mc-fairgen-hi-ratio 0.5 \
+  --mc-fairgen-period-source automotive \
+  --fixed-taskset-seed 409 \
+  --train-seed-mode per-episode \
+  --episodes 1 \
+  --end-time 100000 \
+  --agent-period 50000 \
+  --validation-seeds 200:201 \
+  --validate-every 1 \
+  --validation-end-time 100000 \
+  --validation-workers 1 \
+  --checkpoint 1 \
+  --save-best-by pareto_relative_score \
+  --reward-mode interval_v1 \
+  --action-space single \
+  --budget-increase-ratio 0.025 \
+  --budget-decrease-ratio 0.015 \
+  --include-explicit-noop \
+  --budget-floor-ratio 0.9 \
+  --observation-mode v11_full_10d \
+  --network-arch taskwise \
+  --ema-alpha 0.2 \
+  --overrun-ema-alpha 0.1 \
+  --history-k 8 \
+  --event-window 10 \
+  --max-cost-weight 0.7 \
+  --risk-max-scale 3.0 \
+  --include-safety-margin \
+  --output-dir outputs/smoke_taskwise_seed409
+```
+
+运行完成后应重点检查：
+
+- `outputs/smoke_taskwise_seed409/config.json` 中 `network_arch == "taskwise"`
+- `outputs/smoke_taskwise_seed409/config.json` 中 `observation_dim == 128`
+- `outputs/smoke_taskwise_seed409/config.json` 中 `action_space_size == 25`
+- 输出目录存在 `model_best.pt`、`model_final.pt`、`train_metrics.csv`、`validation_unified_summary.csv`
+
+完整 `taskwise-v2` 最小 smoke 训练命令：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/train_dqn_amc.py \
+  --workload mc_fairgen \
+  --mc-fairgen-mode paper_learnable_headroom \
+  --mc-fairgen-num-tasks 12 \
+  --mc-fairgen-hi-ratio 0.5 \
+  --mc-fairgen-period-source automotive \
+  --fixed-taskset-seed 409 \
+  --train-seed-mode per-episode \
+  --episodes 1 \
+  --end-time 100000 \
+  --agent-period 50000 \
+  --validation-seeds 200:201 \
+  --validate-every 1 \
+  --validation-end-time 100000 \
+  --validation-workers 1 \
+  --checkpoint 1 \
+  --save-best-by pareto_relative_score \
+  --reward-mode interval_v1 \
+  --action-space single \
+  --budget-increase-ratio 0.025 \
+  --budget-decrease-ratio 0.015 \
+  --include-explicit-noop \
+  --budget-floor-ratio 0.9 \
+  --observation-mode v11_full_10d \
+  --network-arch taskwise \
+  --taskwise-use-task-embedding \
+  --taskwise-task-embedding-dim 8 \
+  --taskwise-use-action-bias \
+  --taskwise-action-bias-init 0.0 \
+  --ema-alpha 0.2 \
+  --overrun-ema-alpha 0.1 \
+  --history-k 8 \
+  --event-window 10 \
+  --max-cost-weight 0.7 \
+  --risk-max-scale 3.0 \
+  --include-safety-margin \
+  --output-dir outputs/smoke_taskwise_v2_seed409
+```
+
+运行完成后应额外检查：
+
+- `outputs/smoke_taskwise_v2_seed409/config.json` 中 `taskwise_use_task_embedding == true`
+- `outputs/smoke_taskwise_v2_seed409/config.json` 中 `taskwise_task_embedding_dim == 8`
+- `outputs/smoke_taskwise_v2_seed409/config.json` 中 `taskwise_use_action_bias == true`
+- `outputs/smoke_taskwise_v2_seed409/config.json` 中 `taskwise_action_bias_init == 0.0`
+
+独立 smoke 校验脚本：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/smoke_test_taskwise_dqn.py
+KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/smoke_test_taskwise_v2_dqn.py
+KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/smoke_test_taskwise_action_order.py
+```
+
+预期输出：
+
+- `Taskwise DQN smoke test: PASS`
+- `Taskwise DQN v2 smoke test: PASS`
+- `Taskwise action order: PASS`
+
+单个 seed 的正式 taskwise 训练模板：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/train_dqn_amc.py \
+  --workload mc_fairgen \
+  --mc-fairgen-mode paper_learnable_headroom \
+  --mc-fairgen-num-tasks 12 \
+  --mc-fairgen-hi-ratio 0.5 \
+  --mc-fairgen-period-source automotive \
+  --mc-fairgen-u-hi-lo-min 0.20 \
+  --mc-fairgen-u-hi-lo-max 0.35 \
+  --mc-fairgen-u-hi-hi-min 0.45 \
+  --mc-fairgen-u-hi-hi-max 0.70 \
+  --mc-fairgen-u-lo-lo-min 0.25 \
+  --mc-fairgen-u-lo-lo-max 0.45 \
+  --mc-fairgen-hi-budget-rho-min 0.55 \
+  --mc-fairgen-hi-budget-rho-max 0.75 \
+  --mc-fairgen-lo-budget-rho-min 0.20 \
+  --mc-fairgen-lo-budget-rho-max 0.40 \
+  --mc-fairgen-hi-overrun-prob 0.08 \
+  --mc-fairgen-lo-overrun-prob 0.12 \
+  --mc-fairgen-hi-overrun-factor-min 1.02 \
+  --mc-fairgen-hi-overrun-factor-max 1.25 \
+  --mc-fairgen-lo-overrun-factor-min 1.02 \
+  --mc-fairgen-lo-overrun-factor-max 1.25 \
+  --fixed-taskset-seed 409 \
+  --train-seed-mode per-episode \
+  --episodes 120 \
+  --end-time 1000000 \
+  --agent-period 50000 \
+  --validation-seeds 200:229 \
+  --validate-every 10 \
+  --validation-end-time 1000000 \
+  --validation-workers 1 \
+  --checkpoint 10 \
+  --save-best-by pareto_relative_score \
+  --reward-mode interval_v1 \
+  --action-space single \
+  --budget-increase-ratio 0.025 \
+  --budget-decrease-ratio 0.015 \
+  --include-explicit-noop \
+  --budget-floor-ratio 0.9 \
+  --observation-mode v11_full_10d \
+  --network-arch taskwise \
+  --taskwise-use-task-embedding \
+  --taskwise-task-embedding-dim 8 \
+  --taskwise-use-action-bias \
+  --taskwise-action-bias-init 0.0 \
+  --ema-alpha 0.2 \
+  --overrun-ema-alpha 0.1 \
+  --history-k 8 \
+  --event-window 10 \
+  --max-cost-weight 0.7 \
+  --risk-max-scale 3.0 \
+  --include-safety-margin \
+  --output-dir outputs/train_single_taskwise_v11_seed409_e120_inc0025_dec0015
+```
 
 ### 12.4.1 `--save-best-by` 策略说明
 
