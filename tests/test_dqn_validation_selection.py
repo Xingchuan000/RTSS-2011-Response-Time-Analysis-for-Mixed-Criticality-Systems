@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from amc_py.model_selection import (
+    is_conservative_qos_valid,
+    is_qos_best_valid,
+    is_qos_stable_valid,
+)
 from scripts.train_dqn_amc import _is_better_validation_row, _is_pareto_valid_checkpoint
 
 
@@ -157,3 +162,77 @@ def test_is_pareto_valid_checkpoint_requires_all_three_conditions() -> None:
     assert _is_pareto_valid_checkpoint(row_ok) is True
     assert _is_pareto_valid_checkpoint(row_bad_mode) is False
     assert _is_pareto_valid_checkpoint(row_bad_miss) is False
+
+
+def test_qos_selection_rules_match_plan() -> None:
+    """QoS 三类选模应按计划文档给出的例子工作。"""
+
+    row_a = {
+        "episode": 1,
+        "mode_changes_mean": 10.0,
+        "baseline_mode_changes_mean": 10.0,
+        "hi_deadline_misses_sum": 0,
+        "lc_service_loss_mean": 0.20,
+        "min_lc_service_mean": 0.80,
+        "budget_adjust_count_mean": 2.0,
+    }
+    row_b = {
+        "episode": 2,
+        "mode_changes_mean": 10.4,
+        "baseline_mode_changes_mean": 10.0,
+        "hi_deadline_misses_sum": 0,
+        "lc_service_loss_mean": 0.15,
+        "min_lc_service_mean": 0.80,
+        "budget_adjust_count_mean": 2.0,
+    }
+    row_c = {
+        "episode": 3,
+        "mode_changes_mean": 10.8,
+        "baseline_mode_changes_mean": 10.0,
+        "hi_deadline_misses_sum": 0,
+        "lc_service_loss_mean": 0.10,
+        "min_lc_service_mean": 0.80,
+        "budget_adjust_count_mean": 2.0,
+    }
+    row_d = {
+        "episode": 4,
+        "mode_changes_mean": 10.0,
+        "baseline_mode_changes_mean": 10.0,
+        "hi_deadline_misses_sum": 1,
+        "lc_service_loss_mean": 0.01,
+        "min_lc_service_mean": 0.99,
+        "budget_adjust_count_mean": 1.0,
+    }
+    row_e = {
+        "episode": 5,
+        "mode_changes_mean": 10.4,
+        "baseline_mode_changes_mean": 10.0,
+        "hi_deadline_misses_sum": 0,
+        "lc_service_loss_mean": 0.15,
+        "min_lc_service_mean": 0.90,
+        "budget_adjust_count_mean": 2.0,
+    }
+
+    assert is_conservative_qos_valid(row_a) is True
+    assert is_qos_stable_valid(row_b, delta=0.05) is True
+    assert is_qos_stable_valid(row_c, delta=0.05) is False
+    assert is_qos_best_valid(row_c) is True
+    assert is_qos_best_valid(row_d) is False
+    assert _is_better_validation_row(
+        candidate_row=row_a,
+        best_row=None,
+        save_best_by="conservative_qos",
+        qos_stable_mode_delta=0.05,
+    ) is True
+    assert _is_better_validation_row(
+        candidate_row=row_e,
+        best_row=row_b,
+        save_best_by="qos_stable",
+        qos_stable_mode_delta=0.05,
+    ) is True
+    assert _is_better_validation_row(
+        candidate_row=row_c,
+        best_row=row_b,
+        save_best_by="qos_best",
+        qos_stable_mode_delta=0.05,
+    ) is True

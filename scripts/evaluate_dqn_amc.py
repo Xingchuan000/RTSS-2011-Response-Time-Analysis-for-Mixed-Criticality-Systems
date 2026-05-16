@@ -23,6 +23,12 @@ from amc_py.dqn import (
 )
 from amc_py.event_runtime import simulate_ordered_taskset_event_driven
 from amc_py.experiments import evaluate_taskset
+from amc_py.metrics import (
+    compute_service_quality_metrics,
+    mean_optional as mean_optional_service_metric,
+    safe_relative_reduction,
+    service_metrics_to_row,
+)
 from amc_py.rl.actions import build_budget_action_space
 from amc_py.rl.agents import HeuristicBudgetAgent, NoOpBudgetAgent, RandomBudgetAgent
 from amc_py.rl.feature_config import FeatureConfig
@@ -42,6 +48,19 @@ NOOP_Q_DIAGNOSTIC_FIELDNAMES = [
     "noop_q_is_best_rate",
     "noop_valid_rate",
     "noop_q_sample_count",
+]
+
+QOS_FIELDNAMES = [
+    "released_lo_jobs",
+    "cancelled_lo_jobs",
+    "completed_lo_jobs",
+    "lo_deadline_misses",
+    "hi_deadline_misses",
+    "lc_service_loss",
+    "lc_qos",
+    "min_lc_service",
+    "budget_adjust_count",
+    "mean_abs_budget_change",
 ]
 
 
@@ -286,6 +305,7 @@ def _evaluate_dqn_once(
         )
 
     runtime_result = env._engine.finish() if env._engine is not None else SimulationResult()
+    dqn_service_metrics = compute_service_quality_metrics(runtime_result)
     row = {
             **row_base,
             "method": "dqn_agent",
@@ -327,6 +347,7 @@ def _evaluate_dqn_once(
             "masked_budget_floor_violation_rate": float(debug_stats["masked_budget_floor_violation_rate"]),
             "observation_mode": str(last_info.get("observation_mode", feature_config.observation_mode)),
             "state_dim": int(last_info.get("state_dim", len(obs.state_vector))),
+            **service_metrics_to_row(dqn_service_metrics),
         }
     row.update(_noop_q_diagnostics_to_row(agent, diagnostic_states, diagnostic_valid_masks))
     return (
@@ -361,8 +382,17 @@ def _build_unified_summary_rows(rows: list[dict[str, int | float | str | bool]])
 
         baseline_mode_changes_mean = mean(_to_float(row, "mode_changes") for row in baseline_rows)
         baseline_lo_cancellations_mean = mean(_to_float(row, "lo_cancellations") for row in baseline_rows)
+        baseline_released_lo_jobs_mean = mean(_to_float(row, "released_lo_jobs") for row in baseline_rows)
+        baseline_lc_service_loss_mean = mean(_to_float(row, "lc_service_loss") for row in baseline_rows)
+        baseline_lc_qos_mean = mean(_to_float(row, "lc_qos") for row in baseline_rows)
+        baseline_min_lc_service_mean = mean_optional_service_metric(baseline_rows, "min_lc_service")
         dqn_mode_changes_mean = mean(_to_float(row, "mode_changes") for row in dqn_rows)
         dqn_lo_cancellations_mean = mean(_to_float(row, "lo_cancellations") for row in dqn_rows)
+        dqn_released_lo_jobs_mean = mean(_to_float(row, "released_lo_jobs") for row in dqn_rows)
+        dqn_deadline_misses_sum = sum(int(_to_float(row, "deadline_misses")) for row in dqn_rows)
+        dqn_lc_service_loss_mean = mean(_to_float(row, "lc_service_loss") for row in dqn_rows)
+        dqn_lc_qos_mean = mean(_to_float(row, "lc_qos") for row in dqn_rows)
+        dqn_min_lc_service_mean = mean_optional_service_metric(dqn_rows, "min_lc_service")
         accepted_action_count_mean = mean(_to_float(row, "accepted_actions") for row in dqn_rows)
         rejected_action_count_mean = mean(_to_float(row, "rejected_actions") for row in dqn_rows)
         noop_action_count_mean = mean(_to_float(row, "noop_actions") for row in dqn_rows)
@@ -392,10 +422,32 @@ def _build_unified_summary_rows(rows: list[dict[str, int | float | str | bool]])
                 "seed_count": len(dqn_rows),
                 "baseline_mode_changes_mean": baseline_mode_changes_mean,
                 "baseline_lo_cancellations_mean": baseline_lo_cancellations_mean,
+                "baseline_released_lo_jobs_mean": baseline_released_lo_jobs_mean,
+                "baseline_lc_service_loss_mean": baseline_lc_service_loss_mean,
+                "baseline_lc_qos_mean": baseline_lc_qos_mean,
+                "baseline_min_lc_service_mean": baseline_min_lc_service_mean,
                 "dqn_mode_changes_mean": dqn_mode_changes_mean,
                 "dqn_lo_cancellations_mean": dqn_lo_cancellations_mean,
+                "dqn_released_lo_jobs_mean": dqn_released_lo_jobs_mean,
+                "dqn_lc_service_loss_mean": dqn_lc_service_loss_mean,
+                "dqn_lc_qos_mean": dqn_lc_qos_mean,
+                "dqn_min_lc_service_mean": dqn_min_lc_service_mean,
+                "dqn_deadline_misses_sum": dqn_deadline_misses_sum,
                 "mode_change_ratio": _safe_ratio(baseline_mode_changes_mean, dqn_mode_changes_mean),
                 "lo_cancellation_ratio": _safe_ratio(baseline_lo_cancellations_mean, dqn_lo_cancellations_mean),
+                "relative_lc_loss_reduction": safe_relative_reduction(
+                    baseline_lc_service_loss_mean,
+                    dqn_lc_service_loss_mean,
+                ),
+                "lc_service_loss_delta": dqn_lc_service_loss_mean - baseline_lc_service_loss_mean,
+                "lc_qos_delta": dqn_lc_qos_mean - baseline_lc_qos_mean,
+                "mode_change_delta_ratio": (
+                    (dqn_mode_changes_mean - baseline_mode_changes_mean) / max(1.0, baseline_mode_changes_mean)
+                ),
+                "qos_stable_valid_delta005": (
+                    dqn_deadline_misses_sum == 0
+                    and dqn_mode_changes_mean <= baseline_mode_changes_mean * 1.05
+                ),
                 "accepted_action_count_mean": accepted_action_count_mean,
                 "rejected_action_count_mean": rejected_action_count_mean,
                 "noop_action_count_mean": noop_action_count_mean,
@@ -430,10 +482,24 @@ def _write_unified_summary_csv(
         "seed_count",
         "baseline_mode_changes_mean",
         "baseline_lo_cancellations_mean",
+        "baseline_released_lo_jobs_mean",
+        "baseline_lc_service_loss_mean",
+        "baseline_lc_qos_mean",
+        "baseline_min_lc_service_mean",
         "dqn_mode_changes_mean",
         "dqn_lo_cancellations_mean",
+        "dqn_released_lo_jobs_mean",
+        "dqn_lc_service_loss_mean",
+        "dqn_lc_qos_mean",
+        "dqn_min_lc_service_mean",
+        "dqn_deadline_misses_sum",
         "mode_change_ratio",
         "lo_cancellation_ratio",
+        "relative_lc_loss_reduction",
+        "lc_service_loss_delta",
+        "lc_qos_delta",
+        "mode_change_delta_ratio",
+        "qos_stable_valid_delta005",
         "accepted_action_count_mean",
         "rejected_action_count_mean",
         "noop_action_count_mean",
@@ -723,6 +789,7 @@ def _evaluate_enabled_methods_for_seed(
             scenario=bundle.scenario,
             config=runtime_config,
         )
+        baseline_service_metrics = compute_service_quality_metrics(baseline_result)
         baseline_rejection_rate = 0.0
         rows.append(
             {
@@ -765,6 +832,7 @@ def _evaluate_enabled_methods_for_seed(
                 "no_safe_action_steps": 0,
                 "masked_budget_floor_violation_count": 0,
                 "masked_budget_floor_violation_rate": 0.0,
+                **service_metrics_to_row(baseline_service_metrics),
             }
         )
         deadline_miss_details.extend(
@@ -798,6 +866,7 @@ def _evaluate_enabled_methods_for_seed(
         noop_selected_action_count = sum(int(row.get("action_id") is not None) for row in noop_result.action_log)
         noop_explicit_noop_actions = sum(int(bool(row.get("is_explicit_noop", False))) for row in noop_result.action_log)
         noop_rejection_rate = (noop_result.rejected_actions / noop_step_count) if noop_step_count > 0 else 0.0
+        noop_service_metrics = compute_service_quality_metrics(noop_result.runtime_result)
         rows.append(
             {
                 **row_base,
@@ -843,6 +912,7 @@ def _evaluate_enabled_methods_for_seed(
                 "no_safe_action_steps": 0,
                 "masked_budget_floor_violation_count": 0,
                 "masked_budget_floor_violation_rate": 0.0,
+                **service_metrics_to_row(noop_service_metrics),
             }
         )
         deadline_miss_details.extend(
@@ -885,6 +955,7 @@ def _evaluate_enabled_methods_for_seed(
             int(bool(row.get("is_explicit_noop", False))) for row in random_result.action_log
         )
         random_rejection_rate = (random_result.rejected_actions / random_step_count) if random_step_count > 0 else 0.0
+        random_service_metrics = compute_service_quality_metrics(random_result.runtime_result)
         rows.append(
             {
                 **row_base,
@@ -930,6 +1001,7 @@ def _evaluate_enabled_methods_for_seed(
                 "no_safe_action_steps": 0,
                 "masked_budget_floor_violation_count": 0,
                 "masked_budget_floor_violation_rate": 0.0,
+                **service_metrics_to_row(random_service_metrics),
             }
         )
         deadline_miss_details.extend(
@@ -978,6 +1050,7 @@ def _evaluate_enabled_methods_for_seed(
             if heuristic_step_count > 0
             else 0.0
         )
+        heuristic_service_metrics = compute_service_quality_metrics(heuristic_result.runtime_result)
         rows.append(
             {
                 **row_base,
@@ -1031,6 +1104,7 @@ def _evaluate_enabled_methods_for_seed(
                 "no_safe_action_steps": 0,
                 "masked_budget_floor_violation_count": 0,
                 "masked_budget_floor_violation_rate": 0.0,
+                **service_metrics_to_row(heuristic_service_metrics),
             }
         )
         deadline_miss_details.extend(
@@ -1613,6 +1687,7 @@ def main() -> None:
         "end_time",
         "agent_period",
     ]
+    fieldnames.extend(QOS_FIELDNAMES)
     fieldnames.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
     with args.output.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
