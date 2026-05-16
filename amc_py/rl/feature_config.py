@@ -1,8 +1,8 @@
-"""v11 观测特征配置与状态定义。
+"""v11/v12 观测特征配置与状态定义。
 
 本文件只负责两件事：
 1. 定义 observation_mode 与特征超参数配置（对应实现计划“阶段一”）；
-2. 固化 v11_full_10d 的状态维度定义（每任务 10 维 + 全局 8 维）。
+2. 固化各 observation mode 的状态维度定义与特征顺序。
 
 注意：
 - 这里不实现运行时特征更新逻辑（EMA/history/event window），那属于后续阶段；
@@ -20,6 +20,12 @@ OBSERVATION_MODE_V10_BASIC = "v10_basic"
 # 新版本观测模式常量：
 # v11_full_10d 的状态向量为“每任务 10 维 + 全局 8 维”。
 OBSERVATION_MODE_V11_FULL_10D = "v11_full_10d"
+OBSERVATION_MODE_V11_NO_RISK_9D = "v11_no_risk_9d"
+OBSERVATION_MODE_V11_NO_UTIL_9D = "v11_no_util_9d"
+OBSERVATION_MODE_V11_NO_MAX_9D = "v11_no_max_9d"
+OBSERVATION_MODE_V11_NO_PRIORITY_9D = "v11_no_priority_9d"
+OBSERVATION_MODE_V11_NO_RISK_NO_UTIL_8D = "v11_no_risk_no_util_8d"
+OBSERVATION_MODE_V11_LITE_6D = "v11_lite_6d"
 OBSERVATION_MODE_V12_FULL_14D = "v12_full_14d"
 
 # v10 基础模式下，每个任务固定 2 个输入维度。
@@ -27,9 +33,21 @@ V10_PER_TASK_FEATURE_DIM = 2
 
 # v11 全量模式下，每个任务固定 10 个输入维度。
 V11_PER_TASK_FEATURE_DIM = 10
+V11_NO_RISK_PER_TASK_FEATURE_DIM = 9
+V11_NO_UTIL_PER_TASK_FEATURE_DIM = 9
+V11_NO_MAX_PER_TASK_FEATURE_DIM = 9
+V11_NO_PRIORITY_PER_TASK_FEATURE_DIM = 9
+V11_NO_RISK_NO_UTIL_PER_TASK_FEATURE_DIM = 8
+V11_LITE_PER_TASK_FEATURE_DIM = 6
 
 # v11 全量模式下，全局附加 8 个输入维度。
 V11_GLOBAL_FEATURE_DIM = 8
+V11_NO_RISK_GLOBAL_FEATURE_DIM = V11_GLOBAL_FEATURE_DIM
+V11_NO_UTIL_GLOBAL_FEATURE_DIM = V11_GLOBAL_FEATURE_DIM
+V11_NO_MAX_GLOBAL_FEATURE_DIM = V11_GLOBAL_FEATURE_DIM
+V11_NO_PRIORITY_GLOBAL_FEATURE_DIM = V11_GLOBAL_FEATURE_DIM
+V11_NO_RISK_NO_UTIL_GLOBAL_FEATURE_DIM = V11_GLOBAL_FEATURE_DIM
+V11_LITE_GLOBAL_FEATURE_DIM = V11_GLOBAL_FEATURE_DIM
 V12_PER_TASK_FEATURE_DIM = 14
 V12_GLOBAL_FEATURE_DIM = 8
 
@@ -48,6 +66,80 @@ V11_PER_TASK_FEATURE_NAMES: tuple[str, ...] = (
     "util_budget",
 )
 
+# v11_no_risk_9d 只移除 risk，其他顺序必须与 v11_full_10d 对齐。
+V11_NO_RISK_PER_TASK_FEATURE_NAMES: tuple[str, ...] = (
+    "budget_norm",
+    "recent_cost_norm",
+    "ema_cost_norm",
+    "max_cost_k_norm",
+    "overrun_ema",
+    "surplus",
+    "criticality",
+    "priority_norm",
+    "util_budget",
+)
+
+# v11_no_util_9d 只移除 util_budget，保持其余特征与 v11_full_10d 完全同序。
+V11_NO_UTIL_PER_TASK_FEATURE_NAMES: tuple[str, ...] = (
+    "budget_norm",
+    "recent_cost_norm",
+    "ema_cost_norm",
+    "max_cost_k_norm",
+    "overrun_ema",
+    "risk",
+    "surplus",
+    "criticality",
+    "priority_norm",
+)
+
+# v11_no_max_9d 只移除 max_cost_k_norm，用于单独验证 max-k 历史峰值特征是否必要。
+V11_NO_MAX_PER_TASK_FEATURE_NAMES: tuple[str, ...] = (
+    "budget_norm",
+    "recent_cost_norm",
+    "ema_cost_norm",
+    "overrun_ema",
+    "risk",
+    "surplus",
+    "criticality",
+    "priority_norm",
+    "util_budget",
+)
+
+# v11_no_priority_9d 只移除 priority_norm，用于验证静态优先级归一化是否引入偏置。
+V11_NO_PRIORITY_PER_TASK_FEATURE_NAMES: tuple[str, ...] = (
+    "budget_norm",
+    "recent_cost_norm",
+    "ema_cost_norm",
+    "max_cost_k_norm",
+    "overrun_ema",
+    "risk",
+    "surplus",
+    "criticality",
+    "util_budget",
+)
+
+# v11_no_risk_no_util_8d 在 no_risk 基础上继续移除 util_budget。
+V11_NO_RISK_NO_UTIL_PER_TASK_FEATURE_NAMES: tuple[str, ...] = (
+    "budget_norm",
+    "recent_cost_norm",
+    "ema_cost_norm",
+    "max_cost_k_norm",
+    "overrun_ema",
+    "surplus",
+    "criticality",
+    "priority_norm",
+)
+
+# v11_lite_6d 仅保留预算压力与关键级相关的最小直接语义特征。
+V11_LITE_PER_TASK_FEATURE_NAMES: tuple[str, ...] = (
+    "budget_norm",
+    "recent_cost_norm",
+    "ema_cost_norm",
+    "overrun_ema",
+    "surplus",
+    "criticality",
+)
+
 # v11 全局 8 维的特征名称，顺序必须与设计文档一致。
 V11_GLOBAL_FEATURE_NAMES: tuple[str, ...] = (
     "total_budget_util",
@@ -59,6 +151,12 @@ V11_GLOBAL_FEATURE_NAMES: tuple[str, ...] = (
     "recent_lo_overrun_rate",
     "safety_margin_min",
 )
+V11_NO_RISK_GLOBAL_FEATURE_NAMES: tuple[str, ...] = V11_GLOBAL_FEATURE_NAMES
+V11_NO_UTIL_GLOBAL_FEATURE_NAMES: tuple[str, ...] = V11_GLOBAL_FEATURE_NAMES
+V11_NO_MAX_GLOBAL_FEATURE_NAMES: tuple[str, ...] = V11_GLOBAL_FEATURE_NAMES
+V11_NO_PRIORITY_GLOBAL_FEATURE_NAMES: tuple[str, ...] = V11_GLOBAL_FEATURE_NAMES
+V11_NO_RISK_NO_UTIL_GLOBAL_FEATURE_NAMES: tuple[str, ...] = V11_GLOBAL_FEATURE_NAMES
+V11_LITE_GLOBAL_FEATURE_NAMES: tuple[str, ...] = V11_GLOBAL_FEATURE_NAMES
 
 # v12 每任务 14 维特征名称（前 10 维与 v11 保持一致，后 4 维为新增特征）。
 V12_PER_TASK_FEATURE_NAMES: tuple[str, ...] = (
@@ -80,6 +178,25 @@ V12_PER_TASK_FEATURE_NAMES: tuple[str, ...] = (
 
 # v12 全局维度定义沿用 v11 的 8 维。
 V12_GLOBAL_FEATURE_NAMES: tuple[str, ...] = V11_GLOBAL_FEATURE_NAMES
+
+
+def supports_task_structured_features(mode: str) -> bool:
+    """判断某 observation mode 是否支持 v11-family 的结构化任务特征。
+
+    这里把 v11 全量、v11 消融版本以及 v12 统一视为“可提供 task-structured
+    feature”的模式，供 constraint-guided 等依赖任务级特征的位置复用。
+    """
+
+    return mode in {
+        OBSERVATION_MODE_V11_FULL_10D,
+        OBSERVATION_MODE_V11_NO_RISK_9D,
+        OBSERVATION_MODE_V11_NO_UTIL_9D,
+        OBSERVATION_MODE_V11_NO_MAX_9D,
+        OBSERVATION_MODE_V11_NO_PRIORITY_9D,
+        OBSERVATION_MODE_V11_NO_RISK_NO_UTIL_8D,
+        OBSERVATION_MODE_V11_LITE_6D,
+        OBSERVATION_MODE_V12_FULL_14D,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +239,14 @@ class FeatureConfig:
 
         该方法只做维度定义层面的纯计算，不涉及任何运行时环境状态：
         - v10_basic：2 * n_tasks；
-        - v11_full_10d：10 * n_tasks + 8。
+        - v11_full_10d：10 * n_tasks + 8；
+        - v11_no_risk_9d：9 * n_tasks + 8；
+        - v11_no_util_9d：9 * n_tasks + 8；
+        - v11_no_max_9d：9 * n_tasks + 8；
+        - v11_no_priority_9d：9 * n_tasks + 8；
+        - v11_no_risk_no_util_8d：8 * n_tasks + 8；
+        - v11_lite_6d：6 * n_tasks + 8；
+        - v12_full_14d：14 * n_tasks + 8。
         """
 
         if task_count < 0:
@@ -131,6 +255,24 @@ class FeatureConfig:
             return V10_PER_TASK_FEATURE_DIM * task_count
         if self.observation_mode == OBSERVATION_MODE_V11_FULL_10D:
             return V11_PER_TASK_FEATURE_DIM * task_count + V11_GLOBAL_FEATURE_DIM
+        if self.observation_mode == OBSERVATION_MODE_V11_NO_RISK_9D:
+            return V11_NO_RISK_PER_TASK_FEATURE_DIM * task_count + V11_NO_RISK_GLOBAL_FEATURE_DIM
+        if self.observation_mode == OBSERVATION_MODE_V11_NO_UTIL_9D:
+            return V11_NO_UTIL_PER_TASK_FEATURE_DIM * task_count + V11_NO_UTIL_GLOBAL_FEATURE_DIM
+        if self.observation_mode == OBSERVATION_MODE_V11_NO_MAX_9D:
+            return V11_NO_MAX_PER_TASK_FEATURE_DIM * task_count + V11_NO_MAX_GLOBAL_FEATURE_DIM
+        if self.observation_mode == OBSERVATION_MODE_V11_NO_PRIORITY_9D:
+            return (
+                V11_NO_PRIORITY_PER_TASK_FEATURE_DIM * task_count
+                + V11_NO_PRIORITY_GLOBAL_FEATURE_DIM
+            )
+        if self.observation_mode == OBSERVATION_MODE_V11_NO_RISK_NO_UTIL_8D:
+            return (
+                V11_NO_RISK_NO_UTIL_PER_TASK_FEATURE_DIM * task_count
+                + V11_NO_RISK_NO_UTIL_GLOBAL_FEATURE_DIM
+            )
+        if self.observation_mode == OBSERVATION_MODE_V11_LITE_6D:
+            return V11_LITE_PER_TASK_FEATURE_DIM * task_count + V11_LITE_GLOBAL_FEATURE_DIM
         if self.observation_mode == OBSERVATION_MODE_V12_FULL_14D:
             return V12_PER_TASK_FEATURE_DIM * task_count + V12_GLOBAL_FEATURE_DIM
         raise ValueError(f"不支持的 observation_mode: {self.observation_mode}")

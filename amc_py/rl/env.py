@@ -27,6 +27,7 @@ from amc_py.rl.constraint_guided_pair import (
 from amc_py.rl.feature_config import (
     OBSERVATION_MODE_V12_FULL_14D,
     FeatureConfig,
+    supports_task_structured_features,
 )
 from amc_py.rl.feature_state import RuntimeFeatureState
 from amc_py.rl.monitor import RuntimeMonitor
@@ -231,7 +232,10 @@ class AmcBudgetEnv:
                 diagnosis_reason=None,
                 violated_row_index=None,
             )
-        if self.feature_config.observation_mode not in {"v11_full_10d", OBSERVATION_MODE_V12_FULL_14D}:
+        # constraint-guided 依赖任务级结构化 observation。
+        # 新增的 v11 消融模式虽然维度更小，但仍然属于同一语义家族，
+        # 因此这里不应只硬编码 v11_full_10d，而应统一走 helper 判断。
+        if not supports_task_structured_features(self.feature_config.observation_mode):
             return ConstraintGuidedResolvedAction(
                 valid=False,
                 reject_reason="constraint_guided_unsupported_observation_mode",

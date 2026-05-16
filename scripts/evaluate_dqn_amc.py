@@ -1346,7 +1346,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mask-detail-mode", choices=["minimal", "full"], default="minimal")
     parser.add_argument(
         "--observation-mode",
-        choices=["v10_basic", "v11_full_10d", "v12_full_14d"],
+        choices=[
+            "v10_basic",
+            "v11_full_10d",
+            "v11_no_risk_9d",
+            "v11_no_util_9d",
+            "v11_no_max_9d",
+            "v11_no_priority_9d",
+            "v11_no_risk_no_util_8d",
+            "v11_lite_6d",
+            "v12_full_14d",
+        ],
         default="v10_basic",
     )
     parser.add_argument("--ema-alpha", type=float, default=0.2)

@@ -1,7 +1,7 @@
-"""v12 observation 冒烟测试脚本。
+"""observation mode 冒烟测试脚本。
 
 验证目标：
-1. v10/v11/v12 三种 observation_mode 的状态维度正确；
+1. 所有已开放的 observation_mode 的状态维度正确；
 2. reset 与多步 step 后所有观测值都位于 [0, 1]。
 """
 
@@ -48,14 +48,8 @@ def _run_mode(mode: str) -> None:
     obs = env.reset(seed=0)
     n_tasks = len(env.ordered_tasks)
 
-    if mode == "v10_basic":
-        expected_dim = 2 * n_tasks
-    elif mode == "v11_full_10d":
-        expected_dim = 10 * n_tasks + 8
-    elif mode == "v12_full_14d":
-        expected_dim = 14 * n_tasks + 8
-    else:
-        raise ValueError(f"unsupported mode: {mode}")
+    # 直接复用 FeatureConfig 的理论维度定义，避免脚本与核心配置出现两套口径。
+    expected_dim = FeatureConfig(observation_mode=mode).expected_state_dim(n_tasks)
 
     if len(obs.state_vector) != expected_dim:
         raise AssertionError(f"{mode} reset 维度错误: got={len(obs.state_vector)}, expected={expected_dim}")
@@ -76,9 +70,19 @@ def _run_mode(mode: str) -> None:
 
 
 def main() -> None:
-    """依次执行三种 observation mode 的冒烟测试。"""
+    """依次执行全部 observation mode 的冒烟测试。"""
 
-    for mode in ("v10_basic", "v11_full_10d", "v12_full_14d"):
+    for mode in (
+        "v10_basic",
+        "v11_full_10d",
+        "v11_no_risk_9d",
+        "v11_no_util_9d",
+        "v11_no_max_9d",
+        "v11_no_priority_9d",
+        "v11_no_risk_no_util_8d",
+        "v11_lite_6d",
+        "v12_full_14d",
+    ):
         _run_mode(mode)
 
 

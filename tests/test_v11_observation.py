@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from amc_py.dqn.experiment import build_env_from_experiment_config, build_small_stress_experiment_config
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.runtime_models import RuntimeSemantics
@@ -63,6 +65,49 @@ def test_v11_full_10d_step_observation_length_keeps_10n_plus_8() -> None:
     result = env.step(action_id)
     n_tasks = len(env.ordered_tasks)
     assert len(result.observation.state_vector) == 10 * n_tasks + 8
+
+
+@pytest.mark.parametrize(
+    ("observation_mode", "expected_per_task_dim"),
+    [
+        ("v11_no_risk_9d", 9),
+        ("v11_no_util_9d", 9),
+        ("v11_no_max_9d", 9),
+        ("v11_no_priority_9d", 9),
+        ("v11_no_risk_no_util_8d", 8),
+        ("v11_lite_6d", 6),
+    ],
+)
+def test_v11_ablation_observation_lengths_match_feature_config(
+    observation_mode: str,
+    expected_per_task_dim: int,
+) -> None:
+    """三个新增 v11 消融模式都必须返回计划文档定义的理论维度。"""
+
+    env = _build_env(observation_mode=observation_mode)
+    obs = env.reset(seed=0)
+    n_tasks = len(env.ordered_tasks)
+    assert len(obs.state_vector) == expected_per_task_dim * n_tasks + 8
+    assert len(obs.state_vector) == FeatureConfig(observation_mode=observation_mode).expected_state_dim(n_tasks)
+
+
+@pytest.mark.parametrize(
+    "observation_mode",
+    [
+        "v11_no_risk_9d",
+        "v11_no_util_9d",
+        "v11_no_max_9d",
+        "v11_no_priority_9d",
+        "v11_no_risk_no_util_8d",
+        "v11_lite_6d",
+    ],
+)
+def test_v11_ablation_observation_values_in_unit_interval(observation_mode: str) -> None:
+    """所有新增 v11 消融模式的观测值都必须稳定落在 [0, 1]。"""
+
+    env = _build_env(observation_mode=observation_mode)
+    obs = env.reset(seed=0)
+    assert all(0.0 <= value <= 1.0 for value in obs.state_vector)
 
 
 def test_v11_feature_state_exists_and_preserves_task_keys_after_step() -> None:
