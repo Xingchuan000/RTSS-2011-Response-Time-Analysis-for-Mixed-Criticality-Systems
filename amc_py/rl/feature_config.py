@@ -20,6 +20,7 @@ OBSERVATION_MODE_V10_BASIC = "v10_basic"
 # 新版本观测模式常量：
 # v11_full_10d 的状态向量为“每任务 10 维 + 全局 8 维”。
 OBSERVATION_MODE_V11_FULL_10D = "v11_full_10d"
+OBSERVATION_MODE_V12_FULL_14D = "v12_full_14d"
 
 # v10 基础模式下，每个任务固定 2 个输入维度。
 V10_PER_TASK_FEATURE_DIM = 2
@@ -29,6 +30,8 @@ V11_PER_TASK_FEATURE_DIM = 10
 
 # v11 全量模式下，全局附加 8 个输入维度。
 V11_GLOBAL_FEATURE_DIM = 8
+V12_PER_TASK_FEATURE_DIM = 14
+V12_GLOBAL_FEATURE_DIM = 8
 
 # v11 每任务 10 维的特征名称，顺序必须与设计文档一致。
 # 后续真正拼接 state_vector 时必须严格按该顺序输出，避免训练输入语义漂移。
@@ -56,6 +59,27 @@ V11_GLOBAL_FEATURE_NAMES: tuple[str, ...] = (
     "recent_lo_overrun_rate",
     "safety_margin_min",
 )
+
+# v12 每任务 14 维特征名称（前 10 维与 v11 保持一致，后 4 维为新增特征）。
+V12_PER_TASK_FEATURE_NAMES: tuple[str, ...] = (
+    "budget_norm",
+    "recent_cost_norm",
+    "ema_cost_norm",
+    "max_cost_k_norm",
+    "overrun_ema",
+    "risk",
+    "surplus",
+    "criticality",
+    "priority_norm",
+    "util_budget",
+    "positive_budget_drift",
+    "negative_budget_drift",
+    "task_cancel_ema",
+    "safe_inc_possible",
+)
+
+# v12 全局维度定义沿用 v11 的 8 维。
+V12_GLOBAL_FEATURE_NAMES: tuple[str, ...] = V11_GLOBAL_FEATURE_NAMES
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,4 +131,6 @@ class FeatureConfig:
             return V10_PER_TASK_FEATURE_DIM * task_count
         if self.observation_mode == OBSERVATION_MODE_V11_FULL_10D:
             return V11_PER_TASK_FEATURE_DIM * task_count + V11_GLOBAL_FEATURE_DIM
+        if self.observation_mode == OBSERVATION_MODE_V12_FULL_14D:
+            return V12_PER_TASK_FEATURE_DIM * task_count + V12_GLOBAL_FEATURE_DIM
         raise ValueError(f"不支持的 observation_mode: {self.observation_mode}")

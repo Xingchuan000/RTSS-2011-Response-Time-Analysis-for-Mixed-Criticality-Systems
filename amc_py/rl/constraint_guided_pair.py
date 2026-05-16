@@ -91,6 +91,51 @@ def extract_task_rank_features_from_v11(
     return features
 
 
+def extract_task_rank_features_from_observation(
+    *,
+    observation_mode: str,
+    state_vector: Sequence[float],
+    task_count: int,
+) -> list[dict[str, int | float | bool]]:
+    """从 v11/v12 观测向量中提取逐任务排序特征。
+
+    说明：
+    - v11: 每任务 10 维；
+    - v12: 每任务 14 维（前 10 维语义与 v11 完全一致，额外读取新增 4 维）。
+    """
+
+    if observation_mode == "v11_full_10d":
+        per_task_dim = 10
+    elif observation_mode == "v12_full_14d":
+        per_task_dim = 14
+    else:
+        raise ValueError(f"不支持的 observation_mode: {observation_mode}")
+
+    min_expected = int(task_count) * per_task_dim
+    if len(state_vector) < min_expected:
+        raise ValueError("观测向量长度不足，无法解析逐任务特征")
+
+    features: list[dict[str, int | float | bool]] = []
+    for idx in range(task_count):
+        base = idx * per_task_dim
+        item: dict[str, int | float | bool] = {
+            "index": idx,
+            # 对于解析函数来说，is_hi/is_lo 不从 state 推断，交由调用方结合 task 元信息补充。
+            "is_hi": False,
+            "is_lo": False,
+            "risk": float(state_vector[base + 5]),
+            "surplus": float(state_vector[base + 6]),
+            "priority_rank": idx,
+        }
+        if per_task_dim == 14:
+            item["positive_budget_drift"] = float(state_vector[base + 10])
+            item["negative_budget_drift"] = float(state_vector[base + 11])
+            item["task_cancel_ema"] = float(state_vector[base + 12])
+            item["safe_inc_possible"] = bool(float(state_vector[base + 13]) >= 0.5)
+        features.append(item)
+    return features
+
+
 def build_constraint_guided_increase_candidates(
     *,
     ordered_tasks: Sequence[Task],
@@ -100,10 +145,24 @@ def build_constraint_guided_increase_candidates(
 ) -> list[int]:
     """按 risk 排序构造 increase 候选任务索引。"""
 
-    features = extract_task_rank_features_from_v11(
-        ordered_tasks=ordered_tasks,
-        observation_state_vector=observation_state_vector,
+    task_count = len(ordered_tasks)
+    per_task_10_expected = task_count * 10
+    per_task_14_expected = task_count * 14
+    if len(observation_state_vector) >= per_task_14_expected:
+        observation_mode = "v12_full_14d"
+    elif len(observation_state_vector) >= per_task_10_expected:
+        observation_mode = "v11_full_10d"
+    else:
+        raise ValueError("观测向量长度不足，无法提取 constraint-guided 风险排序特征")
+    features = extract_task_rank_features_from_observation(
+        observation_mode=observation_mode,
+        state_vector=observation_state_vector,
+        task_count=task_count,
     )
+    for item in features:
+        idx = int(item["index"])
+        item["is_hi"] = ordered_tasks[idx].criticality is Criticality.HI
+        item["is_lo"] = not bool(item["is_hi"])
     risk_order = sorted(
         features,
         key=lambda f: (float(f["risk"]), 1 if bool(f["is_hi"]) else 0, -int(f["priority_rank"])),

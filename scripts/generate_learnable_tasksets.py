@@ -29,7 +29,7 @@ from amc_py.rl.feature_config import FeatureConfig
 from amc_py.rl.constraint_guided_pair import (
     build_constraint_guided_increase_candidates,
     enumerate_constraint_guided_transfer_candidates,
-    extract_task_rank_features_from_v11,
+    extract_task_rank_features_from_observation,
     select_constraint_guided_decrease_targets,
 )
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics
@@ -309,23 +309,25 @@ def _count_valid_action_types(env: AmcBudgetEnv, mask: tuple[bool, ...]) -> tupl
 def _extract_task_rank_features(env: AmcBudgetEnv, observation) -> list[dict[str, int | float | str | bool]]:
     """提取 ranked-pair 诊断所需的逐任务特征。"""
 
-    if env.feature_config.observation_mode != "v11_full_10d":
-        raise ValueError("ranked_pair diagnostic 仅支持 v11_full_10d observation_mode")
-    base_features = extract_task_rank_features_from_v11(
-        ordered_tasks=env.ordered_tasks,
-        observation_state_vector=observation.state_vector,
+    if env.feature_config.observation_mode not in {"v11_full_10d", "v12_full_14d"}:
+        raise ValueError("ranked_pair diagnostic 仅支持 v11_full_10d 或 v12_full_14d observation_mode")
+    base_features = extract_task_rank_features_from_observation(
+        observation_mode=env.feature_config.observation_mode,
+        state_vector=observation.state_vector,
+        task_count=len(env.ordered_tasks),
     )
     task_features: list[dict[str, int | float | str | bool]] = []
     for item in base_features:
+        index = int(item["index"])
         task_features.append(
             {
-                "index": int(item["index"]),
-                "name": env.ordered_tasks[int(item["index"])].name,
-                "is_hi": bool(item["is_hi"]),
-                "is_lo": bool(item["is_lo"]),
+                "index": index,
+                "name": env.ordered_tasks[index].name,
+                "is_hi": env.ordered_tasks[index].criticality is Criticality.HI,
+                "is_lo": env.ordered_tasks[index].criticality is not Criticality.HI,
                 "risk": float(item["risk"]),
                 "surplus": float(item["surplus"]),
-                "period": float(item["period"]),
+                "period": float(env.ordered_tasks[index].period),
                 "priority_rank": int(item["priority_rank"]),
             }
         )
@@ -1108,7 +1110,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--include-explicit-noop", action="store_true")
     parser.add_argument("--budget-floor-ratio", type=float, default=0.9)
     parser.add_argument("--forbid-decreasing-hi-budgets", action="store_true")
-    parser.add_argument("--observation-mode", choices=["v10_basic", "v11_full_10d"], default="v11_full_10d")
+    parser.add_argument(
+        "--observation-mode",
+        choices=["v10_basic", "v11_full_10d", "v12_full_14d"],
+        default="v11_full_10d",
+    )
     parser.add_argument("--ema-alpha", type=float, default=0.2)
     parser.add_argument("--overrun-ema-alpha", type=float, default=0.1)
     parser.add_argument("--history-k", type=int, default=8)

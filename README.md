@@ -891,6 +891,20 @@ conda run -n amc-repro env PYTHONPATH=. python scripts/generate_learnable_taskse
 
 - `--observation-mode v10_basic`（默认，旧模式，`state_dim = 2 * n_tasks`）
 - `--observation-mode v11_full_10d`（新模式，`state_dim = 10 * n_tasks + 8`）
+- `--observation-mode v12_full_14d`（新模式，`state_dim = 14 * n_tasks + 8`）
+
+`v12_full_14d` 在 `v11_full_10d` 的每任务 10 维特征后，追加以下 4 个特征（顺序固定）：
+
+- `positive_budget_drift`
+- `negative_budget_drift`
+- `task_cancel_ema`
+- `safe_inc_possible`
+
+重要说明：
+
+- `task_cancel_ema` 第一版使用 task-level overrun event 作为 cancellation pressure proxy；
+- 该值不是严格的 per-task LO cancellation 计数；
+- `safe_inc_possible` 仅作为 observation hint，不会改变 action mask 与动作执行语义。
 
 对应 v11 特征参数：
 
@@ -940,6 +954,25 @@ conda run -n amc-repro python scripts/evaluate_dqn_amc.py \
   --include-safety-margin
 ```
 
+v12 训练示例（仅展示 observation 相关参数）：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/train_dqn_amc.py \
+  --episodes 2 \
+  --workload small \
+  --scenario stress \
+  --action-space single \
+  --observation-mode v12_full_14d \
+  --ema-alpha 0.2 \
+  --overrun-ema-alpha 0.1 \
+  --history-k 8 \
+  --event-window 10 \
+  --max-cost-weight 0.7 \
+  --risk-max-scale 3.0 \
+  --include-safety-margin
+```
+
 日志与产物中已记录：
 
 - step info / 训练日志：`observation_mode`、`state_dim`
@@ -967,6 +1000,25 @@ conda run -n amc-repro python scripts/evaluate_dqn_amc.py \
 ```bash
 cd /Users/x1ngchuan/Documents/AMC
 conda run -n amc-repro python -m pytest -q tests/test_v11_observation.py
+```
+
+新增 v12 冒烟脚本：
+
+- `scripts/smoke_test_v12_observation.py`
+
+运行方式：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/smoke_test_v12_observation.py
+```
+
+预期输出：
+
+```text
+v10_basic: PASS
+v11_full_10d: PASS
+v12_full_14d: PASS
 ```
 
 ### 12.1 运行前说明
