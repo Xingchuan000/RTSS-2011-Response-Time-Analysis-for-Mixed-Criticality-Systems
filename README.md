@@ -1796,3 +1796,152 @@ conda run -n amc-repro python -m pytest \
   tests/test_mc_fairgen_generator.py \
   tests/test_mc_fairgen_cli_smoke.py -q
 ```
+
+## QoS-Pressure 任务集扫描与筛选（新增）
+
+本仓库新增了 QoS-Pressure 工作流脚本，用于在 `mc_fairgen` 任务集上先做 baseline QoS 压力扫描，再筛选出训练 manifest，最后生成训练与对比命令。
+
+### 1. QoS pressure 规则模块
+
+- 文件：`amc_py/qos_pressure.py`
+- 功能：
+  - `classify_qos_pressure_bucket(lc_service_loss)`：按 `easy/medium/hard/overloaded/unknown` 分桶。
+  - `recommend_for_qos_dqn(...)`：按固定门槛输出 `(是否推荐, 拒绝原因)`。
+
+### 2. 扫描脚本
+
+- 文件：`scripts/scan_qos_pressure_tasksets.py`
+- 作用：扫描 candidate seed 的 AMCRTB baseline QoS 指标并输出 CSV；可选开启 static sweep。
+- 说明：static sweep 是 **static budget scaling sweep**，仅在仿真前一次性缩放预算，用作低成本可学习性代理信号，不是运行中按周期动态动作策略。
+
+基础扫描示例：
+
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/scan_qos_pressure_tasksets.py \
+  --workload mc_fairgen \
+  --mc-fairgen-mode paper_learnable_headroom \
+  --mc-fairgen-num-tasks 12 \
+  --mc-fairgen-hi-ratio 0.5 \
+  --mc-fairgen-period-source automotive \
+  --mc-fairgen-u-hi-lo-min 0.20 \
+  --mc-fairgen-u-hi-lo-max 0.35 \
+  --mc-fairgen-u-hi-hi-min 0.45 \
+  --mc-fairgen-u-hi-hi-max 0.70 \
+  --mc-fairgen-u-lo-lo-min 0.25 \
+  --mc-fairgen-u-lo-lo-max 0.45 \
+  --mc-fairgen-hi-budget-rho-min 0.55 \
+  --mc-fairgen-hi-budget-rho-max 0.75 \
+  --mc-fairgen-lo-budget-rho-min 0.20 \
+  --mc-fairgen-lo-budget-rho-max 0.40 \
+  --mc-fairgen-hi-overrun-prob 0.08 \
+  --mc-fairgen-lo-overrun-prob 0.12 \
+  --mc-fairgen-hi-overrun-factor-min 1.02 \
+  --mc-fairgen-hi-overrun-factor-max 1.25 \
+  --mc-fairgen-lo-overrun-factor-min 1.02 \
+  --mc-fairgen-lo-overrun-factor-max 1.25 \
+  --require-schedulable \
+  --seed-start 0 \
+  --seed-end 500 \
+  --eval-seeds 200:229 \
+  --end-time 1000000 \
+  --agent-period 50000 \
+  --workers 1 \
+  --output outputs/tasksets/qos_pressure_scan_v1.csv
+```
+
+开启 static sweep 示例：
+
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/scan_qos_pressure_tasksets.py \
+  ...同上 mc_fairgen 参数... \
+  --seed-start 0 \
+  --seed-end 500 \
+  --eval-seeds 200:229 \
+  --end-time 1000000 \
+  --agent-period 50000 \
+  --enable-static-sweep \
+  --sweep-inc-ratios 0,0.015,0.025,0.035 \
+  --sweep-dec-ratios 0,0.010,0.015 \
+  --min-static-sweep-reduction 0.05 \
+  --output outputs/tasksets/qos_pressure_scan_medium_static.csv \
+  --static-sweep-detail-output outputs/tasksets/qos_pressure_scan_medium_static_detail.csv
+```
+
+### 3. manifest 筛选脚本
+
+- 文件：`scripts/select_qos_pressure_tasksets.py`
+- 作用：从扫描 CSV 按 bucket 和阈值筛选训练用 seed manifest，并输出拒绝原因 CSV。
+
+示例（medium top20）：
+
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/select_qos_pressure_tasksets.py \
+  --scan-csv outputs/tasksets/qos_pressure_scan_medium_static.csv \
+  --bucket medium \
+  --top-k 20 \
+  --min-baseline-lc-service-loss 0.10 \
+  --max-baseline-lc-service-loss 0.30 \
+  --min-released-lo-jobs 100 \
+  --min-cancelled-lo-jobs 10 \
+  --min-mode-changes 1.0 \
+  --min-static-sweep-reduction 0.05 \
+  --target-loss-center 0.20 \
+  --output outputs/tasksets/mc_fairgen_qos_pressure_medium_top20.csv \
+  --rejections-output outputs/tasksets/mc_fairgen_qos_pressure_medium_rejections.csv
+```
+
+### 4. 扫描汇总脚本
+
+- 文件：`scripts/summarize_qos_pressure_scan.py`
+- 作用：按 bucket 统计扫描分布并输出 summary CSV。
+
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/summarize_qos_pressure_scan.py \
+  --scan-csv outputs/tasksets/qos_pressure_scan_v1.csv \
+  --output outputs/tasksets/qos_pressure_scan_v1_summary.csv
+```
+
+### 5. 训练命令生成脚本
+
+- 文件：`scripts/make_train_single_v3_qos_pressure_commands.py`
+- 作用：从 manifest 生成 single_v3 训练脚本，并在每次训练后自动调用 `scripts/select_qos_best_from_validation.py` 重选 best。
+
+```bash
+python -u scripts/make_train_single_v3_qos_pressure_commands.py \
+  --manifest outputs/tasksets/mc_fairgen_qos_pressure_medium_top20.csv \
+  --output-script /tmp/run_single_v3_qospressure_medium_top20_e120.sh \
+  --output-dir-prefix outputs/train_single_v3_qospressure_medium \
+  --episodes 120 \
+  --end-time 1000000 \
+  --agent-period 50000 \
+  --validation-seeds 200:229 \
+  --validation-end-time 1000000 \
+  --qos-stable-mode-delta 0.05
+```
+
+生成的训练命令会显式包含 single_v3 对照关键参数：
+
+```bash
+--train-seed-mode per-episode
+--validate-every 10
+--validation-workers 1
+--checkpoint 10
+--save-best-by qos_stable
+--qos-stable-mode-delta 0.05
+--save-all-best-types
+```
+
+### 6. 对比命令生成脚本
+
+- 文件：`scripts/make_compare_qos_pressure_commands.py`
+- 作用：从 manifest 生成 `qos_stable/conservative_qos/qos_best` 三类 compare 命令脚本。
+
+```bash
+python -u scripts/make_compare_qos_pressure_commands.py \
+  --manifest outputs/tasksets/mc_fairgen_qos_pressure_medium_top20.csv \
+  --output-script /tmp/run_compare_qospressure_medium_top20_e120.sh \
+  --run-dir-prefix outputs/train_single_v3_qospressure_medium \
+  --episodes 120 \
+  --output-prefix outputs/compare_single_v3_qospressure_medium \
+  --qos-stable-mode-delta 0.05
+```
