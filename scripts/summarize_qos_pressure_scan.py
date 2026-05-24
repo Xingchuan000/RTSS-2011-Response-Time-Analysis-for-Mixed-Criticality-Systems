@@ -48,6 +48,22 @@ def main() -> None:
         mode_values = [v for v in (get_float(r, "baseline_mode_changes_mean") for r in bucket_rows) if v is not None]
         cancelled_values = [v for v in (get_float(r, "baseline_cancelled_lo_jobs_mean") for r in bucket_rows) if v is not None]
         reduction_values = [v for v in (get_float(r, "static_sweep_relative_lc_loss_reduction") for r in bucket_rows) if v is not None]
+        # 新增 stable-improvement 维度统计：用于区分“真实稳定可提升”与“仅 trade-off”样本。
+        static_qos_best_reduction_values = [v for v in (get_float(r, "static_qos_best_relative_lc_loss_reduction") for r in bucket_rows) if v is not None]
+        stable005_reduction_values = [v for v in (get_float(r, "stable005_static_relative_lc_loss_reduction") for r in bucket_rows) if v is not None]
+        stable010_reduction_values = [v for v in (get_float(r, "stable010_static_relative_lc_loss_reduction") for r in bucket_rows) if v is not None]
+        single_stable005_reduction_values = [v for v in (get_float(r, "single_stable005_static_relative_lc_loss_reduction") for r in bucket_rows) if v is not None]
+        single_stable010_reduction_values = [v for v in (get_float(r, "single_stable010_static_relative_lc_loss_reduction") for r in bucket_rows) if v is not None]
+        tradeoff_gap_005_values = [v for v in (get_float(r, "tradeoff_gap_005") for r in bucket_rows) if v is not None]
+        tradeoff_gap_010_values = [v for v in (get_float(r, "tradeoff_gap_010") for r in bucket_rows) if v is not None]
+        stable005_found_valid_count = sum(1 for r in bucket_rows if str(r.get("stable005_static_found_valid", "")).strip().lower() == "true")
+        stable010_found_valid_count = sum(1 for r in bucket_rows if str(r.get("stable010_static_found_valid", "")).strip().lower() == "true")
+        single_stable005_found_count = sum(1 for r in bucket_rows if str(r.get("single_stable005_static_found_valid", "")).strip().lower() == "true")
+        single_stable010_found_count = sum(1 for r in bucket_rows if str(r.get("single_stable010_static_found_valid", "")).strip().lower() == "true")
+        tradeoff_only_flag_005_count = sum(1 for r in bucket_rows if str(r.get("tradeoff_only_flag_005", "")).strip().lower() == "true")
+        tradeoff_only_flag_010_count = sum(1 for r in bucket_rows if str(r.get("tradeoff_only_flag_010", "")).strip().lower() == "true")
+        improvement_type_counter = Counter(str(r.get("improvement_type", "")).strip() for r in bucket_rows if str(r.get("improvement_type", "")).strip())
+        single_improvement_type_counter = Counter(str(r.get("single_improvement_type", "")).strip() for r in bucket_rows if str(r.get("single_improvement_type", "")).strip())
         recommended_count = sum(1 for r in bucket_rows if str(r.get("recommended_for_qos_dqn", "")).strip().lower() == "true")
 
         summary_rows.append(
@@ -60,6 +76,27 @@ def main() -> None:
                 "baseline_mode_changes_mean": mean(mode_values),
                 "baseline_cancelled_lo_jobs_mean": mean(cancelled_values),
                 "static_sweep_relative_lc_loss_reduction_mean": mean(reduction_values),
+                "static_qos_best_relative_lc_loss_reduction_mean": mean(static_qos_best_reduction_values),
+                "stable005_static_found_valid_count": stable005_found_valid_count,
+                "stable005_static_relative_lc_loss_reduction_mean": mean(stable005_reduction_values),
+                "stable005_static_relative_lc_loss_reduction_median": (float(median(stable005_reduction_values)) if stable005_reduction_values else ""),
+                "stable005_static_relative_lc_loss_reduction_max": (max(stable005_reduction_values) if stable005_reduction_values else ""),
+                "stable010_static_found_valid_count": stable010_found_valid_count,
+                "stable010_static_relative_lc_loss_reduction_mean": mean(stable010_reduction_values),
+                "stable010_static_relative_lc_loss_reduction_median": (float(median(stable010_reduction_values)) if stable010_reduction_values else ""),
+                "stable010_static_relative_lc_loss_reduction_max": (max(stable010_reduction_values) if stable010_reduction_values else ""),
+                "single_stable005_found_count": single_stable005_found_count,
+                "single_stable005_static_relative_lc_loss_reduction_mean": mean(single_stable005_reduction_values),
+                "single_stable005_static_relative_lc_loss_reduction_max": (max(single_stable005_reduction_values) if single_stable005_reduction_values else ""),
+                "single_stable010_found_count": single_stable010_found_count,
+                "single_stable010_static_relative_lc_loss_reduction_mean": mean(single_stable010_reduction_values),
+                "single_stable010_static_relative_lc_loss_reduction_max": (max(single_stable010_reduction_values) if single_stable010_reduction_values else ""),
+                "tradeoff_gap_005_mean": mean(tradeoff_gap_005_values),
+                "tradeoff_gap_010_mean": mean(tradeoff_gap_010_values),
+                "tradeoff_only_flag_005_count": tradeoff_only_flag_005_count,
+                "tradeoff_only_flag_010_count": tradeoff_only_flag_010_count,
+                "improvement_type_counts": ";".join(f"{k}:{v}" for k, v in sorted(improvement_type_counter.items())),
+                "single_improvement_type_counts": ";".join(f"{k}:{v}" for k, v in sorted(single_improvement_type_counter.items())),
                 "recommended_count": recommended_count,
             }
         )
@@ -78,6 +115,27 @@ def main() -> None:
                 "baseline_mode_changes_mean",
                 "baseline_cancelled_lo_jobs_mean",
                 "static_sweep_relative_lc_loss_reduction_mean",
+                "static_qos_best_relative_lc_loss_reduction_mean",
+                "stable005_static_found_valid_count",
+                "stable005_static_relative_lc_loss_reduction_mean",
+                "stable005_static_relative_lc_loss_reduction_median",
+                "stable005_static_relative_lc_loss_reduction_max",
+                "stable010_static_found_valid_count",
+                "stable010_static_relative_lc_loss_reduction_mean",
+                "stable010_static_relative_lc_loss_reduction_median",
+                "stable010_static_relative_lc_loss_reduction_max",
+                "single_stable005_found_count",
+                "single_stable005_static_relative_lc_loss_reduction_mean",
+                "single_stable005_static_relative_lc_loss_reduction_max",
+                "single_stable010_found_count",
+                "single_stable010_static_relative_lc_loss_reduction_mean",
+                "single_stable010_static_relative_lc_loss_reduction_max",
+                "tradeoff_gap_005_mean",
+                "tradeoff_gap_010_mean",
+                "tradeoff_only_flag_005_count",
+                "tradeoff_only_flag_010_count",
+                "improvement_type_counts",
+                "single_improvement_type_counts",
                 "recommended_count",
             ],
         )

@@ -2330,6 +2330,9 @@ class AmcBudgetEnv:
         lo_overrun_penalty = float(reward_parameters.get("lo_overrun_penalty", 0.0))
         hi_overrun_penalty = float(reward_parameters.get("hi_overrun_penalty", 0.0))
         mode_change_penalty = float(reward_parameters.get("mode_change_penalty", 0.0))
+        # 二次项惩罚系数：用于抑制 mode change 突发尖峰（spike）。
+        # 该项与线性 mode_change_penalty 叠加，形成“低频轻罚、高频重罚”的非线性约束。
+        mode_change_spike_penalty = float(reward_parameters.get("mode_change_spike_penalty", 0.0))
         lo_cancellation_penalty = float(reward_parameters.get("lo_cancellation_penalty", 0.0))
         deadline_miss_penalty = float(reward_parameters.get("deadline_miss_penalty", 0.0))
         invalid_action_penalty = float(reward_parameters.get("invalid_action_penalty", 0.0))
@@ -2367,6 +2370,11 @@ class AmcBudgetEnv:
         lo_pressure_max_penalty_value = lo_pressure_max_penalty * lo_pressure_max
         lo_near_cancel_penalty_value = lo_near_cancel_penalty * lo_near_cancel_rate
         hi_mode_pressure_penalty_value = hi_mode_pressure_penalty * hi_mode_pressure_mean
+        # mode-change 二次惩罚项的实际值（已包含 mode_change_per_job^2），
+        # 单独拆出来用于日志记录，便于后续分析“稳定性代价”在总 reward 中的占比。
+        mode_change_spike_penalty_value = (
+            mode_change_spike_penalty * mode_change_per_job * mode_change_per_job
+        )
         # interval 公式分量（用于日志拆分）：
         # - lo/hi/job_start 保留 event 分量并叠加 interval 分量，兼容旧 reward mode 的日志语义；
         # - mode change 惩罚明确使用按 job 归一化后的 mode_change_per_job；
@@ -2374,7 +2382,10 @@ class AmcBudgetEnv:
         step_reward_job_start = event_job_start_reward + job_start_weight * float(delta_job_start)
         step_reward_lo_overrun = event_lo_overrun_reward - lo_overrun_penalty * lo_overrun_rate
         step_reward_hi_overrun = event_hi_overrun_reward - hi_overrun_penalty * hi_overrun_rate
-        step_reward_mode_change = -mode_change_penalty * mode_change_per_job
+        step_reward_mode_change = (
+            -mode_change_penalty * mode_change_per_job
+            -mode_change_spike_penalty_value
+        )
         step_reward_lo_cancellation = -lo_cancellation_penalty * lo_cancellation_rate
         step_reward_deadline_miss = -deadline_miss_penalty * deadline_miss_rate
         step_reward_invalid_action = -invalid_action_penalty * invalid_action
@@ -2555,6 +2566,9 @@ class AmcBudgetEnv:
             "lo_pressure_max_penalty_value": lo_pressure_max_penalty_value,
             "lo_near_cancel_penalty_value": lo_near_cancel_penalty_value,
             "hi_mode_pressure_penalty_value": hi_mode_pressure_penalty_value,
+            # mode-change spike 惩罚系数与分量值都写入 info，方便训练日志直接聚合。
+            "mode_change_spike_penalty": float(mode_change_spike_penalty),
+            "mode_change_spike_penalty_value": float(mode_change_spike_penalty_value),
             "reward_after_regularization": reward,
             "step_reward_job_start": step_reward_job_start,
             "step_reward_lo_overrun": step_reward_lo_overrun,
