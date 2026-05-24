@@ -21,9 +21,25 @@ from amc_py.runtime_scenarios import ExecutionScenario
 from amc_py.workloads.base import WorkloadBundle, WorkloadProvider
 
 MCFairGenMode = Literal["paper_learnable_headroom"]
+MCFairGenPeriodSource = Literal[
+    "automotive",
+    "controlled_sparse",
+    "controlled_medium",
+    "controlled_dense",
+]
 
 MC_FAIRGEN_AUTOMOTIVE_PERIOD_SET: tuple[int, ...] = (1, 2, 5, 10, 20, 50, 100, 200, 1000)
 MC_FAIRGEN_AUTOMOTIVE_PERIOD_WEIGHTS: tuple[float, ...] = (0.03, 0.05, 0.10, 0.17, 0.20, 0.18, 0.14, 0.08, 0.05)
+MC_FAIRGEN_CONTROLLED_PERIOD_SETS: dict[str, tuple[int, ...]] = {
+    "controlled_sparse": (20, 50, 100, 200, 500),
+    "controlled_medium": (10, 20, 50, 100, 200),
+    "controlled_dense": (5, 10, 20, 50, 100),
+}
+MC_FAIRGEN_CONTROLLED_PERIOD_WEIGHTS: dict[str, tuple[float, ...]] = {
+    "controlled_sparse": (0.08, 0.18, 0.32, 0.27, 0.15),
+    "controlled_medium": (0.10, 0.22, 0.36, 0.22, 0.10),
+    "controlled_dense": (0.10, 0.22, 0.36, 0.22, 0.10),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +51,7 @@ class MCFairGenWorkloadConfig:
 
     num_tasks: int = 16
     hi_ratio: float = 0.5
-    period_source: str = "automotive"
+    period_source: MCFairGenPeriodSource = "automotive"
     period_scale: int = 100
     tick_ns: int = 10
 
@@ -78,8 +94,9 @@ class MCFairGenWorkloadConfig:
             raise ValueError("num_tasks must be >= 3")
         if not 0.0 < self.hi_ratio < 1.0:
             raise ValueError("hi_ratio must be in (0, 1)")
-        if self.period_source != "automotive":
-            raise ValueError("period_source must be 'automotive'")
+        valid_period_sources = {"automotive", *MC_FAIRGEN_CONTROLLED_PERIOD_SETS.keys()}
+        if self.period_source not in valid_period_sources:
+            raise ValueError(f"period_source must be one of {sorted(valid_period_sources)}")
         if self.period_scale <= 0:
             raise ValueError("period_scale must be > 0")
         if self.tick_ns <= 0:
@@ -213,15 +230,22 @@ def _stable_seed(base_seed: int, task_name: str, release_index: int) -> int:
 
 
 def _sample_period_ms(rng: random.Random, config: MCFairGenWorkloadConfig) -> int:
-    """按 automotive 离散周期集合采样 period(ms)。"""
+    """按配置的 period source 采样 period(ms)。
 
-    if config.period_source != "automotive":
-        raise ValueError("period_source must be 'automotive'")
-    return rng.choices(
-        MC_FAIRGEN_AUTOMOTIVE_PERIOD_SET,
-        weights=MC_FAIRGEN_AUTOMOTIVE_PERIOD_WEIGHTS,
-        k=1,
-    )[0]
+    说明：
+    - `automotive` 使用论文风格离散集合；
+    - `controlled_*` 使用可控的稀疏/中等/稠密集合，便于可重复对比实验。
+    """
+
+    if config.period_source == "automotive":
+        periods = MC_FAIRGEN_AUTOMOTIVE_PERIOD_SET
+        weights = MC_FAIRGEN_AUTOMOTIVE_PERIOD_WEIGHTS
+    elif config.period_source in MC_FAIRGEN_CONTROLLED_PERIOD_SETS:
+        periods = MC_FAIRGEN_CONTROLLED_PERIOD_SETS[config.period_source]
+        weights = MC_FAIRGEN_CONTROLLED_PERIOD_WEIGHTS[config.period_source]
+    else:
+        raise ValueError(f"unsupported period_source: {config.period_source}")
+    return rng.choices(periods, weights=weights, k=1)[0]
 
 
 def uunifast_discard(

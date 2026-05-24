@@ -146,6 +146,20 @@ def simulate_ordered_taskset_with_agent(
         delta_mode_changes = mode_changes - prev_mode_changes
         delta_lo_cancellations = lo_cancellations - prev_lo_cancellations
         delta_deadline_misses = deadline_misses - prev_deadline_misses
+        # 与训练环境对齐：构造 interval 级时间与归一化分母。
+        # 这里 action_time 即当前决策点时间，current_time 在 run_until 后通常等于该值，
+        # 因此 interval_time 最小设为 1.0，保证任何 reward rate 都不会出现除零。
+        action_time = current_tick
+        interval_time = max(1.0, float(engine.current_time - action_time))
+        delta_total_jobs = max(1.0, float(delta_job_start))
+        lo_overrun_rate = float(delta_lo_overrun) / delta_total_jobs
+        hi_overrun_rate = float(delta_hi_overrun) / delta_total_jobs
+        mode_change_rate = float(delta_mode_changes) / interval_time
+        mode_change_per_job = float(delta_mode_changes) / delta_total_jobs
+        lo_cancellation_rate = float(delta_lo_cancellations) / delta_total_jobs
+        deadline_miss_rate = float(delta_deadline_misses) / delta_total_jobs
+        # wrapper 路径当前没有“动作被拒绝”输入到 reward 计算前，因此保持 0.0。
+        invalid_action = 0.0
         # 与训练环境保持一致：runtime wrapper 的奖励由“配置文件公式”计算。
         _ = (
             delta_job_start,
@@ -170,23 +184,39 @@ def simulate_ordered_taskset_with_agent(
                 "event_hi_overrun_reward": float(event_hi_overrun_reward),
             },
         )
+        # 与 env.py 保持同口径的 reward 变量表，避免新 reward mode 在 wrapper 路径报 Unknown variable。
+        reward_variables: dict[str, float | bool] = {
+            "paper_reward": float(paper_reward),
+            "noop_bonus_if_noop": 0.0,
+            "budget_change_penalty": float(reward_mode_config.reward_parameters.get("budget_change_penalty", 0.0)),
+            "budget_change_norm": 0.0,
+            "budget_drift_penalty": float(reward_mode_config.reward_parameters.get("budget_drift_penalty", 0.0)),
+            "budget_drift_mean": 0.0,
+            "is_explicit_noop_action": False,
+            "event_job_start_reward": float(event_job_start_reward),
+            "event_lo_overrun_reward": float(event_lo_overrun_reward),
+            "event_hi_overrun_reward": float(event_hi_overrun_reward),
+            "delta_job_start": float(delta_job_start),
+            "delta_lo_overrun": float(delta_lo_overrun),
+            "delta_hi_overrun": float(delta_hi_overrun),
+            "delta_mode_changes": float(delta_mode_changes),
+            "delta_lo_cancellations": float(delta_lo_cancellations),
+            "delta_deadline_misses": float(delta_deadline_misses),
+            "interval_time": float(interval_time),
+            "delta_total_jobs": float(delta_total_jobs),
+            "lo_overrun_rate": float(lo_overrun_rate),
+            "hi_overrun_rate": float(hi_overrun_rate),
+            "mode_change_rate": float(mode_change_rate),
+            "mode_change_per_job": float(mode_change_per_job),
+            "lo_cancellation_rate": float(lo_cancellation_rate),
+            "deadline_miss_rate": float(deadline_miss_rate),
+            "invalid_action": float(invalid_action),
+        }
+        # 奖励参数也并入变量表，使 JSON 公式可直接引用参数名（如 mode_change_spike_penalty）。
+        reward_variables.update(reward_mode_config.reward_parameters)
         step_reward = evaluate_reward_expression(
             reward_mode_config.step_reward_formula,
-            {
-                "paper_reward": float(paper_reward),
-                "noop_bonus_if_noop": 0.0,
-                "budget_change_penalty": float(reward_mode_config.reward_parameters.get("budget_change_penalty", 0.0)),
-                "budget_change_norm": 0.0,
-                "budget_drift_penalty": float(reward_mode_config.reward_parameters.get("budget_drift_penalty", 0.0)),
-                "budget_drift_mean": 0.0,
-                "is_explicit_noop_action": False,
-                "event_job_start_reward": float(event_job_start_reward),
-                "event_lo_overrun_reward": float(event_lo_overrun_reward),
-                "event_hi_overrun_reward": float(event_hi_overrun_reward),
-                "delta_job_start": float(delta_job_start),
-                "delta_lo_overrun": float(delta_lo_overrun),
-                "delta_hi_overrun": float(delta_hi_overrun),
-            },
+            reward_variables,
         )
         total_reward += step_reward
         prev_job_start_count = monitor.job_start_count

@@ -18,6 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--manifest", type=str, required=True)
     parser.add_argument("--output-script", type=str, required=True)
     parser.add_argument("--output-dir-prefix", type=str, required=True)
+    parser.add_argument("--reward-mode", type=str, default="interval_v1")
     parser.add_argument("--episodes", type=int, default=120)
     parser.add_argument("--end-time", type=int, default=1000000)
     parser.add_argument("--agent-period", type=int, default=50000)
@@ -69,7 +70,11 @@ def main() -> None:
     lines: list[str] = ["#!/usr/bin/env bash", "set -euo pipefail", ""]
     for row in rows:
         seed = int(float(row["candidate_seed"]))
-        out_dir = f"{args.output_dir_prefix}_seed{seed}_e{args.episodes}_inc0025_dec0015_floor09"
+        # 输出目录显式包含 reward mode，避免多组 ablation 结果互相覆盖或混淆。
+        out_dir = (
+            f"{args.output_dir_prefix}_{args.reward_mode}_seed{seed}"
+            f"_e{args.episodes}_inc0025_dec0015_floor09"
+        )
 
         cmd_parts = [
             "KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/train_dqn_amc.py",
@@ -84,7 +89,7 @@ def main() -> None:
             "--validate-every 10",
             "--validation-workers 1",
             "--checkpoint 10",
-            "--reward-mode interval_v1",
+            f"--reward-mode {args.reward_mode}",
             "--action-space single",
             "--budget-increase-ratio 0.025",
             "--budget-decrease-ratio 0.015",

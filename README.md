@@ -1806,13 +1806,17 @@ conda run -n amc-repro python -m pytest \
 - 文件：`amc_py/qos_pressure.py`
 - 功能：
   - `classify_qos_pressure_bucket(lc_service_loss)`：按 `easy/medium/hard/overloaded/unknown` 分桶。
-  - `recommend_for_qos_dqn(...)`：按固定门槛输出 `(是否推荐, 拒绝原因)`。
+  - `classify_improvement_type(...)`：按 `stable005/stable010/tradeoff_only` 等类别输出改进类型。
+  - `recommend_for_qos_dqn(...)`：支持 stable-improvement 与 tradeoff-only 约束，输出 `(是否推荐, 拒绝原因)`。
 
 ### 2. 扫描脚本
 
 - 文件：`scripts/scan_qos_pressure_tasksets.py`
 - 作用：扫描 candidate seed 的 AMCRTB baseline QoS 指标并输出 CSV；可选开启 static sweep。
 - 说明：static sweep 是 **static budget scaling sweep**，仅在仿真前一次性缩放预算，用作低成本可学习性代理信号，不是运行中按周期动态动作策略。
+- 新增：支持与 `--action-space single` 对齐的两类代理扫描：
+  - `single-task sweep`：每次只扰动一个任务（increase/decrease，可重复多次）；
+  - `single-sequence sweep`：按固定 single-action 序列逐步改预算后再仿真。
 
 基础扫描示例：
 
@@ -1860,12 +1864,55 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONP
   --end-time 1000000 \
   --agent-period 50000 \
   --enable-static-sweep \
+  --static-sweep-stage quick \
   --sweep-inc-ratios 0,0.015,0.025,0.035 \
   --sweep-dec-ratios 0,0.010,0.015 \
+  --stable-static-mode-deltas 0.05,0.10 \
+  --stable-static-mode-abs-tolerance 0.0 \
   --min-static-sweep-reduction 0.05 \
+  --min-stable-static-sweep-reduction 0.02 \
+  --stable-static-delta 0.10 \
+  --exclude-tradeoff-only \
   --output outputs/tasksets/qos_pressure_scan_medium_static.csv \
   --static-sweep-detail-output outputs/tasksets/qos_pressure_scan_medium_static_detail.csv
 ```
+
+开启 single-task / single-sequence sweep 示例：
+
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/scan_qos_pressure_tasksets.py \
+  ...同上 mc_fairgen 参数... \
+  --seed-start 0 \
+  --seed-end 200 \
+  --eval-seeds 200:204 \
+  --enable-static-sweep \
+  --static-sweep-stage quick \
+  --enable-single-task-sweep \
+  --single-task-sweep-stage quick \
+  --single-task-sweep-actions increase,decrease \
+  --single-task-repeat-counts 1,2 \
+  --single-task-top-k-by-headroom 6 \
+  --single-task-sweep-detail-output outputs/tasksets/qos_pressure_single_task_detail.csv \
+  --enable-single-sequence-sweep \
+  --single-sequence-patterns inc_repeat,dec_repeat,inc_dec_pair,inc_dec_alternate \
+  --single-sequence-lengths 2,4 \
+  --single-sequence-top-k-tasks 4 \
+  --single-sequence-sweep-detail-output outputs/tasksets/qos_pressure_sequence_detail.csv \
+  --output outputs/tasksets/qos_pressure_scan_with_single_proxy.csv
+```
+
+新增关键输出字段（主 CSV）：
+- `static_qos_best_*`：不约束 mode changes 的 static 最优解。
+- `stable005_static_*`：约束 `mode_changes <= baseline * 1.05` 的最优解。
+- `stable010_static_*`：约束 `mode_changes <= baseline * 1.10` 的最优解。
+- `tradeoff_gap_005 / tradeoff_gap_010`：`static_qos_best` 与 `stable` 的改善差距。
+- `tradeoff_only_flag_005 / tradeoff_only_flag_010`：trade-off-only 诊断标记。
+- `improvement_type`：`stable005_improvable / stable010_improvable / tradeoff_only / weak_or_no_improvement / no_static_improvement`。
+- `global_static_qos_best_* / global_stable005_static_* / global_stable010_static_*`：`static_*` 的全局静态别名字段。
+- `single_static_qos_best_* / single_stable005_static_* / single_stable010_static_*`：single-task 代理最优结果。
+- `sequence_static_qos_best_* / sequence_stable005_static_* / sequence_stable010_static_*`：single-sequence 代理最优结果。
+- `single_improvement_type`：single 维度改进类型。
+- `dqn_proxy_stable005_relative_lc_loss_reduction / dqn_proxy_stable010_relative_lc_loss_reduction`：single-task 与 sequence 的稳定改进上界代理。
 
 ### 3. manifest 筛选脚本
 
@@ -1885,10 +1932,33 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONP
   --min-cancelled-lo-jobs 10 \
   --min-mode-changes 1.0 \
   --min-static-sweep-reduction 0.05 \
+  --min-stable-static-sweep-reduction 0.02 \
+  --stable-static-delta 0.10 \
+  --exclude-tradeoff-only \
+  --require-single-action-improvement \
+  --min-single-stable-sweep-reduction 0.005 \
+  --single-stable-delta 0.10 \
+  --allow-relaxed-single-stable \
+  --prefer-single-action-stable \
+  --exclude-single-tradeoff-only \
+  --prefer-stable-static \
   --target-loss-center 0.20 \
   --output outputs/tasksets/mc_fairgen_qos_pressure_medium_top20.csv \
   --rejections-output outputs/tasksets/mc_fairgen_qos_pressure_medium_rejections.csv
 ```
+
+新增筛选参数说明：
+- `--min-stable-static-sweep-reduction`：要求稳定 static 改进至少达到给定阈值。
+- `--stable-static-delta {0.05,0.10}`：指定主稳定约束字段使用 `stable005` 或 `stable010`。
+- `--allow-relaxed-stable-static`：当主字段是 `stable005` 且不满足时，允许回退到 `stable010`。
+- `--exclude-tradeoff-only`：剔除 `tradeoff_only_flag_* = true` 的样本。
+- `--prefer-stable-static`：排序优先按 `stable005/stable010` 改进降序。
+- `--require-single-action-improvement`：强制要求 single-action 稳定改进。
+- `--min-single-stable-sweep-reduction`：single 稳定改进阈值。
+- `--single-stable-delta {0.05,0.10}`：single 主稳定字段。
+- `--allow-relaxed-single-stable`：single 主字段不满足时允许回退到 single010。
+- `--prefer-single-action-stable`：排序优先按 single 稳定改进降序。
+- `--exclude-single-tradeoff-only`：剔除 `single_improvement_type=single_tradeoff_only`。
 
 ### 4. 扫描汇总脚本
 
@@ -1900,6 +1970,20 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONP
   --scan-csv outputs/tasksets/qos_pressure_scan_v1.csv \
   --output outputs/tasksets/qos_pressure_scan_v1_summary.csv
 ```
+
+新增汇总字段（按 bucket）：
+- `stable005_static_found_valid_count`
+- `stable010_static_found_valid_count`
+- `stable005_static_relative_lc_loss_reduction_mean/median/max`
+- `stable010_static_relative_lc_loss_reduction_mean/median/max`
+- `static_qos_best_relative_lc_loss_reduction_mean`
+- `tradeoff_gap_005_mean / tradeoff_gap_010_mean`
+- `tradeoff_only_flag_005_count / tradeoff_only_flag_010_count`
+- `improvement_type_counts`
+- `single_stable005_static_relative_lc_loss_reduction_mean/max`
+- `single_stable010_static_relative_lc_loss_reduction_mean/max`
+- `single_stable005_found_count / single_stable010_found_count`
+- `single_improvement_type_counts`
 
 ### 5. 训练命令生成脚本
 
@@ -1944,4 +2028,445 @@ python -u scripts/make_compare_qos_pressure_commands.py \
   --episodes 120 \
   --output-prefix outputs/compare_single_v3_qospressure_medium \
   --qos-stable-mode-delta 0.05
+```
+
+### 13.6 QoS-Stable Reward 三版本接入说明
+
+本次新增 3 个 reward mode（目录：`configs/reward_modes/`）：
+- `qos_stable_v1_balanced`
+- `qos_stable_v1_conservative`
+- `qos_stable_v1_qoslean`
+
+使用方法：训练时直接切换 `--reward-mode`。
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/train_dqn_amc.py \
+  --workload mc_fairgen \
+  --episodes 2 \
+  --end-time 100000 \
+  --agent-period 50000 \
+  --reward-mode qos_stable_v1_balanced
+```
+
+新增 reward 配置 smoke test：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/smoke_test_reward_modes.py \
+  --modes interval_v1,qos_stable_v1_balanced,qos_stable_v1_conservative,qos_stable_v1_qoslean
+```
+
+你会看到每个 mode 的 `step_reward` 计算结果；若变量名写错或 JSON 格式错误，脚本会返回非 0 退出码。
+
+日志增强说明：
+- `amc_py/rl/env.py` 的 `info` 新增 `mode_change_spike_penalty` 与 `mode_change_spike_penalty_value`。
+- `scripts/train_dqn_amc.py` 的 `train_log.csv` 新增列 `mode_change_spike_penalty_value`。
+- `scripts/train_dqn_amc.py` 的 `train_metrics.csv` 新增列 `reward_mode_change_spike_penalty_value_sum`。
+
+命令生成脚本更新（`scripts/make_train_single_v3_qos_pressure_commands.py`）：
+- 新增参数 `--reward-mode`（默认 `interval_v1`）。
+- 生成命令会自动写入 `--reward-mode {值}`。
+- 生成输出目录名会包含 reward mode，便于做多版本 ablation 对比。
+
+示例：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/make_train_single_v3_qos_pressure_commands.py \
+  --manifest outputs/tasksets/mc_fairgen_qos_pressure_strong_medium_top20_presweep_0_1200_lop020_lorho010_030.csv \
+  --reward-mode qos_stable_v1_balanced \
+  --output-dir-prefix outputs/train_single_v3_qosstable_strong_medium \
+  --output-script /tmp/run_reward_test.sh
+```
+
+### 13.7 Controlled MC-FairGen + Stable Probe 使用说明
+
+本次改动新增了 `controlled` 周期源、stable probe 脚本、probe-aware selector，并把扫描指标扩展为 `per-1M` 归一化字段。
+
+1) `mc_fairgen` 新增周期源：
+- `automotive`
+- `controlled_sparse`
+- `controlled_medium`
+- `controlled_dense`
+
+2) 生成/扫描时可直接使用：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/generate_learnable_tasksets.py \
+  --workload mc_fairgen \
+  --mc-fairgen-period-source controlled_medium \
+  --mc-fairgen-period-scale 100
+```
+
+3) `scan_taskset_headroom.py` 与 `scan_qos_pressure_tasksets.py` 新增输出字段：
+- `baseline_total_events_per_1m`
+- `baseline_mode_changes_per_1m`
+- `baseline_lo_cancellations_per_1m`
+
+并在 `end_time <= 0` 时直接报错：
+- `ValueError("end_time must be positive for per-1M metrics")`
+
+4) 新增 stable probe：`scripts/probe_stable_improvement_tasksets.py`
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/probe_stable_improvement_tasksets.py \
+  --taskset-manifest outputs/tasksets/your_manifest.csv \
+  --manifest-seed-column candidate_seed \
+  --seeds 200:206 \
+  --mc-fairgen-period-source controlled_medium \
+  --end-time 3000000 \
+  --output-summary outputs/taskset_probe/controlled_medium/stable_probe_summary.csv \
+  --output-detail outputs/taskset_probe/controlled_medium/stable_probe_detail.csv
+```
+
+5) 新增 probe-aware selector：`scripts/select_probe_aware_tasksets.py`
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/select_probe_aware_tasksets.py \
+  --headroom-summary outputs/taskset_slack_scan/controlled_medium/headroom_quick_summary.csv \
+  --probe-summary outputs/taskset_probe/controlled_medium/stable_probe_summary.csv \
+  --manifest-csv outputs/tasksets/controlled_medium/fullscan_0_1000.csv \
+  --top-k 20 \
+  --output-summary outputs/tasksets/controlled_medium/probe_aware_top20.csv \
+  --output-manifest outputs/tasksets/controlled_medium/probe_aware_top20_manifest.csv \
+  --output-rejections outputs/tasksets/controlled_medium/probe_aware_rejections.csv
+```
+
+6) `select_learnable_pressure_tasksets.py` 新增 `per-1M` 参数（默认启用 `--use-per-1m-metrics`）：
+- `--min-events-per-1m`
+- `--max-events-per-1m`
+- `--min-lo-cancellations-per-1m`
+- `--max-mode-changes-per-1m`
+
+兼容旧参数，但会打印 warning。
+
+7) 新增 smoke 命令生成器：`scripts/make_controlled_mc_fairgen_smoke_commands.py`
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/make_controlled_mc_fairgen_smoke_commands.py \
+  --period-source controlled_medium \
+  --out /tmp/run_controlled_medium_smoke.sh
+bash /tmp/run_controlled_medium_smoke.sh
+```
+
+### 13.8 Task-level Cancellation Controllability 使用说明
+
+本次新增了 task-level cancellation source 诊断能力，默认关闭；不加新参数时，`scan_taskset_headroom.py` 的旧输出口径保持不变。
+
+1) `scan_taskset_headroom.py` 新增参数：
+- `--enable-task-level-cancellation-diagnostic`：开启 task-level 聚合统计。
+- `--task-level-output-dir`：可选；指定后输出每个 `seed/scale/eval_seed` 的 per-task 明细 CSV。
+
+示例：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro env PYTHONPATH=. python -u scripts/scan_taskset_headroom.py \
+  --workload mc_fairgen \
+  --fixed-taskset-seeds 1484 \
+  --budget-scales 1.0 \
+  --seeds 200:202 \
+  --enable-task-level-cancellation-diagnostic \
+  --task-level-output-dir outputs/task_level_details \
+  --output outputs/task_level_scan_summary.csv
+```
+
+新增 summary 字段（节选）：
+- `task_level_top1_cancel_share_mean`
+- `task_level_top2_cancel_share_mean`
+- `task_level_top3_cancel_share_mean`
+- `task_level_cancel_concentration_hhi_mean`
+- `task_level_num_cancelled_lo_tasks_mean`
+- `task_level_max_task_cancel_ratio_mean`
+- `valid_increase_cancel_coverage_mean`
+- `valid_decrease_cancel_coverage_mean`
+- `valid_increase_top1_cancel_hit_rate`
+
+per-task CSV 字段（节选）：
+- `cancelled_jobs`
+- `cancel_ratio_over_released`
+- `cancel_share_of_total`
+- `is_valid_increase_union`
+- `is_valid_decrease_union`
+- `valid_increase_seen_steps`
+- `valid_decrease_seen_steps`
+- `valid_increase_seen_fraction`
+- `valid_decrease_seen_fraction`
+
+2) 新增独立诊断脚本：`scripts/diagnose_task_level_controllability.py`
+
+用于按指定 seed 列表直接输出 summary + task-level long table。
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro env PYTHONPATH=. python -u scripts/diagnose_task_level_controllability.py \
+  --workload mc_fairgen \
+  --fixed-taskset-seeds 1484,2429,2829,2221,1502,90,2574 \
+  --seeds 200:210 \
+  --output-summary outputs/task_level_diagnostic/summary.csv \
+  --output-task-details outputs/task_level_diagnostic/details.csv
+```
+
+3) 新增 strong/weak 对照汇总脚本：`scripts/summarize_controllability_contrast.py`
+
+将 task-level summary 与训练结果按 `candidate_seed` 关联，输出 joined CSV 和 markdown 报告。
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+python scripts/summarize_controllability_contrast.py \
+  --summary-csv outputs/task_level_diagnostic/summary.csv \
+  --result-csv outputs/controlled_medium_scale500/controlled_medium_scale500_top20_qos_stable_summary_with_qos.csv \
+  --output-csv outputs/task_level_diagnostic/contrast_joined.csv \
+  --output-md outputs/task_level_diagnostic/contrast_report.md
+```
+
+## 14. Decrease Controllability 诊断与 Static Probe 使用说明
+
+本次修改新增了 decrease 侧可控性诊断与静态探测能力，核心目标是回答：
+- 主要 cancellation source 是否可被 valid decrease 覆盖；
+- `decrease_top_cancelled_lo` 与 `decrease_low_cancel_high_budget` 哪种更有效；
+- decrease 改善是否伴随 mode-change tradeoff。
+
+### 14.1 代码改动点
+
+1. `amc_py/task_level_diagnostics.py`
+- 修正 `task_level_top1/top2/top3_cancel_share` 与 `task_level_cancel_concentration_hhi` 的排序口径：统一按 `cancelled_jobs` 降序后的 LO 任务计算。
+- 在 `compute_valid_action_cancel_coverage(...)` 中新增 decrease 侧字段：
+  - `valid_decrease_top1_cancel_hit`
+  - `valid_decrease_top2_cancel_hit_count`
+  - `valid_decrease_top3_cancel_hit_count`
+  - `valid_decrease_cancelled_task_count`
+  - `valid_decrease_cancelled_task_share`
+  - `valid_decrease_top_cancel_task_name`
+  - `valid_decrease_top_cancel_task_index`
+
+2. `scripts/diagnose_task_level_controllability.py`
+- summary 新增 decrease 侧聚合字段：
+  - `valid_decrease_top1_cancel_hit_rate`
+  - `valid_decrease_top2_cancel_hit_count_mean`
+  - `valid_decrease_top3_cancel_hit_count_mean`
+  - `valid_decrease_cancelled_task_share_mean`
+- 新增 `decrease_source_score`（诊断覆盖性指标，不等价于 decrease 一定有益）。
+
+3. 新增脚本 `scripts/probe_static_decrease_controllability.py`
+- 静态探测三类 probe：
+  - `decrease_top_cancelled_lo`
+  - `decrease_low_cancel_high_budget`
+  - `increase_valid_cancel_source`（对照）
+- 输出 detail/summary 两份 CSV，字段与计划文档保持一致。
+- 支持：当 `--candidate-seeds` 非空时，直接使用该列表，不要求 manifest 必须包含这些 seed。
+
+4. 新增脚本 `scripts/summarize_decrease_probe_contrast.py`
+- 将 controllability summary 与 decrease probe summary 合并。
+- 输出 joined CSV 与 Markdown 报告，按 `strong/medium/weak/opportunity_or_lightprobe_weak` 分组汇总。
+
+### 14.2 运行 diagnose（含 decrease 侧指标）
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/diagnose_task_level_controllability.py \
+  --workload mc_fairgen \
+  --fixed-taskset-seeds 1484,2429,2829 \
+  --seeds 200:210 \
+  --end-time 1000000 \
+  --output-summary outputs/taskset_slack_scan/controlled_medium_scale500/controllability_summary_e1m_s200_210.csv \
+  --output-task-details outputs/taskset_slack_scan/controlled_medium_scale500/controllability_task_details_e1m_s200_210.csv
+```
+
+### 14.3 运行 static decrease probe
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONPATH=. python -u scripts/probe_static_decrease_controllability.py \
+  --workload mc_fairgen \
+  --taskset-manifest outputs/tasksets/controlled_medium_scale500/final_top20_medium_0_3000.csv \
+  --manifest-seed-column candidate_seed \
+  --candidate-seeds 1484,2429,2829,2221,1502,90,2574,57,185,2784,395,2505,367,1563,343,559 \
+  --seeds 200:210 \
+  --end-time 1000000 \
+  --budget-increase-ratio 0.025 \
+  --budget-decrease-ratio 0.015 \
+  --budget-floor-ratio 0.9 \
+  --repeat-counts 1,2,3 \
+  --top-k-cancelled 3 \
+  --top-k-low-cancel-high-budget 3 \
+  --top-k-increase-reference 3 \
+  --stable-mode-delta 0.05 \
+  --mc-fairgen-mode paper_learnable_headroom \
+  --mc-fairgen-num-tasks 12 \
+  --mc-fairgen-hi-ratio 0.5 \
+  --mc-fairgen-period-source controlled_medium \
+  --mc-fairgen-period-scale 500 \
+  --mc-fairgen-u-hi-lo-min 0.20 \
+  --mc-fairgen-u-hi-lo-max 0.35 \
+  --mc-fairgen-u-hi-hi-min 0.45 \
+  --mc-fairgen-u-hi-hi-max 0.70 \
+  --mc-fairgen-u-lo-lo-min 0.25 \
+  --mc-fairgen-u-lo-lo-max 0.45 \
+  --mc-fairgen-hi-budget-rho-min 0.55 \
+  --mc-fairgen-hi-budget-rho-max 0.75 \
+  --mc-fairgen-lo-budget-rho-min 0.20 \
+  --mc-fairgen-lo-budget-rho-max 0.40 \
+  --mc-fairgen-hi-overrun-prob 0.08 \
+  --mc-fairgen-lo-overrun-prob 0.12 \
+  --mc-fairgen-hi-overrun-factor-min 1.02 \
+  --mc-fairgen-hi-overrun-factor-max 1.25 \
+  --mc-fairgen-lo-overrun-factor-min 1.02 \
+  --mc-fairgen-lo-overrun-factor-max 1.25 \
+  --output-summary outputs/taskset_slack_scan/controlled_medium_scale500/decrease_probe/static_decrease_probe_summary_e1m_s200_210.csv \
+  --output-detail outputs/taskset_slack_scan/controlled_medium_scale500/decrease_probe/static_decrease_probe_detail_e1m_s200_210.csv
+```
+
+### 14.4 运行对照汇总脚本
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python -u scripts/summarize_decrease_probe_contrast.py \
+  --task-level-summary outputs/taskset_slack_scan/controlled_medium_scale500/controllability_summary_e1m_s200_210.csv \
+  --decrease-probe-summary outputs/taskset_slack_scan/controlled_medium_scale500/decrease_probe/static_decrease_probe_summary_e1m_s200_210.csv \
+  --output-csv outputs/taskset_slack_scan/controlled_medium_scale500/decrease_probe/decrease_probe_contrast_joined.csv \
+  --output-md outputs/taskset_slack_scan/controlled_medium_scale500/decrease_probe/decrease_probe_contrast_report.md
+```
+
+### 14.5 输出文件说明
+
+1. `static_decrease_probe_detail_*.csv`
+- 每行对应一个 `candidate_seed + probe_type + target_task + repeat_count`。
+- 关键字段：`lo_cancellation_rel_reduction`、`lc_service_loss_abs_reduction`、`mode_change_delta_ratio`、`stable_candidate`、`tradeoff_risk`。
+
+2. `static_decrease_probe_summary_*.csv`
+- 每个 candidate seed 一行。
+- 包含：
+  - `best_decrease_*`
+  - `best_decrease_top_cancelled_lo_*`
+  - `best_decrease_low_cancel_high_budget_*`
+  - `best_increase_reference_*`
+  - `decrease_probe_has_stable_positive`
+  - `decrease_probe_best_beats_increase_reference`
+
+3. `decrease_probe_contrast_report.md`
+- 按 manual group 输出组级均值与关键问答，直接用于 strong/weak/opportunity weak 对照分析。
+
+## 13.9 Task-Level Controllability Selector 使用说明
+
+本节对应 `controllability_selector_codex_plan.md` 的必做实现，目标是将任务集筛选从 pressure 指标升级为 task-level controllability 指标。
+
+### 1) 诊断脚本字段补齐（`scripts/diagnose_task_level_controllability.py`）
+
+本次修改后，诊断脚本支持两种指定候选任务集的方式：
+
+- 显式传入 `--fixed-taskset-seeds`；
+- 仅传 `--taskset-manifest`（脚本会自动读取 `--manifest-seed-column` 对应列作为 seed 列表）。
+
+输出的 `summary` 关键字段现在包含：
+
+- `baseline_total_events_per_1m`
+- `baseline_mode_changes_per_1m`
+- `baseline_lo_cancellations_per_1m`
+- `baseline_lo_cancellation_ratio_total`
+- `task_level_top1_cancel_share_mean`
+- `task_level_top2_cancel_share_mean`
+- `task_level_top3_cancel_share_mean`
+- `task_level_cancel_concentration_hhi_mean`
+- `cancel_concentration_hhi_mean`（兼容别名）
+- `valid_increase_cancel_coverage_mean`
+- `valid_increase_top1_cancel_hit_rate`
+- `valid_increase_top2_cancel_hit_count_mean`
+- `valid_increase_top3_cancel_hit_count_mean`
+- `valid_decrease_cancel_coverage_mean`
+- `valid_decrease_top1_cancel_hit_rate`
+- `valid_decrease_top2_cancel_hit_count_mean`
+- `valid_decrease_top3_cancel_hit_count_mean`
+
+`task details` 输出继续包含并保留以下字段：
+
+- `candidate_seed`
+- `eval_seed`
+- `task_index`
+- `task_name`
+- `criticality`
+- `period`
+- `released_jobs`
+- `cancelled_jobs`
+- `cancel_ratio_over_released`
+- `cancel_share_of_total`
+- `is_valid_increase_union`
+- `is_valid_decrease_union`
+- `valid_increase_seen_fraction`
+- `valid_decrease_seen_fraction`
+
+### 2) 新增 selector 脚本（`scripts/select_controllable_tasksets.py`）
+
+脚本输入：
+
+- `--summary-csv`：原 headroom summary
+- `--manifest-csv`：原 taskset manifest
+- `--controllability-summary-csv`：task-level diagnostics summary
+
+脚本输出：
+
+- `--output-summary`：controllability topK 的筛选摘要
+- `--output-manifest`：可直接给 `train_dqn_amc.py` 使用的 manifest（保持原列顺序）
+- `--output-rejections`：未入选种子及拒绝原因
+
+默认阈值（与计划一致）：
+
+- `--top-k 10`
+- `--min-valid-increase 3`
+- `--min-valid-decrease 3`
+- `--min-baseline-lo-cancellations-per-1m 22`
+- `--max-baseline-mode-changes-per-1m 30`
+- `--min-baseline-lo-cancellation-ratio 0.45`
+- `--max-baseline-lo-cancellation-ratio 0.75`
+- `--min-valid-increase-cancel-coverage 0.35`
+- `--min-valid-increase-top2-hit-count 1.0`
+- `--min-valid-increase-top3-hit-count 1.5`
+- `--max-top1-cancel-share 0.75`
+- `--max-deadline-misses 0`
+
+支持 dry-run：
+
+- `--dry-run`：不写文件，只打印通过样本 topN、拒绝原因计数、关键指标 describe
+- `--print-top-n`：dry-run 打印行数（默认 `30`）
+
+### 3) 示例命令
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+
+python scripts/select_controllable_tasksets.py \
+  --summary-csv outputs/taskset_slack_scan/controlled_medium_scale500/top30_medium_summary_0_3000_e5m_s200_210.csv \
+  --manifest-csv outputs/tasksets/controlled_medium_scale500/learnable_top30_0_3000_quick_e3m_s200_206.csv \
+  --controllability-summary-csv outputs/taskset_slack_scan/controlled_medium_scale500/controllability/controllability_summary_top30_e1m_s200_210.csv \
+  --top-k 10 \
+  --min-valid-increase 3 \
+  --min-valid-decrease 3 \
+  --min-baseline-lo-cancellations-per-1m 22 \
+  --max-baseline-mode-changes-per-1m 30 \
+  --min-baseline-lo-cancellation-ratio 0.45 \
+  --max-baseline-lo-cancellation-ratio 0.75 \
+  --min-valid-increase-cancel-coverage 0.35 \
+  --min-valid-increase-top2-hit-count 1.0 \
+  --min-valid-increase-top3-hit-count 1.5 \
+  --max-top1-cancel-share 0.75 \
+  --output-summary outputs/taskset_slack_scan/controlled_medium_scale500/controllability/controllable_top10_summary_0_3000.csv \
+  --output-manifest outputs/tasksets/controlled_medium_scale500/controllable_top10_0_3000.csv \
+  --output-rejections outputs/taskset_slack_scan/controlled_medium_scale500/controllability/controllable_top10_rejections_0_3000.csv
+```
+
+dry-run 示例：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+
+python scripts/select_controllable_tasksets.py \
+  --summary-csv outputs/taskset_slack_scan/controlled_medium_scale500/top30_medium_summary_0_3000_e5m_s200_210.csv \
+  --manifest-csv outputs/tasksets/controlled_medium_scale500/learnable_top30_0_3000_quick_e3m_s200_206.csv \
+  --controllability-summary-csv outputs/taskset_slack_scan/controlled_medium_scale500/controllability/controllability_summary_top30_e1m_s200_210.csv \
+  --dry-run --print-top-n 30
 ```

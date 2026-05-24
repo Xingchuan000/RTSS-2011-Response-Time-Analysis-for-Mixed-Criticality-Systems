@@ -81,6 +81,7 @@ STEP_LOG_FIELDNAMES = [
     "step_reward_lo_overrun",
     "step_reward_hi_overrun",
     "step_reward_mode_change",
+    "mode_change_spike_penalty_value",
     "step_reward_lo_cancellation",
     "step_reward_deadline_miss",
     "step_reward_invalid_action",
@@ -1774,6 +1775,7 @@ def main() -> None:
         reward_lo_overrun_sum = 0.0
         reward_hi_overrun_sum = 0.0
         reward_mode_change_sum = 0.0
+        reward_mode_change_spike_penalty_value_sum = 0.0
         reward_lo_cancellation_sum = 0.0
         reward_deadline_miss_sum = 0.0
         reward_paper_sum = 0.0
@@ -1858,6 +1860,9 @@ def main() -> None:
             reward_lo_overrun_sum += float(result.info.get("step_reward_lo_overrun", 0.0))
             reward_hi_overrun_sum += float(result.info.get("step_reward_hi_overrun", 0.0))
             reward_mode_change_sum += float(result.info.get("step_reward_mode_change", 0.0))
+            reward_mode_change_spike_penalty_value_sum += float(
+                result.info.get("mode_change_spike_penalty_value", 0.0)
+            )
             reward_lo_cancellation_sum += float(result.info.get("step_reward_lo_cancellation", 0.0))
             reward_deadline_miss_sum += float(result.info.get("step_reward_deadline_miss", 0.0))
             reward_paper_sum += float(result.info.get("paper_reward", 0.0))
@@ -1917,6 +1922,10 @@ def main() -> None:
                         "step_reward_lo_overrun": float(result.info.get("step_reward_lo_overrun", 0.0)),
                         "step_reward_hi_overrun": float(result.info.get("step_reward_hi_overrun", 0.0)),
                         "step_reward_mode_change": float(result.info.get("step_reward_mode_change", 0.0)),
+                        # 单独落盘二次项惩罚，便于区分线性 mode-change 惩罚和 spike 惩罚来源。
+                        "mode_change_spike_penalty_value": float(
+                            result.info.get("mode_change_spike_penalty_value", 0.0)
+                        ),
                         "step_reward_lo_cancellation": float(result.info.get("step_reward_lo_cancellation", 0.0)),
                         "step_reward_deadline_miss": float(result.info.get("step_reward_deadline_miss", 0.0)),
                         "step_reward_invalid_action": float(result.info.get("step_reward_invalid_action", 0.0)),
@@ -2042,6 +2051,7 @@ def main() -> None:
                 "reward_lo_overrun_sum": reward_lo_overrun_sum,
                 "reward_hi_overrun_sum": reward_hi_overrun_sum,
                 "reward_mode_change_sum": reward_mode_change_sum,
+                "reward_mode_change_spike_penalty_value_sum": reward_mode_change_spike_penalty_value_sum,
                 "reward_lo_cancellation_sum": reward_lo_cancellation_sum,
                 "reward_deadline_miss_sum": reward_deadline_miss_sum,
                 "reward_paper_sum": reward_paper_sum,
@@ -2324,6 +2334,7 @@ def main() -> None:
             "reward_lo_overrun_sum",
             "reward_hi_overrun_sum",
             "reward_mode_change_sum",
+            "reward_mode_change_spike_penalty_value_sum",
             "reward_lo_cancellation_sum",
             "reward_deadline_miss_sum",
             "reward_paper_sum",

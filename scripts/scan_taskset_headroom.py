@@ -29,6 +29,11 @@ from amc_py.rl.constraint_guided_pair import (
     select_constraint_guided_decrease_targets,
 )
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics
+from amc_py.task_level_diagnostics import (
+    compute_valid_action_cancel_coverage,
+    extract_valid_action_task_indices,
+    summarize_task_level_cancellations,
+)
 from scripts.generate_learnable_tasksets import _rewrite_budgets_for_learnable_headroom
 
 
@@ -625,7 +630,8 @@ def _run_diagnostic_on_seed(
     constraint_guided_pair_top_k_risk: int,
     constraint_guided_pair_top_k_decrease: int,
     constraint_guided_pair_prefer_lo: bool,
-) -> dict[str, float]:
+    enable_task_level_cancellation_diagnostic: bool,
+) -> dict[str, Any]:
     """在单个 eval_seed 上运行 noop 诊断并采集 headroom 指标。"""
 
     env = AmcBudgetEnv(
@@ -693,10 +699,24 @@ def _run_diagnostic_on_seed(
     constraint_guided_pair_reject_lo_mode_values: list[float] = []
     constraint_guided_pair_reject_budget_floor_values: list[float] = []
     constraint_guided_pair_reject_unknown_values: list[float] = []
+    valid_increase_index_union: set[int] = set()
+    valid_decrease_index_union: set[int] = set()
+    valid_increase_index_seen_counts: Counter[int] = Counter()
+    valid_decrease_index_seen_counts: Counter[int] = Counter()
+    step_count = 0
 
     while not done:
         mask = env.valid_action_mask()
         mask_summary = _summarize_action_mask_by_type(env, mask)
+        if enable_task_level_cancellation_diagnostic:
+            valid_sets = extract_valid_action_task_indices(env, mask)
+            valid_increase_index_union.update(valid_sets["valid_increase_indices"])
+            valid_decrease_index_union.update(valid_sets["valid_decrease_indices"])
+            for idx in valid_sets["valid_increase_indices"]:
+                valid_increase_index_seen_counts[idx] += 1
+            for idx in valid_sets["valid_decrease_indices"]:
+                valid_decrease_index_seen_counts[idx] += 1
+            step_count += 1
 
         valid_action_count_values.append(float(sum(mask)))
         valid_increase_count_values.append(mask_summary["valid_increase_count"])
@@ -837,7 +857,7 @@ def _run_diagnostic_on_seed(
         obs = step_result.observation
         done = step_result.done
 
-    return {
+    row: dict[str, Any] = {
         "valid_action_count_mean": mean(valid_action_count_values) if valid_action_count_values else 0.0,
         "valid_action_count_p05": _percentile(valid_action_count_values, 0.05),
         "valid_action_count_median": median(valid_action_count_values) if valid_action_count_values else 0.0,
@@ -920,6 +940,38 @@ def _run_diagnostic_on_seed(
             mean(constraint_guided_pair_reject_unknown_values) if constraint_guided_pair_reject_unknown_values else 0.0
         ),
     }
+    if enable_task_level_cancellation_diagnostic:
+        if env._engine is None:  # noqa: SLF001
+            raise RuntimeError("env engine missing after diagnostic run")
+        runtime_result = env._engine.finish()  # noqa: SLF001
+        task_level = summarize_task_level_cancellations(
+            ordered_tasks=list(env.ordered_tasks),
+            result=runtime_result,
+        )
+        per_task_rows = list(task_level["per_task_rows"])
+        sum_cancelled = int(sum(int(item["cancelled_jobs"]) for item in per_task_rows))
+        if sum_cancelled != int(runtime_result.lo_job_cancellation_count()):
+            raise AssertionError(
+                "task-level cancelled_jobs sum does not match SimulationResult.lo_job_cancellation_count()"
+            )
+        coverage = compute_valid_action_cancel_coverage(
+            ordered_tasks=list(env.ordered_tasks),
+            per_task_rows=per_task_rows,
+            valid_increase_indices=valid_increase_index_union,
+            valid_decrease_indices=valid_decrease_index_union,
+        )
+        row.update(task_level["aggregate"])
+        row.update(coverage)
+        for item in per_task_rows:
+            task_index = int(item["task_index"])
+            item["is_valid_increase_union"] = 1 if task_index in valid_increase_index_union else 0
+            item["is_valid_decrease_union"] = 1 if task_index in valid_decrease_index_union else 0
+            item["valid_increase_seen_steps"] = int(valid_increase_index_seen_counts.get(task_index, 0))
+            item["valid_decrease_seen_steps"] = int(valid_decrease_index_seen_counts.get(task_index, 0))
+            item["valid_increase_seen_fraction"] = float(item["valid_increase_seen_steps"]) / float(max(1, step_count))
+            item["valid_decrease_seen_fraction"] = float(item["valid_decrease_seen_steps"]) / float(max(1, step_count))
+        row["task_level_per_task_rows"] = per_task_rows
+    return row
 
 
 @dataclass(frozen=True)
@@ -994,6 +1046,8 @@ class ScanConfig:
     constraint_guided_pair_top_k_risk: int
     constraint_guided_pair_top_k_decrease: int
     constraint_guided_pair_prefer_lo: bool
+    enable_task_level_cancellation_diagnostic: bool
+    task_level_output_dir: str | None
 
     @classmethod
     def from_args(
@@ -1071,6 +1125,8 @@ class ScanConfig:
             constraint_guided_pair_top_k_risk=args.constraint_guided_pair_top_k_risk,
             constraint_guided_pair_top_k_decrease=args.constraint_guided_pair_top_k_decrease,
             constraint_guided_pair_prefer_lo=args.constraint_guided_pair_prefer_lo,
+            enable_task_level_cancellation_diagnostic=args.enable_task_level_cancellation_diagnostic,
+            task_level_output_dir=str(args.task_level_output_dir) if args.task_level_output_dir else None,
         )
 
 
@@ -1252,7 +1308,8 @@ def scan_one_taskset_seed_budget_scale(
     baseline_mode_changes_values: list[float] = []
     baseline_lo_cancellations_values: list[float] = []
     baseline_deadline_misses_values: list[float] = []
-    diagnostic_rows: list[dict[str, float]] = []
+    diagnostic_rows: list[dict[str, Any]] = []
+    task_level_detail_rows: list[dict[str, Any]] = []
 
     if not (config.require_schedulable and not schedulable):
         for eval_seed in config.eval_seeds:
@@ -1279,8 +1336,7 @@ def scan_one_taskset_seed_budget_scale(
             baseline_lo_cancellations_values.append(float(baseline_result.lo_job_cancellation_count()))
             baseline_deadline_misses_values.append(float(len(baseline_result.deadline_misses)))
 
-            diagnostic_rows.append(
-                _run_diagnostic_on_seed(
+            diagnostic_row = _run_diagnostic_on_seed(
                     ordered_tasks=scaled_tasks,
                     scenario=scenario,
                     feature_config=feature_config,
@@ -1302,8 +1358,20 @@ def scan_one_taskset_seed_budget_scale(
                     constraint_guided_pair_top_k_risk=config.constraint_guided_pair_top_k_risk,
                     constraint_guided_pair_top_k_decrease=config.constraint_guided_pair_top_k_decrease,
                     constraint_guided_pair_prefer_lo=config.constraint_guided_pair_prefer_lo,
+                    enable_task_level_cancellation_diagnostic=config.enable_task_level_cancellation_diagnostic,
                 )
-            )
+            diagnostic_rows.append(diagnostic_row)
+            if config.enable_task_level_cancellation_diagnostic:
+                for per_task in diagnostic_row.get("task_level_per_task_rows", []):
+                    detail = dict(per_task)
+                    detail["candidate_seed"] = int(taskset_seed)
+                    detail["budget_scale"] = float(budget_scale)
+                    detail["eval_seed"] = int(eval_seed)
+                    task_level_detail_rows.append(detail)
+
+    if config.end_time <= 0:
+        # per-1M 指标必须基于正时间尺度，否则无法归一化比较。
+        raise ValueError("end_time must be positive for per-1M metrics")
 
     baseline_mode_changes_mean = mean(baseline_mode_changes_values) if baseline_mode_changes_values else 0.0
     baseline_lo_cancellations_mean = mean(baseline_lo_cancellations_values) if baseline_lo_cancellations_values else 0.0
@@ -1314,6 +1382,10 @@ def scan_one_taskset_seed_budget_scale(
     ]
     baseline_total_events_mean = mean(baseline_total_events_values) if baseline_total_events_values else 0.0
     baseline_lo_cancellation_ratio_total = baseline_lo_cancellations_mean / max(1.0, baseline_total_events_mean)
+    scale_per_1m = float(config.end_time) / 1_000_000.0
+    baseline_total_events_per_1m = baseline_total_events_mean / scale_per_1m
+    baseline_mode_changes_per_1m = baseline_mode_changes_mean / scale_per_1m
+    baseline_lo_cancellations_per_1m = baseline_lo_cancellations_mean / scale_per_1m
 
     valid_increase_count_mean = mean(item["valid_increase_count_mean"] for item in diagnostic_rows) if diagnostic_rows else 0.0
     valid_decrease_count_mean = mean(item["valid_decrease_count_mean"] for item in diagnostic_rows) if diagnostic_rows else 0.0
@@ -1367,6 +1439,45 @@ def scan_one_taskset_seed_budget_scale(
     )
     constraint_guided_pair_reject_unknown_mean = (
         mean(item["constraint_guided_pair_reject_unknown_mean"] for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    task_level_top1_cancel_share_mean = (
+        mean(item.get("task_level_top1_cancel_share", 0.0) for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    task_level_top2_cancel_share_mean = (
+        mean(item.get("task_level_top2_cancel_share", 0.0) for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    task_level_top3_cancel_share_mean = (
+        mean(item.get("task_level_top3_cancel_share", 0.0) for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    task_level_cancel_concentration_hhi_mean = (
+        mean(item.get("task_level_cancel_concentration_hhi", 0.0) for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    task_level_num_cancelled_lo_tasks_mean = (
+        mean(item.get("task_level_num_cancelled_lo_tasks", 0.0) for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    task_level_max_task_cancel_ratio_mean = (
+        mean(item.get("task_level_max_task_cancel_ratio", 0.0) for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    valid_increase_cancel_coverage_mean = (
+        mean(item.get("valid_increase_cancel_coverage", 0.0) for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    valid_decrease_cancel_coverage_mean = (
+        mean(item.get("valid_decrease_cancel_coverage", 0.0) for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    valid_increase_top1_cancel_hit_rate = (
+        mean(item.get("valid_increase_top1_cancel_hit", 0.0) for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    valid_increase_top2_cancel_hit_count_mean = (
+        mean(item.get("valid_increase_top2_cancel_hit_count", 0.0) for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    valid_increase_top3_cancel_hit_count_mean = (
+        mean(item.get("valid_increase_top3_cancel_hit_count", 0.0) for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    valid_increase_cancelled_task_count_mean = (
+        mean(item.get("valid_increase_cancelled_task_count", 0.0) for item in diagnostic_rows) if diagnostic_rows else 0.0
+    )
+    valid_increase_cancelled_task_share_mean = (
+        mean(item.get("valid_increase_cancelled_task_share", 0.0) for item in diagnostic_rows) if diagnostic_rows else 0.0
     )
     valid_ranked_pair_to_single_increase_ratio = valid_ranked_pair_count_mean / max(1.0, valid_increase_count_mean)
 
@@ -1490,10 +1601,13 @@ def scan_one_taskset_seed_budget_scale(
         "num_hi_tasks": num_hi_tasks,
         "num_lo_tasks": num_lo_tasks,
         "baseline_mode_changes_mean": baseline_mode_changes_mean,
+        "baseline_mode_changes_per_1m": baseline_mode_changes_per_1m,
         "baseline_mode_changes_std": pstdev(baseline_mode_changes_values) if len(baseline_mode_changes_values) > 1 else 0.0,
         "baseline_lo_cancellations_mean": baseline_lo_cancellations_mean,
+        "baseline_lo_cancellations_per_1m": baseline_lo_cancellations_per_1m,
         "baseline_lo_cancellations_std": pstdev(baseline_lo_cancellations_values) if len(baseline_lo_cancellations_values) > 1 else 0.0,
         "baseline_total_events_mean": baseline_total_events_mean,
+        "baseline_total_events_per_1m": baseline_total_events_per_1m,
         "baseline_lo_cancellation_ratio_total": baseline_lo_cancellation_ratio_total,
         "baseline_total_events_std": pstdev(baseline_total_events_values) if len(baseline_total_events_values) > 1 else 0.0,
         "baseline_deadline_misses_sum": baseline_deadline_misses_sum,
@@ -1517,6 +1631,19 @@ def scan_one_taskset_seed_budget_scale(
         "valid_decrease_count_median": mean(item["valid_decrease_count_median"] for item in diagnostic_rows) if diagnostic_rows else 0.0,
         "valid_increase_fraction_mean": valid_increase_count_mean / max(1.0, float(len(scaled_tasks_for_sched))),
         "valid_decrease_fraction_mean": valid_decrease_count_mean / max(1.0, float(len(scaled_tasks_for_sched))),
+        "task_level_top1_cancel_share_mean": task_level_top1_cancel_share_mean,
+        "task_level_top2_cancel_share_mean": task_level_top2_cancel_share_mean,
+        "task_level_top3_cancel_share_mean": task_level_top3_cancel_share_mean,
+        "task_level_cancel_concentration_hhi_mean": task_level_cancel_concentration_hhi_mean,
+        "task_level_num_cancelled_lo_tasks_mean": task_level_num_cancelled_lo_tasks_mean,
+        "task_level_max_task_cancel_ratio_mean": task_level_max_task_cancel_ratio_mean,
+        "valid_increase_cancel_coverage_mean": valid_increase_cancel_coverage_mean,
+        "valid_decrease_cancel_coverage_mean": valid_decrease_cancel_coverage_mean,
+        "valid_increase_top1_cancel_hit_rate": valid_increase_top1_cancel_hit_rate,
+        "valid_increase_top2_cancel_hit_count_mean": valid_increase_top2_cancel_hit_count_mean,
+        "valid_increase_top3_cancel_hit_count_mean": valid_increase_top3_cancel_hit_count_mean,
+        "valid_increase_cancelled_task_count_mean": valid_increase_cancelled_task_count_mean,
+        "valid_increase_cancelled_task_share_mean": valid_increase_cancelled_task_share_mean,
         "increase_decrease_balance": increase_decrease_balance,
         "valid_ranked_pair_count_mean": valid_ranked_pair_count_mean,
         "valid_ranked_pair_count_no_safety_mean": valid_ranked_pair_count_no_safety_mean,
@@ -1591,6 +1718,8 @@ def scan_one_taskset_seed_budget_scale(
         row["mc_fairgen_mode"] = config.mc_fairgen_mode
         row["mc_fairgen_num_tasks"] = config.mc_fairgen_num_tasks
         row["mc_fairgen_hi_ratio"] = config.mc_fairgen_hi_ratio
+        row["mc_fairgen_period_source"] = config.mc_fairgen_period_source
+        row["mc_fairgen_period_scale"] = config.mc_fairgen_period_scale
         row["mc_fairgen_u_hi_lo_min"] = config.mc_fairgen_u_hi_lo_min
         row["mc_fairgen_u_hi_lo_max"] = config.mc_fairgen_u_hi_lo_max
         row["mc_fairgen_u_hi_hi_min"] = config.mc_fairgen_u_hi_hi_min
@@ -1601,6 +1730,20 @@ def scan_one_taskset_seed_budget_scale(
         row["mc_fairgen_hi_budget_rho_max"] = config.mc_fairgen_hi_budget_rho_max
         row["mc_fairgen_lo_budget_rho_min"] = config.mc_fairgen_lo_budget_rho_min
         row["mc_fairgen_lo_budget_rho_max"] = config.mc_fairgen_lo_budget_rho_max
+    if config.enable_task_level_cancellation_diagnostic and config.task_level_output_dir and task_level_detail_rows:
+        output_dir = Path(config.task_level_output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for eval_seed in config.eval_seeds:
+            rows_for_seed = [item for item in task_level_detail_rows if int(item["eval_seed"]) == int(eval_seed)]
+            if not rows_for_seed:
+                continue
+            output_path = output_dir / (
+                f"seed{int(taskset_seed)}_scale{str(budget_scale).replace('.', 'p')}_eval{int(eval_seed)}_task_level.csv"
+            )
+            with output_path.open("w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=list(rows_for_seed[0].keys()))
+                writer.writeheader()
+                writer.writerows(rows_for_seed)
 
     cleaned_row: dict[str, int | float | str | bool] = {}
     for key, value in row.items():
@@ -1748,6 +1891,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--constraint-guided-pair-top-k-risk", type=int, default=3)
     parser.add_argument("--constraint-guided-pair-top-k-decrease", type=int, default=4)
     parser.add_argument("--constraint-guided-pair-prefer-lo", action="store_true")
+    parser.add_argument(
+        "--enable-task-level-cancellation-diagnostic",
+        action="store_true",
+        help="Enable task-level LO cancellation source and valid-action coverage diagnostics.",
+    )
+    parser.add_argument(
+        "--task-level-output-dir",
+        type=Path,
+        default=None,
+        help="Optional directory for per-task detailed CSV files.",
+    )
     parser.add_argument("--include-explicit-noop", action="store_true")
     parser.add_argument("--budget-floor-ratio", type=float, default=0.9)
     parser.add_argument("--forbid-decreasing-hi-budgets", action="store_true")
@@ -1821,6 +1975,8 @@ def main() -> None:
         "mc_fairgen_mode",
         "mc_fairgen_num_tasks",
         "mc_fairgen_hi_ratio",
+        "mc_fairgen_period_source",
+        "mc_fairgen_period_scale",
         "mc_fairgen_u_hi_lo_min",
         "mc_fairgen_u_hi_lo_max",
         "mc_fairgen_u_hi_hi_min",
@@ -1850,10 +2006,13 @@ def main() -> None:
         "num_hi_tasks",
         "num_lo_tasks",
         "baseline_mode_changes_mean",
+        "baseline_mode_changes_per_1m",
         "baseline_mode_changes_std",
         "baseline_lo_cancellations_mean",
+        "baseline_lo_cancellations_per_1m",
         "baseline_lo_cancellations_std",
         "baseline_total_events_mean",
+        "baseline_total_events_per_1m",
         "baseline_lo_cancellation_ratio_total",
         "baseline_total_events_std",
         "baseline_deadline_misses_sum",
