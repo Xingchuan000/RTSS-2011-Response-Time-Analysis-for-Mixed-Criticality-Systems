@@ -167,3 +167,52 @@ def test_done_transition_must_not_bootstrap_even_when_next_mask_has_valid_action
     assert loss is not None
     # done=True 时 target=reward=1，当前 Q=0，误差为 1，对应 Huber=0.5。
     assert math.isclose(loss, 0.5, rel_tol=1e-6)
+
+
+def test_action_aware_increase_noop_masks_decrease_in_target_bootstrap() -> None:
+    """action-aware+increase_noop 时，target bootstrap 不应使用 decrease 动作。"""
+
+    config = DqnConfig(
+        gamma=1.0,
+        learning_rate=0.0,
+        replay_capacity=10,
+        min_replay_size=1,
+        batch_size=1,
+        target_update_freq=100,
+        epsilon_start=0.0,
+        epsilon_end=0.0,
+        epsilon_decay_steps=1,
+        hidden_layers=(4,),
+        seed=0,
+        q_network_type="action_aware",
+        action_feature_mode="static_v1",
+        action_aware_mask_mode="increase_noop",
+    )
+    agent = DqnBudgetAgent(
+        observation_dim=2,
+        action_dim=3,
+        config=config,
+        action_features=((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+        action_feature_names=("is_noop", "is_increase", "is_decrease"),
+    )
+    agent._network_q_values = lambda network, _states: (  # type: ignore[method-assign]
+        torch.tensor([[1.0, 100.0, 2.0]], dtype=torch.float32, requires_grad=(network is agent.policy_network))
+        if network is agent.policy_network
+        else torch.tensor([[0.0, 50.0, 4.0]], dtype=torch.float32)
+    )
+    agent.remember(
+        Transition(
+            state=(0.0, 0.0),
+            action_id=0,
+            reward=0.0,
+            next_state=(0.0, 0.0),
+            done=False,
+            valid_action_mask=(True, True, True),
+            next_valid_action_mask=(True, True, True),
+        )
+    )
+    loss = agent.optimize_one_step()
+    assert loss is not None
+    # mask 后 next action 在 {increase, noop} 中选择 noop(action2)，target Q=4；
+    # 当前 policy Q(action0)=1，误差=3，Huber=|3|-0.5=2.5。
+    assert math.isclose(loss, 2.5, rel_tol=1e-6)

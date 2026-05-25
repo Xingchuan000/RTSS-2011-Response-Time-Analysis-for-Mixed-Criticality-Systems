@@ -76,6 +76,15 @@ def build_dummy_variables() -> dict[str, float | bool]:
         "lo_cancellation_rate": 0.2,
         "deadline_miss_rate": 0.0,
         "invalid_action": 0.0,
+        # interval_qos_pareto_v1 新增动作语义变量（与 env.py 同名同口径）。
+        "is_budget_action": 1.0,
+        "is_increase_action": 0.0,
+        "is_decrease_action": 1.0,
+        "is_transfer_action": 0.0,
+        "decrease_hits_hi": 1.0,
+        "decrease_hits_lo": 0.0,
+        "decrease_task_count": 1.0,
+        "unsafe_decrease": 1.0,
     }
 
 

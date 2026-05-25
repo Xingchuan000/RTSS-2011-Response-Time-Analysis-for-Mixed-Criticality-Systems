@@ -598,10 +598,18 @@ PYTHONPATH=. python scripts/diagnose_residual_ranked_actions.py \
   - `action_id`
   - `action_name`
   - `action_type`
+  - `action_direction`
   - `count`
   - `accepted_count`
   - `rejected_count`
   - `accepted_rate`
+  - `is_increase_action`
+  - `is_decrease_action`
+  - `is_transfer_action`
+  - `decrease_hits_hi`
+  - `decrease_hits_lo`
+  - `unsafe_decrease_count`
+  - `unsafe_decrease_rate`
   - `reward_sum`
   - `reward_mean`
   - `lo_delta_sum`
@@ -612,6 +620,43 @@ PYTHONPATH=. python scripts/diagnose_residual_ranked_actions.py \
   - `resolved_decrease_task`
   - `resolved_increase_tasks_json`
   - `resolved_decrease_tasks_json`
+
+新增 `interval_qos_pareto_v1` reward mode 使用说明：
+
+- 配置文件：`configs/reward_modes/interval_qos_pareto_v1.json`
+- 目标：在 `interval_qos_v2` 的 QoS 奖励主干上，增加 `unsafe_decrease` 惩罚，抑制 HI decrease shortcut。
+- 训练命令示例：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/train_dqn_amc.py \
+  --reward-mode interval_qos_pareto_v1 \
+  --workload mc_fairgen \
+  --episodes 1
+```
+
+- 新 reward 变量（由 `env.step()` 注入）：
+  - `is_budget_action`
+  - `is_increase_action`
+  - `is_decrease_action`
+  - `is_transfer_action`
+  - `decrease_hits_hi`
+  - `decrease_hits_lo`
+  - `decrease_task_count`
+  - `unsafe_decrease`
+
+- `train_metrics.csv` 新增 episode 级字段：
+  - `budget_action_count`
+  - `increase_action_count`
+  - `decrease_action_count`
+  - `transfer_action_count`
+  - `hi_decrease_count`
+  - `unsafe_decrease_count`
+  - `unsafe_decrease_rate`
+  - `decrease_action_rate`
+  - `hi_decrease_rate`
+  - `increase_action_rate`
+  - `transfer_action_rate`
 
 ## 12. DQN 训练、评估与绘图
 
@@ -2470,3 +2515,163 @@ python scripts/select_controllable_tasksets.py \
   --controllability-summary-csv outputs/taskset_slack_scan/controlled_medium_scale500/controllability/controllability_summary_top30_e1m_s200_210.csv \
   --dry-run --print-top-n 30
 ```
+
+## 16. Single Action-Aware Q Network 使用说明
+
+本仓库已按 `single_action_aware_q_network_codex_plan.md` 接入 `action_aware` Q 网络模式。该模式只改变 Q 值函数结构，不改变动作空间、reward、selector。
+
+### 16.1 新增参数
+
+`scripts/train_dqn_amc.py` 新增参数：
+
+- `--q-network-type {mlp,action_aware}`
+- `--action-feature-mode {static_v1}`
+
+默认值：
+
+- `--q-network-type mlp`
+- `--action-feature-mode static_v1`
+
+说明：
+
+- `mlp`：旧版 `Q(s) -> all actions`。
+- `action_aware`：新版共享打分 `Q(s,a)`。
+- 第一版 `action_aware` 仅允许 `--action-space single`，否则会报错。
+
+### 16.2 训练示例
+
+```bash
+PYTHONPATH=. python scripts/train_dqn_amc.py \
+  --workload small \
+  --scenario stress \
+  --episodes 2 \
+  --end-time 100 \
+  --agent-period 10 \
+  --action-space single \
+  --include-explicit-noop \
+  --q-network-type action_aware \
+  --action-feature-mode static_v1 \
+  --hidden-layers 32,32 \
+  --min-replay-size 2 \
+  --batch-size 2 \
+  --replay-capacity 100 \
+  --output-dir outputs/smoke_action_aware
+```
+
+兼容旧版训练（默认或显式指定均可）：
+
+```bash
+PYTHONPATH=. python scripts/train_dqn_amc.py \
+  --workload small \
+  --scenario stress \
+  --episodes 2 \
+  --end-time 100 \
+  --agent-period 10 \
+  --action-space single \
+  --include-explicit-noop \
+  --q-network-type mlp \
+  --hidden-layers 32,32 \
+  --min-replay-size 2 \
+  --batch-size 2 \
+  --replay-capacity 100 \
+  --output-dir outputs/smoke_mlp_compat
+```
+
+### 16.3 评估与加载说明
+
+`scripts/evaluate_dqn_amc.py` 会从 checkpoint 读取 `q_network_type`。当模型是 `action_aware` 时，评估脚本会自动从当前环境生成 `static_v1` action features 并注入 agent。
+
+示例：
+
+```bash
+PYTHONPATH=. python scripts/evaluate_dqn_amc.py \
+  --workload small \
+  --scenario stress \
+  --model outputs/smoke_action_aware/model_final.pt \
+  --seeds 0:1 \
+  --end-time 100 \
+  --agent-period 10 \
+  --action-space single \
+  --include-explicit-noop \
+  --baselines dqn_agent \
+  --output outputs/smoke_action_aware/eval.csv
+```
+
+### 16.4 输出字段变更
+
+- `config.json` 新增：
+  - `q_network_type`
+  - `action_feature_mode`
+  - `action_feature_names`
+  - `action_feature_dim`
+- `train_metrics.csv` 新增：
+  - `action_entropy`
+  - `action7_usage_rate`
+  - `action8_11_usage_rate`
+  - `increase_action_usage_rate`
+  - `decrease_action_usage_rate`
+
+### 16.5 额外 smoke 脚本
+
+新增脚本：`scripts/smoke_test_action_aware_q_network.py`
+
+```bash
+PYTHONPATH=. python scripts/smoke_test_action_aware_q_network.py
+```
+
+预期输出：`action-aware q network smoke ok`
+
+### 16.6 dynamic_v1 使用说明
+
+本版本新增 `action_aware + dynamic_v1` 训练/评估路径，严格保持 `single` 动作空间完整，不屏蔽 decrease（主线使用 `--action-aware-mask-mode none`）。
+
+训练示例：
+
+```bash
+PYTHONPATH=. python scripts/train_dqn_amc.py \
+  --workload mc_fairgen \
+  --mc-fairgen-mode paper_learnable_headroom \
+  --mc-fairgen-period-source controlled_medium \
+  --mc-fairgen-period-scale 500 \
+  --fixed-taskset-seed 1896 \
+  --episodes 1 \
+  --end-time 1000000 \
+  --agent-period 25000 \
+  --validation-seeds 200:201 \
+  --validate-every 1 \
+  --action-space single \
+  --q-network-type action_aware \
+  --action-feature-mode dynamic_v1 \
+  --action-aware-mask-mode none \
+  --include-explicit-noop \
+  --output-dir outputs/smoke_dynamic_v1
+```
+
+说明：
+- `dynamic_v1` 会在每个决策步刷新动作特征，并写入 replay transition 的 `action_features/next_action_features`。
+- `static_v1` 旧路径保持不变，仍使用固定动作特征矩阵。
+- `config.json` 会额外记录 `action_aware_mask_mode`。
+
+评估示例：
+
+```bash
+PYTHONPATH=. python scripts/evaluate_dqn_amc.py \
+  --workload mc_fairgen \
+  --mc-fairgen-mode paper_learnable_headroom \
+  --mc-fairgen-period-source controlled_medium \
+  --mc-fairgen-period-scale 500 \
+  --fixed-taskset-seed 1896 \
+  --model outputs/smoke_dynamic_v1/model_final.pt \
+  --seeds 200:201 \
+  --end-time 1000000 \
+  --agent-period 25000 \
+  --action-space single \
+  --include-explicit-noop \
+  --baselines dqn_agent \
+  --output outputs/smoke_dynamic_v1/eval.csv
+```
+
+新增脚本：
+- `scripts/smoke_test_dynamic_action_features.py`：检查 dynamic 特征 shape/finite 与 step 后可用性。
+- `scripts/summarize_policy_action_histogram.py`：按 `validation_policy_actions.csv` 的 `count` 列做动作占比汇总，避免把每行误当成一次动作选择。
+- `scripts/diagnose_action_aware_q_ranking.py`：导出 validation 轨迹上的 Q 排名诊断。

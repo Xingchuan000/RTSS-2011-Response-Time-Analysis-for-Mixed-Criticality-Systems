@@ -23,3 +23,7 @@ class Transition:
     valid_action_mask: tuple[bool, ...]
     # 下一状态下各离散动作是否合法（与 action_dim 等长）。
     next_valid_action_mask: tuple[bool, ...]
+    # 当前状态对应的动作描述符矩阵（仅 dynamic_v1 需要，static_v1 可保持 None）。
+    action_features: tuple[tuple[float, ...], ...] | None = None
+    # 下一状态对应的动作描述符矩阵（仅 dynamic_v1 需要，static_v1 可保持 None）。
+    next_action_features: tuple[tuple[float, ...], ...] | None = None
