@@ -70,6 +70,7 @@ class DqnBudgetAgent:
         action_dim: int,
         config: DqnConfig,
         noop_action_id: int | None = None,
+        increase_action_ids: tuple[int, ...] | None = None,
         hidden_layers: tuple[int, ...] | None = None,
         device: str | None = None,
         double_dqn: bool = True,
@@ -99,11 +100,24 @@ class DqnBudgetAgent:
         # - None 表示当前动作空间没有显式 noop；
         # - 非 None 时，epsilon 探索分支可按 noop_exploration_prob 优先采样该动作。
         self.noop_action_id = noop_action_id
+        # increase-only 动作编号集合（静态动作语义），用于训练期 safe increase 探索分支。
+        # 这里不在 agent 内部推断动作语义，统一由上层环境解析后传入，避免口径漂移。
+        self.increase_action_ids = tuple(int(action_id) for action_id in (increase_action_ids or ()))
+        self.increase_action_id_set = set(self.increase_action_ids)
         # 阶段 1 参数：探索分支中“优先采样显式 noop”的概率。
         # 该值必须在 [0, 1]，否则配置不合法。
         self.noop_exploration_prob = float(config.noop_exploration_prob)
         if not 0.0 <= self.noop_exploration_prob <= 1.0:
             raise ValueError("noop_exploration_prob must be in [0, 1]")
+        # 新增探索模式配置校验：
+        # - epsilon_greedy：完全沿用旧实现；
+        # - epsilon_safe_increase_mixture：训练期 epsilon 探索时，按概率偏向 increase-only 动作。
+        self.exploration_mode = str(config.exploration_mode)
+        if self.exploration_mode not in {"epsilon_greedy", "epsilon_safe_increase_mixture"}:
+            raise ValueError(f"unsupported exploration_mode: {self.exploration_mode}")
+        self.safe_increase_explore_prob = float(config.safe_increase_explore_prob)
+        if not 0.0 <= self.safe_increase_explore_prob <= 1.0:
+            raise ValueError("safe_increase_explore_prob must be in [0, 1]")
         self.q_network_type = str(config.q_network_type)
         self.action_feature_mode = str(config.action_feature_mode)
         self.action_aware_mask_mode = str(config.action_aware_mask_mode)
@@ -177,6 +191,13 @@ class DqnBudgetAgent:
         # - exploration_noop_action_count：上述探索动作中，显式 noop 被选中的次数。
         self.exploration_action_count = 0
         self.exploration_noop_action_count = 0
+        # safe increase 探索统计：
+        # - exploration_safe_increase_action_count：通过 safe increase 分支采样成功次数；
+        # - exploration_all_valid_action_count：走默认 all-valid/non-noop 采样次数；
+        # - exploration_safe_increase_fallback_count：触发 safe increase 分支但无合法 increase 动作时回退次数。
+        self.exploration_safe_increase_action_count = 0
+        self.exploration_all_valid_action_count = 0
+        self.exploration_safe_increase_fallback_count = 0
 
     def set_action_features(
         self,
@@ -345,31 +366,32 @@ class DqnBudgetAgent:
 
         self.current_epsilon = self._compute_epsilon()
         if training and self._rng.random() < self.current_epsilon:
-            # 进入 epsilon 探索分支后，先按文档策略尝试“优先采样显式 noop”。
-            # 触发条件必须同时满足：
-            # 1) 动作空间存在 noop_action_id；
-            # 2) 该 noop 在当前 mask 下合法；
-            # 3) noop_exploration_prob > 0；
-            # 4) 采样命中 noop_exploration_prob。
             self.exploration_action_count += 1
-            should_pick_noop = (
-                self.noop_action_id is not None
-                and self.noop_action_id in valid_action_ids
-                and self.noop_exploration_prob > 0.0
-                and self._rng.random() < self.noop_exploration_prob
-            )
-            if should_pick_noop:
-                action_id = int(self.noop_action_id)
-                self.exploration_noop_action_count += 1
+
+            # 新模式只作用于训练期 epsilon 分支；greedy 与 validation(training=False) 完全不变。
+            if self.exploration_mode == "epsilon_safe_increase_mixture":
+                should_try_safe_increase = (
+                    self.safe_increase_explore_prob > 0.0
+                    and self._rng.random() < self.safe_increase_explore_prob
+                )
+                if should_try_safe_increase:
+                    # safe increase 只允许从“当前合法动作”里筛出 increase-only 候选，严格遵守 valid mask。
+                    valid_increase_action_ids = [
+                        candidate_action_id
+                        for candidate_action_id in valid_action_ids
+                        if candidate_action_id in self.increase_action_id_set
+                    ]
+                    if valid_increase_action_ids:
+                        action_id = int(self._rng.choice(valid_increase_action_ids))
+                        self.exploration_safe_increase_action_count += 1
+                    else:
+                        # 计划要求：safe 分支无合法 increase 候选时，回退到默认探索逻辑。
+                        self.exploration_safe_increase_fallback_count += 1
+                        action_id = self._sample_default_exploration_action(valid_action_ids)
+                else:
+                    action_id = self._sample_default_exploration_action(valid_action_ids)
             else:
-                # 若本轮未选 noop，则从“非 noop 合法动作”中均匀采样。
-                # 当非 noop 集为空（例如动作空间只有显式 noop）时，回退到全部合法动作集合。
-                non_noop_valid_action_ids = [
-                    candidate_action_id
-                    for candidate_action_id in valid_action_ids
-                    if candidate_action_id != self.noop_action_id
-                ]
-                action_id = int(self._rng.choice(non_noop_valid_action_ids or valid_action_ids))
+                action_id = self._sample_default_exploration_action(valid_action_ids)
         else:
             action_id = self._greedy_action_id(state_vector, valid_action_mask)
 
@@ -377,6 +399,29 @@ class DqnBudgetAgent:
             self.epsilon_step += 1
             self.current_epsilon = self._compute_epsilon()
         return action_id
+
+    def _sample_default_exploration_action(self, valid_action_ids: list[int]) -> int:
+        """执行旧版 epsilon 探索采样逻辑（含 noop 优先），供多种探索模式复用。"""
+
+        # 旧逻辑：进入 epsilon 探索后，先尝试按 noop_exploration_prob 选择显式 noop。
+        should_pick_noop = (
+            self.noop_action_id is not None
+            and self.noop_action_id in valid_action_ids
+            and self.noop_exploration_prob > 0.0
+            and self._rng.random() < self.noop_exploration_prob
+        )
+        if should_pick_noop:
+            self.exploration_noop_action_count += 1
+            return int(self.noop_action_id)
+
+        # 未选 noop 时，从非 noop 合法动作均匀采样；若集合为空则回退到全部合法动作。
+        non_noop_valid_action_ids = [
+            candidate_action_id
+            for candidate_action_id in valid_action_ids
+            if candidate_action_id != self.noop_action_id
+        ]
+        self.exploration_all_valid_action_count += 1
+        return int(self._rng.choice(non_noop_valid_action_ids or valid_action_ids))
 
     def remember(self, transition: Transition) -> None:
         """将 transition 写入经验回放池。"""
@@ -572,6 +617,7 @@ class DqnBudgetAgent:
                 "action_dim": self.action_dim,
                 "hidden_layers": self.hidden_layers,
                 "noop_action_id": self.noop_action_id,
+                "increase_action_ids": self.increase_action_ids,
                 "double_dqn": self.double_dqn,
                 "q_network_type": self.q_network_type,
                 "action_feature_mode": self.action_feature_mode,
@@ -608,6 +654,12 @@ class DqnBudgetAgent:
         config_dict.setdefault("action_aware_mask_mode", checkpoint.get("action_aware_mask_mode", "none"))
         config = DqnConfig(**config_dict)
         checkpoint_action_feature_mode = str(checkpoint.get("action_feature_mode", config.action_feature_mode))
+        checkpoint_increase_action_ids = checkpoint.get("increase_action_ids")
+        increase_action_ids = (
+            tuple(int(action_id) for action_id in checkpoint_increase_action_ids)
+            if checkpoint_increase_action_ids is not None
+            else None
+        )
         checkpoint_action_features = checkpoint.get("action_features")
         if checkpoint_action_feature_mode != "static_v1":
             checkpoint_action_features = None
@@ -622,6 +674,7 @@ class DqnBudgetAgent:
             action_dim=int(checkpoint["action_dim"]),
             config=config,
             noop_action_id=checkpoint.get("noop_action_id"),
+            increase_action_ids=increase_action_ids,
             hidden_layers=tuple(checkpoint["hidden_layers"]) if checkpoint["hidden_layers"] is not None else None,
             device=str(resolved_device),
             double_dqn=bool(checkpoint.get("double_dqn", True)),

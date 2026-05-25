@@ -344,6 +344,26 @@ def _get_noop_action_id(env) -> int | None:
     return None
 
 
+def _get_increase_action_ids(env) -> tuple[int, ...]:
+    """从动作空间中提取静态 increase-only 动作编号。
+
+    口径说明：
+    - 仅保留 `increase_idx` 非空且 `decrease_indices` 为空的动作；
+    - 显式 noop 不纳入；
+    - transfer / pair / triple 等含 decrease 语义的动作不纳入。
+    """
+
+    increase_ids: list[int] = []
+    for action in env._actions:  # noqa: SLF001
+        if bool(getattr(action, "is_noop", False)):
+            continue
+        increase_idx = getattr(action, "increase_idx", None)
+        decrease_indices = tuple(getattr(action, "decrease_indices", ()) or ())
+        if increase_idx is not None and len(decrease_indices) == 0:
+            increase_ids.append(int(action.action_id))
+    return tuple(sorted(increase_ids))
+
+
 def _noop_q_diagnostics_to_row(agent: DqnBudgetAgent, states: list[tuple[float, ...]], masks: list[tuple[bool, ...]]) -> dict[str, float | int | None]:
     """把采集到的 validation 决策状态转换为 CSV 可写字段。
 
@@ -1455,6 +1475,26 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--exploration-mode",
+        choices=["epsilon_greedy", "epsilon_safe_increase_mixture"],
+        default="epsilon_greedy",
+        help=(
+            "Training-time epsilon exploration action sampling mode. "
+            "epsilon_greedy preserves the original behavior. "
+            "epsilon_safe_increase_mixture samples from valid increase-only actions "
+            "with --safe-increase-explore-prob when epsilon exploration is triggered."
+        ),
+    )
+    parser.add_argument(
+        "--safe-increase-explore-prob",
+        type=float,
+        default=0.0,
+        help=(
+            "Only used when --exploration-mode epsilon_safe_increase_mixture. "
+            "During epsilon exploration, probability of uniformly sampling from valid increase-only actions."
+        ),
+    )
+    parser.add_argument(
         "--double-dqn",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -1753,6 +1793,8 @@ def main() -> None:
         epsilon_end=args.epsilon_end,
         epsilon_decay_steps=args.epsilon_decay_steps,
         noop_exploration_prob=args.noop_exploration_prob,
+        exploration_mode=args.exploration_mode,
+        safe_increase_explore_prob=args.safe_increase_explore_prob,
         hidden_layers=hidden_layers,
         seed=args.seed,
         network_seed=network_seed,
@@ -1801,11 +1843,13 @@ def main() -> None:
     if args.q_network_type == "action_aware":
         action_features = initial_env.get_action_feature_matrix(args.action_feature_mode)
         action_feature_names = initial_env.get_action_feature_names(args.action_feature_mode)
+    increase_action_ids = _get_increase_action_ids(initial_env)
     agent = DqnBudgetAgent(
         observation_dim=len(initial_obs.state_vector),
         action_dim=initial_env.action_space_size,
         config=config,
         noop_action_id=_get_noop_action_id(initial_env),
+        increase_action_ids=increase_action_ids,
         hidden_layers=hidden_layers,
         double_dqn=args.double_dqn,
         action_features=action_features,
@@ -1924,6 +1968,9 @@ def main() -> None:
         feature_safety_margin_min_values: list[float] = []
         exploration_action_count_before = int(agent.exploration_action_count)
         exploration_noop_action_count_before = int(agent.exploration_noop_action_count)
+        exploration_safe_increase_action_count_before = int(agent.exploration_safe_increase_action_count)
+        exploration_all_valid_action_count_before = int(agent.exploration_all_valid_action_count)
+        exploration_safe_increase_fallback_count_before = int(agent.exploration_safe_increase_fallback_count)
         episode_action_hist: dict[int, dict[str, int]] = defaultdict(lambda: {"count": 0, "accepted": 0, "rejected": 0})
         last_info: dict[str, int | float | str | bool | None] = {
             "mode_changes": 0,
@@ -2173,6 +2220,17 @@ def main() -> None:
         loss_last: float | str = episode_losses[-1] if episode_losses else ""
         taskset_seed = bundle.taskset_seed if bundle.taskset_seed is not None else episode_seed
         scenario_seed = bundle.scenario_seed if bundle.scenario_seed is not None else episode_seed
+        exploration_action_delta = int(agent.exploration_action_count - exploration_action_count_before)
+        exploration_noop_delta = int(agent.exploration_noop_action_count - exploration_noop_action_count_before)
+        exploration_safe_increase_delta = int(
+            agent.exploration_safe_increase_action_count - exploration_safe_increase_action_count_before
+        )
+        exploration_all_valid_delta = int(
+            agent.exploration_all_valid_action_count - exploration_all_valid_action_count_before
+        )
+        exploration_safe_increase_fallback_delta = int(
+            agent.exploration_safe_increase_fallback_count - exploration_safe_increase_fallback_count_before
+        )
         train_metric_rows.append(
             {
                 "episode": episode,
@@ -2271,15 +2329,33 @@ def main() -> None:
                 "reward_budget_change_norm_sum": reward_budget_change_norm_sum,
                 "reward_budget_drift_penalty_sum": reward_budget_drift_penalty_sum,
                 "reward_budget_drift_mean_sum": reward_budget_drift_mean_sum,
+                "exploration_mode": args.exploration_mode,
                 "noop_exploration_prob": args.noop_exploration_prob,
-                "exploration_action_count": int(agent.exploration_action_count - exploration_action_count_before),
-                "exploration_noop_action_count": int(
-                    agent.exploration_noop_action_count - exploration_noop_action_count_before
-                ),
+                "safe_increase_explore_prob": args.safe_increase_explore_prob,
+                "increase_action_id_count": len(increase_action_ids),
+                "exploration_action_count": exploration_action_delta,
+                "exploration_noop_action_count": exploration_noop_delta,
+                "exploration_safe_increase_action_count": exploration_safe_increase_delta,
+                "exploration_all_valid_action_count": exploration_all_valid_delta,
+                "exploration_safe_increase_fallback_count": exploration_safe_increase_fallback_delta,
                 "exploration_noop_action_rate": (
-                    float(agent.exploration_noop_action_count - exploration_noop_action_count_before)
-                    / float(agent.exploration_action_count - exploration_action_count_before)
-                    if int(agent.exploration_action_count - exploration_action_count_before) > 0
+                    float(exploration_noop_delta) / float(exploration_action_delta)
+                    if exploration_action_delta > 0
+                    else 0.0
+                ),
+                "exploration_safe_increase_action_rate": (
+                    float(exploration_safe_increase_delta) / float(exploration_action_delta)
+                    if exploration_action_delta > 0
+                    else 0.0
+                ),
+                "exploration_all_valid_action_rate": (
+                    float(exploration_all_valid_delta) / float(exploration_action_delta)
+                    if exploration_action_delta > 0
+                    else 0.0
+                ),
+                "exploration_safe_increase_fallback_rate": (
+                    float(exploration_safe_increase_fallback_delta) / float(exploration_action_delta)
+                    if exploration_action_delta > 0
                     else 0.0
                 ),
                 "observation_mode": str(last_info.get("observation_mode", args.observation_mode)),
@@ -2591,10 +2667,19 @@ def main() -> None:
             "reward_budget_change_norm_sum",
             "reward_budget_drift_penalty_sum",
             "reward_budget_drift_mean_sum",
+            "exploration_mode",
             "noop_exploration_prob",
+            "safe_increase_explore_prob",
+            "increase_action_id_count",
             "exploration_action_count",
             "exploration_noop_action_count",
+            "exploration_safe_increase_action_count",
+            "exploration_all_valid_action_count",
+            "exploration_safe_increase_fallback_count",
             "exploration_noop_action_rate",
+            "exploration_safe_increase_action_rate",
+            "exploration_all_valid_action_rate",
+            "exploration_safe_increase_fallback_rate",
             "observation_mode",
             "state_dim",
             "feature_safety_margin_min_mean",
@@ -2971,8 +3056,13 @@ def main() -> None:
         "q_network_type": args.q_network_type,
         "action_feature_mode": args.action_feature_mode,
         "action_aware_mask_mode": args.action_aware_mask_mode,
+        "exploration_mode": args.exploration_mode,
+        "safe_increase_explore_prob": args.safe_increase_explore_prob,
+        "noop_exploration_prob": args.noop_exploration_prob,
         "action_feature_names": list(action_feature_names or ()),
         "action_feature_dim": 0 if action_feature_names is None else len(action_feature_names),
+        "increase_action_ids": list(increase_action_ids),
+        "increase_action_id_count": len(increase_action_ids),
         "requested_action_space": requested_action_space,
         "action_space": args.action_space,
         "constraint_guided_transfer_top_k_risk": args.constraint_guided_pair_top_k_risk,
