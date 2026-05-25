@@ -2675,3 +2675,39 @@ PYTHONPATH=. python scripts/evaluate_dqn_amc.py \
 - `scripts/smoke_test_dynamic_action_features.py`：检查 dynamic 特征 shape/finite 与 step 后可用性。
 - `scripts/summarize_policy_action_histogram.py`：按 `validation_policy_actions.csv` 的 `count` 列做动作占比汇总，避免把每行误当成一次动作选择。
 - `scripts/diagnose_action_aware_q_ranking.py`：导出 validation 轨迹上的 Q 排名诊断。
+
+### 16.7 safe increase 训练期探索（严格仅训练期生效）
+
+本版本新增训练期探索模式 `epsilon_safe_increase_mixture`，用于提升对合法 increase-only 动作的覆盖率。该模式不改变 greedy 策略，不改变 validation/evaluation 的 `training=False` 行为。
+
+CLI 参数：
+- `--exploration-mode`：探索模式，支持 `epsilon_greedy`（默认，旧行为）和 `epsilon_safe_increase_mixture`。
+- `--safe-increase-explore-prob`：仅在 `epsilon_safe_increase_mixture` 下使用，表示 epsilon 探索触发时，从“当前合法 increase-only 动作集合”均匀采样的概率。
+
+推荐示例：
+
+```bash
+PYTHONPATH=. python scripts/train_dqn_amc.py \
+  --workload mc_fairgen \
+  --action-space single \
+  --reward-mode interval_qos_v2 \
+  --exploration-mode epsilon_safe_increase_mixture \
+  --safe-increase-explore-prob 0.7 \
+  --noop-exploration-prob 0.0 \
+  --output-dir outputs/smoke_safe_increase
+```
+
+兼容性说明：
+- 默认参数 `--exploration-mode epsilon_greedy --safe-increase-explore-prob 0.0` 与历史行为等价。
+- 旧 checkpoint 缺少 `increase_action_ids` 时可正常加载；新 checkpoint 会保存该字段用于训练复现。
+
+新增 `train_metrics.csv` 字段：
+- `exploration_mode`
+- `safe_increase_explore_prob`
+- `increase_action_id_count`
+- `exploration_safe_increase_action_count`
+- `exploration_all_valid_action_count`
+- `exploration_safe_increase_fallback_count`
+- `exploration_safe_increase_action_rate`
+- `exploration_all_valid_action_rate`
+- `exploration_safe_increase_fallback_rate`
