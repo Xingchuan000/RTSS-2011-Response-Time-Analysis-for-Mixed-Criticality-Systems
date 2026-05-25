@@ -170,3 +170,36 @@ def test_noop_q_diagnostics_return_empty_fields_when_noop_is_invalid() -> None:
     assert diagnostics.sample_count == 1
     assert diagnostics.noop_q_mean is None
     assert diagnostics.noop_q_rank_mean is None
+
+
+def test_action_aware_increase_noop_mask_blocks_decrease_in_selection() -> None:
+    """increase_noop 模式下，greedy 选择应屏蔽 decrease 动作。"""
+
+    config = _config(
+        q_network_type="action_aware",
+        action_feature_mode="static_v1",
+        action_aware_mask_mode="increase_noop",
+    )
+    # action0: increase, action1: decrease, action2: noop
+    action_features = (
+        (0.0, 1.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0, 0.0),
+        (1.0, 0.0, 0.0, 0.0),
+    )
+    agent = DqnBudgetAgent(
+        observation_dim=len(STATE),
+        action_dim=3,
+        config=config,
+        action_features=action_features,
+        action_feature_names=("is_noop", "is_increase", "is_decrease", "dummy"),
+    )
+    with torch.no_grad():
+        for param in agent.policy_network.parameters():
+            param.zero_()
+        # decrease 动作（action 1）Q 最高；若 mask 生效，应改选 increase/noop 中更高的 action 0。
+        # ActionAwareQNetwork 输出是共享单头，无法直接按 action 设独立 bias；
+        # 这里通过覆写 _network_q_values 精确控制测试 Q 值。
+    agent._network_q_values = lambda _network, _states: torch.tensor(  # type: ignore[method-assign]
+        [[3.0, 10.0, 2.0]], dtype=torch.float32, device=agent.device
+    )
+    assert agent.select_action_id(STATE, valid_action_mask=(True, True, True), training=False) == 0

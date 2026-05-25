@@ -230,6 +230,10 @@ def _evaluate_dqn_once(
         )
 
     obs = env.reset(seed=seed)
+    if getattr(agent, "q_network_type", "mlp") == "action_aware":
+        action_features = env.get_action_feature_matrix(agent.action_feature_mode)
+        action_feature_names = env.get_action_feature_names(agent.action_feature_mode)
+        agent.set_action_features(action_features, action_feature_names)
     done = False
     # 评估期统计口径与训练期保持一致：
     # - step_count：总决策步；
@@ -257,6 +261,11 @@ def _evaluate_dqn_once(
         # 每次循环对应一次环境 step，所有 rate 都以该值为主分母。
         step_count += 1
         mask = env.valid_action_mask()
+        # dynamic_v1 为状态相关特征，评估时也必须逐步刷新。
+        if getattr(agent, "q_network_type", "mlp") == "action_aware" and agent.action_feature_mode == "dynamic_v1":
+            action_features = env.get_action_feature_matrix(agent.action_feature_mode)
+            action_feature_names = env.get_action_feature_names(agent.action_feature_mode)
+            agent.set_action_features(action_features, action_feature_names)
         if len(diagnostic_states) < max_q_diagnostic_samples:
             diagnostic_states.append(tuple(float(value) for value in obs.state_vector))
             diagnostic_valid_masks.append(tuple(bool(value) for value in mask))
@@ -309,6 +318,7 @@ def _evaluate_dqn_once(
     row = {
             **row_base,
             "method": "dqn_agent",
+            "q_network_type": str(getattr(agent, "q_network_type", "mlp")),
             "mode_changes": int(last_info.get("mode_changes", 0)),
             "lo_cancellations": int(last_info.get("lo_cancellations", 0)),
             "deadline_misses": int(last_info.get("deadline_misses", 0)),
@@ -1644,6 +1654,7 @@ def main() -> None:
         "taskset_seed",
         "scenario_seed",
         "method",
+        "q_network_type",
         "amc_rtb_schedulable",
         "attempts",
         "mode_changes",

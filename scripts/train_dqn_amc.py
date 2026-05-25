@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
@@ -73,6 +74,14 @@ STEP_LOG_FIELDNAMES = [
     "noop_due_to_no_valid_action",
     "is_noop",
     "is_explicit_noop",
+    "is_budget_action",
+    "is_increase_action",
+    "is_decrease_action",
+    "is_transfer_action",
+    "decrease_hits_hi",
+    "decrease_hits_lo",
+    "decrease_task_count",
+    "unsafe_decrease",
     "mode_changes",
     "lo_cancellations",
     "deadline_misses",
@@ -563,12 +572,23 @@ def _evaluate_agent_on_validation_seed(
     validation_action_reward_sum: defaultdict[int, float] = defaultdict(float)
     validation_action_lo_delta_sum: defaultdict[int, float] = defaultdict(float)
     validation_action_mode_delta_sum: defaultdict[int, float] = defaultdict(float)
+    validation_action_is_increase_sum: defaultdict[int, int] = defaultdict(int)
+    validation_action_is_decrease_sum: defaultdict[int, int] = defaultdict(int)
+    validation_action_is_transfer_sum: defaultdict[int, int] = defaultdict(int)
+    validation_action_decrease_hits_hi_sum: defaultdict[int, int] = defaultdict(int)
+    validation_action_decrease_hits_lo_sum: defaultdict[int, int] = defaultdict(int)
+    validation_action_unsafe_decrease_sum: defaultdict[int, int] = defaultdict(int)
 
     while not done:
         # step_count 明确定义为“完成了多少次 agent 决策循环”，
         # 因此所有 per-step rate 的分母都必须统一使用它。
         step_count += 1
         mask = env.valid_action_mask()
+        # dynamic_v1 是状态相关特征，必须在每次决策前刷新。
+        if agent.q_network_type == "action_aware" and agent.action_feature_mode == "dynamic_v1":
+            action_features = env.get_action_feature_matrix(agent.action_feature_mode)
+            action_feature_names = env.get_action_feature_names(agent.action_feature_mode)
+            agent.set_action_features(action_features, action_feature_names)
         if len(diagnostic_states) < max_q_diagnostic_samples:
             diagnostic_states.append(tuple(float(value) for value in obs.state_vector))
             diagnostic_valid_masks.append(tuple(bool(value) for value in mask))
@@ -606,6 +626,12 @@ def _evaluate_agent_on_validation_seed(
             validation_action_reward_sum[action_key] += float(result.reward)
             validation_action_lo_delta_sum[action_key] += float(result.info.get("delta_lo_cancellations", 0.0))
             validation_action_mode_delta_sum[action_key] += float(result.info.get("delta_mode_changes", 0.0))
+            validation_action_is_increase_sum[action_key] += int(bool(result.info.get("is_increase_action", False)))
+            validation_action_is_decrease_sum[action_key] += int(bool(result.info.get("is_decrease_action", False)))
+            validation_action_is_transfer_sum[action_key] += int(bool(result.info.get("is_transfer_action", False)))
+            validation_action_decrease_hits_hi_sum[action_key] += int(bool(result.info.get("decrease_hits_hi", False)))
+            validation_action_decrease_hits_lo_sum[action_key] += int(bool(result.info.get("decrease_hits_lo", False)))
+            validation_action_unsafe_decrease_sum[action_key] += int(bool(result.info.get("unsafe_decrease", False)))
 
         is_noop = bool(result.info.get("is_noop", False))
         if is_noop:
@@ -699,6 +725,36 @@ def _evaluate_agent_on_validation_seed(
         )
         row["validation_action_mode_delta_sum_json"] = json.dumps(
             {str(k): float(v) for k, v in validation_action_mode_delta_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_is_increase_sum_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_action_is_increase_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_is_decrease_sum_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_action_is_decrease_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_is_transfer_sum_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_action_is_transfer_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_decrease_hits_hi_sum_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_action_decrease_hits_hi_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_decrease_hits_lo_sum_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_action_decrease_hits_lo_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_unsafe_decrease_sum_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_action_unsafe_decrease_sum.items()},
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -1124,6 +1180,36 @@ def _run_validation(
         validation_row["policy_action_mode_delta_sum_json"] = json.dumps(
             _merge_counter_json(dqn_rows, "validation_action_mode_delta_sum_json"), ensure_ascii=False, sort_keys=True
         )
+        validation_row["policy_action_is_increase_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_is_increase_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_is_decrease_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_is_decrease_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_is_transfer_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_is_transfer_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_decrease_hits_hi_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_decrease_hits_hi_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_decrease_hits_lo_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_decrease_hits_lo_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_unsafe_decrease_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_unsafe_decrease_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
     return validation_row, baseline_cache, used_baseline_cache
 
 
@@ -1522,6 +1608,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--include-explicit-noop", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
+        "--q-network-type",
+        choices=["mlp", "action_aware"],
+        default="mlp",
+        help="DQN Q 网络类型：mlp 为原始 Q(s)->all actions；action_aware 为共享 Q(s,a)。",
+    )
+    parser.add_argument(
+        "--action-feature-mode",
+        choices=["static_v1", "dynamic_v1"],
+        default="static_v1",
+        help="action-aware 模式的动作描述符配置。",
+    )
+    parser.add_argument(
+        "--action-aware-mask-mode",
+        choices=["none", "increase_noop"],
+        default="none",
+        help="action-aware 诊断 mask 模式：none(旧行为) 或 increase_noop(屏蔽 decrease)。",
+    )
+    parser.add_argument(
         "--enable-residual-safety-fallback",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -1601,6 +1705,12 @@ def main() -> None:
         args.target_update_freq = int(args.target_update_frequency)
     if args.budget_floor_ratio < 0.0 or args.budget_floor_ratio > 1.0:
         raise ValueError("--budget-floor-ratio must be in [0, 1]")
+    if args.q_network_type == "action_aware" and args.action_space != "single":
+        raise ValueError("第一版 action_aware 仅支持 --action-space single；请勿用于其他动作空间。")
+    if args.action_aware_mask_mode != "none" and (
+        args.q_network_type != "action_aware" or args.action_space != "single"
+    ):
+        raise ValueError("--action-aware-mask-mode 仅支持 q_network_type=action_aware 且 action_space=single。")
     reward_mode_config = load_reward_mode_config(args.reward_mode)
     feature_config = FeatureConfig(
         observation_mode=args.observation_mode,
@@ -1648,6 +1758,9 @@ def main() -> None:
         network_seed=network_seed,
         exploration_seed=exploration_seed,
         replay_seed=replay_seed,
+        q_network_type=args.q_network_type,
+        action_feature_mode=args.action_feature_mode,
+        action_aware_mask_mode=args.action_aware_mask_mode,
     )
 
     initial_seed = episode_seed_schedule[0]
@@ -1683,6 +1796,11 @@ def main() -> None:
         residual_guard_use_hi_pressure_max=args.residual_guard_use_hi_pressure_max,
     )
     initial_obs = initial_env.reset(seed=initial_seed)
+    action_features = None
+    action_feature_names = None
+    if args.q_network_type == "action_aware":
+        action_features = initial_env.get_action_feature_matrix(args.action_feature_mode)
+        action_feature_names = initial_env.get_action_feature_names(args.action_feature_mode)
     agent = DqnBudgetAgent(
         observation_dim=len(initial_obs.state_vector),
         action_dim=initial_env.action_space_size,
@@ -1690,6 +1808,8 @@ def main() -> None:
         noop_action_id=_get_noop_action_id(initial_env),
         hidden_layers=hidden_layers,
         double_dqn=args.double_dqn,
+        action_features=action_features,
+        action_feature_names=action_feature_names,
     )
 
     if args.output_dir is None:
@@ -1762,6 +1882,13 @@ def main() -> None:
         )
         bundle = resolve_experiment_bundle(experiment_config, episode_seed)
         obs = env.reset(seed=episode_seed)
+        if args.q_network_type == "action_aware" and args.action_feature_mode == "static_v1":
+            episode_action_features = env.get_action_feature_matrix(args.action_feature_mode)
+            if episode_action_features != action_features:
+                raise RuntimeError(
+                    "action_aware static action features changed across episodes. "
+                    "第一版要求固定任务集与固定动作描述符。"
+                )
         done = False
         episode_reward = 0.0
         episode_losses: list[float] = []
@@ -1771,6 +1898,15 @@ def main() -> None:
         episode_selected_action_count = 0
         episode_noop_actions = 0
         episode_explicit_noop_actions = 0
+        # Pareto-aware 奖励诊断计数器：
+        # - budget_action_count 仅统计 agent 明确给出的预算动作（排除显式/隐式 noop）；
+        # - 其余计数器全部由 env.info 的动作语义字段驱动，避免脚本侧重复推断口径漂移。
+        episode_budget_action_count = 0
+        episode_increase_action_count = 0
+        episode_decrease_action_count = 0
+        episode_transfer_action_count = 0
+        episode_hi_decrease_count = 0
+        episode_unsafe_decrease_count = 0
         reward_job_start_sum = 0.0
         reward_lo_overrun_sum = 0.0
         reward_hi_overrun_sum = 0.0
@@ -1799,6 +1935,14 @@ def main() -> None:
             # episode_step_count 是训练期指标的主分母，定义为“完成了多少个环境 step”。
             episode_step_count += 1
             mask = env.valid_action_mask()
+            current_action_features = None
+            if args.q_network_type == "action_aware":
+                current_action_features = env.get_action_feature_matrix(args.action_feature_mode)
+                if args.action_feature_mode == "dynamic_v1":
+                    agent.set_action_features(
+                        current_action_features,
+                        action_feature_names=action_feature_names,
+                    )
             valid_action_count = sum(mask)
             masked_action_count = len(mask) - valid_action_count
             action_id = agent.select_action_id(
@@ -1817,6 +1961,15 @@ def main() -> None:
                 if not result.done
                 else tuple(False for _ in range(env.action_space_size))
             )
+            next_action_features = None
+            if args.q_network_type == "action_aware":
+                if result.done:
+                    if current_action_features is not None:
+                        next_action_features = tuple(
+                            tuple(0.0 for _ in row) for row in current_action_features
+                        )
+                else:
+                    next_action_features = env.get_action_feature_matrix(args.action_feature_mode)
 
             loss: float | None = None
             if action_id is not None:
@@ -1828,6 +1981,16 @@ def main() -> None:
                     done=result.done,
                     valid_action_mask=tuple(mask),
                     next_valid_action_mask=tuple(next_mask),
+                    action_features=(
+                        current_action_features
+                        if args.q_network_type == "action_aware" and args.action_feature_mode == "dynamic_v1"
+                        else None
+                    ),
+                    next_action_features=(
+                        next_action_features
+                        if args.q_network_type == "action_aware" and args.action_feature_mode == "dynamic_v1"
+                        else None
+                    ),
                 )
                 agent.remember(transition)
                 loss = agent.optimize_one_step()
@@ -1843,6 +2006,12 @@ def main() -> None:
             rejected = action_id is not None and not accepted
             noop = bool(result.info.get("is_noop", False))
             explicit_noop = bool(result.info.get("is_explicit_noop_action", False))
+            is_budget_action = bool(result.info.get("is_budget_action", False))
+            is_increase_action = bool(result.info.get("is_increase_action", False))
+            is_decrease_action = bool(result.info.get("is_decrease_action", False))
+            is_transfer_action = bool(result.info.get("is_transfer_action", False))
+            decrease_hits_hi = bool(result.info.get("decrease_hits_hi", False))
+            unsafe_decrease = bool(result.info.get("unsafe_decrease", False))
             # 统计口径说明：
             # - explicit noop 既可能是 accepted，也必须计入 noop；
             # - 因此 rate 分母必须用 step_count，不能用 accepted+rejected+noop。
@@ -1854,6 +2023,18 @@ def main() -> None:
                 episode_noop_actions += 1
             if explicit_noop:
                 episode_explicit_noop_actions += 1
+            if is_budget_action:
+                episode_budget_action_count += 1
+            if is_increase_action:
+                episode_increase_action_count += 1
+            if is_decrease_action:
+                episode_decrease_action_count += 1
+            if is_transfer_action:
+                episode_transfer_action_count += 1
+            if is_decrease_action and decrease_hits_hi:
+                episode_hi_decrease_count += 1
+            if unsafe_decrease:
+                episode_unsafe_decrease_count += 1
 
             episode_reward += result.reward
             reward_job_start_sum += float(result.info.get("step_reward_job_start", 0.0))
@@ -1914,6 +2095,14 @@ def main() -> None:
                         "noop_due_to_no_valid_action": action_id is None,
                         "is_noop": noop,
                         "is_explicit_noop": explicit_noop,
+                        "is_budget_action": is_budget_action,
+                        "is_increase_action": is_increase_action,
+                        "is_decrease_action": is_decrease_action,
+                        "is_transfer_action": is_transfer_action,
+                        "decrease_hits_hi": decrease_hits_hi,
+                        "decrease_hits_lo": bool(result.info.get("decrease_hits_lo", False)),
+                        "decrease_task_count": int(result.info.get("decrease_task_count", 0)),
+                        "unsafe_decrease": unsafe_decrease,
                         "mode_changes": int(result.info.get("mode_changes", 0)),
                         "lo_cancellations": int(result.info.get("lo_cancellations", 0)),
                         "deadline_misses": int(result.info.get("deadline_misses", 0)),
@@ -2009,6 +2198,12 @@ def main() -> None:
                 "rejected_actions": episode_rejected_actions,
                 "noop_actions": episode_noop_actions,
                 "explicit_noop_actions": episode_explicit_noop_actions,
+                "budget_action_count": episode_budget_action_count,
+                "increase_action_count": episode_increase_action_count,
+                "decrease_action_count": episode_decrease_action_count,
+                "transfer_action_count": episode_transfer_action_count,
+                "hi_decrease_count": episode_hi_decrease_count,
+                "unsafe_decrease_count": episode_unsafe_decrease_count,
                 "noop_action_rate": (
                     episode_noop_actions
                     / episode_step_count
@@ -2024,6 +2219,22 @@ def main() -> None:
                 ),
                 "rejected_action_rate": (
                     episode_rejected_actions / episode_step_count if episode_step_count > 0 else 0.0
+                ),
+                # 文档要求这些 rate 使用 budget_action_count/decrease_action_count 作为分母。
+                "unsafe_decrease_rate": (
+                    episode_unsafe_decrease_count / max(1, episode_budget_action_count)
+                ),
+                "decrease_action_rate": (
+                    episode_decrease_action_count / max(1, episode_budget_action_count)
+                ),
+                "hi_decrease_rate": (
+                    episode_hi_decrease_count / max(1, episode_decrease_action_count)
+                ),
+                "increase_action_rate": (
+                    episode_increase_action_count / max(1, episode_budget_action_count)
+                ),
+                "transfer_action_rate": (
+                    episode_transfer_action_count / max(1, episode_budget_action_count)
                 ),
                 "safety_checked_actions": int(debug_stats["safety_checked_actions"]),
                 "selected_invalid_mask_actions": int(debug_stats["selected_invalid_mask_actions"]),
@@ -2092,6 +2303,32 @@ def main() -> None:
                     "rejected_count": action_hist["rejected"],
                 }
             )
+        action_counts = [int(action_hist["count"]) for action_hist in episode_action_hist.values()]
+        total_action_count = sum(action_counts)
+        action_entropy = (
+            -sum((count / total_action_count) * math.log((count / total_action_count) + 1e-12) for count in action_counts)
+            if total_action_count > 0
+            else 0.0
+        )
+        single_increase_ids = [int(action.action_id) for action in env._actions if action.increase_idx is not None]
+        single_decrease_ids = [int(action.action_id) for action in env._actions if action.decrease_indices]
+        action7_count = int(episode_action_hist.get(7, {}).get("count", 0))
+        action8_11_count = sum(int(episode_action_hist.get(action_id, {}).get("count", 0)) for action_id in (8, 9, 10, 11))
+        increase_action_count = sum(int(episode_action_hist.get(action_id, {}).get("count", 0)) for action_id in single_increase_ids)
+        decrease_action_count = sum(int(episode_action_hist.get(action_id, {}).get("count", 0)) for action_id in single_decrease_ids)
+        train_metric_rows[-1]["action_entropy"] = action_entropy
+        train_metric_rows[-1]["action7_usage_rate"] = (
+            float(action7_count) / float(total_action_count) if total_action_count > 0 else 0.0
+        )
+        train_metric_rows[-1]["action8_11_usage_rate"] = (
+            float(action8_11_count) / float(total_action_count) if total_action_count > 0 else 0.0
+        )
+        train_metric_rows[-1]["increase_action_usage_rate"] = (
+            float(increase_action_count) / float(total_action_count) if total_action_count > 0 else 0.0
+        )
+        train_metric_rows[-1]["decrease_action_usage_rate"] = (
+            float(decrease_action_count) / float(total_action_count) if total_action_count > 0 else 0.0
+        )
 
         if args.trace_every > 0 and (episode + 1) % args.trace_every == 0 and args.trace_dir is not None:
             runtime_result = env._engine.finish() if env._engine is not None else SimulationResult()
@@ -2304,10 +2541,21 @@ def main() -> None:
             "rejected_actions",
             "noop_actions",
             "explicit_noop_actions",
+            "budget_action_count",
+            "increase_action_count",
+            "decrease_action_count",
+            "transfer_action_count",
+            "hi_decrease_count",
+            "unsafe_decrease_count",
             "noop_action_rate",
             "explicit_noop_action_rate",
             "accepted_action_rate",
             "rejected_action_rate",
+            "unsafe_decrease_rate",
+            "decrease_action_rate",
+            "hi_decrease_rate",
+            "increase_action_rate",
+            "transfer_action_rate",
             "safety_checked_actions",
             "selected_invalid_mask_actions",
             "action_space_type",
@@ -2351,6 +2599,11 @@ def main() -> None:
             "state_dim",
             "feature_safety_margin_min_mean",
             "feature_safety_margin_min_p05",
+            "action_entropy",
+            "action7_usage_rate",
+            "action8_11_usage_rate",
+            "increase_action_usage_rate",
+            "decrease_action_usage_rate",
         ]
         with train_metrics_path.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=metric_fieldnames)
@@ -2418,6 +2671,12 @@ def main() -> None:
                     "policy_action_reward_sum_json",
                     "policy_action_lo_delta_sum_json",
                     "policy_action_mode_delta_sum_json",
+                    "policy_action_is_increase_sum_json",
+                    "policy_action_is_decrease_sum_json",
+                    "policy_action_is_transfer_sum_json",
+                    "policy_action_decrease_hits_hi_sum_json",
+                    "policy_action_decrease_hits_lo_sum_json",
+                    "policy_action_unsafe_decrease_sum_json",
                 ]
             )
         with validation_metrics_path.open("w", encoding="utf-8", newline="") as f:
@@ -2435,6 +2694,16 @@ def main() -> None:
                 reward_sum_hist = json.loads(str(validation_row["policy_action_reward_sum_json"]))
                 lo_delta_sum_hist = json.loads(str(validation_row["policy_action_lo_delta_sum_json"]))
                 mode_delta_sum_hist = json.loads(str(validation_row["policy_action_mode_delta_sum_json"]))
+                is_increase_sum_hist = json.loads(str(validation_row["policy_action_is_increase_sum_json"]))
+                is_decrease_sum_hist = json.loads(str(validation_row["policy_action_is_decrease_sum_json"]))
+                is_transfer_sum_hist = json.loads(str(validation_row["policy_action_is_transfer_sum_json"]))
+                decrease_hits_hi_sum_hist = json.loads(
+                    str(validation_row["policy_action_decrease_hits_hi_sum_json"])
+                )
+                decrease_hits_lo_sum_hist = json.loads(
+                    str(validation_row["policy_action_decrease_hits_lo_sum_json"])
+                )
+                unsafe_decrease_sum_hist = json.loads(str(validation_row["policy_action_unsafe_decrease_sum_json"]))
                 increase_hist = json.loads(str(validation_row["policy_resolved_increase_task_hist_json"]))
                 decrease_hist = json.loads(str(validation_row["policy_resolved_decrease_task_hist_json"]))
                 for action_id_text, action_name in sorted(definitions.items(), key=lambda item: int(item[0])):
@@ -2445,7 +2714,23 @@ def main() -> None:
                     reward_sum = float(reward_sum_hist.get(action_id_text, 0.0))
                     lo_delta_sum = float(lo_delta_sum_hist.get(action_id_text, 0.0))
                     mode_delta_sum = float(mode_delta_sum_hist.get(action_id_text, 0.0))
+                    is_increase_count = int(is_increase_sum_hist.get(action_id_text, 0))
+                    is_decrease_count = int(is_decrease_sum_hist.get(action_id_text, 0))
+                    is_transfer_count = int(is_transfer_sum_hist.get(action_id_text, 0))
+                    decrease_hits_hi_count = int(decrease_hits_hi_sum_hist.get(action_id_text, 0))
+                    decrease_hits_lo_count = int(decrease_hits_lo_sum_hist.get(action_id_text, 0))
+                    unsafe_decrease_count = int(unsafe_decrease_sum_hist.get(action_id_text, 0))
                     action_type = "noop" if action_name == "noop" else action_name.split("|", maxsplit=1)[0]
+                    if is_increase_count > 0:
+                        action_direction = "increase"
+                    elif is_decrease_count > 0:
+                        action_direction = "decrease"
+                    elif is_transfer_count > 0:
+                        action_direction = "transfer"
+                    elif action_type == "noop":
+                        action_direction = "noop"
+                    else:
+                        action_direction = "other"
                     resolved_increase_tasks = {
                         key.split(":", maxsplit=1)[1]: int(value)
                         for key, value in increase_hist.items()
@@ -2477,10 +2762,20 @@ def main() -> None:
                             "action_id": action_id,
                             "action_name": str(action_name),
                             "action_type": action_type,
+                            "action_direction": action_direction,
                             "count": count,
                             "accepted_count": accepted_count,
                             "rejected_count": rejected_count,
                             "accepted_rate": (float(accepted_count) / float(count)) if count > 0 else 0.0,
+                            "is_increase_action": bool(is_increase_count > 0),
+                            "is_decrease_action": bool(is_decrease_count > 0),
+                            "is_transfer_action": bool(is_transfer_count > 0),
+                            "decrease_hits_hi": bool(decrease_hits_hi_count > 0),
+                            "decrease_hits_lo": bool(decrease_hits_lo_count > 0),
+                            "unsafe_decrease_count": unsafe_decrease_count,
+                            "unsafe_decrease_rate": (
+                                float(unsafe_decrease_count) / float(max(1, count))
+                            ),
                             "reward_sum": reward_sum,
                             "reward_mean": (reward_sum / float(count)) if count > 0 else 0.0,
                             "lo_delta_sum": lo_delta_sum,
@@ -2505,10 +2800,18 @@ def main() -> None:
                         "action_id",
                         "action_name",
                         "action_type",
+                        "action_direction",
                         "count",
                         "accepted_count",
                         "rejected_count",
                         "accepted_rate",
+                        "is_increase_action",
+                        "is_decrease_action",
+                        "is_transfer_action",
+                        "decrease_hits_hi",
+                        "decrease_hits_lo",
+                        "unsafe_decrease_count",
+                        "unsafe_decrease_rate",
                         "reward_sum",
                         "reward_mean",
                         "lo_delta_sum",
@@ -2665,6 +2968,11 @@ def main() -> None:
         "reward_mode": args.reward_mode,
         "reward_definition": reward_mode_config.describe(),
         "double_dqn": args.double_dqn,
+        "q_network_type": args.q_network_type,
+        "action_feature_mode": args.action_feature_mode,
+        "action_aware_mask_mode": args.action_aware_mask_mode,
+        "action_feature_names": list(action_feature_names or ()),
+        "action_feature_dim": 0 if action_feature_names is None else len(action_feature_names),
         "requested_action_space": requested_action_space,
         "action_space": args.action_space,
         "constraint_guided_transfer_top_k_risk": args.constraint_guided_pair_top_k_risk,

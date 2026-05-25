@@ -37,6 +37,18 @@ class DqnConfig:
     noop_exploration_prob: float = 0.0
     # MLP 隐藏层宽度；若为空则按任务规模自动推导。
     hidden_layers: tuple[int, ...] | None = None
+    # Q 网络结构类型：
+    # - mlp:         旧版 Q(s)->all actions；
+    # - action_aware: 新版共享 Q(s,a) 打分网络。
+    q_network_type: str = "mlp"
+    # action_feature_mode:
+    # - static_v1: 固定动作描述符，不需要在 replay transition 中保存每步特征；
+    # - dynamic_v1: 状态相关动作描述符，必须把当前/下一步特征矩阵一起写入 transition。
+    action_feature_mode: str = "static_v1"
+    # action_aware_mask_mode:
+    # - none: 使用环境原始合法动作 mask；
+    # - increase_noop: 仅用于诊断，会屏蔽 decrease 动作。
+    action_aware_mask_mode: str = "none"
     # 随机种子，用于回放采样与探索行为复现。
     seed: int = 0
     # 网络参数初始化随机种子。阶段 0 需要把“网络初始化随机性”单独暴露。

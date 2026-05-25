@@ -78,6 +78,10 @@ def _evaluate_dqn_agent(
     agent = DqnBudgetAgent.load(model_path)
 
     obs = env.reset(seed=seed)
+    if getattr(agent, "q_network_type", "mlp") == "action_aware":
+        action_features = env.get_action_feature_matrix("static_v1")
+        action_feature_names = env.get_action_feature_names("static_v1")
+        agent.set_action_features(action_features, action_feature_names)
     done = False
     accepted_actions = 0
     rejected_actions = 0

@@ -12,7 +12,7 @@ from torch import nn
 from torch.optim import Adam
 
 from amc_py.dqn.config import DqnConfig
-from amc_py.dqn.network import DqnNetwork
+from amc_py.dqn.network import ActionAwareQNetwork, DqnNetwork
 from amc_py.dqn.replay import ReplayBuffer
 from amc_py.dqn.types import Transition
 
@@ -73,6 +73,9 @@ class DqnBudgetAgent:
         hidden_layers: tuple[int, ...] | None = None,
         device: str | None = None,
         double_dqn: bool = True,
+        action_features: tuple[tuple[float, ...], ...] | None = None,
+        action_feature_names: tuple[str, ...] | None = None,
+        action_feature_dim: int | None = None,
     ):
         """初始化网络、优化器和经验回放池。"""
 
@@ -101,6 +104,15 @@ class DqnBudgetAgent:
         self.noop_exploration_prob = float(config.noop_exploration_prob)
         if not 0.0 <= self.noop_exploration_prob <= 1.0:
             raise ValueError("noop_exploration_prob must be in [0, 1]")
+        self.q_network_type = str(config.q_network_type)
+        self.action_feature_mode = str(config.action_feature_mode)
+        self.action_aware_mask_mode = str(config.action_aware_mask_mode)
+        self.action_feature_names = tuple(action_feature_names or ())
+        self.action_feature_dim = 0
+        self._action_features_tensor: torch.Tensor | None = None
+        self._action_aware_selectable_mask: torch.Tensor | None = None
+        if self.action_aware_mask_mode not in {"none", "increase_noop"}:
+            raise ValueError(f"unsupported action_aware_mask_mode: {self.action_aware_mask_mode}")
 
         # 新字段为空时沿用旧的 seed 语义，保证历史配置不改参数也能复现实验。
         exploration_seed = config.seed if config.exploration_seed is None else config.exploration_seed
@@ -112,18 +124,44 @@ class DqnBudgetAgent:
         torch.manual_seed(network_seed)
         # 回放池采样使用单独 replay_seed，避免与探索随机流互相污染。
         self.replay_buffer = ReplayBuffer(capacity=config.replay_capacity, seed=replay_seed)
-        self.policy_network = DqnNetwork(
-            input_dim=observation_dim,
-            output_dim=action_dim,
-            hidden_layers=self.hidden_layers,
-        ).to(self.device)
-        self.target_network = DqnNetwork(
-            input_dim=observation_dim,
-            output_dim=action_dim,
-            hidden_layers=self.hidden_layers,
-        ).to(self.device)
+        if self.q_network_type == "mlp":
+            self.policy_network = DqnNetwork(
+                input_dim=observation_dim,
+                output_dim=action_dim,
+                hidden_layers=self.hidden_layers,
+            ).to(self.device)
+            self.target_network = DqnNetwork(
+                input_dim=observation_dim,
+                output_dim=action_dim,
+                hidden_layers=self.hidden_layers,
+            ).to(self.device)
+        elif self.q_network_type == "action_aware":
+            # action-aware 需要知道动作描述符维度以构建网络。
+            # static_v1 一般直接传入固定 action_features；
+            # dynamic_v1 可只传 feature_dim，运行时每步再 set_action_features。
+            feature_dim = 0
+            if action_features is not None:
+                feature_dim = len(action_features[0]) if action_features and action_features[0] else 0
+            elif action_feature_dim is not None:
+                feature_dim = int(action_feature_dim)
+            if feature_dim <= 0:
+                raise ValueError("action_aware requires non-empty action feature dimension")
+            self.policy_network = ActionAwareQNetwork(
+                observation_dim=observation_dim,
+                action_feature_dim=feature_dim,
+                hidden_layers=self.hidden_layers,
+            ).to(self.device)
+            self.target_network = ActionAwareQNetwork(
+                observation_dim=observation_dim,
+                action_feature_dim=feature_dim,
+                hidden_layers=self.hidden_layers,
+            ).to(self.device)
+        else:
+            raise ValueError(f"unsupported q_network_type: {self.q_network_type}")
         self.target_network.load_state_dict(self.policy_network.state_dict())
         self.target_network.eval()
+        if action_features is not None:
+            self.set_action_features(action_features, action_feature_names=action_feature_names)
 
         self.optimizer = Adam(self.policy_network.parameters(), lr=config.learning_rate)
         # 稳定性修改 A：
@@ -140,6 +178,119 @@ class DqnBudgetAgent:
         self.exploration_action_count = 0
         self.exploration_noop_action_count = 0
 
+    def set_action_features(
+        self,
+        action_features: tuple[tuple[float, ...], ...],
+        action_feature_names: tuple[str, ...] | None = None,
+    ) -> None:
+        """设置 action-aware 网络使用的静态动作描述符。"""
+
+        if len(action_features) != self.action_dim:
+            raise ValueError("action_features 行数必须等于 action_dim")
+        if not action_features:
+            raise ValueError("action_features 不能为空")
+        feature_dim = len(action_features[0])
+        if feature_dim <= 0:
+            raise ValueError("action_features 的每行维度必须大于 0")
+        if any(len(row) != feature_dim for row in action_features):
+            raise ValueError("action_features 的每行长度必须一致")
+        if action_feature_names is not None and len(action_feature_names) != feature_dim:
+            raise ValueError("action_feature_names 长度必须与 action feature 维度一致")
+        self.action_feature_dim = feature_dim
+        self.action_feature_names = tuple(action_feature_names or ())
+        self._action_features_tensor = torch.tensor(action_features, dtype=torch.float32, device=self.device)
+        self._action_aware_selectable_mask = None
+        if self._is_action_aware_increase_noop_mode():
+            if not self.action_feature_names:
+                raise ValueError("increase_noop mode requires action_feature_names")
+            try:
+                noop_idx = self.action_feature_names.index("is_noop")
+                increase_idx = self.action_feature_names.index("is_increase")
+            except ValueError as exc:
+                raise ValueError("increase_noop mode requires is_noop/is_increase action features") from exc
+            selectable = [
+                bool(float(row[noop_idx]) >= 0.5 or float(row[increase_idx]) >= 0.5)
+                for row in action_features
+            ]
+            self._action_aware_selectable_mask = torch.tensor(selectable, dtype=torch.bool, device=self.device)
+
+    def _is_action_aware_increase_noop_mode(self) -> bool:
+        """当前是否启用 action-aware increase+noop 诊断 mask。"""
+
+        return self.q_network_type == "action_aware" and self.action_aware_mask_mode == "increase_noop"
+
+    def _apply_action_aware_valid_mask(
+        self,
+        valid_action_mask: tuple[bool, ...] | None,
+    ) -> tuple[bool, ...] | None:
+        """在需要时，把动作合法掩码与 action-aware 诊断掩码相交。"""
+
+        if not self._is_action_aware_increase_noop_mode():
+            return valid_action_mask
+        if self._action_aware_selectable_mask is None:
+            raise RuntimeError("increase_noop mode requires action feature mask")
+        mode_mask = tuple(bool(value) for value in self._action_aware_selectable_mask.detach().cpu().tolist())
+        if valid_action_mask is None:
+            return mode_mask
+        return tuple(bool(a and b) for a, b in zip(valid_action_mask, mode_mask))
+
+    def _apply_action_aware_next_valid_masks(self, next_valid_masks: torch.Tensor) -> torch.Tensor:
+        """在训练 target 计算前应用 action-aware 诊断掩码。"""
+
+        if not self._is_action_aware_increase_noop_mode():
+            return next_valid_masks
+        if self._action_aware_selectable_mask is None:
+            raise RuntimeError("increase_noop mode requires action feature mask")
+        return next_valid_masks & self._action_aware_selectable_mask.unsqueeze(0)
+
+    def _network_q_values(
+        self,
+        network: nn.Module,
+        states: torch.Tensor,
+        action_features: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """统一处理两类 Q 网络的前向调用。"""
+
+        if self.q_network_type == "mlp":
+            return network(states)
+        if self.q_network_type == "action_aware":
+            features = action_features if action_features is not None else self._action_features_tensor
+            if features is None:
+                raise RuntimeError("action_aware network requires action features")
+            assert isinstance(network, ActionAwareQNetwork)
+            return network(states, features)
+        raise ValueError(f"unsupported q_network_type: {self.q_network_type}")
+
+    def _batch_action_features_tensor(
+        self,
+        batch: list[Transition],
+        *,
+        next_features: bool,
+    ) -> torch.Tensor | None:
+        """把 replay batch 中的动态动作特征拼成 [B, A, F] 张量。
+
+        说明：
+        - 仅在 `action_aware + dynamic_v1` 下需要该张量；
+        - `static_v1` 继续复用 agent 内部固定特征矩阵，不从 transition 读取。
+        """
+
+        if self.q_network_type != "action_aware":
+            return None
+        if self.action_feature_mode == "static_v1":
+            return None
+        key = "next_action_features" if next_features else "action_features"
+        matrices = [getattr(item, key) for item in batch]
+        if any(matrix is None for matrix in matrices):
+            raise RuntimeError(f"{self.action_feature_mode} requires {key} in replay transition")
+        arr = np.asarray(matrices, dtype=np.float32)
+        if arr.ndim != 3:
+            raise RuntimeError(f"{key} must have shape [B,A,F]")
+        if arr.shape[1] != self.action_dim:
+            raise RuntimeError(f"{key} action_dim mismatch")
+        if arr.shape[2] != self.action_feature_dim:
+            raise RuntimeError(f"{key} feature_dim mismatch")
+        return torch.from_numpy(arr).to(self.device)
+
     def _compute_epsilon(self) -> float:
         """按线性衰减规则计算当前 epsilon。"""
 
@@ -153,6 +304,7 @@ class DqnBudgetAgent:
     def _valid_action_ids(self, valid_action_mask: tuple[bool, ...] | None) -> list[int]:
         """将合法动作掩码转换为动作编号列表。"""
 
+        valid_action_mask = self._apply_action_aware_valid_mask(valid_action_mask)
         if valid_action_mask is None:
             return list(range(self.action_dim))
         if len(valid_action_mask) != self.action_dim:
@@ -166,9 +318,10 @@ class DqnBudgetAgent:
     ) -> int:
         """在给定掩码约束下选择 Q 值最大的合法动作。"""
 
+        valid_action_mask = self._apply_action_aware_valid_mask(valid_action_mask)
         state_tensor = torch.tensor([state_vector], dtype=torch.float32, device=self.device)
         with torch.no_grad():
-            q_values = self.policy_network(state_tensor)[0]
+            q_values = self._network_q_values(self.policy_network, state_tensor)[0]
         if valid_action_mask is not None:
             mask_tensor = torch.tensor(valid_action_mask, dtype=torch.bool, device=self.device)
             # 按文档要求，将非法动作的 Q 值视为 -inf，保证 greedy 不会选到它们。
@@ -260,14 +413,25 @@ class DqnBudgetAgent:
         rewards = torch.from_numpy(rewards_np).to(self.device)
         dones = torch.from_numpy(dones_np).to(self.device)
         next_valid_masks = torch.from_numpy(next_valid_masks_np).to(self.device)
+        next_valid_masks = self._apply_action_aware_next_valid_masks(next_valid_masks)
 
-        policy_q = self.policy_network(states).gather(1, actions).squeeze(1)
+        state_action_features = self._batch_action_features_tensor(batch, next_features=False)
+        next_action_features = self._batch_action_features_tensor(batch, next_features=True)
+        policy_q = self._network_q_values(
+            self.policy_network,
+            states,
+            action_features=state_action_features,
+        ).gather(1, actions).squeeze(1)
         with torch.no_grad():
             if self.double_dqn:
                 # Double DQN target 第一步：policy network 只负责“选动作”。
                 # 这里对 next state 的 policy Q 值套用 next_valid_masks，把非法动作置为 -inf，
                 # 确保 argmax 只会在当前环境允许的动作集合中产生 greedy action。
-                next_policy_q_values = self.policy_network(next_states)
+                next_policy_q_values = self._network_q_values(
+                    self.policy_network,
+                    next_states,
+                    action_features=next_action_features,
+                )
                 next_policy_q_values = next_policy_q_values.masked_fill(
                     ~next_valid_masks,
                     float("-inf"),
@@ -278,12 +442,22 @@ class DqnBudgetAgent:
                 # gather 的列索引来自 policy network 选出的 next_actions，因此 bootstrap
                 # 使用的是 Q_target(s', argmax_a Q_policy(s', a))，而不是标准 DQN 的
                 # max_a Q_target(s', a)，从而降低大动作空间下的 max over actions 高估。
-                next_target_q_values = self.target_network(next_states)
+                next_target_q_values = self._network_q_values(
+                    self.target_network,
+                    next_states,
+                    action_features=next_action_features,
+                )
                 next_q = next_target_q_values.gather(1, next_actions).squeeze(1)
+                has_any_valid_action = next_valid_masks.any(dim=1)
+                next_q = torch.where(has_any_valid_action, next_q, torch.zeros_like(next_q))
             else:
                 # 标准 DQN 对照分支：保持原实现语义，直接在 target network 输出上屏蔽非法动作，
                 # 然后取合法动作中的最大 Q 值作为 bootstrap target。
-                next_q_values = self.target_network(next_states)
+                next_q_values = self._network_q_values(
+                    self.target_network,
+                    next_states,
+                    action_features=next_action_features,
+                )
                 masked_next_q_values = next_q_values.masked_fill(~next_valid_masks, float("-inf"))
                 next_q = masked_next_q_values.max(dim=1).values
                 has_any_valid_action = next_valid_masks.any(dim=1)
@@ -340,7 +514,7 @@ class DqnBudgetAgent:
             return NoopQDiagnostics(None, None, None, None, None, None, None, None, None, 0)
 
         # 诊断只读取 policy network 的 Q 值，不应改变训练/评估模式之外的状态。
-        q_values = self.policy_network(states)
+        q_values = self._network_q_values(self.policy_network, states)
         noop_valid = valid_masks[:, resolved_noop_action_id]
         sample_count = int(states.shape[0])
         noop_valid_count = int(noop_valid.sum().item())
@@ -399,6 +573,18 @@ class DqnBudgetAgent:
                 "hidden_layers": self.hidden_layers,
                 "noop_action_id": self.noop_action_id,
                 "double_dqn": self.double_dqn,
+                "q_network_type": self.q_network_type,
+                "action_feature_mode": self.action_feature_mode,
+                "action_aware_mask_mode": self.action_aware_mask_mode,
+                "action_feature_names": self.action_feature_names,
+                "action_feature_dim": self.action_feature_dim,
+                # dynamic_v1 的动作特征是“状态相关”的，不能把 checkpoint 中的最后一帧
+                # 当作固定特征复用；因此仅 static_v1 持久化固定 action_features。
+                "action_features": (
+                    self._action_features_tensor.detach().cpu().tolist()
+                    if self._action_features_tensor is not None and self.action_feature_mode == "static_v1"
+                    else None
+                ),
                 "optimization_steps": self.optimization_steps,
                 "epsilon_step": self.epsilon_step,
                 "current_epsilon": self.current_epsilon,
@@ -416,7 +602,21 @@ class DqnBudgetAgent:
 
         resolved_device = _resolve_torch_device(device)
         checkpoint = torch.load(path, map_location=resolved_device)
-        config = DqnConfig(**checkpoint["config"])
+        config_dict = dict(checkpoint["config"])
+        config_dict.setdefault("q_network_type", checkpoint.get("q_network_type", "mlp"))
+        config_dict.setdefault("action_feature_mode", checkpoint.get("action_feature_mode", "static_v1"))
+        config_dict.setdefault("action_aware_mask_mode", checkpoint.get("action_aware_mask_mode", "none"))
+        config = DqnConfig(**config_dict)
+        checkpoint_action_feature_mode = str(checkpoint.get("action_feature_mode", config.action_feature_mode))
+        checkpoint_action_features = checkpoint.get("action_features")
+        if checkpoint_action_feature_mode != "static_v1":
+            checkpoint_action_features = None
+        checkpoint_action_features_tuple = (
+            tuple(tuple(float(value) for value in row) for row in checkpoint_action_features)
+            if checkpoint_action_features is not None
+            else None
+        )
+        checkpoint_action_feature_names = checkpoint.get("action_feature_names")
         agent = cls(
             observation_dim=int(checkpoint["observation_dim"]),
             action_dim=int(checkpoint["action_dim"]),
@@ -425,6 +625,13 @@ class DqnBudgetAgent:
             hidden_layers=tuple(checkpoint["hidden_layers"]) if checkpoint["hidden_layers"] is not None else None,
             device=str(resolved_device),
             double_dqn=bool(checkpoint.get("double_dqn", True)),
+            action_features=checkpoint_action_features_tuple,
+            action_feature_names=(
+                tuple(str(value) for value in checkpoint_action_feature_names)
+                if checkpoint_action_feature_names is not None
+                else None
+            ),
+            action_feature_dim=int(checkpoint.get("action_feature_dim", 0) or 0),
         )
         agent.policy_network.load_state_dict(checkpoint["policy_network_state_dict"])
         agent.target_network.load_state_dict(checkpoint["target_network_state_dict"])

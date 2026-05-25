@@ -41,6 +41,58 @@ from amc_py.rl.types import AgentObservation, AgentStepResult
 from amc_py.runtime_models import RuntimeConfig
 from amc_py.runtime_scenarios import ExecutionScenario
 
+ACTION_FEATURE_PRESSURE_THRESHOLD = 0.85
+ACTION_FEATURE_NEAR_CANCEL_THRESHOLD = 0.95
+ACTION_FEATURE_HI_PRESSURE_THRESHOLD = 0.85
+
+DYNAMIC_V1_ACTION_FEATURE_NAMES = (
+    "is_noop",
+    "is_increase",
+    "is_decrease",
+    "increase_ratio",
+    "decrease_ratio_negative",
+    "has_target_task",
+    "decrease_count_norm",
+    "target_is_hi",
+    "target_is_lo",
+    "target_period_norm",
+    "target_deadline_norm",
+    "target_c_lo_norm",
+    "target_c_hi_norm",
+    "target_c_hi_over_c_lo",
+    "target_initial_budget_norm",
+    "target_current_budget_norm",
+    "target_budget_ratio_to_initial",
+    "target_budget_floor_distance",
+    "target_budget_headroom_to_upper",
+    "target_recent_exec_budget_ratio",
+    "target_ema_exec_budget_ratio",
+    "target_est_exec_budget_ratio",
+    "target_pressure",
+    "target_overrun_ema",
+    "target_cancel_ema",
+    "target_recent_cost_over_initial",
+    "action_delta_budget_norm",
+    "action_after_budget_norm",
+    "action_after_budget_ratio_to_initial",
+    "action_after_floor_distance",
+    "action_after_est_exec_budget_ratio",
+    "action_after_pressure",
+    "action_would_hit_floor",
+    "action_would_reduce_budget",
+    "action_would_increase_budget",
+    "global_lo_pressure_mean",
+    "global_lo_pressure_max",
+    "global_lo_near_cancel_rate",
+    "global_hi_mode_pressure_mean",
+    "global_hi_mode_pressure_max",
+    "global_mode_change_window_rate",
+    "global_lo_cancel_window_rate",
+    "global_hi_overrun_window_rate",
+    "global_lo_overrun_window_rate",
+    "global_safety_margin_min",
+)
+
 
 @dataclass(frozen=True)
 class CandidateBudgetUpdateDiagnosis:
@@ -1362,6 +1414,321 @@ class AmcBudgetEnv:
 
         return len(self._actions)
 
+    def get_action_feature_names(self, mode: str = "static_v1") -> tuple[str, ...]:
+        """返回动作描述符名称列表。"""
+
+        if mode == "static_v1":
+            return (
+            "is_noop",
+            "is_increase",
+            "is_decrease",
+            "increase_ratio",
+            "decrease_ratio_negative",
+            "has_target_task",
+            "target_task_index_norm",
+            "target_is_hi",
+            "target_is_lo",
+            "target_period_norm",
+            "target_deadline_norm",
+            "target_c_lo_norm",
+            "target_c_hi_norm",
+            "target_c_hi_over_c_lo",
+            "target_initial_budget_norm",
+            "decrease_count_norm",
+            )
+        if mode == "dynamic_v1":
+            return DYNAMIC_V1_ACTION_FEATURE_NAMES
+        raise ValueError(f"不支持的 action feature mode: {mode}")
+
+    def _resolve_action_target_index(self, action: BudgetAction) -> int | None:
+        """解析动作对应的目标任务索引。
+
+        规则与 static_v1 保持一致：
+        - noop 没有目标；
+        - increase 目标是 increase_idx；
+        - decrease 目标取 decrease 列表首元素（single 空间下唯一）。
+        """
+
+        if action.is_noop:
+            return None
+        if action.increase_idx is not None:
+            return int(action.increase_idx)
+        if action.decrease_indices:
+            return int(action.decrease_indices[0])
+        return None
+
+    def _clip01(self, value: float) -> float:
+        """把数值裁剪到 [0,1] 区间，避免特征越界。"""
+
+        return max(0.0, min(1.0, float(value)))
+
+    def _safe_div01(self, numer: float, denom: float, *, clip: float = 5.0) -> float:
+        """安全比值归一化：先做除法，再裁剪到 [0, clip]，最后映射到 [0,1]。"""
+
+        value = float(numer) / max(float(denom), 1e-9)
+        value = max(0.0, min(float(clip), value))
+        return value / float(clip)
+
+    def _estimate_single_action_target_budget_after(
+        self,
+        *,
+        action: BudgetAction,
+        target_idx: int | None,
+        current_budget: float,
+        initial_budget: float,
+        upper_budget: float,
+    ) -> float:
+        """按 single 动作语义估算动作执行后的目标预算。
+
+        注意：这里严格复用 step/mask 的乘法+取整+clip 口径，避免“特征看到的 after budget”
+        与真实环境执行语义不一致。
+        """
+
+        if action.is_noop or target_idx is None:
+            return float(current_budget)
+        if action.increase_idx is not None:
+            increased = math.ceil(float(current_budget) * (1.0 + float(action.increase_ratio)))
+            increased = min(int(upper_budget), max(1, int(increased)))
+            return float(increased)
+        if action.decrease_indices:
+            floor_budget = max(1, math.ceil(float(self.budget_floor_ratio) * float(initial_budget)))
+            decreased = math.floor(float(current_budget) * (1.0 - float(action.decrease_ratio)))
+            decreased = max(floor_budget, max(1, int(decreased)))
+            return float(decreased)
+        return float(current_budget)
+
+    def _get_static_v1_action_feature_matrix(self) -> tuple[tuple[float, ...], ...]:
+        """构建 static_v1 动作特征矩阵。"""
+
+        num_tasks = len(self.ordered_tasks)
+        max_period = max((float(task.period) for task in self.ordered_tasks), default=1.0)
+        max_deadline = max((float(task.deadline) for task in self.ordered_tasks), default=1.0)
+        max_c_lo = max((float(task.c_lo) for task in self.ordered_tasks), default=1.0)
+        max_c_hi = max((float(task.c_hi) for task in self.ordered_tasks), default=1.0)
+        max_initial_budget = max((float(value) for value in self._initial_budgets.values()), default=1.0)
+        max_task_denominator = max(num_tasks - 1, 1)
+        rows: list[tuple[float, ...]] = []
+
+        for action in self._actions:
+            target_idx = self._resolve_action_target_index(action)
+            has_target_task = 1.0 if target_idx is not None else 0.0
+            target_task_index_norm = 0.0
+            target_is_hi = 0.0
+            target_is_lo = 0.0
+            target_period_norm = 0.0
+            target_deadline_norm = 0.0
+            target_c_lo_norm = 0.0
+            target_c_hi_norm = 0.0
+            target_c_hi_over_c_lo = 0.0
+            target_initial_budget_norm = 0.0
+
+            if target_idx is not None and 0 <= target_idx < num_tasks:
+                target_task = self.ordered_tasks[target_idx]
+                target_task_index_norm = float(target_idx) / float(max_task_denominator)
+                target_is_hi = 1.0 if target_task.criticality is Criticality.HI else 0.0
+                target_is_lo = 1.0 if target_task.criticality is Criticality.LO else 0.0
+                target_period_norm = float(target_task.period) / float(max_period)
+                target_deadline_norm = float(target_task.deadline) / float(max_deadline)
+                target_c_lo_norm = float(target_task.c_lo) / float(max_c_lo)
+                target_c_hi_norm = float(target_task.c_hi) / float(max_c_hi)
+                ratio = float(target_task.c_hi) / max(float(target_task.c_lo), 1e-9)
+                target_c_hi_over_c_lo = min(max(ratio, 0.0), 10.0) / 10.0
+                target_initial_budget_norm = float(self._initial_budgets[target_task.name]) / float(max_initial_budget)
+
+            rows.append(
+                (
+                    1.0 if action.is_noop else 0.0,
+                    1.0 if action.increase_idx is not None else 0.0,
+                    1.0 if bool(action.decrease_indices) else 0.0,
+                    float(action.increase_ratio),
+                    -float(action.decrease_ratio),
+                    has_target_task,
+                    target_task_index_norm,
+                    target_is_hi,
+                    target_is_lo,
+                    target_period_norm,
+                    target_deadline_norm,
+                    target_c_lo_norm,
+                    target_c_hi_norm,
+                    target_c_hi_over_c_lo,
+                    target_initial_budget_norm,
+                    float(len(action.decrease_indices)) / float(max(num_tasks, 1)),
+                )
+            )
+        return tuple(rows)
+
+    def _get_dynamic_v1_action_feature_matrix(self) -> tuple[tuple[float, ...], ...]:
+        """构建 dynamic_v1 动作特征矩阵（状态相关）。"""
+
+        if self._engine is None or self._feature_state is None:
+            raise RuntimeError("dynamic_v1 action features require env.reset() first")
+        budgets = dict(self._engine.runtime_budgets.budgets)
+        num_tasks = len(self.ordered_tasks)
+        max_period = max((float(task.period) for task in self.ordered_tasks), default=1.0)
+        max_deadline = max((float(task.deadline) for task in self.ordered_tasks), default=1.0)
+        max_c_lo = max((float(task.c_lo) for task in self.ordered_tasks), default=1.0)
+        max_c_hi = max((float(task.c_hi) for task in self.ordered_tasks), default=1.0)
+        max_initial_budget = max((float(value) for value in self._initial_budgets.values()), default=1.0)
+        max_upper_budget = max((float(value) for value in self._task_upper_bounds), default=1.0)
+        lo_stats = self._compute_lo_pressure_stats(
+            budgets=budgets,
+            pressure_threshold=ACTION_FEATURE_PRESSURE_THRESHOLD,
+            near_cancel_threshold=ACTION_FEATURE_NEAR_CANCEL_THRESHOLD,
+        )
+        hi_stats = self._compute_hi_mode_pressure_stats(
+            budgets=budgets,
+            threshold=ACTION_FEATURE_HI_PRESSURE_THRESHOLD,
+        )
+        safety_margin_min = self._compute_current_safety_margin_min()
+        rows: list[tuple[float, ...]] = []
+
+        for action in self._actions:
+            target_idx = self._resolve_action_target_index(action)
+            has_target_task = 1.0 if target_idx is not None else 0.0
+            decrease_count_norm = float(len(action.decrease_indices)) / float(max(num_tasks, 1))
+            target_is_hi = 0.0
+            target_is_lo = 0.0
+            target_period_norm = 0.0
+            target_deadline_norm = 0.0
+            target_c_lo_norm = 0.0
+            target_c_hi_norm = 0.0
+            target_c_hi_over_c_lo = 0.0
+            target_initial_budget_norm = 0.0
+            target_current_budget_norm = 0.0
+            target_budget_ratio_to_initial = 0.0
+            target_budget_floor_distance = 0.0
+            target_budget_headroom_to_upper = 0.0
+            target_recent_exec_budget_ratio = 0.0
+            target_ema_exec_budget_ratio = 0.0
+            target_est_exec_budget_ratio = 0.0
+            target_pressure = 0.0
+            target_overrun_ema = 0.0
+            target_cancel_ema = 0.0
+            target_recent_cost_over_initial = 0.0
+            action_delta_budget_norm = 0.0
+            action_after_budget_norm = 0.0
+            action_after_budget_ratio_to_initial = 0.0
+            action_after_floor_distance = 0.0
+            action_after_est_exec_budget_ratio = 0.0
+            action_after_pressure = 0.0
+            action_would_hit_floor = 0.0
+            action_would_reduce_budget = 0.0
+            action_would_increase_budget = 0.0
+
+            if target_idx is not None and 0 <= target_idx < num_tasks:
+                task = self.ordered_tasks[target_idx]
+                task_name = task.name
+                initial_budget = float(self._initial_budgets[task_name])
+                current_budget = float(budgets[task_name])
+                upper_budget = float(self._task_upper_bounds[target_idx])
+                floor_budget = max(1.0, math.ceil(initial_budget * float(self.budget_floor_ratio)))
+                recent_exec = float(self._monitor.recent_execution.get(task_name, 0.0))
+                ema_exec = float(self._feature_state.ema_cost.get(task_name, float(task.c_lo)))
+                est_exec = max(recent_exec, ema_exec)
+                after_budget = self._estimate_single_action_target_budget_after(
+                    action=action,
+                    target_idx=target_idx,
+                    current_budget=current_budget,
+                    initial_budget=initial_budget,
+                    upper_budget=upper_budget,
+                )
+                target_is_hi = 1.0 if task.criticality is Criticality.HI else 0.0
+                target_is_lo = 1.0 if task.criticality is Criticality.LO else 0.0
+                target_period_norm = self._clip01(float(task.period) / max_period)
+                target_deadline_norm = self._clip01(float(task.deadline) / max_deadline)
+                target_c_lo_norm = self._clip01(float(task.c_lo) / max_c_lo)
+                target_c_hi_norm = self._clip01(float(task.c_hi) / max_c_hi)
+                target_c_hi_over_c_lo = self._safe_div01(float(task.c_hi), max(float(task.c_lo), 1e-9), clip=10.0)
+                target_initial_budget_norm = self._clip01(initial_budget / max_initial_budget)
+                target_current_budget_norm = self._clip01(current_budget / max_upper_budget)
+                target_budget_ratio_to_initial = self._safe_div01(current_budget, initial_budget)
+                target_budget_floor_distance = self._clip01(max(0.0, current_budget - floor_budget) / max(initial_budget, 1e-9))
+                target_budget_headroom_to_upper = self._clip01(max(0.0, upper_budget - current_budget) / max(upper_budget, 1e-9))
+                target_recent_exec_budget_ratio = self._safe_div01(recent_exec, current_budget)
+                target_ema_exec_budget_ratio = self._safe_div01(ema_exec, current_budget)
+                target_est_exec_budget_ratio = self._safe_div01(est_exec, current_budget)
+                target_pressure = self._safe_div01(
+                    max(0.0, est_exec / max(current_budget, 1e-9) - ACTION_FEATURE_PRESSURE_THRESHOLD),
+                    1.0,
+                    clip=1.0,
+                )
+                target_overrun_ema = self._clip01(float(self._feature_state.overrun_ema.get(task_name, 0.0)))
+                target_cancel_ema = self._clip01(float(self._feature_state.task_cancel_ema.get(task_name, 0.0)))
+                target_recent_cost_over_initial = self._safe_div01(recent_exec, initial_budget)
+                action_delta_budget_norm = self._safe_div01(abs(after_budget - current_budget), max_upper_budget, clip=1.0)
+                action_after_budget_norm = self._clip01(after_budget / max_upper_budget)
+                action_after_budget_ratio_to_initial = self._safe_div01(after_budget, initial_budget)
+                action_after_floor_distance = self._clip01(max(0.0, after_budget - floor_budget) / max(initial_budget, 1e-9))
+                action_after_est_exec_budget_ratio = self._safe_div01(est_exec, after_budget)
+                action_after_pressure = self._safe_div01(
+                    max(0.0, est_exec / max(after_budget, 1e-9) - ACTION_FEATURE_PRESSURE_THRESHOLD),
+                    1.0,
+                    clip=1.0,
+                )
+                action_would_hit_floor = 1.0 if after_budget <= floor_budget else 0.0
+                action_would_reduce_budget = 1.0 if after_budget < current_budget else 0.0
+                action_would_increase_budget = 1.0 if after_budget > current_budget else 0.0
+
+            rows.append(
+                (
+                    1.0 if action.is_noop else 0.0,
+                    1.0 if action.increase_idx is not None else 0.0,
+                    1.0 if bool(action.decrease_indices) else 0.0,
+                    float(action.increase_ratio),
+                    -float(action.decrease_ratio),
+                    has_target_task,
+                    decrease_count_norm,
+                    target_is_hi,
+                    target_is_lo,
+                    target_period_norm,
+                    target_deadline_norm,
+                    target_c_lo_norm,
+                    target_c_hi_norm,
+                    target_c_hi_over_c_lo,
+                    target_initial_budget_norm,
+                    target_current_budget_norm,
+                    target_budget_ratio_to_initial,
+                    target_budget_floor_distance,
+                    target_budget_headroom_to_upper,
+                    target_recent_exec_budget_ratio,
+                    target_ema_exec_budget_ratio,
+                    target_est_exec_budget_ratio,
+                    target_pressure,
+                    target_overrun_ema,
+                    target_cancel_ema,
+                    target_recent_cost_over_initial,
+                    action_delta_budget_norm,
+                    action_after_budget_norm,
+                    action_after_budget_ratio_to_initial,
+                    action_after_floor_distance,
+                    action_after_est_exec_budget_ratio,
+                    action_after_pressure,
+                    action_would_hit_floor,
+                    action_would_reduce_budget,
+                    action_would_increase_budget,
+                    self._clip01(float(lo_stats["lo_pressure_mean"])),
+                    self._clip01(float(lo_stats["lo_pressure_max"])),
+                    self._clip01(float(lo_stats["lo_near_cancel_rate"])),
+                    self._clip01(float(hi_stats["hi_mode_pressure_mean"])),
+                    self._clip01(float(hi_stats["hi_mode_pressure_max"])),
+                    self._clip01(self._feature_state.rate(self._feature_state.window_mode_changes)),
+                    self._clip01(self._feature_state.rate(self._feature_state.window_lo_cancellations)),
+                    self._clip01(self._feature_state.rate(self._feature_state.window_hi_overruns)),
+                    self._clip01(self._feature_state.rate(self._feature_state.window_lo_overruns)),
+                    self._clip01(float(safety_margin_min)),
+                )
+            )
+        return tuple(rows)
+
+    def get_action_feature_matrix(self, mode: str = "static_v1") -> tuple[tuple[float, ...], ...]:
+        """返回动作描述符矩阵，形状为 [action_dim, feature_dim]。"""
+
+        if mode == "static_v1":
+            return self._get_static_v1_action_feature_matrix()
+        if mode == "dynamic_v1":
+            return self._get_dynamic_v1_action_feature_matrix()
+        raise ValueError(f"不支持的 action feature mode: {mode}")
+
     def valid_action_mask(self) -> tuple[bool, ...]:
         """返回当前时刻每个离散动作是否可通过安全检查。
 
@@ -2287,6 +2654,40 @@ class AmcBudgetEnv:
         # invalid_action：动作经过安全检查且未被接受时记为 1.0，否则记为 0.0。
         # 这样可以把“动作被拒绝”作为一个可在奖励公式里直接惩罚的显式信号。
         invalid_action = 1.0 if action_was_checked and not accepted else 0.0
+        # 动作语义变量（interval_qos_pareto_v1 第一版）：
+        # 1) is_budget_action：agent 是否真的给出了一个离散预算动作（排除隐式 noop 与显式 noop）。
+        # 2) increase/decrease/transfer：按 resolved 动作结果做互斥语义判定，避免只看 action_id 造成误判。
+        # 3) decrease_hits_hi/decrease_hits_lo：用于识别 decrease 命中的任务关键级别。
+        # 4) unsafe_decrease：第一版采用“保守且可解释”的定义，仅把“decrease 命中 HI”视为不安全。
+        is_budget_action = action_id is not None and not is_explicit_noop_action
+        is_increase_action = (
+            resolved_increase_idx is not None
+            and len(resolved_decrease_indices) == 0
+        )
+        is_decrease_action = (
+            resolved_increase_idx is None
+            and len(resolved_decrease_indices) > 0
+        )
+        is_transfer_action = (
+            resolved_increase_idx is not None
+            and len(resolved_decrease_indices) > 0
+        )
+        decrease_hits_hi = any(
+            self.ordered_tasks[idx].criticality is Criticality.HI
+            for idx in resolved_decrease_indices
+        )
+        decrease_hits_lo = any(
+            self.ordered_tasks[idx].criticality is Criticality.LO
+            for idx in resolved_decrease_indices
+        )
+        decrease_task_count = len(resolved_decrease_indices)
+        unsafe_decrease = bool(
+            is_decrease_action
+            and decrease_hits_hi
+        )
+        # Future extension:
+        # unsafe_decrease may also include high mode pressure,
+        # near-floor budget, or recent overrun pressure.
 
         step_reward_job_start = 0.0
         step_reward_lo_overrun = 0.0
@@ -2434,6 +2835,14 @@ class AmcBudgetEnv:
             "lo_cancellation_rate": float(lo_cancellation_rate),
             "deadline_miss_rate": float(deadline_miss_rate),
             "invalid_action": float(invalid_action),
+            "is_budget_action": float(is_budget_action),
+            "is_increase_action": float(is_increase_action),
+            "is_decrease_action": float(is_decrease_action),
+            "is_transfer_action": float(is_transfer_action),
+            "decrease_hits_hi": float(decrease_hits_hi),
+            "decrease_hits_lo": float(decrease_hits_lo),
+            "decrease_task_count": float(decrease_task_count),
+            "unsafe_decrease": float(unsafe_decrease),
         }
         # 必须把 reward_parameters 合并进变量表：
         # 这样 step_reward_formula 可以直接写 `lo_overrun_penalty * lo_overrun_rate`，
@@ -2532,6 +2941,15 @@ class AmcBudgetEnv:
             "residual_resolved_decrease_tasks": tuple(resolved_decrease_tasks),
             "residual_resolved_increase_idx": resolved_increase_idx,
             "residual_resolved_decrease_indices": tuple(resolved_decrease_indices),
+            # 统一输出动作语义字段，供 train/validation 日志直接复用同一判断口径。
+            "is_budget_action": bool(is_budget_action),
+            "is_increase_action": bool(is_increase_action),
+            "is_decrease_action": bool(is_decrease_action),
+            "is_transfer_action": bool(is_transfer_action),
+            "decrease_hits_hi": bool(decrease_hits_hi),
+            "decrease_hits_lo": bool(decrease_hits_lo),
+            "decrease_task_count": int(decrease_task_count),
+            "unsafe_decrease": bool(unsafe_decrease),
             "mode_changes": mode_changes,
             "lo_cancellations": lo_cancellations,
             "deadline_misses": deadline_misses,

@@ -130,6 +130,35 @@ def test_train_cli_rejects_invalid_budget_floor_ratio(tmp_path: Path) -> None:
     assert result.returncode != 0
 
 
+def test_train_cli_rejects_action_aware_mask_mode_outside_action_aware_single(tmp_path: Path) -> None:
+    """action-aware-mask-mode 仅允许 action_aware+single。"""
+
+    output_dir = tmp_path / "invalid_action_aware_mask_mode"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--episodes",
+            "1",
+            "--end-time",
+            "20",
+            "--output-dir",
+            str(output_dir),
+            "--q-network-type",
+            "mlp",
+            "--action-space",
+            "single",
+            "--action-aware-mask-mode",
+            "increase_noop",
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        check=False,
+    )
+    assert result.returncode != 0
+
+
 def test_train_cli_supports_parallel_validation_and_disabling_step_log(tmp_path: Path) -> None:
     """并行 validation 与关闭 step 日志时，训练仍应正常完成并写出空表头 CSV。"""
 
