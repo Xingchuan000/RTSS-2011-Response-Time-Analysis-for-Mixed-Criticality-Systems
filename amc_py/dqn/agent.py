@@ -112,8 +112,13 @@ class DqnBudgetAgent:
         # 新增探索模式配置校验：
         # - epsilon_greedy：完全沿用旧实现；
         # - epsilon_safe_increase_mixture：训练期 epsilon 探索时，按概率偏向 increase-only 动作。
+        # - epsilon_increase_coverage：训练期 epsilon 探索时，按概率优先选择历史最少访问的 increase-only 动作。
         self.exploration_mode = str(config.exploration_mode)
-        if self.exploration_mode not in {"epsilon_greedy", "epsilon_safe_increase_mixture"}:
+        if self.exploration_mode not in {
+            "epsilon_greedy",
+            "epsilon_safe_increase_mixture",
+            "epsilon_increase_coverage",
+        }:
             raise ValueError(f"unsupported exploration_mode: {self.exploration_mode}")
         self.safe_increase_explore_prob = float(config.safe_increase_explore_prob)
         if not 0.0 <= self.safe_increase_explore_prob <= 1.0:
@@ -198,6 +203,15 @@ class DqnBudgetAgent:
         self.exploration_safe_increase_action_count = 0
         self.exploration_all_valid_action_count = 0
         self.exploration_safe_increase_fallback_count = 0
+        # coverage-based increase exploration 统计：
+        # - increase_exploration_visit_counts：仅记录 coverage 分支实际选中过的 increase-only 动作；
+        # - exploration_increase_coverage_action_count：coverage 分支成功命中的次数；
+        # - exploration_increase_coverage_tie_count：coverage 分支中出现并列最少候选的次数。
+        self.increase_exploration_visit_counts: dict[int, int] = {
+            int(action_id): 0 for action_id in self.increase_action_ids
+        }
+        self.exploration_increase_coverage_action_count = 0
+        self.exploration_increase_coverage_tie_count = 0
 
     def set_action_features(
         self,
@@ -332,6 +346,57 @@ class DqnBudgetAgent:
             raise ValueError("valid_action_mask 长度必须与 action_dim 一致")
         return [action_id for action_id, is_valid in enumerate(valid_action_mask) if is_valid]
 
+    def _valid_increase_action_ids(self, valid_action_ids: list[int]) -> list[int]:
+        """从当前合法动作中筛出 increase-only 候选。"""
+
+        return [
+            candidate_action_id
+            for candidate_action_id in valid_action_ids
+            if candidate_action_id in self.increase_action_id_set
+        ]
+
+    def _sample_uniform_increase_exploration_action(self, valid_action_ids: list[int]) -> int | None:
+        """在合法 increase-only 动作中均匀采样。"""
+
+        valid_increase_action_ids = self._valid_increase_action_ids(valid_action_ids)
+        if not valid_increase_action_ids:
+            return None
+        self.exploration_safe_increase_action_count += 1
+        return int(self._rng.choice(valid_increase_action_ids))
+
+    def _sample_coverage_increase_exploration_action(self, valid_action_ids: list[int]) -> int | None:
+        """在合法 increase-only 动作中优先选择历史访问次数最少的动作。"""
+
+        valid_increase_action_ids = self._valid_increase_action_ids(valid_action_ids)
+        if not valid_increase_action_ids:
+            return None
+
+        # coverage 只统计当前仍然合法的 increase 动作，避免旧 checkpoint 或动作集合变化时
+        # 出现键缺失。这里为所有候选补齐计数项，保证后续最小值比较口径一致。
+        for action_id in valid_increase_action_ids:
+            self.increase_exploration_visit_counts.setdefault(int(action_id), 0)
+
+        min_count = min(
+            self.increase_exploration_visit_counts.get(int(action_id), 0)
+            for action_id in valid_increase_action_ids
+        )
+        least_visited_action_ids = [
+            int(action_id)
+            for action_id in valid_increase_action_ids
+            if self.increase_exploration_visit_counts.get(int(action_id), 0) == min_count
+        ]
+
+        if len(least_visited_action_ids) > 1:
+            self.exploration_increase_coverage_tie_count += 1
+
+        action_id = int(self._rng.choice(least_visited_action_ids))
+        self.increase_exploration_visit_counts[action_id] = (
+            self.increase_exploration_visit_counts.get(action_id, 0) + 1
+        )
+        self.exploration_safe_increase_action_count += 1
+        self.exploration_increase_coverage_action_count += 1
+        return action_id
+
     def _greedy_action_id(
         self,
         state_vector: tuple[float, ...],
@@ -369,22 +434,17 @@ class DqnBudgetAgent:
             self.exploration_action_count += 1
 
             # 新模式只作用于训练期 epsilon 分支；greedy 与 validation(training=False) 完全不变。
-            if self.exploration_mode == "epsilon_safe_increase_mixture":
+            if self.exploration_mode in {"epsilon_safe_increase_mixture", "epsilon_increase_coverage"}:
                 should_try_safe_increase = (
                     self.safe_increase_explore_prob > 0.0
                     and self._rng.random() < self.safe_increase_explore_prob
                 )
                 if should_try_safe_increase:
-                    # safe increase 只允许从“当前合法动作”里筛出 increase-only 候选，严格遵守 valid mask。
-                    valid_increase_action_ids = [
-                        candidate_action_id
-                        for candidate_action_id in valid_action_ids
-                        if candidate_action_id in self.increase_action_id_set
-                    ]
-                    if valid_increase_action_ids:
-                        action_id = int(self._rng.choice(valid_increase_action_ids))
-                        self.exploration_safe_increase_action_count += 1
+                    if self.exploration_mode == "epsilon_increase_coverage":
+                        action_id = self._sample_coverage_increase_exploration_action(valid_action_ids)
                     else:
+                        action_id = self._sample_uniform_increase_exploration_action(valid_action_ids)
+                    if action_id is None:
                         # 计划要求：safe 分支无合法 increase 候选时，回退到默认探索逻辑。
                         self.exploration_safe_increase_fallback_count += 1
                         action_id = self._sample_default_exploration_action(valid_action_ids)
@@ -618,6 +678,9 @@ class DqnBudgetAgent:
                 "hidden_layers": self.hidden_layers,
                 "noop_action_id": self.noop_action_id,
                 "increase_action_ids": self.increase_action_ids,
+                "increase_exploration_visit_counts": dict(self.increase_exploration_visit_counts),
+                "exploration_increase_coverage_action_count": self.exploration_increase_coverage_action_count,
+                "exploration_increase_coverage_tie_count": self.exploration_increase_coverage_tie_count,
                 "double_dqn": self.double_dqn,
                 "q_network_type": self.q_network_type,
                 "action_feature_mode": self.action_feature_mode,
@@ -692,4 +755,21 @@ class DqnBudgetAgent:
         agent.optimization_steps = int(checkpoint["optimization_steps"])
         agent.epsilon_step = int(checkpoint["epsilon_step"])
         agent.current_epsilon = float(checkpoint["current_epsilon"])
+        raw_visit_counts = checkpoint.get("increase_exploration_visit_counts")
+        if raw_visit_counts is not None:
+            agent.increase_exploration_visit_counts = {
+                int(action_id): int(count) for action_id, count in raw_visit_counts.items()
+            }
+            for action_id in agent.increase_action_ids:
+                agent.increase_exploration_visit_counts.setdefault(int(action_id), 0)
+        else:
+            agent.increase_exploration_visit_counts = {
+                int(action_id): 0 for action_id in agent.increase_action_ids
+            }
+        agent.exploration_increase_coverage_action_count = int(
+            checkpoint.get("exploration_increase_coverage_action_count", 0)
+        )
+        agent.exploration_increase_coverage_tie_count = int(
+            checkpoint.get("exploration_increase_coverage_tie_count", 0)
+        )
         return agent
