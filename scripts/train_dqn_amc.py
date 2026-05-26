@@ -319,6 +319,24 @@ def _build_episode_seed_schedule(
     raise ValueError(f"不支持的 train-seed-mode: {mode}")
 
 
+def _relative_lc_reduction_from_validation_row(row: dict[str, int | float | None]) -> float | None:
+    """从 validation row 计算相对 LC cancellation reduction。
+
+    这里使用 baseline 与 DQN 的 lo_cancellations_mean 做归一化比较：
+    reduction = (baseline - dqn) / baseline。
+    值越大表示相对 baseline 的改善越明显。
+    """
+
+    baseline = row.get("baseline_lo_cancellations_mean")
+    dqn = row.get("lo_cancellations_mean")
+    if baseline is None or dqn is None:
+        return None
+    baseline_f = float(baseline)
+    if baseline_f <= 0.0:
+        return None
+    return (baseline_f - float(dqn)) / baseline_f
+
+
 def _serialize_tasks(tasks: list[Task]) -> list[dict[str, int | str]]:
     """将任务集转换为可写入 JSON 的结构。"""
 
@@ -1480,6 +1498,7 @@ def build_parser() -> argparse.ArgumentParser:
             "epsilon_greedy",
             "epsilon_safe_increase_mixture",
             "epsilon_increase_coverage",
+            "epsilon_plateau_soft_target_balanced",
         ],
         default="epsilon_greedy",
         help=(
@@ -1488,7 +1507,9 @@ def build_parser() -> argparse.ArgumentParser:
             "epsilon_safe_increase_mixture samples from valid increase-only actions "
             "with --safe-increase-explore-prob when epsilon exploration is triggered. "
             "epsilon_increase_coverage samples the least-visited valid increase-only action "
-            "with --safe-increase-explore-prob when epsilon exploration is triggered."
+            "with --safe-increase-explore-prob when epsilon exploration is triggered. "
+            "epsilon_plateau_soft_target_balanced only mixes in coverage-balanced sampling "
+            "during plateau-triggered bursts."
         ),
     )
     parser.add_argument(
@@ -1499,6 +1520,48 @@ def build_parser() -> argparse.ArgumentParser:
             "Only used when --exploration-mode epsilon_safe_increase_mixture or epsilon_increase_coverage. "
             "During epsilon exploration, probability of entering the increase-only branch."
         ),
+    )
+    parser.add_argument(
+        "--plateau-balanced-start-episode",
+        type=int,
+        default=40,
+        help="Minimum episode before plateau-triggered balanced bursts can be activated.",
+    )
+    parser.add_argument(
+        "--plateau-balanced-window",
+        type=int,
+        default=3,
+        help="Number of consecutive validation checks without best improvement before triggering a burst.",
+    )
+    parser.add_argument(
+        "--plateau-balanced-burst-episodes",
+        type=int,
+        default=20,
+        help="Number of training episodes for each plateau-triggered balanced exploration burst.",
+    )
+    parser.add_argument(
+        "--plateau-balanced-mix-prob",
+        type=float,
+        default=0.3,
+        help=(
+            "During an active burst, probability of using coverage-balanced increase sampling "
+            "inside epsilon exploration."
+        ),
+    )
+    parser.add_argument(
+        "--plateau-balanced-max-best-reduction",
+        type=float,
+        default=0.08,
+        help=(
+            "Only trigger plateau-balanced bursts while current best relative LC reduction is below "
+            "this threshold. Set <=0 to disable this protection."
+        ),
+    )
+    parser.add_argument(
+        "--plateau-balanced-reset-counts-on-burst",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Whether to reset target coverage counts when a new burst starts.",
     )
     parser.add_argument(
         "--double-dqn",
@@ -1747,6 +1810,14 @@ def main() -> None:
         raise ValueError("--log-step-every 必须为非负整数")
     if args.max_q_diagnostic_samples < 0:
         raise ValueError("--max-q-diagnostic-samples 必须为非负整数")
+    if args.plateau_balanced_start_episode < 0:
+        raise ValueError("--plateau-balanced-start-episode 必须为非负整数")
+    if args.plateau_balanced_window <= 0:
+        raise ValueError("--plateau-balanced-window 必须为正整数")
+    if args.plateau_balanced_burst_episodes < 0:
+        raise ValueError("--plateau-balanced-burst-episodes 必须为非负整数")
+    if not 0.0 <= args.plateau_balanced_mix_prob <= 1.0:
+        raise ValueError("--plateau-balanced-mix-prob must be in [0, 1]")
     if args.target_update_frequency is not None:
         args.target_update_freq = int(args.target_update_frequency)
     if args.budget_floor_ratio < 0.0 or args.budget_floor_ratio > 1.0:
@@ -1801,6 +1872,7 @@ def main() -> None:
         noop_exploration_prob=args.noop_exploration_prob,
         exploration_mode=args.exploration_mode,
         safe_increase_explore_prob=args.safe_increase_explore_prob,
+        plateau_balanced_mix_prob=args.plateau_balanced_mix_prob,
         hidden_layers=hidden_layers,
         seed=args.seed,
         network_seed=network_seed,
@@ -1896,6 +1968,10 @@ def main() -> None:
     # - False：尚未见到任何 Pareto-valid checkpoint，允许 fallback 到软分数；
     # - True ：已经见到至少一个 Pareto-valid checkpoint，后续仅在 Pareto-valid 集合内比较。
     pareto_valid_seen: bool = False
+    plateau_no_improve_count = 0
+    plateau_best_reduction: float | None = None
+    plateau_last_trigger_episode: int | None = None
+    plateau_trigger_rows: list[dict[str, int | float | str | bool | None]] = []
 
     global_step = 0
     for episode in range(args.episodes):
@@ -1981,6 +2057,9 @@ def main() -> None:
             agent.exploration_increase_coverage_action_count
         )
         exploration_increase_coverage_tie_count_before = int(agent.exploration_increase_coverage_tie_count)
+        plateau_balanced_action_count_before = int(agent.plateau_balanced_action_count)
+        plateau_balanced_fallback_count_before = int(agent.plateau_balanced_fallback_count)
+        plateau_balanced_burst_count_before = int(agent.plateau_balanced_burst_count)
         episode_action_hist: dict[int, dict[str, int]] = defaultdict(lambda: {"count": 0, "accepted": 0, "rejected": 0})
         last_info: dict[str, int | float | str | bool | None] = {
             "mode_changes": 0,
@@ -2247,6 +2326,15 @@ def main() -> None:
         exploration_increase_coverage_tie_delta = int(
             agent.exploration_increase_coverage_tie_count - exploration_increase_coverage_tie_count_before
         )
+        plateau_balanced_action_delta = int(
+            agent.plateau_balanced_action_count - plateau_balanced_action_count_before
+        )
+        plateau_balanced_fallback_delta = int(
+            agent.plateau_balanced_fallback_count - plateau_balanced_fallback_count_before
+        )
+        plateau_balanced_burst_delta = int(
+            agent.plateau_balanced_burst_count - plateau_balanced_burst_count_before
+        )
         coverage_counts = [
             int(agent.increase_exploration_visit_counts.get(int(action_id), 0))
             for action_id in increase_action_ids
@@ -2373,6 +2461,14 @@ def main() -> None:
                 "exploration_safe_increase_fallback_count": exploration_safe_increase_fallback_delta,
                 "exploration_increase_coverage_action_count": exploration_increase_coverage_delta,
                 "exploration_increase_coverage_tie_count": exploration_increase_coverage_tie_delta,
+                "plateau_balanced_active": bool(agent.plateau_balanced_is_active),
+                "plateau_balanced_active_episodes_remaining": int(
+                    agent.plateau_balanced_active_episodes_remaining
+                ),
+                "plateau_balanced_burst_count_total": int(agent.plateau_balanced_burst_count),
+                "plateau_balanced_burst_count_delta": plateau_balanced_burst_delta,
+                "plateau_balanced_action_count": plateau_balanced_action_delta,
+                "plateau_balanced_fallback_count": plateau_balanced_fallback_delta,
                 "exploration_noop_action_rate": (
                     float(exploration_noop_delta) / float(exploration_action_delta)
                     if exploration_action_delta > 0
@@ -2401,6 +2497,11 @@ def main() -> None:
                 "exploration_increase_coverage_tie_rate": (
                     float(exploration_increase_coverage_tie_delta) / float(exploration_increase_coverage_delta)
                     if exploration_increase_coverage_delta > 0
+                    else 0.0
+                ),
+                "plateau_balanced_action_rate": (
+                    float(plateau_balanced_action_delta) / float(exploration_action_delta)
+                    if exploration_action_delta > 0
                     else 0.0
                 ),
                 "increase_coverage_min_count": coverage_min,
@@ -2454,6 +2555,10 @@ def main() -> None:
         train_metric_rows[-1]["decrease_action_usage_rate"] = (
             float(decrease_action_count) / float(total_action_count) if total_action_count > 0 else 0.0
         )
+
+        # 先推进上一轮 burst 的剩余 episode 计数，再进行本 episode 的 checkpoint/validation。
+        # 这样如果 validation 在当前 episode 结束时触发新的 burst，新的 burst 不会被当场递减。
+        agent.on_episode_end()
 
         if args.trace_every > 0 and (episode + 1) % args.trace_every == 0 and args.trace_dir is not None:
             runtime_result = env._engine.finish() if env._engine is not None else SimulationResult()
@@ -2546,6 +2651,62 @@ def main() -> None:
             validation_row["is_better_than_baseline"] = float(validation_row["relative_score"]) < 0.0
             # 标记当前候选是否满足 Pareto-valid，用于“先筛选，再排序”的两阶段策略。
             validation_row["is_pareto_valid"] = _is_pareto_valid_checkpoint(validation_row)
+
+            current_reduction = _relative_lc_reduction_from_validation_row(validation_row)
+            plateau_triggered = False
+            plateau_trigger_reason = ""
+            if current_reduction is not None:
+                # plateau 统计只在新探索模式下驱动训练状态，避免影响旧主线行为。
+                if args.exploration_mode == "epsilon_plateau_soft_target_balanced":
+                    if plateau_best_reduction is None or current_reduction > plateau_best_reduction + 1e-12:
+                        plateau_best_reduction = current_reduction
+                        plateau_no_improve_count = 0
+                    else:
+                        plateau_no_improve_count += 1
+
+                    episode_number = episode + 1
+                    enough_episode = episode_number >= args.plateau_balanced_start_episode
+                    plateau_reached = plateau_no_improve_count >= args.plateau_balanced_window
+                    burst_len_positive = args.plateau_balanced_burst_episodes > 0
+                    below_reduction_gate = True
+                    if (
+                        args.plateau_balanced_max_best_reduction > 0.0
+                        and plateau_best_reduction is not None
+                    ):
+                        below_reduction_gate = (
+                            plateau_best_reduction < args.plateau_balanced_max_best_reduction
+                        )
+                    if enough_episode and plateau_reached and burst_len_positive and below_reduction_gate:
+                        agent.start_plateau_balanced_burst(
+                            args.plateau_balanced_burst_episodes,
+                            reset_counts=args.plateau_balanced_reset_counts_on_burst,
+                        )
+                        plateau_triggered = True
+                        plateau_last_trigger_episode = episode_number
+                        plateau_trigger_reason = "plateau_low_reduction"
+                        plateau_no_improve_count = 0
+
+            plateau_status = {
+                "episode": episode + 1,
+                "current_reduction": current_reduction,
+                "plateau_best_reduction": plateau_best_reduction,
+                "plateau_no_improve_count": plateau_no_improve_count,
+                "plateau_triggered": plateau_triggered,
+                "plateau_trigger_reason": plateau_trigger_reason,
+                "plateau_active_episodes_remaining": agent.plateau_balanced_active_episodes_remaining,
+                "plateau_burst_count": agent.plateau_balanced_burst_count,
+            }
+            plateau_trigger_rows.append(plateau_status)
+            validation_row.update(
+                {
+                    "plateau_current_reduction": current_reduction,
+                    "plateau_best_reduction": plateau_best_reduction,
+                    "plateau_no_improve_count": plateau_no_improve_count,
+                    "plateau_balanced_triggered": plateau_triggered,
+                    "plateau_balanced_active_episodes_remaining": agent.plateau_balanced_active_episodes_remaining,
+                    "plateau_balanced_burst_count": agent.plateau_balanced_burst_count,
+                }
+            )
             validation_rows.append(validation_row)
 
             should_update_best = False
@@ -2727,12 +2888,19 @@ def main() -> None:
             "exploration_safe_increase_fallback_count",
             "exploration_increase_coverage_action_count",
             "exploration_increase_coverage_tie_count",
+            "plateau_balanced_active",
+            "plateau_balanced_active_episodes_remaining",
+            "plateau_balanced_burst_count_total",
+            "plateau_balanced_burst_count_delta",
+            "plateau_balanced_action_count",
+            "plateau_balanced_fallback_count",
             "exploration_noop_action_rate",
             "exploration_safe_increase_action_rate",
             "exploration_all_valid_action_rate",
             "exploration_safe_increase_fallback_rate",
             "exploration_increase_coverage_action_rate",
             "exploration_increase_coverage_tie_rate",
+            "plateau_balanced_action_rate",
             "increase_coverage_min_count",
             "increase_coverage_max_count",
             "increase_coverage_mean_count",
@@ -2789,14 +2957,20 @@ def main() -> None:
         validation_fieldnames.extend(QOS_VALIDATION_FIELDNAMES)
         validation_fieldnames.extend(
             [
-            "relative_score_alpha",
-            "raw_delta_lo_cancellations",
-            "raw_delta_mode_changes",
-            "relative_delta_lo_cancellations",
-            "relative_delta_mode_changes",
-            "relative_score",
-            "is_better_than_baseline",
-            "is_pareto_valid",
+                "plateau_current_reduction",
+                "plateau_best_reduction",
+                "plateau_no_improve_count",
+                "plateau_balanced_triggered",
+                "plateau_balanced_active_episodes_remaining",
+                "plateau_balanced_burst_count",
+                "relative_score_alpha",
+                "raw_delta_lo_cancellations",
+                "raw_delta_mode_changes",
+                "relative_delta_lo_cancellations",
+                "relative_delta_mode_changes",
+                "relative_score",
+                "is_better_than_baseline",
+                "is_pareto_valid",
             ]
         )
         validation_fieldnames.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
@@ -3115,6 +3289,15 @@ def main() -> None:
         "action_aware_mask_mode": args.action_aware_mask_mode,
         "exploration_mode": args.exploration_mode,
         "safe_increase_explore_prob": args.safe_increase_explore_prob,
+        "plateau_balanced_start_episode": args.plateau_balanced_start_episode,
+        "plateau_balanced_window": args.plateau_balanced_window,
+        "plateau_balanced_burst_episodes": args.plateau_balanced_burst_episodes,
+        "plateau_balanced_mix_prob": args.plateau_balanced_mix_prob,
+        "plateau_balanced_max_best_reduction": args.plateau_balanced_max_best_reduction,
+        "plateau_balanced_reset_counts_on_burst": args.plateau_balanced_reset_counts_on_burst,
+        "plateau_balanced_total_bursts": agent.plateau_balanced_burst_count,
+        "plateau_balanced_total_actions": agent.plateau_balanced_action_count,
+        "plateau_balanced_total_fallbacks": agent.plateau_balanced_fallback_count,
         "noop_exploration_prob": args.noop_exploration_prob,
         "action_feature_names": list(action_feature_names or ()),
         "action_feature_dim": 0 if action_feature_names is None else len(action_feature_names),

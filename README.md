@@ -2681,13 +2681,20 @@ PYTHONPATH=. python scripts/evaluate_dqn_amc.py \
 本节新增两种训练期 epsilon 探索模式，二者都只影响 `training=True` 时的动作采样，不改变 greedy policy，也不影响 validation/evaluation 的 `training=False` 行为。
 
 CLI 参数：
-- `--exploration-mode`：探索模式，支持 `epsilon_greedy`（默认，旧行为）、`epsilon_safe_increase_mixture`、`epsilon_increase_coverage`。
+- `--exploration-mode`：探索模式，支持 `epsilon_greedy`（默认，旧行为）、`epsilon_safe_increase_mixture`、`epsilon_increase_coverage`、`epsilon_plateau_soft_target_balanced`。
 - `--safe-increase-explore-prob`：仅在 `epsilon_safe_increase_mixture` 和 `epsilon_increase_coverage` 下使用，表示 epsilon 探索触发时进入 increase-only 分支的概率。
+- `--plateau-balanced-start-episode`：训练 episode 达到多少之后，才允许 plateau-triggered burst 生效，默认 `40`。
+- `--plateau-balanced-window`：连续多少次 validation 没有刷新 best 时触发 burst，默认 `3`。
+- `--plateau-balanced-burst-episodes`：每次 burst 持续多少个训练 episode，默认 `20`。
+- `--plateau-balanced-mix-prob`：burst 激活后，epsilon 探索分支里走 coverage-balanced increase 采样的概率，默认 `0.3`。
+- `--plateau-balanced-max-best-reduction`：只有当前 best 的 `relative LC cancellation reduction` 还低于这个阈值时才允许触发 burst，默认 `0.08`；传 `0` 或负数可关闭这个保护。
+- `--plateau-balanced-reset-counts-on-burst` / `--no-plateau-balanced-reset-counts-on-burst`：控制 burst 开始时是否清空 coverage 计数，默认不清空。
 
 模式语义：
 - `epsilon_greedy`：保持历史行为，epsilon 触发后走原始 all-valid 探索逻辑。
 - `epsilon_safe_increase_mixture`：epsilon 触发后，以 `--safe-increase-explore-prob` 的概率从当前合法 increase-only 动作中均匀采样。
 - `epsilon_increase_coverage`：epsilon 触发后，以 `--safe-increase-explore-prob` 的概率从当前合法 increase-only 动作中选择“历史探索次数最少”的动作；若并列最少，则在并列集合中随机采样。
+- `epsilon_plateau_soft_target_balanced`：只有在 validation 停滞并且 burst 处于激活状态时，才会以 `--plateau-balanced-mix-prob` 的概率进入 coverage-balanced increase 采样；否则退化为原始 epsilon-greedy。
 
 推荐示例 1：均匀 increase 混合探索
 
@@ -2715,9 +2722,27 @@ PYTHONPATH=. python scripts/train_dqn_amc.py \
   --output-dir outputs/smoke_increase_coverage
 ```
 
+推荐示例 3：plateau-triggered soft target-balanced exploration
+
+```bash
+PYTHONPATH=. python scripts/train_dqn_amc.py \
+  --workload mc_fairgen \
+  --action-space single \
+  --reward-mode interval_qos_v2 \
+  --exploration-mode epsilon_plateau_soft_target_balanced \
+  --plateau-balanced-start-episode 40 \
+  --plateau-balanced-window 3 \
+  --plateau-balanced-burst-episodes 20 \
+  --plateau-balanced-mix-prob 0.3 \
+  --plateau-balanced-max-best-reduction 0.08 \
+  --noop-exploration-prob 0.0 \
+  --output-dir outputs/smoke_plateau_soft_balanced
+```
+
 兼容性说明：
 - 默认参数 `--exploration-mode epsilon_greedy --safe-increase-explore-prob 0.0` 与历史行为等价。
 - 旧 checkpoint 缺少 `increase_action_ids` 或 coverage 统计字段时可正常加载；新 checkpoint 会保存这些字段用于训练复现。
+- plateau 模式只会在 `validation_metrics.csv` 记录停滞检测结果，并在 `train_metrics.csv` 里记录 burst 是否激活、剩余 episode 数、burst 触发次数、burst 内 balanced 采样次数与回退次数。
 
 新增 `train_metrics.csv` 字段：
 - `exploration_mode`
@@ -2728,12 +2753,35 @@ PYTHONPATH=. python scripts/train_dqn_amc.py \
 - `exploration_safe_increase_fallback_count`
 - `exploration_increase_coverage_action_count`
 - `exploration_increase_coverage_tie_count`
+- `plateau_balanced_active`
+- `plateau_balanced_active_episodes_remaining`
+- `plateau_balanced_burst_count_total`
+- `plateau_balanced_burst_count_delta`
+- `plateau_balanced_action_count`
+- `plateau_balanced_fallback_count`
 - `exploration_safe_increase_action_rate`
 - `exploration_all_valid_action_rate`
 - `exploration_safe_increase_fallback_rate`
 - `exploration_increase_coverage_action_rate`
 - `exploration_increase_coverage_tie_rate`
+- `plateau_balanced_action_rate`
 - `increase_coverage_min_count`
 - `increase_coverage_max_count`
 - `increase_coverage_mean_count`
 - `increase_coverage_std_count`
+
+新增 `validation_metrics.csv` 字段：
+- `plateau_current_reduction`
+- `plateau_best_reduction`
+- `plateau_no_improve_count`
+- `plateau_balanced_triggered`
+- `plateau_balanced_active_episodes_remaining`
+- `plateau_balanced_burst_count`
+
+新增 `config.json` / `dqn_config` 字段：
+- `plateau_balanced_mix_prob`
+- `plateau_balanced_start_episode`
+- `plateau_balanced_window`
+- `plateau_balanced_burst_episodes`
+- `plateau_balanced_max_best_reduction`
+- `plateau_balanced_reset_counts_on_burst`

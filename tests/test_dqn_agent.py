@@ -179,6 +179,50 @@ def test_increase_coverage_exploration_tracks_least_visited_actions_and_persists
     assert loaded.exploration_increase_coverage_tie_count == agent.exploration_increase_coverage_tie_count
 
 
+def test_plateau_balanced_burst_uses_coverage_sampling_and_persists(tmp_path: Path) -> None:
+    """plateau burst 打开后应进入 coverage-balanced 采样，并在 checkpoint 中保留状态。"""
+
+    agent = DqnBudgetAgent(
+        observation_dim=len(STATE),
+        action_dim=3,
+        config=_config(
+            epsilon_start=1.0,
+            epsilon_end=1.0,
+            exploration_mode="epsilon_plateau_soft_target_balanced",
+            plateau_balanced_mix_prob=1.0,
+        ),
+        increase_action_ids=(0, 1),
+        double_dqn=True,
+    )
+
+    agent.start_plateau_balanced_burst(3)
+    assert agent.plateau_balanced_is_active is True
+    assert agent.plateau_balanced_active_episodes_remaining == 3
+
+    chosen_actions = [
+        agent.select_action_id(STATE, valid_action_mask=(True, True, True), training=True)
+        for _ in range(4)
+    ]
+    assert all(action_id in {0, 1} for action_id in chosen_actions)
+    assert agent.plateau_balanced_action_count == 4
+    assert agent.plateau_balanced_fallback_count == 0
+    assert agent.exploration_safe_increase_fallback_count == 0
+    assert agent.increase_exploration_visit_counts == {0: 2, 1: 2}
+
+    agent.on_episode_end()
+    assert agent.plateau_balanced_active_episodes_remaining == 2
+
+    model_path = tmp_path / "plateau_agent.pt"
+    agent.save(model_path)
+    loaded = DqnBudgetAgent.load(model_path)
+
+    assert loaded.plateau_balanced_active_episodes_remaining == agent.plateau_balanced_active_episodes_remaining
+    assert loaded.plateau_balanced_burst_count == agent.plateau_balanced_burst_count
+    assert loaded.plateau_balanced_action_count == agent.plateau_balanced_action_count
+    assert loaded.plateau_balanced_fallback_count == agent.plateau_balanced_fallback_count
+    assert loaded.increase_exploration_visit_counts == agent.increase_exploration_visit_counts
+
+
 def test_noop_q_rank_is_one_when_noop_is_best() -> None:
     """当显式 noop 是合法动作中最高 Q 时，rank 应为 1。"""
 

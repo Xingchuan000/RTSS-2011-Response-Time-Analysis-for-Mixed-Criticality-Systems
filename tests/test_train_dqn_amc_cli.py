@@ -210,6 +210,56 @@ def test_train_cli_supports_parallel_validation_and_disabling_step_log(tmp_path:
     assert config_payload["log_step_every"] == 0
 
 
+def test_train_cli_supports_plateau_balanced_exploration_fields(tmp_path: Path) -> None:
+    """plateau-balanced 探索模式应写出对应的配置与统计字段。"""
+
+    output_dir = tmp_path / "plateau_balanced"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--workload",
+            "small",
+            "--episodes",
+            "2",
+            "--end-time",
+            "100",
+            "--validate-every",
+            "1",
+            "--validation-seeds",
+            "100:101",
+            "--exploration-mode",
+            "epsilon_plateau_soft_target_balanced",
+            "--plateau-balanced-mix-prob",
+            "0.25",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+
+    with (output_dir / "config.json").open("r", encoding="utf-8") as f:
+        config_payload = json.load(f)
+    assert config_payload["exploration_mode"] == "epsilon_plateau_soft_target_balanced"
+    assert config_payload["plateau_balanced_mix_prob"] == 0.25
+    assert "plateau_balanced_total_bursts" in config_payload
+
+    with (output_dir / "train_metrics.csv").open("r", encoding="utf-8", newline="") as f:
+        train_rows = list(csv.DictReader(f))
+    assert train_rows
+    assert "plateau_balanced_active" in train_rows[0]
+    assert "plateau_balanced_action_rate" in train_rows[0]
+
+    with (output_dir / "validation_metrics.csv").open("r", encoding="utf-8", newline="") as f:
+        validation_rows = list(csv.DictReader(f))
+    assert validation_rows
+    assert "plateau_current_reduction" in validation_rows[0]
+    assert "plateau_balanced_triggered" in validation_rows[0]
+
+
 def test_train_cli_rejects_invalid_validation_workers(tmp_path: Path) -> None:
     """validation worker 数小于 1 时，训练 CLI 应显式报错。"""
 

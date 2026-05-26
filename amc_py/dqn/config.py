@@ -46,6 +46,9 @@ class DqnConfig:
     # 仅当 exploration_mode 为 safe_increase_mixture / increase_coverage 时生效。
     # 含义：epsilon 探索触发时，以该概率进入 increase-only 分支。
     safe_increase_explore_prob: float = 0.0
+    # plateau-triggered soft target-balanced exploration 中，epsilon 探索分支里
+    # 走 coverage-balanced increase 采样的概率。
+    plateau_balanced_mix_prob: float = 0.3
     # MLP 隐藏层宽度；若为空则按任务规模自动推导。
     hidden_layers: tuple[int, ...] | None = None
     # Q 网络结构类型：
