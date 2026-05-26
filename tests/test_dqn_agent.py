@@ -141,6 +141,44 @@ def test_save_and_load_keep_same_greedy_output(tmp_path: Path) -> None:
     assert loaded.double_dqn is True
 
 
+def test_increase_coverage_exploration_tracks_least_visited_actions_and_persists(tmp_path: Path) -> None:
+    """coverage 探索应优先挑选访问次数最少的 increase 动作，并在 checkpoint 中保留统计。"""
+
+    agent = DqnBudgetAgent(
+        observation_dim=len(STATE),
+        action_dim=3,
+        config=_config(
+            epsilon_start=1.0,
+            epsilon_end=1.0,
+            exploration_mode="epsilon_increase_coverage",
+            safe_increase_explore_prob=1.0,
+        ),
+        increase_action_ids=(0, 1),
+        double_dqn=True,
+    )
+
+    chosen_actions = [
+        agent.select_action_id(STATE, valid_action_mask=(True, True, True), training=True)
+        for _ in range(3)
+    ]
+    assert all(action_id in {0, 1} for action_id in chosen_actions)
+    assert agent.exploration_safe_increase_action_count == 3
+    assert agent.exploration_increase_coverage_action_count == 3
+    assert agent.exploration_safe_increase_fallback_count == 0
+    # 第 1 次和第 3 次选择时，两个 increase 候选会出现并列最少，应该触发 tie 统计。
+    assert agent.exploration_increase_coverage_tie_count == 2
+    assert set(agent.increase_exploration_visit_counts.keys()) == {0, 1}
+    assert sorted(agent.increase_exploration_visit_counts.values()) == [1, 2]
+
+    model_path = tmp_path / "coverage_agent.pt"
+    agent.save(model_path)
+    loaded = DqnBudgetAgent.load(model_path)
+
+    assert loaded.increase_exploration_visit_counts == agent.increase_exploration_visit_counts
+    assert loaded.exploration_increase_coverage_action_count == agent.exploration_increase_coverage_action_count
+    assert loaded.exploration_increase_coverage_tie_count == agent.exploration_increase_coverage_tie_count
+
+
 def test_noop_q_rank_is_one_when_noop_is_best() -> None:
     """当显式 noop 是合法动作中最高 Q 时，rank 应为 1。"""
 

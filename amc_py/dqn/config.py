@@ -39,9 +39,12 @@ class DqnConfig:
     # - epsilon_greedy：保持旧逻辑，epsilon 触发后从合法动作中采样（含 noop 优先逻辑）；
     # - epsilon_safe_increase_mixture：epsilon 触发后，先按 safe_increase_explore_prob
     #   尝试从“当前合法 increase-only 动作”采样，未命中或无可选 increase 时回到旧逻辑。
+    # - epsilon_increase_coverage：epsilon 触发后，先按 safe_increase_explore_prob
+    #   尝试从“当前合法 increase-only 动作”中选择历史探索次数最少的动作；
+    #   若并列最少，则随机打散并从并列集合中采样；未命中或无可选 increase 时回到旧逻辑。
     exploration_mode: str = "epsilon_greedy"
-    # 仅当 exploration_mode == epsilon_safe_increase_mixture 时生效。
-    # 含义：epsilon 探索触发时，以该概率从合法 increase-only 动作集合中均匀采样。
+    # 仅当 exploration_mode 为 safe_increase_mixture / increase_coverage 时生效。
+    # 含义：epsilon 探索触发时，以该概率进入 increase-only 分支。
     safe_increase_explore_prob: float = 0.0
     # MLP 隐藏层宽度；若为空则按任务规模自动推导。
     hidden_layers: tuple[int, ...] | None = None

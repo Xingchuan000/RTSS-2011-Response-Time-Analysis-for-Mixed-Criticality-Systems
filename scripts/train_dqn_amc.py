@@ -1476,12 +1476,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--exploration-mode",
-        choices=["epsilon_greedy", "epsilon_safe_increase_mixture"],
+        choices=[
+            "epsilon_greedy",
+            "epsilon_safe_increase_mixture",
+            "epsilon_increase_coverage",
+        ],
         default="epsilon_greedy",
         help=(
             "Training-time epsilon exploration action sampling mode. "
             "epsilon_greedy preserves the original behavior. "
             "epsilon_safe_increase_mixture samples from valid increase-only actions "
+            "with --safe-increase-explore-prob when epsilon exploration is triggered. "
+            "epsilon_increase_coverage samples the least-visited valid increase-only action "
             "with --safe-increase-explore-prob when epsilon exploration is triggered."
         ),
     )
@@ -1490,8 +1496,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.0,
         help=(
-            "Only used when --exploration-mode epsilon_safe_increase_mixture. "
-            "During epsilon exploration, probability of uniformly sampling from valid increase-only actions."
+            "Only used when --exploration-mode epsilon_safe_increase_mixture or epsilon_increase_coverage. "
+            "During epsilon exploration, probability of entering the increase-only branch."
         ),
     )
     parser.add_argument(
@@ -1971,6 +1977,10 @@ def main() -> None:
         exploration_safe_increase_action_count_before = int(agent.exploration_safe_increase_action_count)
         exploration_all_valid_action_count_before = int(agent.exploration_all_valid_action_count)
         exploration_safe_increase_fallback_count_before = int(agent.exploration_safe_increase_fallback_count)
+        exploration_increase_coverage_action_count_before = int(
+            agent.exploration_increase_coverage_action_count
+        )
+        exploration_increase_coverage_tie_count_before = int(agent.exploration_increase_coverage_tie_count)
         episode_action_hist: dict[int, dict[str, int]] = defaultdict(lambda: {"count": 0, "accepted": 0, "rejected": 0})
         last_info: dict[str, int | float | str | bool | None] = {
             "mode_changes": 0,
@@ -2231,6 +2241,29 @@ def main() -> None:
         exploration_safe_increase_fallback_delta = int(
             agent.exploration_safe_increase_fallback_count - exploration_safe_increase_fallback_count_before
         )
+        exploration_increase_coverage_delta = int(
+            agent.exploration_increase_coverage_action_count - exploration_increase_coverage_action_count_before
+        )
+        exploration_increase_coverage_tie_delta = int(
+            agent.exploration_increase_coverage_tie_count - exploration_increase_coverage_tie_count_before
+        )
+        coverage_counts = [
+            int(agent.increase_exploration_visit_counts.get(int(action_id), 0))
+            for action_id in increase_action_ids
+        ]
+        if coverage_counts:
+            coverage_min = int(min(coverage_counts))
+            coverage_max = int(max(coverage_counts))
+            coverage_mean = float(sum(coverage_counts) / len(coverage_counts))
+            coverage_var = float(
+                sum((count - coverage_mean) ** 2 for count in coverage_counts) / len(coverage_counts)
+            )
+            coverage_std = coverage_var ** 0.5
+        else:
+            coverage_min = 0
+            coverage_max = 0
+            coverage_mean = 0.0
+            coverage_std = 0.0
         train_metric_rows.append(
             {
                 "episode": episode,
@@ -2338,6 +2371,8 @@ def main() -> None:
                 "exploration_safe_increase_action_count": exploration_safe_increase_delta,
                 "exploration_all_valid_action_count": exploration_all_valid_delta,
                 "exploration_safe_increase_fallback_count": exploration_safe_increase_fallback_delta,
+                "exploration_increase_coverage_action_count": exploration_increase_coverage_delta,
+                "exploration_increase_coverage_tie_count": exploration_increase_coverage_tie_delta,
                 "exploration_noop_action_rate": (
                     float(exploration_noop_delta) / float(exploration_action_delta)
                     if exploration_action_delta > 0
@@ -2358,6 +2393,20 @@ def main() -> None:
                     if exploration_action_delta > 0
                     else 0.0
                 ),
+                "exploration_increase_coverage_action_rate": (
+                    float(exploration_increase_coverage_delta) / float(exploration_action_delta)
+                    if exploration_action_delta > 0
+                    else 0.0
+                ),
+                "exploration_increase_coverage_tie_rate": (
+                    float(exploration_increase_coverage_tie_delta) / float(exploration_increase_coverage_delta)
+                    if exploration_increase_coverage_delta > 0
+                    else 0.0
+                ),
+                "increase_coverage_min_count": coverage_min,
+                "increase_coverage_max_count": coverage_max,
+                "increase_coverage_mean_count": coverage_mean,
+                "increase_coverage_std_count": coverage_std,
                 "observation_mode": str(last_info.get("observation_mode", args.observation_mode)),
                 "state_dim": int(last_info.get("state_dim", len(obs.state_vector))),
                 "feature_safety_margin_min_mean": (
@@ -2676,10 +2725,18 @@ def main() -> None:
             "exploration_safe_increase_action_count",
             "exploration_all_valid_action_count",
             "exploration_safe_increase_fallback_count",
+            "exploration_increase_coverage_action_count",
+            "exploration_increase_coverage_tie_count",
             "exploration_noop_action_rate",
             "exploration_safe_increase_action_rate",
             "exploration_all_valid_action_rate",
             "exploration_safe_increase_fallback_rate",
+            "exploration_increase_coverage_action_rate",
+            "exploration_increase_coverage_tie_rate",
+            "increase_coverage_min_count",
+            "increase_coverage_max_count",
+            "increase_coverage_mean_count",
+            "increase_coverage_std_count",
             "observation_mode",
             "state_dim",
             "feature_safety_margin_min_mean",
