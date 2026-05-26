@@ -1328,6 +1328,14 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py
 - `--checkpoint`
 - `--scenario`
 - `--save-best-by`
+- `--dqn-device`
+
+`--dqn-device` 用于显式指定 DQN 的 torch device，可取 `cpu`、`cuda`、`cuda:0`、`mps` 等值。
+默认情况下不传该参数时，训练仍保持旧行为：macOS 上优先使用 `mps`，否则使用 `cpu`。
+如果显式指定 `cuda`，但当前 PyTorch 不是 CUDA 版本，训练会立即报错，不会静默回退到 CPU。
+每次训练启动时，脚本都会在终端打印请求的 device 和实际解析出的 device；同时 `config.json`
+会额外记录 `dqn_device_requested`、`dqn_device_resolved`、`torch_version`、
+`torch_cuda_available`、`torch_cuda_device_count` 和 `torch_cuda_device_name`，方便回看训练到底跑在什么设备上。
 
 输出文件：
 

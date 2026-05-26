@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TEST_ENV = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE", "PYTHONPATH": "."}
 
 
 def test_hidden_layers_and_replay_related_params_are_applied(tmp_path: Path) -> None:
@@ -25,6 +26,8 @@ def test_hidden_layers_and_replay_related_params_are_applied(tmp_path: Path) -> 
             "50",
             "--seed",
             "0",
+            "--dqn-device",
+            "cpu",
             "--batch-size",
             "64",
             "--replay-capacity",
@@ -42,7 +45,7 @@ def test_hidden_layers_and_replay_related_params_are_applied(tmp_path: Path) -> 
         ],
         check=True,
         cwd=PROJECT_ROOT,
-        env={**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"},
+        env=TEST_ENV,
     )
 
     config_path = output_dir / "config.json"
@@ -56,3 +59,22 @@ def test_hidden_layers_and_replay_related_params_are_applied(tmp_path: Path) -> 
     assert dqn_cfg["target_update_freq"] == 5
     assert dqn_cfg["grad_clip_norm"] == 10.0
     assert tuple(dqn_cfg["hidden_layers"]) == (128, 128)
+    assert payload["dqn_device_requested"] == "cpu"
+    assert payload["dqn_device_resolved"] == "cpu"
+    assert payload["torch_cuda_available"] in {True, False}
+    assert isinstance(payload["torch_cuda_device_count"], int)
+    assert payload["torch_cuda_device_name"] is None
+
+
+def test_train_dqn_amc_help_shows_dqn_device_option() -> None:
+    """帮助信息里应暴露 DQN device 参数。"""
+
+    result = subprocess.run(
+        [sys.executable, "scripts/train_dqn_amc.py", "--help"],
+        cwd=PROJECT_ROOT,
+        env=TEST_ENV,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "--dqn-device" in result.stdout

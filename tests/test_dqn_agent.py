@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+import pytest
 import torch
 
 from amc_py.dqn import DqnBudgetAgent, DqnConfig, Transition
@@ -139,6 +140,19 @@ def test_save_and_load_keep_same_greedy_output(tmp_path: Path) -> None:
     assert loaded.select_action_id(STATE, training=False) == expected
     assert loaded.noop_action_id == 2
     assert loaded.double_dqn is True
+
+
+def test_explicit_cuda_device_raises_when_cuda_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """显式请求 CUDA 时，如果当前 PyTorch 不支持 CUDA，应立即报错。"""
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    with pytest.raises(RuntimeError, match="Requested DQN device 'cuda'"):
+        DqnBudgetAgent(
+            observation_dim=len(STATE),
+            action_dim=3,
+            config=_config(),
+            device="cuda",
+        )
 
 
 def test_increase_coverage_exploration_tracks_least_visited_actions_and_persists(tmp_path: Path) -> None:

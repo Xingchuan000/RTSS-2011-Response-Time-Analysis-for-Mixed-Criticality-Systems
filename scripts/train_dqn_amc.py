@@ -1652,6 +1652,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="并行 validation 的进程数；1 表示保持串行。",
     )
     parser.add_argument(
+        "--dqn-device",
+        type=str,
+        default=None,
+        help=(
+            "Torch device for DQN training. Examples: cpu, cuda, cuda:0, mps. "
+            "Default keeps existing behavior: mps on macOS if available, otherwise cpu. "
+            "Use --dqn-device cuda to enable NVIDIA GPU training."
+        ),
+    )
+    parser.add_argument(
         "--log-step-every",
         type=int,
         default=1,
@@ -1929,6 +1939,7 @@ def main() -> None:
         noop_action_id=_get_noop_action_id(initial_env),
         increase_action_ids=increase_action_ids,
         hidden_layers=hidden_layers,
+        device=args.dqn_device,
         double_dqn=args.double_dqn,
         action_features=action_features,
         action_feature_names=action_feature_names,
@@ -1949,6 +1960,16 @@ def main() -> None:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
     if args.trace_dir is not None:
         args.trace_dir.mkdir(parents=True, exist_ok=True)
+
+    # 训练启动时把 device 解析结果明确打印出来，方便在终端里直接确认是否真的用了 GPU。
+    print(f"[DQN] requested device: {args.dqn_device}")
+    print(f"[DQN] resolved device: {agent.device}")
+    print(f"[DQN] torch version: {torch.__version__}")
+    if agent.device.type == "cuda":
+        cuda_index = agent.device.index if agent.device.index is not None else 0
+        print(f"[DQN] cuda available: {torch.cuda.is_available()}")
+        print(f"[DQN] cuda device count: {torch.cuda.device_count()}")
+        print(f"[DQN] cuda device name: {torch.cuda.get_device_name(cuda_index)}")
 
     step_rows: list[dict[str, int | float | str | bool]] = []
     train_metric_rows: list[dict[str, int | float | str]] = []
@@ -3284,6 +3305,16 @@ def main() -> None:
         "reward_mode": args.reward_mode,
         "reward_definition": reward_mode_config.describe(),
         "double_dqn": args.double_dqn,
+        "dqn_device_requested": args.dqn_device,
+        "dqn_device_resolved": str(agent.device),
+        "torch_version": torch.__version__,
+        "torch_cuda_available": torch.cuda.is_available(),
+        "torch_cuda_device_count": torch.cuda.device_count(),
+        "torch_cuda_device_name": (
+            torch.cuda.get_device_name(agent.device.index if agent.device.index is not None else 0)
+            if agent.device.type == "cuda"
+            else None
+        ),
         "q_network_type": args.q_network_type,
         "action_feature_mode": args.action_feature_mode,
         "action_aware_mask_mode": args.action_aware_mask_mode,
