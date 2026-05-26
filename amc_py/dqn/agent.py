@@ -43,19 +43,31 @@ class NoopQDiagnostics:
 
 
 def _resolve_torch_device(device: str | None = None) -> torch.device:
-    """解析 DQN 使用的设备，默认自动优先选择 Apple Metal(MPS)。
+    """解析 DQN 训练使用的 torch device。
 
-    选择策略：
-    - 若调用方显式传入 `device`，则严格使用该值；
-    - 否则若当前 PyTorch 环境支持且可用 `mps`，优先使用 `mps`；
-    - 否则回退到 `cpu`。
+    约定如下：
+    - 如果调用方显式传入 `device`，就严格使用该设备，并在硬件不可用时立即报错；
+    - 如果没有显式指定设备，则保持旧默认行为：macOS 上优先 `mps`，否则使用 `cpu`；
+    - 不在默认分支里自动切换到 `cuda`，避免改变既有实验的默认训练口径。
 
-    这里不自动尝试 `cuda`，因为当前用户运行环境是 macOS，目标是优先启用
-    Apple Silicon / Metal 加速；若后续需要显式使用其他设备，可继续通过参数覆盖。
+    这里故意不做静默回退：用户一旦明确请求 `cuda` 或 `mps`，就必须真的可用。
     """
 
     if device is not None:
-        return torch.device(device)
+        requested = torch.device(device)
+        if requested.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError(
+                f"Requested DQN device '{device}', but torch.cuda.is_available() is False. "
+                "Install a CUDA-enabled PyTorch build or use --dqn-device cpu."
+            )
+        if requested.type == "mps" and not (
+            torch.backends.mps.is_built() and torch.backends.mps.is_available()
+        ):
+            raise RuntimeError(
+                f"Requested DQN device '{device}', but MPS is not available in this PyTorch build. "
+                "Use --dqn-device cpu or install a compatible PyTorch build."
+            )
+        return requested
     if torch.backends.mps.is_built() and torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
