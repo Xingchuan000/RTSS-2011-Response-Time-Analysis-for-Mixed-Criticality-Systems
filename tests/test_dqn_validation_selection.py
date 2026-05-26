@@ -7,7 +7,11 @@ from amc_py.model_selection import (
     is_qos_best_valid,
     is_qos_stable_valid,
 )
-from scripts.train_dqn_amc import _is_better_validation_row, _is_pareto_valid_checkpoint
+from scripts.train_dqn_amc import (
+    _is_better_validation_row,
+    _is_pareto_valid_checkpoint,
+    _relative_lc_reduction_from_validation_row,
+)
 
 
 def test_reward_metric_should_prefer_larger_value() -> None:
@@ -162,6 +166,25 @@ def test_is_pareto_valid_checkpoint_requires_all_three_conditions() -> None:
     assert _is_pareto_valid_checkpoint(row_ok) is True
     assert _is_pareto_valid_checkpoint(row_bad_mode) is False
     assert _is_pareto_valid_checkpoint(row_bad_miss) is False
+
+
+def test_relative_lc_reduction_uses_baseline_mean_ratio() -> None:
+    """plateau reduction 应按 baseline 与 DQN 的 lo_cancellations_mean 归一化计算。"""
+
+    row = {
+        "baseline_lo_cancellations_mean": 10.0,
+        "lo_cancellations_mean": 8.0,
+    }
+    assert _relative_lc_reduction_from_validation_row(row) == 0.2
+
+
+def test_relative_lc_reduction_returns_none_when_baseline_is_missing_or_non_positive() -> None:
+    """baseline 缺失或非正时，reduction 应返回 None。"""
+
+    assert _relative_lc_reduction_from_validation_row({"lo_cancellations_mean": 8.0}) is None
+    assert _relative_lc_reduction_from_validation_row(
+        {"baseline_lo_cancellations_mean": 0.0, "lo_cancellations_mean": 8.0}
+    ) is None
 
 
 def test_qos_selection_rules_match_plan() -> None:

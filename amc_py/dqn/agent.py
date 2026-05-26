@@ -118,11 +118,15 @@ class DqnBudgetAgent:
             "epsilon_greedy",
             "epsilon_safe_increase_mixture",
             "epsilon_increase_coverage",
+            "epsilon_plateau_soft_target_balanced",
         }:
             raise ValueError(f"unsupported exploration_mode: {self.exploration_mode}")
         self.safe_increase_explore_prob = float(config.safe_increase_explore_prob)
         if not 0.0 <= self.safe_increase_explore_prob <= 1.0:
             raise ValueError("safe_increase_explore_prob must be in [0, 1]")
+        self.plateau_balanced_mix_prob = float(config.plateau_balanced_mix_prob)
+        if not 0.0 <= self.plateau_balanced_mix_prob <= 1.0:
+            raise ValueError("plateau_balanced_mix_prob must be in [0, 1]")
         self.q_network_type = str(config.q_network_type)
         self.action_feature_mode = str(config.action_feature_mode)
         self.action_aware_mask_mode = str(config.action_aware_mask_mode)
@@ -212,6 +216,14 @@ class DqnBudgetAgent:
         }
         self.exploration_increase_coverage_action_count = 0
         self.exploration_increase_coverage_tie_count = 0
+        # plateau-triggered soft target-balanced exploration 状态：
+        # - active_episodes_remaining > 0 时，训练期 epsilon 探索分支允许进入 balanced 采样；
+        # - burst_count 记录一共触发了多少次 burst；
+        # - action_count / fallback_count 用于训练日志观察 burst 实际效果。
+        self.plateau_balanced_active_episodes_remaining = 0
+        self.plateau_balanced_burst_count = 0
+        self.plateau_balanced_action_count = 0
+        self.plateau_balanced_fallback_count = 0
 
     def set_action_features(
         self,
@@ -397,6 +409,37 @@ class DqnBudgetAgent:
         self.exploration_increase_coverage_action_count += 1
         return action_id
 
+    def start_plateau_balanced_burst(self, burst_episodes: int, *, reset_counts: bool = False) -> None:
+        """启动一个 plateau-triggered soft balanced exploration burst。
+
+        该方法只负责打开 burst 状态，不改变 validation 或 greedy 选择逻辑。
+        若已有 burst 正在进行，则保留更长的剩余 episode 数，避免新触发把旧 burst
+        无意缩短。
+        """
+
+        if burst_episodes <= 0:
+            return
+        self.plateau_balanced_active_episodes_remaining = max(
+            self.plateau_balanced_active_episodes_remaining,
+            int(burst_episodes),
+        )
+        self.plateau_balanced_burst_count += 1
+        if reset_counts:
+            for action_id in list(self.increase_exploration_visit_counts.keys()):
+                self.increase_exploration_visit_counts[int(action_id)] = 0
+
+    def on_episode_end(self) -> None:
+        """训练循环每个 episode 结束时调用，用于推进 burst 的剩余 episode 计数。"""
+
+        if self.plateau_balanced_active_episodes_remaining > 0:
+            self.plateau_balanced_active_episodes_remaining -= 1
+
+    @property
+    def plateau_balanced_is_active(self) -> bool:
+        """当前是否处于 plateau-triggered balanced burst 中。"""
+
+        return self.plateau_balanced_active_episodes_remaining > 0
+
     def _greedy_action_id(
         self,
         state_vector: tuple[float, ...],
@@ -434,7 +477,24 @@ class DqnBudgetAgent:
             self.exploration_action_count += 1
 
             # 新模式只作用于训练期 epsilon 分支；greedy 与 validation(training=False) 完全不变。
-            if self.exploration_mode in {"epsilon_safe_increase_mixture", "epsilon_increase_coverage"}:
+            if self.exploration_mode == "epsilon_plateau_soft_target_balanced":
+                should_try_balanced = (
+                    self.plateau_balanced_is_active
+                    and self.plateau_balanced_mix_prob > 0.0
+                    and self._rng.random() < self.plateau_balanced_mix_prob
+                )
+                if should_try_balanced:
+                    action_id = self._sample_coverage_increase_exploration_action(valid_action_ids)
+                    if action_id is None:
+                        # coverage-balanced 分支无合法 increase 动作时，严格回退到旧版探索逻辑。
+                        self.plateau_balanced_fallback_count += 1
+                        self.exploration_safe_increase_fallback_count += 1
+                        action_id = self._sample_default_exploration_action(valid_action_ids)
+                    else:
+                        self.plateau_balanced_action_count += 1
+                else:
+                    action_id = self._sample_default_exploration_action(valid_action_ids)
+            elif self.exploration_mode in {"epsilon_safe_increase_mixture", "epsilon_increase_coverage"}:
                 should_try_safe_increase = (
                     self.safe_increase_explore_prob > 0.0
                     and self._rng.random() < self.safe_increase_explore_prob
@@ -681,6 +741,10 @@ class DqnBudgetAgent:
                 "increase_exploration_visit_counts": dict(self.increase_exploration_visit_counts),
                 "exploration_increase_coverage_action_count": self.exploration_increase_coverage_action_count,
                 "exploration_increase_coverage_tie_count": self.exploration_increase_coverage_tie_count,
+                "plateau_balanced_active_episodes_remaining": self.plateau_balanced_active_episodes_remaining,
+                "plateau_balanced_burst_count": self.plateau_balanced_burst_count,
+                "plateau_balanced_action_count": self.plateau_balanced_action_count,
+                "plateau_balanced_fallback_count": self.plateau_balanced_fallback_count,
                 "double_dqn": self.double_dqn,
                 "q_network_type": self.q_network_type,
                 "action_feature_mode": self.action_feature_mode,
@@ -772,4 +836,10 @@ class DqnBudgetAgent:
         agent.exploration_increase_coverage_tie_count = int(
             checkpoint.get("exploration_increase_coverage_tie_count", 0)
         )
+        agent.plateau_balanced_active_episodes_remaining = int(
+            checkpoint.get("plateau_balanced_active_episodes_remaining", 0)
+        )
+        agent.plateau_balanced_burst_count = int(checkpoint.get("plateau_balanced_burst_count", 0))
+        agent.plateau_balanced_action_count = int(checkpoint.get("plateau_balanced_action_count", 0))
+        agent.plateau_balanced_fallback_count = int(checkpoint.get("plateau_balanced_fallback_count", 0))
         return agent
