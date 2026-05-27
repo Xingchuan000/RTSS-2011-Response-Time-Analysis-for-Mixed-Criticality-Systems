@@ -159,6 +159,17 @@ class DqnBudgetAgent:
         torch.manual_seed(network_seed)
         # 回放池采样使用单独 replay_seed，避免与探索随机流互相污染。
         self.replay_buffer = ReplayBuffer(capacity=config.replay_capacity, seed=replay_seed)
+        # elite replay 使用与普通 replay 独立的采样随机流，避免两者完全耦合。
+        elite_replay_seed = replay_seed + 1000003 if replay_seed is not None else None
+        self.elite_replay_buffer = (
+            ReplayBuffer(capacity=config.elite_replay_capacity, seed=elite_replay_seed)
+            if config.use_elite_replay
+            else None
+        )
+        # 训练统计：记录普通/elite 样本累计使用量与写入量，便于日志追踪。
+        self.elite_samples_used_total = 0
+        self.normal_samples_used_total = 0
+        self.elite_transitions_added_total = 0
         if self.q_network_type == "mlp":
             self.policy_network = DqnNetwork(
                 input_dim=observation_dim,
@@ -562,13 +573,60 @@ class DqnBudgetAgent:
             raise ValueError("transition.action_id 超出动作空间范围")
         self.replay_buffer.push(transition)
 
+    def remember_elite_many(self, transitions: list[Transition]) -> int:
+        """将一批 transition 写入 elite replay buffer，返回实际写入数量。"""
+
+        if not self.config.use_elite_replay or self.elite_replay_buffer is None:
+            return 0
+        added = 0
+        for transition in transitions:
+            if transition.action_id < 0 or transition.action_id >= self.action_dim:
+                raise ValueError("elite transition.action_id 超出动作空间范围")
+            self.elite_replay_buffer.push(transition)
+            added += 1
+        self.elite_transitions_added_total += added
+        return added
+
+    @property
+    def elite_replay_size(self) -> int:
+        """返回当前 elite replay buffer 大小。"""
+
+        if self.elite_replay_buffer is None:
+            return 0
+        return len(self.elite_replay_buffer)
+
     def optimize_one_step(self) -> float | None:
         """执行一次 DQN 单步优化；样本不足时返回 None。"""
 
         if len(self.replay_buffer) < self.config.min_replay_size:
             return None
 
-        batch = self.replay_buffer.sample(self.config.batch_size)
+        # mixed replay 策略：
+        # - 默认仍从普通 replay 采样，保持旧逻辑兼容；
+        # - 仅当 elite replay 启用且达到最小容量时，按配置把一部分 batch 替换为 elite 样本。
+        use_elite_batch = (
+            self.config.use_elite_replay
+            and self.elite_replay_buffer is not None
+            and self.config.elite_batch_size > 0
+            and len(self.elite_replay_buffer) >= self.config.elite_replay_min_size
+        )
+        if use_elite_batch:
+            elite_n = min(
+                self.config.elite_batch_size,
+                self.config.batch_size,
+                len(self.elite_replay_buffer),
+            )
+            normal_n = self.config.batch_size - elite_n
+            if len(self.replay_buffer) < normal_n:
+                return None
+            normal_batch = self.replay_buffer.sample(normal_n) if normal_n > 0 else []
+            elite_batch = self.elite_replay_buffer.sample(elite_n)
+            batch = normal_batch + elite_batch
+            self.normal_samples_used_total += normal_n
+            self.elite_samples_used_total += elite_n
+        else:
+            batch = self.replay_buffer.sample(self.config.batch_size)
+            self.normal_samples_used_total += self.config.batch_size
         # 这里先把 Python 层的 tuple/list 批量拼成连续的 NumPy 数组，
         # 再统一转换成 torch tensor。这样可以减少 `torch.tensor(list_of_tuples)` 在
         # Python 侧逐元素解包与 dtype 推断的开销，尤其在训练中频繁优化时更明显。
@@ -773,6 +831,11 @@ class DqnBudgetAgent:
                 "optimization_steps": self.optimization_steps,
                 "epsilon_step": self.epsilon_step,
                 "current_epsilon": self.current_epsilon,
+                # 第一版只保存 elite replay 的统计量，不保存 buffer 内容，避免 checkpoint 体积膨胀。
+                "elite_replay_size": self.elite_replay_size,
+                "elite_transitions_added_total": self.elite_transitions_added_total,
+                "elite_samples_used_total": self.elite_samples_used_total,
+                "normal_samples_used_total": self.normal_samples_used_total,
             },
             path,
         )
@@ -854,4 +917,8 @@ class DqnBudgetAgent:
         agent.plateau_balanced_burst_count = int(checkpoint.get("plateau_balanced_burst_count", 0))
         agent.plateau_balanced_action_count = int(checkpoint.get("plateau_balanced_action_count", 0))
         agent.plateau_balanced_fallback_count = int(checkpoint.get("plateau_balanced_fallback_count", 0))
+        # 兼容旧 checkpoint：缺失字段时默认回落到 0。
+        agent.elite_transitions_added_total = int(checkpoint.get("elite_transitions_added_total", 0))
+        agent.elite_samples_used_total = int(checkpoint.get("elite_samples_used_total", 0))
+        agent.normal_samples_used_total = int(checkpoint.get("normal_samples_used_total", 0))
         return agent

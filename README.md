@@ -2793,3 +2793,76 @@ PYTHONPATH=. python scripts/train_dqn_amc.py \
 - `plateau_balanced_burst_episodes`
 - `plateau_balanced_max_best_reduction`
 - `plateau_balanced_reset_counts_on_burst`
+
+## Elite Replay v1 使用说明（按计划边界实现）
+
+本次实现仅包含：
+- 训练期 recent episode transition 缓存
+- validation 后按阈值筛选并写入 elite replay buffer
+- 训练 batch 的 normal + elite 混合采样
+
+本次未实现（保持原逻辑）：
+- 不改 DQN loss / target 计算 / 网络结构
+- 不改 reward / validation 口径
+- 不做 deterministic best rollout / imitation loss / checkpoint 回滚
+- 不改 epsilon decay / learning rate schedule / prioritized replay
+
+新增训练参数（`scripts/train_dqn_amc.py`）：
+- `--use-elite-replay`
+- `--elite-replay-capacity`
+- `--elite-replay-min-size`
+- `--elite-batch-size`
+- `--elite-score-min`
+- `--elite-score-ratio`
+- `--elite-recent-episodes`
+- `--elite-max-mode-delta`
+- `--elite-require-no-hi-miss` / `--no-elite-require-no-hi-miss`
+- `--elite-require-qos-stable` / `--no-elite-require-qos-stable`
+- `--elite-max-add-per-validation`
+
+关键行为说明：
+- 默认不加 `--use-elite-replay` 时，训练行为与旧版本一致。
+- 启用后，只有当 `elite_replay_size >= elite_replay_min_size` 才会参与混合采样。
+- 每步优化保持 `batch_size` 总量不变，其中最多 `elite_batch_size` 条来自 elite buffer。
+- 每次 validation 若 checkpoint 被判定为 elite，会把最近 `elite_recent_episodes` 个 episode 的 transition（受 `elite_max_add_per_validation` 限流）加入 elite buffer。
+
+新增输出文件：
+- `elite_replay_log.csv`：每个 validation checkpoint 一行，记录是否 candidate、拒绝原因、阈值、写入数量、buffer 大小和累计采样统计。未启用时也会生成 header。
+
+新增 `train_metrics.csv` 字段：
+- `elite_replay_enabled`
+- `elite_replay_buffer_size`
+- `elite_transitions_added_total`
+- `elite_samples_used_total`
+- `normal_samples_used_total`
+
+新增 `validation_metrics.csv` 字段：
+- `elite_replay_enabled`
+- `elite_replay_candidate`
+- `elite_replay_reason`
+- `elite_replay_threshold`
+- `elite_replay_current_reduction`
+- `elite_replay_best_reduction`
+- `elite_replay_added_count`
+- `elite_replay_buffer_size`
+- `elite_replay_recent_episode_start`
+- `elite_replay_recent_episode_end`
+- `elite_samples_used_total`
+- `normal_samples_used_total`
+
+新增 `config.json` 顶层字段：
+- `use_elite_replay`
+- `elite_replay_capacity`
+- `elite_replay_min_size`
+- `elite_batch_size`
+- `elite_score_min`
+- `elite_score_ratio`
+- `elite_recent_episodes`
+- `elite_max_mode_delta`
+- `elite_require_no_hi_miss`
+- `elite_require_qos_stable`
+- `elite_max_add_per_validation`
+- `elite_transitions_added_total`
+- `elite_samples_used_total`
+- `normal_samples_used_total`
+- `elite_replay_final_buffer_size`
