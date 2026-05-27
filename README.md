@@ -2815,6 +2815,7 @@ PYTHONPATH=. python scripts/train_dqn_amc.py \
 - `--elite-score-min`
 - `--elite-score-ratio`
 - `--elite-recent-episodes`
+- `--elite-start-episode`
 - `--elite-max-mode-delta`
 - `--elite-require-no-hi-miss` / `--no-elite-require-no-hi-miss`
 - `--elite-require-qos-stable` / `--no-elite-require-qos-stable`
@@ -2824,6 +2825,7 @@ PYTHONPATH=. python scripts/train_dqn_amc.py \
 - 默认不加 `--use-elite-replay` 时，训练行为与旧版本一致。
 - 启用后，只有当 `elite_replay_size >= elite_replay_min_size` 才会参与混合采样。
 - 每步优化保持 `batch_size` 总量不变，其中最多 `elite_batch_size` 条来自 elite buffer。
+- 仅当 `episode >= elite_start_episode` 时，elite 才会开始参与“入池判定 + 混合采样”。
 - 每次 validation 若 checkpoint 被判定为 elite，会把最近 `elite_recent_episodes` 个 episode 的 transition（受 `elite_max_add_per_validation` 限流）加入 elite buffer。
 
 新增输出文件：

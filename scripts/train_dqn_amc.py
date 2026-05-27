@@ -1516,6 +1516,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--elite-score-min", type=float, default=0.05)
     parser.add_argument("--elite-score-ratio", type=float, default=0.8)
     parser.add_argument("--elite-recent-episodes", type=int, default=10)
+    parser.add_argument(
+        "--elite-start-episode",
+        type=int,
+        default=0,
+        help="在该 episode 序号之前禁用 elite replay；默认 0 表示保持 Elite Replay v1 原行为。",
+    )
     parser.add_argument("--elite-max-mode-delta", type=float, default=0.05)
     parser.add_argument(
         "--elite-require-no-hi-miss",
@@ -1895,6 +1901,8 @@ def main() -> None:
         raise ValueError("--elite-score-ratio 必须在 [0, 1] 内")
     if args.elite_recent_episodes < 0:
         raise ValueError("--elite-recent-episodes 必须为非负整数")
+    if args.elite_start_episode < 0:
+        raise ValueError("--elite-start-episode 必须为非负整数")
     if args.elite_max_mode_delta < 0.0:
         raise ValueError("--elite-max-mode-delta 必须为非负数")
     if args.elite_max_add_per_validation <= 0:
@@ -2090,6 +2098,10 @@ def main() -> None:
 
     global_step = 0
     for episode in range(args.episodes):
+        # elite_active 由“是否启用 elite replay”与“是否达到起始 episode”共同决定。
+        # 这里按 0-based episode 索引判断：episode >= elite_start_episode 时激活。
+        elite_active = bool(args.use_elite_replay and episode >= args.elite_start_episode)
+        agent.set_elite_replay_runtime_enabled(elite_active)
         episode_seed = episode_seed_schedule[episode]
         env = build_env_from_experiment_config(
             experiment_config,
@@ -2246,7 +2258,7 @@ def main() -> None:
                     ),
                 )
                 agent.remember(transition)
-                if args.use_elite_replay:
+                if elite_active:
                     episode_transitions.append(transition)
                 loss = agent.optimize_one_step()
                 if loss is not None:
@@ -2424,7 +2436,7 @@ def main() -> None:
                 f"selected_invalid_mask_actions 必须为 0，episode={episode}, value={debug_stats['selected_invalid_mask_actions']}"
             )
         # 在进入 validation 判断前先刷新 recent episode 窗口，确保本轮 episode 可参与 elite 判定。
-        if args.use_elite_replay:
+        if elite_active:
             recent_episode_transition_buffers.append((episode + 1, list(episode_transitions)))
 
         loss_mean = sum(episode_losses) / len(episode_losses) if episode_losses else ""
@@ -2574,6 +2586,7 @@ def main() -> None:
                 "reward_budget_drift_mean_sum": reward_budget_drift_mean_sum,
                 # Elite Replay v1 训练期统计：用于观察 elite buffer 是否生效以及采样占比。
                 "elite_replay_enabled": bool(args.use_elite_replay),
+                "elite_replay_active": bool(elite_active),
                 "elite_replay_buffer_size": int(agent.elite_replay_size),
                 "elite_transitions_added_total": int(agent.elite_transitions_added_total),
                 "elite_samples_used_total": int(agent.elite_samples_used_total),
@@ -2804,7 +2817,7 @@ def main() -> None:
             elite_reason = "disabled"
             elite_recent_episode_start: int | None = None
             elite_recent_episode_end: int | None = None
-            if args.use_elite_replay:
+            if elite_active:
                 elite_candidate, elite_threshold, elite_reason = _is_elite_replay_candidate(
                     validation_row,
                     current_reduction=current_reduction,
@@ -2827,6 +2840,8 @@ def main() -> None:
                     if len(transitions_to_add) > args.elite_max_add_per_validation:
                         transitions_to_add = transitions_to_add[-args.elite_max_add_per_validation :]
                     elite_added_count = agent.remember_elite_many(transitions_to_add)
+            else:
+                elite_reason = "not_started"
 
             plateau_triggered = False
             plateau_trigger_reason = ""
@@ -2881,6 +2896,7 @@ def main() -> None:
                     "plateau_balanced_active_episodes_remaining": agent.plateau_balanced_active_episodes_remaining,
                     "plateau_balanced_burst_count": agent.plateau_balanced_burst_count,
                     "elite_replay_enabled": bool(args.use_elite_replay),
+                    "elite_replay_active": bool(elite_active),
                     "elite_replay_candidate": bool(elite_candidate),
                     "elite_replay_reason": str(elite_reason),
                     "elite_replay_threshold": elite_threshold,
@@ -2898,6 +2914,7 @@ def main() -> None:
                 {
                     "episode": episode + 1,
                     "enabled": bool(args.use_elite_replay),
+                    "active": bool(elite_active),
                     "candidate": bool(elite_candidate),
                     "reason": str(elite_reason),
                     "threshold": elite_threshold,
@@ -3083,6 +3100,7 @@ def main() -> None:
             "reward_budget_drift_penalty_sum",
             "reward_budget_drift_mean_sum",
             "elite_replay_enabled",
+            "elite_replay_active",
             "elite_replay_buffer_size",
             "elite_transitions_added_total",
             "elite_samples_used_total",
@@ -3174,6 +3192,7 @@ def main() -> None:
                 "plateau_balanced_active_episodes_remaining",
                 "plateau_balanced_burst_count",
                 "elite_replay_enabled",
+                "elite_replay_active",
                 "elite_replay_candidate",
                 "elite_replay_reason",
                 "elite_replay_threshold",
@@ -3418,6 +3437,7 @@ def main() -> None:
     elite_replay_fieldnames = [
         "episode",
         "enabled",
+        "active",
         "candidate",
         "reason",
         "threshold",
@@ -3528,6 +3548,7 @@ def main() -> None:
         "reward_definition": reward_mode_config.describe(),
         "double_dqn": args.double_dqn,
         "use_elite_replay": args.use_elite_replay,
+        "elite_start_episode": args.elite_start_episode,
         "elite_replay_capacity": args.elite_replay_capacity,
         "elite_replay_min_size": args.elite_replay_min_size,
         "elite_batch_size": args.elite_batch_size,

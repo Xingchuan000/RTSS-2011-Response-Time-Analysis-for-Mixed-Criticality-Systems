@@ -170,6 +170,9 @@ class DqnBudgetAgent:
         self.elite_samples_used_total = 0
         self.normal_samples_used_total = 0
         self.elite_transitions_added_total = 0
+        # 运行期开关：允许训练脚本按 episode 动态启停 elite 混采。
+        # 默认与配置一致，保持历史行为不变。
+        self.elite_replay_runtime_enabled = bool(config.use_elite_replay)
         if self.q_network_type == "mlp":
             self.policy_network = DqnNetwork(
                 input_dim=observation_dim,
@@ -606,6 +609,7 @@ class DqnBudgetAgent:
         # - 仅当 elite replay 启用且达到最小容量时，按配置把一部分 batch 替换为 elite 样本。
         use_elite_batch = (
             self.config.use_elite_replay
+            and self.elite_replay_runtime_enabled
             and self.elite_replay_buffer is not None
             and self.config.elite_batch_size > 0
             and len(self.elite_replay_buffer) >= self.config.elite_replay_min_size
@@ -722,6 +726,11 @@ class DqnBudgetAgent:
         """将 policy network 参数同步到 target network。"""
 
         self.target_network.load_state_dict(self.policy_network.state_dict())
+
+    def set_elite_replay_runtime_enabled(self, enabled: bool) -> None:
+        """设置运行期 elite 混采开关。"""
+
+        self.elite_replay_runtime_enabled = bool(enabled)
 
     @torch.no_grad()
     def compute_noop_q_diagnostics(
