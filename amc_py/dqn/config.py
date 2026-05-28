@@ -27,6 +27,14 @@ class DqnConfig:
     elite_replay_min_size: int = 128
     # 每个训练 batch 中从 elite buffer 抽取的样本数。
     elite_batch_size: int = 8
+    # 是否启用 best elite replay；默认关闭，保证旧实验行为完全不变。
+    use_best_elite_replay: bool = False
+    # best elite replay buffer 容量上限。
+    best_elite_replay_capacity: int = 2000
+    # best elite buffer 至少积累到该样本量后，才允许参与混合采样。
+    best_elite_replay_min_size: int = 128
+    # 每个训练 batch 中从 best elite buffer 抽取的样本数。
+    best_elite_batch_size: int = 4
     # target network 的同步频率，单位为优化步数。
     # 按稳定性修改计划改为 5，更接近论文设置，减少 target 过旧导致的 TD 目标漂移。
     target_update_freq: int = 5

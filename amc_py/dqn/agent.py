@@ -161,18 +161,32 @@ class DqnBudgetAgent:
         self.replay_buffer = ReplayBuffer(capacity=config.replay_capacity, seed=replay_seed)
         # elite replay 使用与普通 replay 独立的采样随机流，避免两者完全耦合。
         elite_replay_seed = replay_seed + 1000003 if replay_seed is not None else None
+        # best elite replay 也使用独立随机流，避免与普通/候选 elite 采样耦合。
+        best_elite_replay_seed = replay_seed + 2000003 if replay_seed is not None else None
+        self._best_elite_replay_seed = best_elite_replay_seed
         self.elite_replay_buffer = (
             ReplayBuffer(capacity=config.elite_replay_capacity, seed=elite_replay_seed)
             if config.use_elite_replay
             else None
         )
+        self.best_elite_replay_buffer = (
+            ReplayBuffer(
+                capacity=config.best_elite_replay_capacity,
+                seed=best_elite_replay_seed,
+            )
+            if config.use_best_elite_replay
+            else None
+        )
         # 训练统计：记录普通/elite 样本累计使用量与写入量，便于日志追踪。
         self.elite_samples_used_total = 0
+        self.best_elite_samples_used_total = 0
         self.normal_samples_used_total = 0
         self.elite_transitions_added_total = 0
+        self.best_elite_transitions_added_total = 0
         # 运行期开关：允许训练脚本按 episode 动态启停 elite 混采。
         # 默认与配置一致，保持历史行为不变。
         self.elite_replay_runtime_enabled = bool(config.use_elite_replay)
+        self.best_elite_replay_runtime_enabled = bool(config.use_best_elite_replay)
         if self.q_network_type == "mlp":
             self.policy_network = DqnNetwork(
                 input_dim=observation_dim,
@@ -590,6 +604,20 @@ class DqnBudgetAgent:
         self.elite_transitions_added_total += added
         return added
 
+    def remember_best_elite_many(self, transitions: list[Transition]) -> int:
+        """将一批 transition 写入 best elite replay buffer，返回实际写入数量。"""
+
+        if not self.config.use_best_elite_replay or self.best_elite_replay_buffer is None:
+            return 0
+        added = 0
+        for transition in transitions:
+            if transition.action_id < 0 or transition.action_id >= self.action_dim:
+                raise ValueError("best elite transition.action_id 超出动作空间范围")
+            self.best_elite_replay_buffer.push(transition)
+            added += 1
+        self.best_elite_transitions_added_total += added
+        return added
+
     @property
     def elite_replay_size(self) -> int:
         """返回当前 elite replay buffer 大小。"""
@@ -597,6 +625,23 @@ class DqnBudgetAgent:
         if self.elite_replay_buffer is None:
             return 0
         return len(self.elite_replay_buffer)
+
+    @property
+    def best_elite_replay_size(self) -> int:
+        """返回当前 best elite replay buffer 大小。"""
+
+        if self.best_elite_replay_buffer is None:
+            return 0
+        return len(self.best_elite_replay_buffer)
+
+    def clear_best_elite_replay(self) -> None:
+        """清空 best elite replay buffer；仅用于 replace-on-new-best 模式。"""
+
+        if self.best_elite_replay_buffer is not None:
+            self.best_elite_replay_buffer = ReplayBuffer(
+                capacity=self.config.best_elite_replay_capacity,
+                seed=self._best_elite_replay_seed,
+            )
 
     def optimize_one_step(self) -> float | None:
         """执行一次 DQN 单步优化；样本不足时返回 None。"""
@@ -614,23 +659,44 @@ class DqnBudgetAgent:
             and self.config.elite_batch_size > 0
             and len(self.elite_replay_buffer) >= self.config.elite_replay_min_size
         )
-        if use_elite_batch:
-            elite_n = min(
-                self.config.elite_batch_size,
-                self.config.batch_size,
-                len(self.elite_replay_buffer),
-            )
-            normal_n = self.config.batch_size - elite_n
-            if len(self.replay_buffer) < normal_n:
-                return None
-            normal_batch = self.replay_buffer.sample(normal_n) if normal_n > 0 else []
-            elite_batch = self.elite_replay_buffer.sample(elite_n)
-            batch = normal_batch + elite_batch
-            self.normal_samples_used_total += normal_n
-            self.elite_samples_used_total += elite_n
-        else:
-            batch = self.replay_buffer.sample(self.config.batch_size)
-            self.normal_samples_used_total += self.config.batch_size
+        use_best_elite_batch = (
+            self.config.use_best_elite_replay
+            and self.best_elite_replay_runtime_enabled
+            and self.best_elite_replay_buffer is not None
+            and self.config.best_elite_batch_size > 0
+            and len(self.best_elite_replay_buffer) >= self.config.best_elite_replay_min_size
+        )
+        elite_n = (
+            min(self.config.elite_batch_size, len(self.elite_replay_buffer))
+            if use_elite_batch and self.elite_replay_buffer is not None
+            else 0
+        )
+        best_elite_n = (
+            min(self.config.best_elite_batch_size, len(self.best_elite_replay_buffer))
+            if use_best_elite_batch and self.best_elite_replay_buffer is not None
+            else 0
+        )
+        normal_n = self.config.batch_size - elite_n - best_elite_n
+        if normal_n < 0:
+            raise ValueError("elite_batch_size + best_elite_batch_size 不能大于 batch_size")
+        if len(self.replay_buffer) < normal_n:
+            return None
+        normal_batch = self.replay_buffer.sample(normal_n) if normal_n > 0 else []
+        elite_batch = (
+            self.elite_replay_buffer.sample(elite_n)
+            if elite_n > 0 and self.elite_replay_buffer is not None
+            else []
+        )
+        best_elite_batch = (
+            self.best_elite_replay_buffer.sample(best_elite_n)
+            if best_elite_n > 0 and self.best_elite_replay_buffer is not None
+            else []
+        )
+        # 固定拼接顺序，便于日志统计和问题复现：normal + candidate elite + best elite。
+        batch = normal_batch + elite_batch + best_elite_batch
+        self.normal_samples_used_total += normal_n
+        self.elite_samples_used_total += elite_n
+        self.best_elite_samples_used_total += best_elite_n
         # 这里先把 Python 层的 tuple/list 批量拼成连续的 NumPy 数组，
         # 再统一转换成 torch tensor。这样可以减少 `torch.tensor(list_of_tuples)` 在
         # Python 侧逐元素解包与 dtype 推断的开销，尤其在训练中频繁优化时更明显。
@@ -731,6 +797,11 @@ class DqnBudgetAgent:
         """设置运行期 elite 混采开关。"""
 
         self.elite_replay_runtime_enabled = bool(enabled)
+
+    def set_best_elite_replay_runtime_enabled(self, enabled: bool) -> None:
+        """设置运行期 best elite 混采开关。"""
+
+        self.best_elite_replay_runtime_enabled = bool(enabled)
 
     @torch.no_grad()
     def compute_noop_q_diagnostics(
@@ -844,6 +915,9 @@ class DqnBudgetAgent:
                 "elite_replay_size": self.elite_replay_size,
                 "elite_transitions_added_total": self.elite_transitions_added_total,
                 "elite_samples_used_total": self.elite_samples_used_total,
+                "best_elite_replay_size": self.best_elite_replay_size,
+                "best_elite_transitions_added_total": self.best_elite_transitions_added_total,
+                "best_elite_samples_used_total": self.best_elite_samples_used_total,
                 "normal_samples_used_total": self.normal_samples_used_total,
             },
             path,
@@ -929,5 +1003,7 @@ class DqnBudgetAgent:
         # 兼容旧 checkpoint：缺失字段时默认回落到 0。
         agent.elite_transitions_added_total = int(checkpoint.get("elite_transitions_added_total", 0))
         agent.elite_samples_used_total = int(checkpoint.get("elite_samples_used_total", 0))
+        agent.best_elite_transitions_added_total = int(checkpoint.get("best_elite_transitions_added_total", 0))
+        agent.best_elite_samples_used_total = int(checkpoint.get("best_elite_samples_used_total", 0))
         agent.normal_samples_used_total = int(checkpoint.get("normal_samples_used_total", 0))
         return agent
