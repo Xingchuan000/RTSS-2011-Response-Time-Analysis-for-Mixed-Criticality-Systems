@@ -1534,6 +1534,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
     )
     parser.add_argument("--elite-max-add-per-validation", type=int, default=2000)
+    # Two-Pool Elite Replay：第二层 best elite 池参数，默认全部关闭或保守值，保证旧命令兼容。
+    parser.add_argument("--use-best-elite-replay", action="store_true")
+    parser.add_argument("--best-elite-replay-capacity", type=int, default=2000)
+    parser.add_argument("--best-elite-replay-min-size", type=int, default=128)
+    parser.add_argument("--best-elite-batch-size", type=int, default=4)
+    parser.add_argument("--best-elite-min-improvement", type=float, default=0.001)
+    parser.add_argument("--best-elite-recent-episodes", type=int, default=10)
+    parser.add_argument("--best-elite-start-episode", type=int, default=100)
+    parser.add_argument("--best-elite-max-add-per-validation", type=int, default=2000)
+    parser.add_argument("--best-elite-replace-on-new-best", action="store_true")
     parser.add_argument("--hidden-layers", type=str, default="128,128")
     parser.add_argument("--learning-rate", type=float, default=5e-5)
     parser.add_argument("--gamma", type=float, default=0.99)
@@ -1895,6 +1905,14 @@ def main() -> None:
         raise ValueError("--elite-batch-size 必须为非负整数")
     if args.elite_batch_size > args.batch_size:
         raise ValueError("--elite-batch-size 不能大于 --batch-size")
+    if args.best_elite_replay_capacity <= 0:
+        raise ValueError("--best-elite-replay-capacity 必须为正整数")
+    if args.best_elite_replay_min_size < 0:
+        raise ValueError("--best-elite-replay-min-size 必须为非负整数")
+    if args.best_elite_batch_size < 0:
+        raise ValueError("--best-elite-batch-size 必须为非负整数")
+    if args.elite_batch_size + args.best_elite_batch_size > args.batch_size:
+        raise ValueError("--elite-batch-size + --best-elite-batch-size 不能大于 --batch-size")
     if not 0.0 <= args.elite_score_min <= 1.0:
         raise ValueError("--elite-score-min 必须在 [0, 1] 内")
     if not 0.0 <= args.elite_score_ratio <= 1.0:
@@ -1911,6 +1929,18 @@ def main() -> None:
         raise ValueError("启用 --use-elite-replay 时 --elite-batch-size 必须大于 0")
     if args.use_elite_replay and args.elite_recent_episodes == 0:
         raise ValueError("启用 --use-elite-replay 时 --elite-recent-episodes 必须大于 0")
+    if args.best_elite_min_improvement < 0.0:
+        raise ValueError("--best-elite-min-improvement 必须为非负数")
+    if args.best_elite_recent_episodes < 0:
+        raise ValueError("--best-elite-recent-episodes 必须为非负整数")
+    if args.best_elite_start_episode < 0:
+        raise ValueError("--best-elite-start-episode 必须为非负整数")
+    if args.best_elite_max_add_per_validation <= 0:
+        raise ValueError("--best-elite-max-add-per-validation 必须为正整数")
+    if args.use_best_elite_replay and args.best_elite_batch_size == 0:
+        raise ValueError("启用 --use-best-elite-replay 时 --best-elite-batch-size 必须大于 0")
+    if args.use_best_elite_replay and args.best_elite_recent_episodes == 0:
+        raise ValueError("启用 --use-best-elite-replay 时 --best-elite-recent-episodes 必须大于 0")
     if args.plateau_balanced_start_episode < 0:
         raise ValueError("--plateau-balanced-start-episode 必须为非负整数")
     if args.plateau_balanced_window <= 0:
@@ -1969,6 +1999,10 @@ def main() -> None:
         elite_replay_capacity=args.elite_replay_capacity,
         elite_replay_min_size=args.elite_replay_min_size,
         elite_batch_size=args.elite_batch_size,
+        use_best_elite_replay=args.use_best_elite_replay,
+        best_elite_replay_capacity=args.best_elite_replay_capacity,
+        best_elite_replay_min_size=args.best_elite_replay_min_size,
+        best_elite_batch_size=args.best_elite_batch_size,
         target_update_freq=args.target_update_freq,
         grad_clip_norm=args.grad_clip_norm,
         epsilon_start=args.epsilon_start,
@@ -2090,11 +2124,14 @@ def main() -> None:
     plateau_trigger_rows: list[dict[str, int | float | str | bool | None]] = []
     # Elite Replay v1：缓存最近若干训练 episode 的 transition。
     # 当 validation checkpoint 满足精英条件时，把这一窗口内的 transition 批量写入 elite buffer。
+    # recent transition 窗口要同时覆盖 candidate elite 和 best elite 的回看范围。
+    recent_window_len = max(args.elite_recent_episodes, args.best_elite_recent_episodes)
     recent_episode_transition_buffers: deque[tuple[int, list[Transition]]] = deque(
-        maxlen=max(1, args.elite_recent_episodes)
+        maxlen=max(1, recent_window_len)
     )
     elite_replay_rows: list[dict[str, int | float | str | bool | None]] = []
     elite_current_best_reduction: float | None = None
+    best_elite_current_best_reduction: float | None = None
 
     global_step = 0
     for episode in range(args.episodes):
@@ -2102,6 +2139,10 @@ def main() -> None:
         # 这里按 0-based episode 索引判断：episode >= elite_start_episode 时激活。
         elite_active = bool(args.use_elite_replay and episode >= args.elite_start_episode)
         agent.set_elite_replay_runtime_enabled(elite_active)
+        # best elite 按 1-based episode 序号控制激活时机，便于与日志展示一致。
+        best_elite_active = bool(args.use_best_elite_replay and (episode + 1) >= args.best_elite_start_episode)
+        agent.set_best_elite_replay_runtime_enabled(best_elite_active)
+        collect_elite_transitions = bool(elite_active or best_elite_active)
         episode_seed = episode_seed_schedule[episode]
         env = build_env_from_experiment_config(
             experiment_config,
@@ -2258,7 +2299,7 @@ def main() -> None:
                     ),
                 )
                 agent.remember(transition)
-                if elite_active:
+                if collect_elite_transitions:
                     episode_transitions.append(transition)
                 loss = agent.optimize_one_step()
                 if loss is not None:
@@ -2436,7 +2477,7 @@ def main() -> None:
                 f"selected_invalid_mask_actions 必须为 0，episode={episode}, value={debug_stats['selected_invalid_mask_actions']}"
             )
         # 在进入 validation 判断前先刷新 recent episode 窗口，确保本轮 episode 可参与 elite 判定。
-        if elite_active:
+        if collect_elite_transitions:
             recent_episode_transition_buffers.append((episode + 1, list(episode_transitions)))
 
         loss_mean = sum(episode_losses) / len(episode_losses) if episode_losses else ""
@@ -2590,6 +2631,11 @@ def main() -> None:
                 "elite_replay_buffer_size": int(agent.elite_replay_size),
                 "elite_transitions_added_total": int(agent.elite_transitions_added_total),
                 "elite_samples_used_total": int(agent.elite_samples_used_total),
+                "best_elite_replay_enabled": bool(args.use_best_elite_replay),
+                "best_elite_replay_active": bool(best_elite_active),
+                "best_elite_replay_buffer_size": int(agent.best_elite_replay_size),
+                "best_elite_transitions_added_total": int(agent.best_elite_transitions_added_total),
+                "best_elite_samples_used_total": int(agent.best_elite_samples_used_total),
                 "normal_samples_used_total": int(agent.normal_samples_used_total),
                 "exploration_mode": args.exploration_mode,
                 "noop_exploration_prob": args.noop_exploration_prob,
@@ -2843,6 +2889,53 @@ def main() -> None:
             else:
                 elite_reason = "not_started"
 
+            best_elite_candidate = False
+            best_elite_reason = "disabled"
+            best_elite_added_count = 0
+            best_elite_recent_episode_start: int | None = None
+            best_elite_recent_episode_end: int | None = None
+            if best_elite_active:
+                safe_candidate, _, safe_reason = _is_elite_replay_candidate(
+                    validation_row,
+                    current_reduction=current_reduction,
+                    current_best_reduction=current_reduction,
+                    elite_score_min=0.0,
+                    elite_score_ratio=0.0,
+                    elite_max_mode_delta=args.elite_max_mode_delta,
+                    elite_require_no_hi_miss=args.elite_require_no_hi_miss,
+                    elite_require_qos_stable=args.elite_require_qos_stable,
+                )
+                if not safe_candidate:
+                    best_elite_reason = safe_reason
+                elif best_elite_current_best_reduction is None:
+                    best_elite_candidate = True
+                    best_elite_reason = "accepted_new_best"
+                elif current_reduction is not None and current_reduction > (
+                    best_elite_current_best_reduction + args.best_elite_min_improvement
+                ):
+                    best_elite_candidate = True
+                    best_elite_reason = "accepted_new_best"
+                else:
+                    best_elite_reason = "not_new_best"
+            else:
+                best_elite_reason = "not_started" if args.use_best_elite_replay else "disabled"
+
+            if best_elite_candidate:
+                recent_items = list(recent_episode_transition_buffers)[-args.best_elite_recent_episodes :]
+                if recent_items:
+                    best_elite_recent_episode_start = int(recent_items[0][0])
+                    best_elite_recent_episode_end = int(recent_items[-1][0])
+                transitions_to_add: list[Transition] = []
+                for _, transitions in recent_items:
+                    transitions_to_add.extend(transitions)
+                if len(transitions_to_add) > args.best_elite_max_add_per_validation:
+                    transitions_to_add = transitions_to_add[-args.best_elite_max_add_per_validation :]
+                if args.best_elite_replace_on_new_best:
+                    agent.clear_best_elite_replay()
+                best_elite_added_count = agent.remember_best_elite_many(transitions_to_add)
+                # 只要触发了本次 best elite 新最优判定，就刷新 best reduction，避免重复触发。
+                best_elite_current_best_reduction = current_reduction
+
             plateau_triggered = False
             plateau_trigger_reason = ""
             if current_reduction is not None:
@@ -2908,6 +3001,18 @@ def main() -> None:
                     "elite_replay_recent_episode_end": elite_recent_episode_end,
                     "elite_samples_used_total": int(agent.elite_samples_used_total),
                     "normal_samples_used_total": int(agent.normal_samples_used_total),
+                    "best_elite_replay_enabled": bool(args.use_best_elite_replay),
+                    "best_elite_replay_active": bool(best_elite_active),
+                    "best_elite_replay_candidate": bool(best_elite_candidate),
+                    "best_elite_replay_reason": str(best_elite_reason),
+                    "best_elite_replay_current_reduction": current_reduction,
+                    "best_elite_replay_best_reduction": best_elite_current_best_reduction,
+                    "best_elite_replay_added_count": int(best_elite_added_count),
+                    "best_elite_replay_buffer_size": int(agent.best_elite_replay_size),
+                    "best_elite_replay_recent_episode_start": best_elite_recent_episode_start,
+                    "best_elite_replay_recent_episode_end": best_elite_recent_episode_end,
+                    "best_elite_samples_used_total": int(agent.best_elite_samples_used_total),
+                    "best_elite_transitions_added_total": int(agent.best_elite_transitions_added_total),
                 }
             )
             elite_replay_rows.append(
@@ -2926,6 +3031,18 @@ def main() -> None:
                     "recent_episode_end": elite_recent_episode_end,
                     "elite_samples_used_total": int(agent.elite_samples_used_total),
                     "normal_samples_used_total": int(agent.normal_samples_used_total),
+                    "best_enabled": bool(args.use_best_elite_replay),
+                    "best_active": bool(best_elite_active),
+                    "best_candidate": bool(best_elite_candidate),
+                    "best_reason": str(best_elite_reason),
+                    "best_current_reduction": current_reduction,
+                    "best_best_reduction": best_elite_current_best_reduction,
+                    "best_added_count": int(best_elite_added_count),
+                    "best_buffer_size": int(agent.best_elite_replay_size),
+                    "best_recent_episode_start": best_elite_recent_episode_start,
+                    "best_recent_episode_end": best_elite_recent_episode_end,
+                    "best_samples_used_total": int(agent.best_elite_samples_used_total),
+                    "best_transitions_added_total": int(agent.best_elite_transitions_added_total),
                 }
             )
             validation_rows.append(validation_row)
@@ -3104,6 +3221,11 @@ def main() -> None:
             "elite_replay_buffer_size",
             "elite_transitions_added_total",
             "elite_samples_used_total",
+            "best_elite_replay_enabled",
+            "best_elite_replay_active",
+            "best_elite_replay_buffer_size",
+            "best_elite_transitions_added_total",
+            "best_elite_samples_used_total",
             "normal_samples_used_total",
             "exploration_mode",
             "noop_exploration_prob",
@@ -3204,6 +3326,18 @@ def main() -> None:
                 "elite_replay_recent_episode_end",
                 "elite_samples_used_total",
                 "normal_samples_used_total",
+                "best_elite_replay_enabled",
+                "best_elite_replay_active",
+                "best_elite_replay_candidate",
+                "best_elite_replay_reason",
+                "best_elite_replay_current_reduction",
+                "best_elite_replay_best_reduction",
+                "best_elite_replay_added_count",
+                "best_elite_replay_buffer_size",
+                "best_elite_replay_recent_episode_start",
+                "best_elite_replay_recent_episode_end",
+                "best_elite_samples_used_total",
+                "best_elite_transitions_added_total",
                 "relative_score_alpha",
                 "raw_delta_lo_cancellations",
                 "raw_delta_mode_changes",
@@ -3449,6 +3583,18 @@ def main() -> None:
         "recent_episode_end",
         "elite_samples_used_total",
         "normal_samples_used_total",
+        "best_enabled",
+        "best_active",
+        "best_candidate",
+        "best_reason",
+        "best_current_reduction",
+        "best_best_reduction",
+        "best_added_count",
+        "best_buffer_size",
+        "best_recent_episode_start",
+        "best_recent_episode_end",
+        "best_samples_used_total",
+        "best_transitions_added_total",
     ]
     with elite_replay_log_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=elite_replay_fieldnames)
@@ -3561,6 +3707,18 @@ def main() -> None:
         "elite_max_add_per_validation": args.elite_max_add_per_validation,
         "elite_transitions_added_total": int(agent.elite_transitions_added_total),
         "elite_samples_used_total": int(agent.elite_samples_used_total),
+        "use_best_elite_replay": args.use_best_elite_replay,
+        "best_elite_replay_capacity": args.best_elite_replay_capacity,
+        "best_elite_replay_min_size": args.best_elite_replay_min_size,
+        "best_elite_batch_size": args.best_elite_batch_size,
+        "best_elite_min_improvement": args.best_elite_min_improvement,
+        "best_elite_recent_episodes": args.best_elite_recent_episodes,
+        "best_elite_start_episode": args.best_elite_start_episode,
+        "best_elite_max_add_per_validation": args.best_elite_max_add_per_validation,
+        "best_elite_replace_on_new_best": args.best_elite_replace_on_new_best,
+        "best_elite_transitions_added_total": int(agent.best_elite_transitions_added_total),
+        "best_elite_samples_used_total": int(agent.best_elite_samples_used_total),
+        "best_elite_replay_final_buffer_size": int(agent.best_elite_replay_size),
         "normal_samples_used_total": int(agent.normal_samples_used_total),
         "elite_replay_final_buffer_size": int(agent.elite_replay_size),
         "dqn_device_requested": args.dqn_device,

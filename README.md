@@ -2868,3 +2868,35 @@ PYTHONPATH=. python scripts/train_dqn_amc.py \
 - `elite_samples_used_total`
 - `normal_samples_used_total`
 - `elite_replay_final_buffer_size`
+
+## Two-Pool Elite Replay 使用说明（方案 C）
+
+本次在原 `Elite Replay v1` 基础上新增第二层 `best elite replay buffer`，形成三源混采：
+- `normal replay samples + candidate elite samples + best elite samples = batch_size`
+
+默认行为：
+- 默认不加 `--use-best-elite-replay` 时，训练行为与旧版本保持一致。
+- 默认不改 reward、DQN loss、网络结构、validation 环境逻辑。
+
+新增训练参数（`scripts/train_dqn_amc.py`）：
+- `--use-best-elite-replay`
+- `--best-elite-replay-capacity`
+- `--best-elite-replay-min-size`
+- `--best-elite-batch-size`
+- `--best-elite-min-improvement`
+- `--best-elite-recent-episodes`
+- `--best-elite-start-episode`
+- `--best-elite-max-add-per-validation`
+- `--best-elite-replace-on-new-best`
+
+关键行为说明：
+- `best elite` 只有在 validation checkpoint 同时满足 elite 安全条件，且 `current_reduction` 相比 `best_elite_current_best_reduction` 至少提升 `best_elite_min_improvement` 时才写入。
+- `best elite` 写入时仅回看最近 `best_elite_recent_episodes` 个训练 episode 的 transitions，并受 `best_elite_max_add_per_validation` 限流。
+- 只有当 `best_elite_replay_size >= best_elite_replay_min_size` 时，`best elite` 才参与混合采样。
+- 运行期激活由 `best_elite_start_episode` 控制；未激活阶段不会写入或混采 best elite。
+
+新增输出字段：
+- `train_metrics.csv`：`best_elite_replay_enabled`、`best_elite_replay_active`、`best_elite_replay_buffer_size`、`best_elite_transitions_added_total`、`best_elite_samples_used_total`
+- `validation_metrics.csv`：`best_elite_replay_candidate`、`best_elite_replay_reason`、`best_elite_replay_current_reduction`、`best_elite_replay_best_reduction`、`best_elite_replay_added_count`、`best_elite_replay_buffer_size`、`best_elite_replay_recent_episode_start`、`best_elite_replay_recent_episode_end`
+- `elite_replay_log.csv`：`best_enabled`、`best_active`、`best_candidate`、`best_reason`、`best_current_reduction`、`best_best_reduction`、`best_added_count`、`best_buffer_size`
+- `config.json`：完整记录 best elite 全部配置与统计字段，便于复现实验。
