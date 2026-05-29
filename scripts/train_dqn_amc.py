@@ -350,23 +350,15 @@ def _is_elite_replay_candidate(
 ) -> tuple[bool, float | None, str]:
     """判断当前 validation checkpoint 是否应把 recent transitions 加入 elite replay。"""
 
-    if current_reduction is None:
-        return False, None, "no_reduction"
-    if current_reduction <= 0.0:
-        return False, None, "non_positive_reduction"
-
-    if elite_require_no_hi_miss:
-        deadline_misses = float(row.get("deadline_misses_sum", 0.0) or 0.0)
-        if deadline_misses > 0.0:
-            return False, None, "hi_deadline_miss"
-
-    if elite_require_qos_stable:
-        baseline_mode = float(row.get("baseline_mode_changes_mean", 0.0) or 0.0)
-        dqn_mode = float(row.get("mode_changes_mean", 0.0) or 0.0)
-        denom = max(abs(baseline_mode), 1e-9)
-        mode_delta_ratio = (dqn_mode - baseline_mode) / denom
-        if mode_delta_ratio > elite_max_mode_delta:
-            return False, None, "mode_delta_too_large"
+    safe_candidate, safe_reason = _is_safe_elite_checkpoint(
+        row,
+        current_reduction=current_reduction,
+        elite_max_mode_delta=elite_max_mode_delta,
+        elite_require_no_hi_miss=elite_require_no_hi_miss,
+        elite_require_qos_stable=elite_require_qos_stable,
+    )
+    if not safe_candidate:
+        return False, None, safe_reason
 
     best_for_threshold = (
         current_best_reduction if current_best_reduction is not None else current_reduction
@@ -376,6 +368,45 @@ def _is_elite_replay_candidate(
         return False, threshold, "below_threshold"
 
     return True, threshold, "accepted"
+
+
+def _is_safe_elite_checkpoint(
+    row: dict[str, int | float | None],
+    *,
+    current_reduction: float | None,
+    elite_max_mode_delta: float,
+    elite_require_no_hi_miss: bool,
+    elite_require_qos_stable: bool,
+) -> tuple[bool, str]:
+    """只判断 checkpoint 是否通过 elite 安全约束，不包含阈值筛选。
+
+    返回值语义：
+    - bool: 是否通过安全过滤
+    - str : 拒绝/通过原因（用于 validation 日志与 best elite 判定可解释性）
+    """
+
+    # reduction 缺失或非正收益时，直接拒绝；这两类情况都不应进入后续阈值逻辑。
+    if current_reduction is None:
+        return False, "no_reduction"
+    if current_reduction <= 0.0:
+        return False, "non_positive_reduction"
+
+    # 安全门 1：若要求 HI 零 miss，则任何 deadline miss 都必须拒绝。
+    if elite_require_no_hi_miss:
+        deadline_misses = float(row.get("deadline_misses_sum", 0.0) or 0.0)
+        if deadline_misses > 0.0:
+            return False, "hi_deadline_miss"
+
+    # 安全门 2：若要求 QoS 稳定，则 mode change 相对 baseline 的恶化比例不能超过上限。
+    if elite_require_qos_stable:
+        baseline_mode = float(row.get("baseline_mode_changes_mean", 0.0) or 0.0)
+        dqn_mode = float(row.get("mode_changes_mean", 0.0) or 0.0)
+        denom = max(abs(baseline_mode), 1e-9)
+        mode_delta_ratio = (dqn_mode - baseline_mode) / denom
+        if mode_delta_ratio > elite_max_mode_delta:
+            return False, "mode_delta_too_large"
+
+    return True, "accepted"
 
 
 def _serialize_tasks(tasks: list[Task]) -> list[dict[str, int | str]]:
@@ -2131,6 +2162,9 @@ def main() -> None:
     )
     elite_replay_rows: list[dict[str, int | float | str | bool | None]] = []
     elite_current_best_reduction: float | None = None
+    # 从训练开始全程维护“通过安全约束的全局最优 reduction”，不受 best_elite_start_episode 限制。
+    safe_global_best_reduction: float | None = None
+    # 仅记录 best elite buffer 已经接受过的最高 reduction，用于日志可读性与防止重复触发。
     best_elite_current_best_reduction: float | None = None
 
     global_step = 0
@@ -2840,6 +2874,21 @@ def main() -> None:
             validation_row["is_pareto_valid"] = _is_pareto_valid_checkpoint(validation_row)
 
             current_reduction = _relative_lc_reduction_from_validation_row(validation_row)
+            safe_candidate_for_global_best, safe_global_reason = _is_safe_elite_checkpoint(
+                validation_row,
+                current_reduction=current_reduction,
+                elite_max_mode_delta=args.elite_max_mode_delta,
+                elite_require_no_hi_miss=args.elite_require_no_hi_miss,
+                elite_require_qos_stable=args.elite_require_qos_stable,
+            )
+            # 必须先保存“更新前”全局 best，best elite 的 new-best 判定要和历史比较而不是和自己比较。
+            safe_global_best_before = safe_global_best_reduction
+            safe_global_new_best = False
+            if safe_candidate_for_global_best and current_reduction is not None:
+                if safe_global_best_reduction is None or current_reduction > safe_global_best_reduction:
+                    safe_global_new_best = True
+                    safe_global_best_reduction = current_reduction
+            safe_global_best_after = safe_global_best_reduction
             # Elite Replay v1：仅用于“精英阈值”历史参考，不影响原有 best checkpoint 选择逻辑。
             if current_reduction is not None and current_reduction > 0.0:
                 candidate_for_best, _, _ = _is_elite_replay_candidate(
@@ -2895,28 +2944,24 @@ def main() -> None:
             best_elite_recent_episode_start: int | None = None
             best_elite_recent_episode_end: int | None = None
             if best_elite_active:
-                safe_candidate, _, safe_reason = _is_elite_replay_candidate(
-                    validation_row,
-                    current_reduction=current_reduction,
-                    current_best_reduction=current_reduction,
-                    elite_score_min=0.0,
-                    elite_score_ratio=0.0,
-                    elite_max_mode_delta=args.elite_max_mode_delta,
-                    elite_require_no_hi_miss=args.elite_require_no_hi_miss,
-                    elite_require_qos_stable=args.elite_require_qos_stable,
-                )
-                if not safe_candidate:
-                    best_elite_reason = safe_reason
-                elif best_elite_current_best_reduction is None:
+                if not safe_candidate_for_global_best:
+                    best_elite_reason = safe_global_reason
+                elif not elite_candidate:
+                    # best elite 必须是普通 elite 的子集，防止出现 below_threshold 但 best accepted 的反直觉写入。
+                    best_elite_reason = "not_candidate_elite"
+                elif current_reduction is None:
+                    best_elite_reason = "no_reduction"
+                elif safe_global_best_before is None:
+                    # 仅当训练历史里此前还没有任何安全 global best 时，允许首次写入。
                     best_elite_candidate = True
-                    best_elite_reason = "accepted_new_best"
+                    best_elite_reason = "accepted_new_global_best"
                 elif current_reduction is not None and current_reduction > (
-                    best_elite_current_best_reduction + args.best_elite_min_improvement
+                    safe_global_best_before + args.best_elite_min_improvement
                 ):
                     best_elite_candidate = True
-                    best_elite_reason = "accepted_new_best"
+                    best_elite_reason = "accepted_new_global_best"
                 else:
-                    best_elite_reason = "not_new_best"
+                    best_elite_reason = "not_global_new_best"
             else:
                 best_elite_reason = "not_started" if args.use_best_elite_replay else "disabled"
 
@@ -3001,6 +3046,10 @@ def main() -> None:
                     "elite_replay_recent_episode_end": elite_recent_episode_end,
                     "elite_samples_used_total": int(agent.elite_samples_used_total),
                     "normal_samples_used_total": int(agent.normal_samples_used_total),
+                    "safe_global_best_reduction_before": safe_global_best_before,
+                    "safe_global_best_reduction_after": safe_global_best_after,
+                    "safe_global_new_best": bool(safe_global_new_best),
+                    "safe_global_best_reason": str(safe_global_reason),
                     "best_elite_replay_enabled": bool(args.use_best_elite_replay),
                     "best_elite_replay_active": bool(best_elite_active),
                     "best_elite_replay_candidate": bool(best_elite_candidate),
@@ -3031,6 +3080,10 @@ def main() -> None:
                     "recent_episode_end": elite_recent_episode_end,
                     "elite_samples_used_total": int(agent.elite_samples_used_total),
                     "normal_samples_used_total": int(agent.normal_samples_used_total),
+                    "safe_global_best_reduction_before": safe_global_best_before,
+                    "safe_global_best_reduction_after": safe_global_best_after,
+                    "safe_global_new_best": bool(safe_global_new_best),
+                    "safe_global_best_reason": str(safe_global_reason),
                     "best_enabled": bool(args.use_best_elite_replay),
                     "best_active": bool(best_elite_active),
                     "best_candidate": bool(best_elite_candidate),
@@ -3326,6 +3379,10 @@ def main() -> None:
                 "elite_replay_recent_episode_end",
                 "elite_samples_used_total",
                 "normal_samples_used_total",
+                "safe_global_best_reduction_before",
+                "safe_global_best_reduction_after",
+                "safe_global_new_best",
+                "safe_global_best_reason",
                 "best_elite_replay_enabled",
                 "best_elite_replay_active",
                 "best_elite_replay_candidate",
@@ -3583,6 +3640,10 @@ def main() -> None:
         "recent_episode_end",
         "elite_samples_used_total",
         "normal_samples_used_total",
+        "safe_global_best_reduction_before",
+        "safe_global_best_reduction_after",
+        "safe_global_new_best",
+        "safe_global_best_reason",
         "best_enabled",
         "best_active",
         "best_candidate",

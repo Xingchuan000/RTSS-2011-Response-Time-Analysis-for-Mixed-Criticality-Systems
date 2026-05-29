@@ -912,10 +912,10 @@ class DqnBudgetAgent:
                 "epsilon_step": self.epsilon_step,
                 "current_epsilon": self.current_epsilon,
                 # 第一版只保存 elite replay 的统计量，不保存 buffer 内容，避免 checkpoint 体积膨胀。
-                "elite_replay_size": self.elite_replay_size,
+                "elite_replay_size": int(self.elite_replay_size),
                 "elite_transitions_added_total": self.elite_transitions_added_total,
                 "elite_samples_used_total": self.elite_samples_used_total,
-                "best_elite_replay_size": self.best_elite_replay_size,
+                "best_elite_replay_size": int(self.best_elite_replay_size),
                 "best_elite_transitions_added_total": self.best_elite_transitions_added_total,
                 "best_elite_samples_used_total": self.best_elite_samples_used_total,
                 "normal_samples_used_total": self.normal_samples_used_total,

@@ -2890,13 +2890,20 @@ PYTHONPATH=. python scripts/train_dqn_amc.py \
 - `--best-elite-replace-on-new-best`
 
 关键行为说明：
-- `best elite` 只有在 validation checkpoint 同时满足 elite 安全条件，且 `current_reduction` 相比 `best_elite_current_best_reduction` 至少提升 `best_elite_min_improvement` 时才写入。
+- `best elite` 只在当前 validation checkpoint 刷新“全训练历史安全 global best”时写入；该 global best 从训练一开始维护，不受 `best_elite_start_episode` 限制。
+- `best elite` 的写入必须同时满足：通过 elite 安全过滤、通过普通 elite candidate 阈值、且相对历史安全 global best 至少提升 `best_elite_min_improvement`。
 - `best elite` 写入时仅回看最近 `best_elite_recent_episodes` 个训练 episode 的 transitions，并受 `best_elite_max_add_per_validation` 限流。
 - 只有当 `best_elite_replay_size >= best_elite_replay_min_size` 时，`best elite` 才参与混合采样。
 - 运行期激活由 `best_elite_start_episode` 控制；未激活阶段不会写入或混采 best elite。
+- 若 `best_elite_start_episode` 之前已经出现更高的安全 global best，而 start 之后没有更高值，则 `best elite` 不会写入。
+
+best elite 判定 reason（`validation_metrics.csv` / `elite_replay_log.csv`）：
+- `accepted_new_global_best`：当前 checkpoint 刷新了安全 global best，并满足普通 elite candidate。
+- `not_global_new_best`：通过安全过滤和普通 elite candidate，但未超过历史安全 global best（含最小提升门限）。
+- `not_candidate_elite`：通过安全过滤，但未通过普通 elite candidate 阈值。
 
 新增输出字段：
 - `train_metrics.csv`：`best_elite_replay_enabled`、`best_elite_replay_active`、`best_elite_replay_buffer_size`、`best_elite_transitions_added_total`、`best_elite_samples_used_total`
-- `validation_metrics.csv`：`best_elite_replay_candidate`、`best_elite_replay_reason`、`best_elite_replay_current_reduction`、`best_elite_replay_best_reduction`、`best_elite_replay_added_count`、`best_elite_replay_buffer_size`、`best_elite_replay_recent_episode_start`、`best_elite_replay_recent_episode_end`
-- `elite_replay_log.csv`：`best_enabled`、`best_active`、`best_candidate`、`best_reason`、`best_current_reduction`、`best_best_reduction`、`best_added_count`、`best_buffer_size`
+- `validation_metrics.csv`：`safe_global_best_reduction_before`、`safe_global_best_reduction_after`、`safe_global_new_best`、`safe_global_best_reason`、`best_elite_replay_candidate`、`best_elite_replay_reason`、`best_elite_replay_current_reduction`、`best_elite_replay_best_reduction`、`best_elite_replay_added_count`、`best_elite_replay_buffer_size`、`best_elite_replay_recent_episode_start`、`best_elite_replay_recent_episode_end`
+- `elite_replay_log.csv`：`safe_global_best_reduction_before`、`safe_global_best_reduction_after`、`safe_global_new_best`、`safe_global_best_reason`、`best_enabled`、`best_active`、`best_candidate`、`best_reason`、`best_current_reduction`、`best_best_reduction`、`best_added_count`、`best_buffer_size`
 - `config.json`：完整记录 best elite 全部配置与统计字段，便于复现实验。
