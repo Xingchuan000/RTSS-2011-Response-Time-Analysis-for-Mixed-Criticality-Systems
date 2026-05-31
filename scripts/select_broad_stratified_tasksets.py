@@ -40,7 +40,6 @@ import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-import numpy as np
 import pandas as pd
 
 
@@ -136,7 +135,7 @@ def _first_existing_col(df: pd.DataFrame, names: Sequence[str]) -> Optional[str]
     return None
 
 
-def _ensure_numeric(df: pd.DataFrame, col: str, default: float = np.nan) -> pd.Series:
+def _ensure_numeric(df: pd.DataFrame, col: str, default: float = math.nan) -> pd.Series:
     if col in df.columns:
         return pd.to_numeric(df[col], errors="coerce")
     return pd.Series([default] * len(df), index=df.index, dtype="float64")
@@ -271,20 +270,20 @@ def _apply_common_filters(df: pd.DataFrame, args: argparse.Namespace) -> Tuple[p
             reasons.extend((idx, reason) for idx in failed_idx)
         keep &= mask
 
-    fail(df["baseline_deadline_misses_sum"].fillna(np.inf) <= args.max_deadline_misses, "deadline_miss")
-    fail(df["valid_increase_count_mean"].fillna(-np.inf) >= args.common_min_valid_increase, "valid_increase_low")
-    fail(df["valid_decrease_count_mean"].fillna(-np.inf) >= args.common_min_valid_decrease, "valid_decrease_low")
-    fail(df["baseline_lo_cancellations_per_1m"].fillna(-np.inf) >= args.common_min_lo_cancellations_per_1m, "lo_cancellations_low")
-    fail(df["baseline_mode_changes_per_1m"].fillna(np.inf) <= args.common_max_mode_changes_per_1m, "mode_changes_high")
+    fail(df["baseline_deadline_misses_sum"].fillna(math.inf) <= args.max_deadline_misses, "deadline_miss")
+    fail(df["valid_increase_count_mean"].fillna(-math.inf) >= args.common_min_valid_increase, "valid_increase_low")
+    fail(df["valid_decrease_count_mean"].fillna(-math.inf) >= args.common_min_valid_decrease, "valid_decrease_low")
+    fail(df["baseline_lo_cancellations_per_1m"].fillna(-math.inf) >= args.common_min_lo_cancellations_per_1m, "lo_cancellations_low")
+    fail(df["baseline_mode_changes_per_1m"].fillna(math.inf) <= args.common_max_mode_changes_per_1m, "mode_changes_high")
 
     if args.min_total_events_per_1m is not None:
-        fail(df["baseline_total_events_per_1m"].fillna(-np.inf) >= args.min_total_events_per_1m, "events_low")
+        fail(df["baseline_total_events_per_1m"].fillna(-math.inf) >= args.min_total_events_per_1m, "events_low")
     if args.max_total_events_per_1m is not None:
-        fail(df["baseline_total_events_per_1m"].fillna(np.inf) <= args.max_total_events_per_1m, "events_high")
+        fail(df["baseline_total_events_per_1m"].fillna(math.inf) <= args.max_total_events_per_1m, "events_high")
     if args.min_lo_cancellation_ratio is not None:
-        fail(df["baseline_lo_cancellation_ratio_total"].fillna(-np.inf) >= args.min_lo_cancellation_ratio, "lo_ratio_low")
+        fail(df["baseline_lo_cancellation_ratio_total"].fillna(-math.inf) >= args.min_lo_cancellation_ratio, "lo_ratio_low")
     if args.max_lo_cancellation_ratio is not None:
-        fail(df["baseline_lo_cancellation_ratio_total"].fillna(np.inf) <= args.max_lo_cancellation_ratio, "lo_ratio_high")
+        fail(df["baseline_lo_cancellation_ratio_total"].fillna(math.inf) <= args.max_lo_cancellation_ratio, "lo_ratio_high")
 
     filtered = df[keep].copy()
     rej_rows = []
@@ -349,9 +348,7 @@ def _assign_buckets(df: pd.DataFrame, args: argparse.Namespace, main_top20: List
     bucketed = out[out["broad_bucket"].notna()].copy()
     rejected = out[out["broad_bucket"].isna()].copy()
     if not rejected.empty:
-        rejected["reject_reason"] = np.where(
-            rejected["is_main_top20"], "main_top20_excluded", "no_bucket_match"
-        )
+        rejected["reject_reason"] = rejected["is_main_top20"].map({True: "main_top20_excluded", False: "no_bucket_match"})
     return bucketed, rejected
 
 
@@ -368,7 +365,7 @@ def _select_even_quantiles(bucket_df: pd.DataFrame, n: int) -> pd.DataFrame:
     if m <= n:
         selected = work.copy()
         selected["bucket_quantile"] = [(i + 0.5) / max(m, 1) for i in range(m)]
-        selected["bucket_rank"] = np.arange(1, m + 1)
+        selected["bucket_rank"] = list(range(1, m + 1))
         selected["selection_note"] = "all_available_bucket_smaller_than_requested"
         return selected
 
@@ -393,7 +390,7 @@ def _select_even_quantiles(bucket_df: pd.DataFrame, n: int) -> pd.DataFrame:
         idxs.append(idx)
 
     selected = work.iloc[sorted(idxs)].copy()
-    selected["bucket_rank"] = np.arange(1, len(selected) + 1)
+    selected["bucket_rank"] = list(range(1, len(selected) + 1))
     selected["bucket_quantile"] = [(idx + 0.5) / m for idx in sorted(idxs)]
     selected["selection_note"] = "even_quantile_sample"
     return selected
@@ -408,7 +405,7 @@ def _make_outputs(df: pd.DataFrame, bucket_sizes: Dict[str, int]) -> Tuple[pd.Da
         bucket_df = bucket_df.sort_values(
             ["opportunity_score", "candidate_seed"], ascending=[True, True]
         ).reset_index(drop=True)
-        bucket_df["bucket_candidate_rank"] = np.arange(1, len(bucket_df) + 1)
+        bucket_df["bucket_candidate_rank"] = list(range(1, len(bucket_df) + 1))
         bucket_df["bucket_candidate_quantile"] = [
             (i + 0.5) / max(len(bucket_df), 1) for i in range(len(bucket_df))
         ]
