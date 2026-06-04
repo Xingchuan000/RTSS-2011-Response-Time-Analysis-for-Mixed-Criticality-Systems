@@ -662,6 +662,61 @@ PYTHONPATH=. python scripts/train_dqn_amc.py \
 
 当前仓库已经包含最小 DQN 接入、正式 DQN CLI、训练诊断绘图脚本，以及可接入的 automotive workload 生成器。
 
+### 12.1 mixed-horizon 训练使用说明
+
+`scripts/train_dqn_amc.py` 现在支持按 episode 切换训练 `end_time`，用于 mixed-horizon training。
+这项改动只作用于训练 episode 的环境构造，不会修改 validation 的 `validation_end_time`。
+
+默认行为仍然完全兼容旧命令：
+
+- 不传 `--train-end-times` 时，所有 training episode 都继续使用 `--end-time`
+- 不传 `--train-end-time-schedule-seed` 时，调度 seed 默认使用 `--seed`
+- 不传 `--train-end-time-probs` 时，会对 `--train-end-times` 做均匀分布
+
+新增参数：
+
+- `--train-end-times`：逗号分隔的训练 horizon 候选值，例如 `1000000,5000000`
+- `--train-end-time-probs`：与候选 horizon 一一对应的概率，例如 `0.8,0.2`
+- `--train-end-time-schedule-seed`：混合 horizon 调度打乱用的 seed，默认取 `--seed`
+- `--train-end-time-schedule-mode`：`balanced_shuffle`、`cycle` 或 `random`
+
+推荐用法是默认的 `balanced_shuffle`，因为它会先按概率计算每个 horizon 的 episode 数，再用固定 seed 打乱，便于小规模 pilot 保持比例稳定。
+
+示例：`80% 1e6 + 20% 5e6`
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/train_dqn_amc.py \
+  --episodes 450 \
+  --end-time 1000000 \
+  --train-end-times 1000000,5000000 \
+  --train-end-time-probs 0.8,0.2 \
+  --train-end-time-schedule-mode balanced_shuffle \
+  --seed 42
+```
+
+示例：`70% 1e6 + 20% 5e6 + 10% 1e7`
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/train_dqn_amc.py \
+  --episodes 450 \
+  --end-time 1000000 \
+  --train-end-times 1000000,5000000,10000000 \
+  --train-end-time-probs 0.7,0.2,0.1 \
+  --train-end-time-schedule-mode balanced_shuffle \
+  --seed 42
+```
+
+训练输出中会额外写入以下内容，方便分析 mixed-horizon 的分布与效果：
+
+- `train_log.csv`：新增 `episode_end_time`
+- `train_metrics.csv`：新增 `episode_end_time`、`mixed_horizon_enabled`
+- `config.json`：新增 `train_end_times`、`train_end_time_probs`、`train_end_time_schedule`、`train_end_time_counts`、`train_end_time_realized_probs`、`mixed_horizon_enabled`
+
+如果你想做快速 smoke test，可以先用 `--train-end-time-schedule-mode cycle`，
+这样能够更直观地看到 episode horizon 按顺序轮换。
+
 ## 13. 最小 taskset slack 验证（阶段 A/B）
 
 本节对应 `minimal_taskset_slack_validation_plan.md` 的阶段 A、阶段 B。

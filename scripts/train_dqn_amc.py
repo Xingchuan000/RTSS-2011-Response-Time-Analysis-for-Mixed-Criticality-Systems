@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import math
+import random
 from collections import Counter, defaultdict, deque
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
@@ -49,6 +50,7 @@ from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationRes
 
 STEP_LOG_FIELDNAMES = [
     "episode",
+    "episode_end_time",
     "step",
     "sim_time",
     "reward",
@@ -317,6 +319,110 @@ def _build_episode_seed_schedule(
             raise ValueError("train-seed-mode=cycle 时，--train-seeds 不能为空")
         return [train_seeds[episode % len(train_seeds)] for episode in range(episodes)]
     raise ValueError(f"不支持的 train-seed-mode: {mode}")
+
+
+def _parse_int_list(text: str) -> list[int]:
+    """解析逗号分隔的正整数列表。
+
+    这里不复用 `_parse_seed_spec()`，是因为 horizon 列表只允许显式整数，
+    不支持 seed spec 里的区间语法，这样可以避免训练 horizon 的语义被混淆。
+    """
+
+    values: list[int] = []
+    for part in (item.strip() for item in text.split(",")):
+        if not part:
+            continue
+        value = int(part)
+        if value <= 0:
+            raise ValueError(f"end_time 必须为正整数，收到: {value}")
+        values.append(value)
+    return values
+
+
+def _parse_float_list(text: str) -> list[float]:
+    """解析逗号分隔的浮点数列表。"""
+
+    values: list[float] = []
+    for part in (item.strip() for item in text.split(",")):
+        if not part:
+            continue
+        value = float(part)
+        if value < 0.0:
+            raise ValueError(f"概率不能为负数，收到: {value}")
+        values.append(value)
+    return values
+
+
+def _normalize_probabilities(probs: list[float], n: int) -> list[float]:
+    """把概率列表归一化到长度 n 的分布。
+
+    当用户没有显式提供概率时，返回均匀分布，保证 mixed horizon 的默认行为
+    是“每个候选 horizon 同等权重”。
+    """
+
+    if not probs:
+        return [1.0 / n for _ in range(n)]
+    if len(probs) != n:
+        raise ValueError("--train-end-time-probs 的长度必须与 --train-end-times 一致")
+    total = sum(probs)
+    if total <= 0.0:
+        raise ValueError("--train-end-time-probs 的总和必须大于 0")
+    return [p / total for p in probs]
+
+
+def _build_episode_end_time_schedule(
+    *,
+    episodes: int,
+    default_end_time: int,
+    train_end_times_text: str,
+    train_end_time_probs_text: str,
+    mode: str,
+    seed: int,
+) -> tuple[list[int], list[int], list[float]]:
+    """构建每个 episode 使用的 training end_time schedule。
+
+    返回值依次为：
+    - schedule: 长度为 episodes 的每 episode horizon；
+    - train_end_times: 解析后的候选 horizon；
+    - probs: 归一化后的目标概率。
+    """
+
+    if episodes <= 0:
+        raise ValueError("episodes 必须为正整数")
+
+    train_end_times = _parse_int_list(train_end_times_text)
+    if not train_end_times:
+        return [default_end_time for _ in range(episodes)], [default_end_time], [1.0]
+    if len(set(train_end_times)) != len(train_end_times):
+        raise ValueError("--train-end-times 不允许重复 end_time")
+
+    probs = _normalize_probabilities(_parse_float_list(train_end_time_probs_text), len(train_end_times))
+
+    if mode == "balanced_shuffle":
+        # 先按期望比例四舍五入到整数 count，再用固定 seed 打乱，
+        # 这样既能稳定地满足比例，又能保持 episode 顺序可复现。
+        raw_counts = [p * episodes for p in probs]
+        counts = [int(math.floor(x)) for x in raw_counts]
+        remaining = episodes - sum(counts)
+        remainders = sorted(
+            range(len(train_end_times)),
+            key=lambda i: raw_counts[i] - counts[i],
+            reverse=True,
+        )
+        for i in remainders[:remaining]:
+            counts[i] += 1
+        schedule: list[int] = []
+        for end_time, count in zip(train_end_times, counts):
+            schedule.extend([end_time] * count)
+        rng = random.Random(seed)
+        rng.shuffle(schedule)
+        return schedule, train_end_times, probs
+    if mode == "cycle":
+        return [train_end_times[i % len(train_end_times)] for i in range(episodes)], train_end_times, probs
+    if mode == "random":
+        rng = random.Random(seed)
+        return rng.choices(train_end_times, weights=probs, k=episodes), train_end_times, probs
+    raise ValueError(f"不支持的 train-end-time-schedule-mode: {mode}")
 
 
 def _relative_lc_reduction_from_validation_row(row: dict[str, int | float | None]) -> float | None:
@@ -1531,6 +1637,44 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--end-time", type=int, default=100)
+    parser.add_argument(
+        "--train-end-times",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated per-episode training horizons. "
+            "Example: 1000000,5000000. If empty, use --end-time for every episode."
+        ),
+    )
+    parser.add_argument(
+        "--train-end-time-probs",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated probabilities for --train-end-times. "
+            "Example: 0.8,0.2. Must match length and sum to 1. "
+            "If empty while --train-end-times is set, use uniform probabilities."
+        ),
+    )
+    parser.add_argument(
+        "--train-end-time-schedule-seed",
+        type=int,
+        default=None,
+        help=(
+            "Seed used to shuffle the mixed-horizon episode schedule. "
+            "Defaults to --seed when omitted."
+        ),
+    )
+    parser.add_argument(
+        "--train-end-time-schedule-mode",
+        choices=["balanced_shuffle", "cycle", "random"],
+        default="balanced_shuffle",
+        help=(
+            "How to build the per-episode end_time schedule. "
+            "balanced_shuffle keeps realized counts close to requested probabilities; "
+            "cycle repeats end times; random samples independently per episode."
+        ),
+    )
     parser.add_argument("--agent-period", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--network-seed", type=int, default=None)
@@ -2010,6 +2154,23 @@ def main() -> None:
         mode=args.train_seed_mode,
         train_seeds=train_seed_candidates,
     )
+    train_end_time_schedule_seed = (
+        args.seed if args.train_end_time_schedule_seed is None else int(args.train_end_time_schedule_seed)
+    )
+    (
+        episode_end_time_schedule,
+        train_end_times,
+        train_end_time_probs,
+    ) = _build_episode_end_time_schedule(
+        episodes=args.episodes,
+        default_end_time=args.end_time,
+        train_end_times_text=args.train_end_times,
+        train_end_time_probs_text=args.train_end_time_probs,
+        mode=args.train_end_time_schedule_mode,
+        seed=train_end_time_schedule_seed,
+    )
+    train_end_time_counts = Counter(episode_end_time_schedule)
+    mixed_horizon_enabled = len(set(episode_end_time_schedule)) > 1
     validation_seeds = _parse_seed_spec(args.validation_seeds)
 
     hidden_layers = _parse_hidden_layers(args.hidden_layers)
@@ -2122,6 +2283,10 @@ def main() -> None:
         args.trace_dir.mkdir(parents=True, exist_ok=True)
 
     # 训练启动时把 device 解析结果明确打印出来，方便在终端里直接确认是否真的用了 GPU。
+    print(f"[DQN] train end-time schedule mode: {args.train_end_time_schedule_mode}")
+    print(f"[DQN] train end-times: {train_end_times}")
+    print(f"[DQN] train end-time target probs: {train_end_time_probs}")
+    print(f"[DQN] train end-time realized counts: {dict(train_end_time_counts)}")
     print(f"[DQN] requested device: {args.dqn_device}")
     print(f"[DQN] resolved device: {agent.device}")
     print(f"[DQN] torch version: {torch.__version__}")
@@ -2178,10 +2343,11 @@ def main() -> None:
         agent.set_best_elite_replay_runtime_enabled(best_elite_active)
         collect_elite_transitions = bool(elite_active or best_elite_active)
         episode_seed = episode_seed_schedule[episode]
+        episode_end_time = int(episode_end_time_schedule[episode])
         env = build_env_from_experiment_config(
             experiment_config,
             seed=episode_seed,
-            end_time=args.end_time,
+            end_time=episode_end_time,
             agent_period=args.agent_period,
             semantics=RuntimeSemantics.AMC_PLUS,
             reward_mode=args.reward_mode,
@@ -2407,6 +2573,7 @@ def main() -> None:
                         "reward": float(result.reward),
                         "episode_reward": float(episode_reward),
                         "total_reward": float(episode_reward),
+                        "episode_end_time": episode_end_time,
                         "loss": "" if loss is None else loss,
                         "epsilon": agent.current_epsilon,
                         "action_id": "" if action_id is None else action_id,
@@ -2565,6 +2732,8 @@ def main() -> None:
             {
                 "episode": episode,
                 "episode_seed": episode_seed,
+                "episode_end_time": episode_end_time,
+                "mixed_horizon_enabled": mixed_horizon_enabled,
                 "taskset_seed": taskset_seed,
                 "scenario_seed": scenario_seed,
                 "network_seed": network_seed,
@@ -3200,6 +3369,8 @@ def main() -> None:
         metric_fieldnames = [
             "episode",
             "episode_seed",
+            "episode_end_time",
+            "mixed_horizon_enabled",
             "taskset_seed",
             "scenario_seed",
             "network_seed",
@@ -3719,6 +3890,16 @@ def main() -> None:
         "train_seeds": episode_seed_schedule,
         "scenario_seed_offset": args.scenario_seed_offset,
         "fixed_taskset_seed": args.fixed_taskset_seed,
+        "train_end_times": train_end_times,
+        "train_end_time_probs": train_end_time_probs,
+        "train_end_time_schedule_mode": args.train_end_time_schedule_mode,
+        "train_end_time_schedule_seed": train_end_time_schedule_seed,
+        "train_end_time_schedule": episode_end_time_schedule,
+        "mixed_horizon_enabled": mixed_horizon_enabled,
+        "train_end_time_counts": {str(k): int(v) for k, v in train_end_time_counts.items()},
+        "train_end_time_realized_probs": {
+            str(k): float(v) / float(args.episodes) for k, v in train_end_time_counts.items()
+        },
         "mc_fairgen_mode": args.mc_fairgen_mode,
         "mc_fairgen_num_tasks": args.mc_fairgen_num_tasks,
         "mc_fairgen_hi_ratio": args.mc_fairgen_hi_ratio,
@@ -3865,7 +4046,9 @@ def main() -> None:
         "tasks": _serialize_tasks(list(initial_bundle.ordered_tasks)),
         "runtime_config": {
             "end_time": args.end_time,
+            "default_train_end_time": args.end_time,
             "agent_period": args.agent_period,
+            "episode_train_end_time_schedule_enabled": mixed_horizon_enabled,
             "semantics": RuntimeSemantics.AMC_PLUS.value,
         },
         "effective_taskset_seed": (
