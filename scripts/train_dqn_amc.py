@@ -108,6 +108,11 @@ STEP_LOG_FIELDNAMES = [
     "budget_change_penalty_value",
     "budget_drift_mean",
     "budget_drift_penalty_value",
+    "budget_under_drift_mean",
+    "budget_over_drift_mean",
+    "budget_over_drift_deadzone_mean",
+    "budget_abs_drift_mean",
+    "budget_abs_drift_deadzone_mean",
     "lo_pressure_mean",
     "lo_pressure_max",
     "lo_near_cancel_rate",
@@ -116,6 +121,28 @@ STEP_LOG_FIELDNAMES = [
     "lo_pressure_max_penalty_value",
     "lo_near_cancel_penalty_value",
     "hi_mode_pressure_penalty_value",
+    "over_budget_dwell_penalty",
+    "over_increase_deadzone",
+    "over_increase_excess",
+    "is_over_increase_action",
+    "safe_recovery_decrease",
+    "recovery_decrease_target_count",
+    "recovery_decrease_excess_before_mean",
+    "unsafe_decrease_full",
+    "pingpong_action",
+    "increase_concentration_excess",
+    "consecutive_increase_count_for_target",
+    "current_budget_action_direction",
+    "current_budget_action_task",
+    "last_budget_action_direction",
+    "last_budget_action_task",
+    "final_budget_ratio_by_task_json",
+    "increase_count_by_task_json",
+    "decrease_count_by_task_json",
+    "recovery_decrease_count_by_task_json",
+    "over_increase_count_by_task_json",
+    "consecutive_increase_max_by_task_json",
+    "over_budget_dwell_steps_by_task_json",
     "reward_after_regularization",
     "workload",
     "total_util",
@@ -869,6 +896,13 @@ def _evaluate_agent_on_validation_seed(
     validation_action_decrease_hits_hi_sum: defaultdict[int, int] = defaultdict(int)
     validation_action_decrease_hits_lo_sum: defaultdict[int, int] = defaultdict(int)
     validation_action_unsafe_decrease_sum: defaultdict[int, int] = defaultdict(int)
+    validation_action_over_increase_sum: defaultdict[int, int] = defaultdict(int)
+    validation_action_over_increase_excess_sum: defaultdict[int, float] = defaultdict(float)
+    validation_action_safe_recovery_decrease_sum: defaultdict[int, int] = defaultdict(int)
+    validation_action_unsafe_decrease_full_sum: defaultdict[int, int] = defaultdict(int)
+    validation_action_budget_over_drift_deadzone_sum: defaultdict[int, float] = defaultdict(float)
+    validation_action_increase_concentration_excess_sum: defaultdict[int, float] = defaultdict(float)
+    validation_action_pingpong_sum: defaultdict[int, float] = defaultdict(float)
 
     while not done:
         # step_count 明确定义为“完成了多少次 agent 决策循环”，
@@ -923,6 +957,23 @@ def _evaluate_agent_on_validation_seed(
             validation_action_decrease_hits_hi_sum[action_key] += int(bool(result.info.get("decrease_hits_hi", False)))
             validation_action_decrease_hits_lo_sum[action_key] += int(bool(result.info.get("decrease_hits_lo", False)))
             validation_action_unsafe_decrease_sum[action_key] += int(bool(result.info.get("unsafe_decrease", False)))
+            validation_action_over_increase_sum[action_key] += int(bool(result.info.get("is_over_increase_action", False)))
+            validation_action_over_increase_excess_sum[action_key] += float(
+                result.info.get("over_increase_excess", 0.0)
+            )
+            validation_action_safe_recovery_decrease_sum[action_key] += int(
+                bool(result.info.get("safe_recovery_decrease", False))
+            )
+            validation_action_unsafe_decrease_full_sum[action_key] += int(
+                bool(result.info.get("unsafe_decrease_full", False))
+            )
+            validation_action_budget_over_drift_deadzone_sum[action_key] += float(
+                result.info.get("budget_over_drift_deadzone_mean", 0.0)
+            )
+            validation_action_increase_concentration_excess_sum[action_key] += float(
+                result.info.get("increase_concentration_excess", 0.0)
+            )
+            validation_action_pingpong_sum[action_key] += float(result.info.get("pingpong_action", 0.0))
 
         is_noop = bool(result.info.get("is_noop", False))
         if is_noop:
@@ -1046,6 +1097,41 @@ def _evaluate_agent_on_validation_seed(
         )
         row["validation_action_unsafe_decrease_sum_json"] = json.dumps(
             {str(k): int(v) for k, v in validation_action_unsafe_decrease_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_over_increase_sum_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_action_over_increase_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_over_increase_excess_sum_json"] = json.dumps(
+            {str(k): float(v) for k, v in validation_action_over_increase_excess_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_safe_recovery_decrease_sum_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_action_safe_recovery_decrease_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_unsafe_decrease_full_sum_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_action_unsafe_decrease_full_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_budget_over_drift_deadzone_sum_json"] = json.dumps(
+            {str(k): float(v) for k, v in validation_action_budget_over_drift_deadzone_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_increase_concentration_excess_sum_json"] = json.dumps(
+            {str(k): float(v) for k, v in validation_action_increase_concentration_excess_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_pingpong_sum_json"] = json.dumps(
+            {str(k): float(v) for k, v in validation_action_pingpong_sum.items()},
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -1498,6 +1584,41 @@ def _run_validation(
         )
         validation_row["policy_action_unsafe_decrease_sum_json"] = json.dumps(
             _merge_counter_json(dqn_rows, "validation_action_unsafe_decrease_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_over_increase_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_over_increase_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_over_increase_excess_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_over_increase_excess_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_safe_recovery_decrease_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_safe_recovery_decrease_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_unsafe_decrease_full_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_unsafe_decrease_full_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_budget_over_drift_deadzone_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_budget_over_drift_deadzone_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_increase_concentration_excess_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_increase_concentration_excess_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_pingpong_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_pingpong_sum_json"),
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -2742,6 +2863,15 @@ def main() -> None:
                         "budget_change_penalty_value": float(result.info.get("budget_change_penalty_value", 0.0)),
                         "budget_drift_mean": float(result.info.get("budget_drift_mean", 0.0)),
                         "budget_drift_penalty_value": float(result.info.get("budget_drift_penalty_value", 0.0)),
+                        "budget_under_drift_mean": float(result.info.get("budget_under_drift_mean", 0.0)),
+                        "budget_over_drift_mean": float(result.info.get("budget_over_drift_mean", 0.0)),
+                        "budget_over_drift_deadzone_mean": float(
+                            result.info.get("budget_over_drift_deadzone_mean", 0.0)
+                        ),
+                        "budget_abs_drift_mean": float(result.info.get("budget_abs_drift_mean", 0.0)),
+                        "budget_abs_drift_deadzone_mean": float(
+                            result.info.get("budget_abs_drift_deadzone_mean", 0.0)
+                        ),
                         "lo_pressure_mean": float(result.info.get("lo_pressure_mean", 0.0)),
                         "lo_pressure_max": float(result.info.get("lo_pressure_max", 0.0)),
                         "lo_near_cancel_rate": float(result.info.get("lo_near_cancel_rate", 0.0)),
@@ -2755,6 +2885,42 @@ def main() -> None:
                         ),
                         "hi_mode_pressure_penalty_value": float(
                             result.info.get("hi_mode_pressure_penalty_value", 0.0)
+                        ),
+                        "over_budget_dwell_penalty": float(result.info.get("over_budget_dwell_penalty", 0.0)),
+                        "over_increase_deadzone": float(result.info.get("over_increase_deadzone", 0.0)),
+                        "over_increase_excess": float(result.info.get("over_increase_excess", 0.0)),
+                        "is_over_increase_action": bool(result.info.get("is_over_increase_action", False)),
+                        "safe_recovery_decrease": bool(result.info.get("safe_recovery_decrease", False)),
+                        "recovery_decrease_target_count": int(result.info.get("recovery_decrease_target_count", 0)),
+                        "recovery_decrease_excess_before_mean": float(
+                            result.info.get("recovery_decrease_excess_before_mean", 0.0)
+                        ),
+                        "unsafe_decrease_full": bool(result.info.get("unsafe_decrease_full", False)),
+                        "pingpong_action": float(result.info.get("pingpong_action", 0.0)),
+                        "increase_concentration_excess": float(
+                            result.info.get("increase_concentration_excess", 0.0)
+                        ),
+                        "consecutive_increase_count_for_target": int(
+                            result.info.get("consecutive_increase_count_for_target", 0)
+                        ),
+                        "current_budget_action_direction": result.info.get("current_budget_action_direction", ""),
+                        "current_budget_action_task": result.info.get("current_budget_action_task", ""),
+                        "last_budget_action_direction": result.info.get("last_budget_action_direction", ""),
+                        "last_budget_action_task": result.info.get("last_budget_action_task", ""),
+                        "final_budget_ratio_by_task_json": result.info.get("final_budget_ratio_by_task_json", "{}"),
+                        "increase_count_by_task_json": result.info.get("increase_count_by_task_json", "{}"),
+                        "decrease_count_by_task_json": result.info.get("decrease_count_by_task_json", "{}"),
+                        "recovery_decrease_count_by_task_json": result.info.get(
+                            "recovery_decrease_count_by_task_json", "{}"
+                        ),
+                        "over_increase_count_by_task_json": result.info.get(
+                            "over_increase_count_by_task_json", "{}"
+                        ),
+                        "consecutive_increase_max_by_task_json": result.info.get(
+                            "consecutive_increase_max_by_task_json", "{}"
+                        ),
+                        "over_budget_dwell_steps_by_task_json": result.info.get(
+                            "over_budget_dwell_steps_by_task_json", "{}"
                         ),
                         "reward_after_regularization": float(result.info.get("reward_after_regularization", 0.0)),
                         "workload": args.workload,
@@ -3700,6 +3866,13 @@ def main() -> None:
                     "policy_action_decrease_hits_hi_sum_json",
                     "policy_action_decrease_hits_lo_sum_json",
                     "policy_action_unsafe_decrease_sum_json",
+                    "policy_action_over_increase_sum_json",
+                    "policy_action_over_increase_excess_sum_json",
+                    "policy_action_safe_recovery_decrease_sum_json",
+                    "policy_action_unsafe_decrease_full_sum_json",
+                    "policy_action_budget_over_drift_deadzone_sum_json",
+                    "policy_action_increase_concentration_excess_sum_json",
+                    "policy_action_pingpong_sum_json",
                 ]
             )
         with validation_metrics_path.open("w", encoding="utf-8", newline="") as f:
@@ -3727,6 +3900,23 @@ def main() -> None:
                     str(validation_row["policy_action_decrease_hits_lo_sum_json"])
                 )
                 unsafe_decrease_sum_hist = json.loads(str(validation_row["policy_action_unsafe_decrease_sum_json"]))
+                over_increase_sum_hist = json.loads(str(validation_row["policy_action_over_increase_sum_json"]))
+                over_increase_excess_sum_hist = json.loads(
+                    str(validation_row["policy_action_over_increase_excess_sum_json"])
+                )
+                safe_recovery_decrease_sum_hist = json.loads(
+                    str(validation_row["policy_action_safe_recovery_decrease_sum_json"])
+                )
+                unsafe_decrease_full_sum_hist = json.loads(
+                    str(validation_row["policy_action_unsafe_decrease_full_sum_json"])
+                )
+                budget_over_drift_deadzone_sum_hist = json.loads(
+                    str(validation_row["policy_action_budget_over_drift_deadzone_sum_json"])
+                )
+                increase_concentration_excess_sum_hist = json.loads(
+                    str(validation_row["policy_action_increase_concentration_excess_sum_json"])
+                )
+                pingpong_sum_hist = json.loads(str(validation_row["policy_action_pingpong_sum_json"]))
                 increase_hist = json.loads(str(validation_row["policy_resolved_increase_task_hist_json"]))
                 decrease_hist = json.loads(str(validation_row["policy_resolved_decrease_task_hist_json"]))
                 for action_id_text, action_name in sorted(definitions.items(), key=lambda item: int(item[0])):
@@ -3743,6 +3933,17 @@ def main() -> None:
                     decrease_hits_hi_count = int(decrease_hits_hi_sum_hist.get(action_id_text, 0))
                     decrease_hits_lo_count = int(decrease_hits_lo_sum_hist.get(action_id_text, 0))
                     unsafe_decrease_count = int(unsafe_decrease_sum_hist.get(action_id_text, 0))
+                    over_increase_count = int(over_increase_sum_hist.get(action_id_text, 0))
+                    over_increase_excess_sum = float(over_increase_excess_sum_hist.get(action_id_text, 0.0))
+                    safe_recovery_decrease_count = int(safe_recovery_decrease_sum_hist.get(action_id_text, 0))
+                    unsafe_decrease_full_count = int(unsafe_decrease_full_sum_hist.get(action_id_text, 0))
+                    budget_over_drift_deadzone_sum = float(
+                        budget_over_drift_deadzone_sum_hist.get(action_id_text, 0.0)
+                    )
+                    increase_concentration_excess_sum = float(
+                        increase_concentration_excess_sum_hist.get(action_id_text, 0.0)
+                    )
+                    pingpong_sum = float(pingpong_sum_hist.get(action_id_text, 0.0))
                     action_type = "noop" if action_name == "noop" else action_name.split("|", maxsplit=1)[0]
                     if is_increase_count > 0:
                         action_direction = "increase"
@@ -3799,6 +4000,26 @@ def main() -> None:
                             "unsafe_decrease_rate": (
                                 float(unsafe_decrease_count) / float(max(1, count))
                             ),
+                            "over_increase_count": over_increase_count,
+                            "over_increase_rate": (float(over_increase_count) / float(max(1, count))),
+                            "over_increase_excess_mean": (
+                                over_increase_excess_sum / float(max(1, count))
+                            ),
+                            "safe_recovery_decrease_count": safe_recovery_decrease_count,
+                            "safe_recovery_decrease_rate": (
+                                float(safe_recovery_decrease_count) / float(max(1, count))
+                            ),
+                            "unsafe_decrease_full_count": unsafe_decrease_full_count,
+                            "unsafe_decrease_full_rate": (
+                                float(unsafe_decrease_full_count) / float(max(1, count))
+                            ),
+                            "budget_over_drift_deadzone_mean": (
+                                budget_over_drift_deadzone_sum / float(max(1, count))
+                            ),
+                            "increase_concentration_excess_mean": (
+                                increase_concentration_excess_sum / float(max(1, count))
+                            ),
+                            "pingpong_action_rate": (pingpong_sum / float(max(1, count))),
                             "reward_sum": reward_sum,
                             "reward_mean": (reward_sum / float(count)) if count > 0 else 0.0,
                             "lo_delta_sum": lo_delta_sum,
@@ -3835,6 +4056,16 @@ def main() -> None:
                         "decrease_hits_lo",
                         "unsafe_decrease_count",
                         "unsafe_decrease_rate",
+                        "over_increase_count",
+                        "over_increase_rate",
+                        "over_increase_excess_mean",
+                        "safe_recovery_decrease_count",
+                        "safe_recovery_decrease_rate",
+                        "unsafe_decrease_full_count",
+                        "unsafe_decrease_full_rate",
+                        "budget_over_drift_deadzone_mean",
+                        "increase_concentration_excess_mean",
+                        "pingpong_action_rate",
                         "reward_sum",
                         "reward_mean",
                         "lo_delta_sum",

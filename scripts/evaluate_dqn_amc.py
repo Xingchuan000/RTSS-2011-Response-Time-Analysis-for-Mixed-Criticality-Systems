@@ -63,6 +63,18 @@ QOS_FIELDNAMES = [
     "mean_abs_budget_change",
 ]
 
+TASK_LEVEL_INFO_KEYS = [
+    "final_budget_ratio_by_task_json",
+    "max_budget_ratio_by_task_json",
+    "min_budget_ratio_by_task_json",
+    "increase_count_by_task_json",
+    "decrease_count_by_task_json",
+    "recovery_decrease_count_by_task_json",
+    "over_increase_count_by_task_json",
+    "consecutive_increase_max_by_task_json",
+    "over_budget_dwell_steps_by_task_json",
+]
+
 
 def _parse_seeds(raw_value: str) -> list[int]:
     """将种子字符串解析为整数列表，支持 `a:b` 与逗号列表。"""
@@ -163,6 +175,126 @@ def _mean_optional_metric(rows: list[dict[str, int | float | str | bool]], key: 
     if not values:
         return None
     return mean(values)
+
+
+def _task_level_info_row(info: dict[str, int | float | str | bool | None]) -> dict[str, str]:
+    """从环境 info 中提取 task-level JSON 日志。
+
+    这里统一把缺失字段写成空字符串，保证 CSV 列稳定且兼容旧 checkpoint / 旧评估结果。
+    """
+
+    return {key: str(info.get(key, "")) if info.get(key, "") is not None else "" for key in TASK_LEVEL_INFO_KEYS}
+
+
+def _eval_summary_fieldnames() -> list[str]:
+    """返回 evaluate 输出 CSV 的固定 header。
+
+    抽成 helper 的目的是让测试可以直接断言列集合，而无需真正跑完整 evaluate 流程。
+    """
+
+    fieldnames = [
+        "workload",
+        "total_util",
+        "num_tasks",
+        "cf",
+        "cp",
+        "seed",
+        "taskset_seed",
+        "scenario_seed",
+        "method",
+        "q_network_type",
+        "amc_rtb_schedulable",
+        "attempts",
+        "mode_changes",
+        "lo_cancellations",
+        "deadline_misses",
+        "budget_overruns",
+        "accepted_actions",
+        "rejected_actions",
+        "step_count",
+        "selected_action_count",
+        "noop_actions",
+        "explicit_noop_actions",
+        "noop_action_rate",
+        "explicit_noop_action_rate",
+        "accepted_action_rate",
+        "rejection_rate",
+        "total_reward",
+        "check_safety",
+        "safety_checked_actions",
+        "safety_accepted_actions",
+        "safety_rejected_actions",
+        "valid_action_count_mean",
+        "masked_action_count_mean",
+        "masked_decrease_hi_forbidden_count",
+        "masked_decrease_hi_forbidden_rate",
+        "masked_action_count_max",
+        "mask_rejection_rate_mean",
+        "selected_invalid_mask_actions",
+        "selected_explicit_noop_actions",
+        "selected_explicit_noop_rate",
+        "action_space_type",
+        "action_count",
+        "budget_increase_ratio",
+        "budget_decrease_ratio",
+        "budget_floor_ratio",
+        "no_safe_action_steps",
+        "masked_budget_floor_violation_count",
+        "masked_budget_floor_violation_rate",
+        "observation_mode",
+        "state_dim",
+        "mean_over_increase_excess",
+        "over_increase_action_count",
+        "safe_recovery_decrease_count",
+        "unsafe_decrease_full_count",
+        "mean_budget_over_drift_deadzone",
+        "mean_increase_concentration_excess",
+        "pingpong_action_count",
+    ]
+    fieldnames.extend(TASK_LEVEL_INFO_KEYS)
+    fieldnames.extend(QOS_FIELDNAMES)
+    fieldnames.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
+    return fieldnames
+
+
+def _aggregate_action_log_metrics(action_log: list[dict[str, object]]) -> dict[str, float | int]:
+    """从 action_log 中聚合 single recovery reward 的关键诊断指标。
+
+    这些字段直接来自 env.info，因此这里不做额外推断，只做简单均值/计数汇总。
+    """
+
+    step_count = len(action_log)
+    if step_count == 0:
+        return {
+            "mean_over_increase_excess": 0.0,
+            "over_increase_action_count": 0,
+            "safe_recovery_decrease_count": 0,
+            "unsafe_decrease_full_count": 0,
+            "mean_budget_over_drift_deadzone": 0.0,
+            "mean_increase_concentration_excess": 0.0,
+            "pingpong_action_count": 0,
+        }
+
+    mean_over_increase_excess = mean(float(row.get("over_increase_excess", 0.0)) for row in action_log)
+    over_increase_action_count = sum(int(bool(row.get("is_over_increase_action", False))) for row in action_log)
+    safe_recovery_decrease_count = sum(int(bool(row.get("safe_recovery_decrease", False))) for row in action_log)
+    unsafe_decrease_full_count = sum(int(bool(row.get("unsafe_decrease_full", False))) for row in action_log)
+    mean_budget_over_drift_deadzone = mean(
+        float(row.get("budget_over_drift_deadzone_mean", 0.0)) for row in action_log
+    )
+    mean_increase_concentration_excess = mean(
+        float(row.get("increase_concentration_excess", 0.0)) for row in action_log
+    )
+    pingpong_action_count = sum(int(float(row.get("pingpong_action", 0.0)) > 0.0) for row in action_log)
+    return {
+        "mean_over_increase_excess": mean_over_increase_excess,
+        "over_increase_action_count": over_increase_action_count,
+        "safe_recovery_decrease_count": safe_recovery_decrease_count,
+        "unsafe_decrease_full_count": unsafe_decrease_full_count,
+        "mean_budget_over_drift_deadzone": mean_budget_over_drift_deadzone,
+        "mean_increase_concentration_excess": mean_increase_concentration_excess,
+        "pingpong_action_count": pingpong_action_count,
+    }
 
 
 def _evaluate_dqn_once(
@@ -296,6 +428,7 @@ def _evaluate_dqn_once(
     if hasattr(env, "_engine") and env._engine is not None:
         budget_overruns = _budget_overruns_from_result(env._engine.finish())
     debug_stats = env.debug_statistics()
+    action_log_metrics = _aggregate_action_log_metrics(env.action_log)
     # 阶段 2：所有动作 rate 都基于 step_count，避免 explicit noop 双重计数导致分母膨胀。
     # rejected_action_rate 沿用历史字段名 `rejection_rate`，语义等价于 rejected/step_count。
     rejection_rate = (rejected_actions / step_count) if step_count > 0 else 0.0
@@ -357,7 +490,17 @@ def _evaluate_dqn_once(
             "masked_budget_floor_violation_rate": float(debug_stats["masked_budget_floor_violation_rate"]),
             "observation_mode": str(last_info.get("observation_mode", feature_config.observation_mode)),
             "state_dim": int(last_info.get("state_dim", len(obs.state_vector))),
+            "mean_over_increase_excess": float(action_log_metrics["mean_over_increase_excess"]),
+            "over_increase_action_count": int(action_log_metrics["over_increase_action_count"]),
+            "safe_recovery_decrease_count": int(action_log_metrics["safe_recovery_decrease_count"]),
+            "unsafe_decrease_full_count": int(action_log_metrics["unsafe_decrease_full_count"]),
+            "mean_budget_over_drift_deadzone": float(action_log_metrics["mean_budget_over_drift_deadzone"]),
+            "mean_increase_concentration_excess": float(
+                action_log_metrics["mean_increase_concentration_excess"]
+            ),
+            "pingpong_action_count": int(action_log_metrics["pingpong_action_count"]),
             **service_metrics_to_row(dqn_service_metrics),
+            **_task_level_info_row(last_info),
         }
     row.update(_noop_q_diagnostics_to_row(agent, diagnostic_states, diagnostic_valid_masks))
     return (
@@ -469,6 +612,7 @@ def _build_unified_summary_rows(rows: list[dict[str, int | float | str | bool]])
                 "rejected_action_rate_mean": rejected_action_rate_mean,
                 "masked_action_count_mean": masked_action_count_mean,
                 "valid_action_count_mean": valid_action_count_mean,
+                **_task_level_info_row(dqn_rows[0]),
                 **noop_q_diagnostic_summary,
             }
         )
@@ -521,6 +665,7 @@ def _write_unified_summary_csv(
         "masked_action_count_mean",
         "valid_action_count_mean",
     ]
+    fieldnames.extend(TASK_LEVEL_INFO_KEYS)
     fieldnames.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
     with summary_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -1644,62 +1789,7 @@ def main() -> None:
         deadline_miss_details.extend(seed_deadline_miss_details)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = [
-        "workload",
-        "total_util",
-        "num_tasks",
-        "cf",
-        "cp",
-        "seed",
-        "taskset_seed",
-        "scenario_seed",
-        "method",
-        "q_network_type",
-        "amc_rtb_schedulable",
-        "attempts",
-        "mode_changes",
-        "lo_cancellations",
-        "deadline_misses",
-        "budget_overruns",
-        "accepted_actions",
-        "rejected_actions",
-        "step_count",
-        "selected_action_count",
-        "noop_actions",
-        "explicit_noop_actions",
-        "noop_action_rate",
-        "explicit_noop_action_rate",
-        "accepted_action_rate",
-        "rejection_rate",
-        "total_reward",
-        "check_safety",
-        "safety_checked_actions",
-        "safety_accepted_actions",
-        "safety_rejected_actions",
-        "valid_action_count_mean",
-        "masked_action_count_mean",
-        "masked_decrease_hi_forbidden_count",
-        "masked_decrease_hi_forbidden_rate",
-        "masked_action_count_max",
-        "mask_rejection_rate_mean",
-        "selected_invalid_mask_actions",
-        "selected_explicit_noop_actions",
-        "selected_explicit_noop_rate",
-        "action_space_type",
-        "action_count",
-        "budget_increase_ratio",
-        "budget_decrease_ratio",
-        "budget_floor_ratio",
-        "no_safe_action_steps",
-        "masked_budget_floor_violation_count",
-        "masked_budget_floor_violation_rate",
-        "observation_mode",
-        "state_dim",
-        "end_time",
-        "agent_period",
-    ]
-    fieldnames.extend(QOS_FIELDNAMES)
-    fieldnames.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
+    fieldnames = _eval_summary_fieldnames() + ["end_time", "agent_period"]
     with args.output.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -201,6 +202,17 @@ class AmcBudgetEnv:
     _prev_mode_changes: int = field(init=False, default=0, repr=False)
     _prev_lo_cancellations: int = field(init=False, default=0, repr=False)
     _prev_deadline_misses: int = field(init=False, default=0, repr=False)
+    _last_budget_action_direction: str | None = field(init=False, default=None, repr=False)
+    _last_budget_action_task: str | None = field(init=False, default=None, repr=False)
+    _episode_increase_count_by_task: dict[str, int] = field(init=False, repr=False)
+    _episode_decrease_count_by_task: dict[str, int] = field(init=False, repr=False)
+    _episode_recovery_decrease_count_by_task: dict[str, int] = field(init=False, repr=False)
+    _episode_over_increase_count_by_task: dict[str, int] = field(init=False, repr=False)
+    _episode_consecutive_increase_by_task: dict[str, int] = field(init=False, repr=False)
+    _episode_consecutive_increase_max_by_task: dict[str, int] = field(init=False, repr=False)
+    _episode_over_budget_dwell_steps_by_task: dict[str, int] = field(init=False, repr=False)
+    _episode_max_budget_ratio_by_task: dict[str, float] = field(init=False, repr=False)
+    _episode_min_budget_ratio_by_task: dict[str, float] = field(init=False, repr=False)
     _task_index: dict[str, int] = field(init=False, repr=False)
     _task_names: tuple[str, ...] = field(init=False, repr=False)
     _task_upper_bounds: tuple[int, ...] = field(init=False, repr=False)
@@ -258,6 +270,37 @@ class AmcBudgetEnv:
         # 记录环境初始预算，用于阶段 2 的预算变化归一化惩罚。
         self._initial_budgets = {task.name: task.c_lo for task in self.ordered_tasks}
         self._last_observation = None
+
+    def _reset_episode_task_counters(self) -> None:
+        """重置 episode 级 task 统计计数器。
+
+        这些计数器只服务于当前 episode 的 reward shaping 和日志输出，不允许跨 episode 复用，
+        否则训练日志会把上一轮轨迹的状态错误混入当前轮。
+        """
+
+        self._last_budget_action_direction = None
+        self._last_budget_action_task = None
+        self._episode_increase_count_by_task = {task.name: 0 for task in self.ordered_tasks}
+        self._episode_decrease_count_by_task = {task.name: 0 for task in self.ordered_tasks}
+        self._episode_recovery_decrease_count_by_task = {task.name: 0 for task in self.ordered_tasks}
+        self._episode_over_increase_count_by_task = {task.name: 0 for task in self.ordered_tasks}
+        self._episode_consecutive_increase_by_task = {task.name: 0 for task in self.ordered_tasks}
+        self._episode_consecutive_increase_max_by_task = {task.name: 0 for task in self.ordered_tasks}
+        self._episode_over_budget_dwell_steps_by_task = {task.name: 0 for task in self.ordered_tasks}
+        self._episode_max_budget_ratio_by_task = {
+            task.name: self._budget_ratio(self._initial_budgets, task.name) for task in self.ordered_tasks
+        }
+        self._episode_min_budget_ratio_by_task = {
+            task.name: self._budget_ratio(self._initial_budgets, task.name) for task in self.ordered_tasks
+        }
+
+    def _budget_ratio(self, budgets: dict[str, int], task_name: str) -> float:
+        """计算某个任务当前预算相对初始预算的比例。"""
+
+        initial = float(self._initial_budgets.get(task_name, 0.0))
+        if initial <= 0.0:
+            return 1.0
+        return float(budgets.get(task_name, 0.0)) / initial
 
     def _resolve_constraint_guided_pair_action(
         self,
@@ -921,6 +964,7 @@ class AmcBudgetEnv:
             return {
                 "budget_under_drift_mean": 0.0,
                 "budget_over_drift_mean": 0.0,
+                "budget_over_drift_deadzone_mean": 0.0,
                 "budget_abs_drift_mean": 0.0,
                 "budget_abs_drift_deadzone_mean": 0.0,
             }
@@ -928,6 +972,7 @@ class AmcBudgetEnv:
         dz = max(0.0, float(deadzone))
         under_total = 0.0
         over_total = 0.0
+        over_deadzone_total = 0.0
         abs_total = 0.0
         abs_deadzone_total = 0.0
 
@@ -941,6 +986,7 @@ class AmcBudgetEnv:
 
             under_total += under
             over_total += over
+            over_deadzone_total += max(0.0, over - dz)
             abs_total += abs_drift
             abs_deadzone_total += max(0.0, abs_drift - dz)
 
@@ -948,6 +994,7 @@ class AmcBudgetEnv:
         return {
             "budget_under_drift_mean": under_total / denom,
             "budget_over_drift_mean": over_total / denom,
+            "budget_over_drift_deadzone_mean": over_deadzone_total / denom,
             "budget_abs_drift_mean": abs_total / denom,
             "budget_abs_drift_deadzone_mean": abs_deadzone_total / denom,
         }
@@ -2373,6 +2420,7 @@ class AmcBudgetEnv:
         self._prev_mode_changes = 0
         self._prev_lo_cancellations = 0
         self._prev_deadline_misses = 0
+        self._reset_episode_task_counters()
         # v11 特征缓存在每个 episode reset 后重置，避免跨 episode 污染。
         self._feature_state = RuntimeFeatureState(
             history_k=self.feature_config.history_k,
@@ -2745,6 +2793,15 @@ class AmcBudgetEnv:
         # unsafe_decrease may also include high mode pressure,
         # near-floor budget, or recent overrun pressure.
 
+        current_budget_action_direction: str | None = None
+        current_budget_action_task: str | None = None
+        if is_increase_action and resolved_increase_task is not None:
+            current_budget_action_direction = "increase"
+            current_budget_action_task = resolved_increase_task
+        elif is_decrease_action and len(resolved_decrease_tasks) == 1:
+            current_budget_action_direction = "decrease"
+            current_budget_action_task = resolved_decrease_tasks[0]
+
         step_reward_job_start = 0.0
         step_reward_lo_overrun = 0.0
         step_reward_hi_overrun = 0.0
@@ -2799,6 +2856,12 @@ class AmcBudgetEnv:
         # 双向预算漂移惩罚；默认 0，保证旧 reward mode 完全兼容。
         budget_abs_drift_penalty = float(reward_parameters.get("budget_abs_drift_penalty", 0.0))
         budget_abs_drift_deadzone = float(reward_parameters.get("budget_abs_drift_deadzone", 0.0))
+        over_budget_dwell_penalty = float(reward_parameters.get("over_budget_dwell_penalty", 0.0))
+        over_increase_penalty = float(reward_parameters.get("over_increase_penalty", 0.0))
+        recovery_decrease_bonus = float(reward_parameters.get("recovery_decrease_bonus", 0.0))
+        unsafe_decrease_penalty = float(reward_parameters.get("unsafe_decrease_penalty", 0.0))
+        pingpong_penalty = float(reward_parameters.get("pingpong_penalty", 0.0))
+        concentration_penalty = float(reward_parameters.get("concentration_penalty", 0.0))
         lo_pressure_penalty = float(reward_parameters.get("lo_pressure_penalty", 0.0))
         lo_pressure_threshold = float(reward_parameters.get("lo_pressure_threshold", 0.8))
         lo_pressure_max_penalty = float(reward_parameters.get("lo_pressure_max_penalty", 0.0))
@@ -2842,6 +2905,123 @@ class AmcBudgetEnv:
         lo_pressure_max_penalty_value = lo_pressure_max_penalty * lo_pressure_max
         lo_near_cancel_penalty_value = lo_near_cancel_penalty * lo_near_cancel_rate
         hi_mode_pressure_penalty_value = hi_mode_pressure_penalty * hi_mode_pressure_mean
+
+        over_budget_dwell_deadzone = float(
+            reward_parameters.get("over_budget_dwell_deadzone", budget_abs_drift_deadzone)
+        )
+        budget_over_drift_deadzone_mean = float(
+            self._compute_budget_drift_stats(
+                budgets=budget_after,
+                initial_budgets=self._initial_budgets,
+                deadzone=over_budget_dwell_deadzone,
+            )["budget_over_drift_deadzone_mean"]
+        )
+        for task in self.ordered_tasks:
+            if self._budget_ratio(budget_after, task.name) > 1.0 + over_budget_dwell_deadzone:
+                self._episode_over_budget_dwell_steps_by_task[task.name] += 1
+
+        over_increase_deadzone = float(reward_parameters.get("over_increase_deadzone", 0.05))
+        over_increase_excess = 0.0
+        is_over_increase_action = False
+        if is_increase_action and resolved_increase_task is not None:
+            ratio_before = self._budget_ratio(budget_before, resolved_increase_task)
+            over_increase_excess = max(0.0, ratio_before - 1.0 - over_increase_deadzone)
+            is_over_increase_action = over_increase_excess > 0.0
+            if accepted:
+                self._episode_over_increase_count_by_task[resolved_increase_task] += int(
+                    is_over_increase_action
+                )
+
+        recovery_deadzone = float(reward_parameters.get("recovery_deadzone", 0.05))
+        recovery_floor_ratio = float(reward_parameters.get("recovery_floor_ratio", 1.00))
+        recovery_lo_near_cancel_threshold = float(
+            reward_parameters.get("recovery_lo_near_cancel_threshold", lo_near_cancel_threshold)
+        )
+        recovery_hi_pressure_threshold = float(
+            reward_parameters.get("recovery_hi_pressure_threshold", hi_mode_pressure_threshold)
+        )
+        safe_recovery_decrease = 0.0
+        recovery_decrease_target_count = 0
+        recovery_decrease_excess_before_mean = 0.0
+        if is_decrease_action and accepted and decrease_hits_lo and not decrease_hits_hi:
+            excess_values: list[float] = []
+            checks: list[bool] = []
+            for task_name in resolved_decrease_tasks:
+                before_ratio = self._budget_ratio(budget_before, task_name)
+                after_ratio = self._budget_ratio(budget_after, task_name)
+                excess_before = max(0.0, before_ratio - 1.0 - recovery_deadzone)
+                excess_values.append(excess_before)
+                checks.append(excess_before > 0.0 and after_ratio >= recovery_floor_ratio)
+            recovery_decrease_target_count = len(excess_values)
+            if excess_values:
+                recovery_decrease_excess_before_mean = float(sum(excess_values) / len(excess_values))
+            if (
+                checks
+                and all(checks)
+                and lo_near_cancel_rate <= recovery_lo_near_cancel_threshold
+                and hi_mode_pressure_mean <= recovery_hi_pressure_threshold
+            ):
+                safe_recovery_decrease = 1.0
+                for task_name in resolved_decrease_tasks:
+                    self._episode_recovery_decrease_count_by_task[task_name] += 1
+
+        unsafe_decrease_lo_near_cancel_threshold = float(
+            reward_parameters.get("unsafe_decrease_lo_near_cancel_threshold", 0.95)
+        )
+        unsafe_decrease_hi_pressure_threshold = float(
+            reward_parameters.get("unsafe_decrease_hi_pressure_threshold", 0.90)
+        )
+        unsafe_decrease_full = bool(
+            is_decrease_action
+            and (
+                decrease_hits_hi
+                or lo_near_cancel_rate > unsafe_decrease_lo_near_cancel_threshold
+                or hi_mode_pressure_mean > unsafe_decrease_hi_pressure_threshold
+                or invalid_action > 0.0
+            )
+        )
+
+        pingpong_action = 0.0
+        if (
+            current_budget_action_direction is not None
+            and current_budget_action_task is not None
+            and self._last_budget_action_direction is not None
+            and self._last_budget_action_task == current_budget_action_task
+            and self._last_budget_action_direction != current_budget_action_direction
+        ):
+            pingpong_action = 1.0
+
+        concentration_window = int(reward_parameters.get("concentration_window", 3))
+        increase_concentration_excess = 0.0
+        consecutive_increase_count_for_target = 0
+        if accepted and is_increase_action and resolved_increase_task is not None:
+            previous_consecutive = self._episode_consecutive_increase_by_task[resolved_increase_task]
+            consecutive_increase_count_for_target = previous_consecutive + 1
+            increase_concentration_excess = max(
+                0.0,
+                float(consecutive_increase_count_for_target - concentration_window),
+            )
+            self._episode_consecutive_increase_by_task[resolved_increase_task] = consecutive_increase_count_for_target
+            self._episode_consecutive_increase_max_by_task[resolved_increase_task] = max(
+                self._episode_consecutive_increase_max_by_task[resolved_increase_task],
+                consecutive_increase_count_for_target,
+            )
+            self._episode_increase_count_by_task[resolved_increase_task] += 1
+        else:
+            # 只要当前 step 不是被接受的单任务 increase，就把连续 increase 计数清空。
+            # 这样 concentration penalty 才会严格描述“连续对同一 task increase”的震荡风险。
+            for task_name in self._episode_consecutive_increase_by_task:
+                self._episode_consecutive_increase_by_task[task_name] = 0
+            if accepted and is_decrease_action:
+                for task_name in resolved_decrease_tasks:
+                    self._episode_decrease_count_by_task[task_name] += 1
+        if accepted and current_budget_action_direction is not None:
+            self._last_budget_action_direction = current_budget_action_direction
+            self._last_budget_action_task = current_budget_action_task
+        elif not accepted and not is_increase_action:
+            # 非 increase 的拒绝动作也会打断同一 task 的连续 increase 语义。
+            for task_name in self._episode_consecutive_increase_by_task:
+                self._episode_consecutive_increase_by_task[task_name] = 0
         # mode-change 二次惩罚项的实际值（已包含 mode_change_per_job^2），
         # 单独拆出来用于日志记录，便于后续分析“稳定性代价”在总 reward 中的占比。
         mode_change_spike_penalty_value = (
@@ -2874,11 +3054,28 @@ class AmcBudgetEnv:
             "budget_drift_mean": float(budget_drift_mean),
             "budget_under_drift_mean": float(budget_under_drift_mean),
             "budget_over_drift_mean": float(budget_over_drift_mean),
+            "budget_over_drift_deadzone_mean": float(budget_over_drift_deadzone_mean),
             "budget_abs_drift_mean": float(budget_abs_drift_mean),
             "budget_abs_drift_deadzone": float(budget_abs_drift_deadzone),
             "budget_abs_drift_deadzone_mean": float(budget_abs_drift_deadzone_mean),
             "budget_abs_drift_penalty": float(budget_abs_drift_penalty),
             "budget_abs_drift_penalty_value": float(budget_abs_drift_penalty_value),
+            "over_budget_dwell_penalty": float(over_budget_dwell_penalty),
+            "over_increase_penalty": float(over_increase_penalty),
+            "over_increase_deadzone": float(over_increase_deadzone),
+            "over_increase_excess": float(over_increase_excess),
+            "is_over_increase_action": float(is_over_increase_action),
+            "safe_recovery_decrease": float(safe_recovery_decrease),
+            "recovery_decrease_target_count": float(recovery_decrease_target_count),
+            "recovery_decrease_excess_before_mean": float(recovery_decrease_excess_before_mean),
+            "unsafe_decrease_penalty": float(unsafe_decrease_penalty),
+            "unsafe_decrease_full": float(unsafe_decrease_full),
+            "pingpong_penalty": float(pingpong_penalty),
+            "pingpong_action": float(pingpong_action),
+            "concentration_penalty": float(concentration_penalty),
+            "concentration_window": float(concentration_window),
+            "increase_concentration_excess": float(increase_concentration_excess),
+            "consecutive_increase_count_for_target": float(consecutive_increase_count_for_target),
             "lo_pressure_mean": float(lo_pressure_mean),
             "lo_pressure_max": float(lo_pressure_max),
             "lo_near_cancel_rate": float(lo_near_cancel_rate),
@@ -2951,6 +3148,41 @@ class AmcBudgetEnv:
             if self.feature_config.observation_mode == OBSERVATION_MODE_V12_FULL_14D
             else None
         )
+        final_budget_ratio_by_task = {
+            task.name: self._budget_ratio(budget_after, task.name) for task in self.ordered_tasks
+        }
+        for task_name, ratio in final_budget_ratio_by_task.items():
+            previous_max = self._episode_max_budget_ratio_by_task.get(task_name, ratio)
+            previous_min = self._episode_min_budget_ratio_by_task.get(task_name, ratio)
+            self._episode_max_budget_ratio_by_task[task_name] = max(previous_max, ratio)
+            self._episode_min_budget_ratio_by_task[task_name] = min(previous_min, ratio)
+        task_level_json_fields = {
+            "final_budget_ratio_by_task_json": json.dumps(final_budget_ratio_by_task, ensure_ascii=False, sort_keys=True),
+            "max_budget_ratio_by_task_json": json.dumps(
+                self._episode_max_budget_ratio_by_task, ensure_ascii=False, sort_keys=True
+            ),
+            "min_budget_ratio_by_task_json": json.dumps(
+                self._episode_min_budget_ratio_by_task, ensure_ascii=False, sort_keys=True
+            ),
+            "increase_count_by_task_json": json.dumps(
+                self._episode_increase_count_by_task, ensure_ascii=False, sort_keys=True
+            ),
+            "decrease_count_by_task_json": json.dumps(
+                self._episode_decrease_count_by_task, ensure_ascii=False, sort_keys=True
+            ),
+            "recovery_decrease_count_by_task_json": json.dumps(
+                self._episode_recovery_decrease_count_by_task, ensure_ascii=False, sort_keys=True
+            ),
+            "over_increase_count_by_task_json": json.dumps(
+                self._episode_over_increase_count_by_task, ensure_ascii=False, sort_keys=True
+            ),
+            "consecutive_increase_max_by_task_json": json.dumps(
+                self._episode_consecutive_increase_max_by_task, ensure_ascii=False, sort_keys=True
+            ),
+            "over_budget_dwell_steps_by_task_json": json.dumps(
+                self._episode_over_budget_dwell_steps_by_task, ensure_ascii=False, sort_keys=True
+            ),
+        }
 
         observation = build_observation(
             time=current_time,
@@ -3054,6 +3286,11 @@ class AmcBudgetEnv:
             "budget_change_penalty_value": budget_change_penalty_value,
             "budget_drift_mean": budget_drift_mean,
             "budget_drift_penalty_value": budget_drift_penalty_value,
+            "budget_under_drift_mean": budget_under_drift_mean,
+            "budget_over_drift_mean": budget_over_drift_mean,
+            "budget_over_drift_deadzone_mean": budget_over_drift_deadzone_mean,
+            "budget_abs_drift_mean": budget_abs_drift_mean,
+            "budget_abs_drift_deadzone_mean": budget_abs_drift_deadzone_mean,
             "lo_pressure_mean": lo_pressure_mean,
             "lo_pressure_max": lo_pressure_max,
             "lo_near_cancel_rate": lo_near_cancel_rate,
@@ -3062,6 +3299,21 @@ class AmcBudgetEnv:
             "lo_pressure_max_penalty_value": lo_pressure_max_penalty_value,
             "lo_near_cancel_penalty_value": lo_near_cancel_penalty_value,
             "hi_mode_pressure_penalty_value": hi_mode_pressure_penalty_value,
+            "over_budget_dwell_penalty": over_budget_dwell_penalty,
+            "over_increase_deadzone": over_increase_deadzone,
+            "over_increase_excess": over_increase_excess,
+            "is_over_increase_action": bool(is_over_increase_action),
+            "safe_recovery_decrease": bool(safe_recovery_decrease),
+            "recovery_decrease_target_count": recovery_decrease_target_count,
+            "recovery_decrease_excess_before_mean": recovery_decrease_excess_before_mean,
+            "unsafe_decrease_full": bool(unsafe_decrease_full),
+            "pingpong_action": float(pingpong_action),
+            "increase_concentration_excess": increase_concentration_excess,
+            "consecutive_increase_count_for_target": consecutive_increase_count_for_target,
+            "current_budget_action_direction": current_budget_action_direction,
+            "current_budget_action_task": current_budget_action_task,
+            "last_budget_action_direction": self._last_budget_action_direction,
+            "last_budget_action_task": self._last_budget_action_task,
             # mode-change spike 惩罚系数与分量值都写入 info，方便训练日志直接聚合。
             "mode_change_spike_penalty": float(mode_change_spike_penalty),
             "mode_change_spike_penalty_value": float(mode_change_spike_penalty_value),
@@ -3078,6 +3330,7 @@ class AmcBudgetEnv:
             "state_dim": len(observation.state_vector),
             "feature_safety_margin_min": float(safety_margin_min),
         }
+        info.update(task_level_json_fields)
         action_log_entry = dict(info)
         action_log_entry["time"] = action_time
         self._action_log.append(action_log_entry)

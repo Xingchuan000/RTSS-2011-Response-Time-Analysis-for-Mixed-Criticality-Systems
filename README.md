@@ -658,6 +658,93 @@ PYTHONPATH=. python scripts/train_dqn_amc.py \
   - `increase_action_rate`
   - `transfer_action_rate`
 
+新增 `interval_qos_v2_single_recovery_full` reward mode 使用说明：
+
+- 配置文件：`configs/reward_modes/interval_qos_v2_single_recovery_full.json`
+- 目标：继续使用 `--action-space single`，在 `interval_qos_v2` 的 QoS 主干上加入 over-budget recovery、over-increase 抑制、ping-pong 抑制和 concentration 抑制。
+- 训练命令示例：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/train_dqn_amc.py \
+  --workload mc_fairgen \
+  --action-space single \
+  --reward-mode interval_qos_v2_single_recovery_full \
+  --include-explicit-noop \
+  --forbid-decreasing-hi-budgets \
+  --log-validation-policy-actions \
+  --episodes 1
+```
+
+- 开跑前可以先做配置烟雾测试：
+
+```bash
+python scripts/smoke_test_reward_modes.py --modes interval_qos_v2_single_recovery_full
+```
+
+- 新 reward 变量（由 `env.step()` 注入）：
+  - `budget_under_drift_mean`
+  - `budget_over_drift_mean`
+  - `budget_over_drift_deadzone_mean`
+  - `budget_abs_drift_mean`
+  - `budget_abs_drift_deadzone_mean`
+  - `over_increase_deadzone`
+  - `over_increase_excess`
+  - `is_over_increase_action`
+  - `safe_recovery_decrease`
+  - `recovery_decrease_target_count`
+  - `recovery_decrease_excess_before_mean`
+  - `unsafe_decrease_full`
+  - `pingpong_action`
+  - `increase_concentration_excess`
+  - `consecutive_increase_count_for_target`
+
+- `train_log.csv` 新增字段：
+  - `budget_under_drift_mean`
+  - `budget_over_drift_mean`
+  - `budget_over_drift_deadzone_mean`
+  - `budget_abs_drift_mean`
+  - `budget_abs_drift_deadzone_mean`
+  - `over_budget_dwell_penalty`
+  - `over_increase_deadzone`
+  - `over_increase_excess`
+  - `is_over_increase_action`
+  - `safe_recovery_decrease`
+  - `recovery_decrease_target_count`
+  - `recovery_decrease_excess_before_mean`
+  - `unsafe_decrease_full`
+  - `pingpong_action`
+  - `increase_concentration_excess`
+  - `consecutive_increase_count_for_target`
+  - `final_budget_ratio_by_task_json`
+  - `increase_count_by_task_json`
+  - `decrease_count_by_task_json`
+  - `recovery_decrease_count_by_task_json`
+  - `over_increase_count_by_task_json`
+  - `consecutive_increase_max_by_task_json`
+  - `over_budget_dwell_steps_by_task_json`
+
+- `validation_policy_actions.csv` 新增字段：
+  - `over_increase_count`
+  - `over_increase_rate`
+  - `over_increase_excess_mean`
+  - `safe_recovery_decrease_count`
+  - `safe_recovery_decrease_rate`
+  - `unsafe_decrease_full_count`
+  - `unsafe_decrease_full_rate`
+  - `budget_over_drift_deadzone_mean`
+  - `increase_concentration_excess_mean`
+  - `pingpong_action_rate`
+
+- `evaluate_dqn_amc.py` 的 `eval_summary.csv` 新增聚合字段：
+  - `mean_over_increase_excess`
+  - `over_increase_action_count`
+  - `safe_recovery_decrease_count`
+  - `unsafe_decrease_full_count`
+  - `mean_budget_over_drift_deadzone`
+  - `mean_increase_concentration_excess`
+  - `pingpong_action_count`
+
 ## 12. DQN 训练、评估与绘图
 
 当前仓库已经包含最小 DQN 接入、正式 DQN CLI、训练诊断绘图脚本，以及可接入的 automotive workload 生成器。
