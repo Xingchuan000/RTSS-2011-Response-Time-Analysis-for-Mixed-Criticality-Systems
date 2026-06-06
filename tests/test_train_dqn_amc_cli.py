@@ -56,6 +56,52 @@ def test_train_dqn_amc_cli_runs_and_writes_expected_outputs(tmp_path: Path) -> N
     assert "valid_action_count" in rows[0]
 
 
+def test_train_dqn_amc_cli_supports_learning_rate_schedule(tmp_path: Path) -> None:
+    """正式训练 CLI 应支持按 episode 切换 learning rate，并写出对应元数据。"""
+
+    output_dir = tmp_path / "dqn_amc_lr_schedule"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--episodes",
+            "3",
+            "--end-time",
+            "20",
+            "--seed",
+            "0",
+            "--learning-rate",
+            "5e-5",
+            "--learning-rate-schedule",
+            "0:5e-5,1:2.5e-5,2:1e-5",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+
+    with (output_dir / "config.json").open("r", encoding="utf-8") as f:
+        config_payload = json.load(f)
+    assert config_payload["learning_rate_schedule_enabled"] is True
+    assert config_payload["learning_rate_schedule"] == [
+        {"start_episode": 0, "learning_rate": 5e-5},
+        {"start_episode": 1, "learning_rate": 2.5e-5},
+        {"start_episode": 2, "learning_rate": 1e-5},
+    ]
+
+    with (output_dir / "train_metrics.csv").open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    assert rows
+    assert reader.fieldnames is not None
+    assert "learning_rate" in reader.fieldnames
+    assert "learning_rate" in rows[0]
+    assert [float(row["learning_rate"]) for row in rows] == [5e-5, 2.5e-5, 1e-5]
+
+
 def test_train_dqn_amc_cli_is_reasonably_reproducible_for_fixed_seed(tmp_path: Path) -> None:
     """固定 seed 时两次训练的日志应保持一致。"""
 

@@ -265,6 +265,31 @@ class DqnBudgetAgent:
         self.plateau_balanced_action_count = 0
         self.plateau_balanced_fallback_count = 0
 
+    def set_learning_rate(self, learning_rate: float) -> None:
+        """更新 optimizer 的 learning rate。
+
+        这个方法专门用于 episode-level learning-rate annealing。
+        这里只改 `param_group["lr"]`，不重建 Adam optimizer，这样可以保留
+        Adam 已积累的动量与二阶矩状态，避免在退火点丢失优化历史。
+        """
+
+        lr = float(learning_rate)
+        if lr <= 0.0:
+            raise ValueError(f"learning_rate must be positive, got {learning_rate}")
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] = lr
+
+    def get_learning_rate(self) -> float:
+        """返回当前 optimizer 的 learning rate。
+
+        当前实现只有一个 optimizer，通常也只有一个 param group；
+        如果未来扩展为多个 param group，这里保持返回第一个组的 lr。
+        """
+
+        if not self.optimizer.param_groups:
+            return float(self.config.learning_rate)
+        return float(self.optimizer.param_groups[0].get("lr", self.config.learning_rate))
+
     def set_action_features(
         self,
         action_features: tuple[tuple[float, ...], ...],

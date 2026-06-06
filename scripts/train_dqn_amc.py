@@ -353,6 +353,81 @@ def _parse_float_list(text: str) -> list[float]:
     return values
 
 
+def _parse_learning_rate_schedule(text: str | None, *, default_lr: float) -> list[tuple[int, float]]:
+    """解析 episode-level learning-rate schedule。
+
+    输入示例：
+        "0:5e-5,450:2.5e-5,900:1e-5"
+
+    返回示例：
+        [(0, 5e-5), (450, 2.5e-5), (900, 1e-5)]
+
+    含义：
+        每个 tuple 表示从该 episode 起开始使用对应 learning rate。
+    """
+
+    if text is None or not str(text).strip():
+        if default_lr <= 0.0:
+            raise ValueError(f"--learning-rate must be positive, got {default_lr}")
+        return [(0, float(default_lr))]
+
+    pairs: list[tuple[int, float]] = []
+    for raw_part in str(text).split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            raise ValueError(
+                "--learning-rate-schedule entries must be '<episode>:<lr>', "
+                f"got: {part}"
+            )
+        episode_text, lr_text = part.split(":", 1)
+        episode = int(episode_text.strip())
+        lr = float(lr_text.strip())
+        if episode < 0:
+            raise ValueError(f"schedule episode must be >= 0, got {episode}")
+        if lr <= 0.0:
+            raise ValueError(f"schedule learning rate must be positive, got {lr}")
+        pairs.append((episode, lr))
+
+    if not pairs:
+        raise ValueError("--learning-rate-schedule parsed to empty schedule")
+
+    pairs = sorted(pairs, key=lambda item: item[0])
+
+    if pairs[0][0] != 0:
+        raise ValueError(
+            "--learning-rate-schedule must start at episode 0, "
+            f"got first breakpoint {pairs[0][0]}"
+        )
+
+    seen: set[int] = set()
+    for episode, _ in pairs:
+        if episode in seen:
+            raise ValueError(f"duplicate learning-rate schedule episode: {episode}")
+        seen.add(episode)
+
+    return pairs
+
+
+def _learning_rate_for_episode(
+    *,
+    episode: int,
+    schedule: list[tuple[int, float]],
+) -> float:
+    """根据 schedule 返回当前 episode 应使用的 learning rate。"""
+
+    if episode < 0:
+        raise ValueError(f"episode must be >= 0, got {episode}")
+    current_lr = float(schedule[0][1])
+    for start_episode, lr in schedule:
+        if episode >= start_episode:
+            current_lr = float(lr)
+        else:
+            break
+    return current_lr
+
+
 def _normalize_probabilities(probs: list[float], n: int) -> list[float]:
     """把概率列表归一化到长度 n 的分布。
 
@@ -1721,6 +1796,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--best-elite-replace-on-new-best", action="store_true")
     parser.add_argument("--hidden-layers", type=str, default="128,128")
     parser.add_argument("--learning-rate", type=float, default=5e-5)
+    parser.add_argument(
+        "--learning-rate-schedule",
+        type=str,
+        default=None,
+        help=(
+            "Episode-level learning-rate schedule, e.g. "
+            "'0:5e-5,450:2.5e-5,900:1e-5'. "
+            "If omitted, --learning-rate is used for all episodes."
+        ),
+    )
     parser.add_argument("--gamma", type=float, default=0.99)
     # 稳定性修改 C：默认 target network 更新频率改为 5（优化步为单位）。
     # 该值可继续通过 CLI 覆盖，用于后续对照实验。
@@ -2134,6 +2219,16 @@ def main() -> None:
         args.q_network_type != "action_aware" or args.action_space != "single"
     ):
         raise ValueError("--action-aware-mask-mode 仅支持 q_network_type=action_aware 且 action_space=single。")
+    learning_rate_schedule = _parse_learning_rate_schedule(
+        args.learning_rate_schedule,
+        default_lr=args.learning_rate,
+    )
+    if learning_rate_schedule[-1][0] >= args.episodes:
+        raise ValueError(
+            "learning-rate schedule contains breakpoint >= episodes: "
+            f"last_breakpoint={learning_rate_schedule[-1][0]}, episodes={args.episodes}"
+        )
+    learning_rate_schedule_enabled = bool(args.learning_rate_schedule)
     reward_mode_config = load_reward_mode_config(args.reward_mode)
     feature_config = FeatureConfig(
         observation_mode=args.observation_mode,
@@ -2287,6 +2382,8 @@ def main() -> None:
     print(f"[DQN] train end-times: {train_end_times}")
     print(f"[DQN] train end-time target probs: {train_end_time_probs}")
     print(f"[DQN] train end-time realized counts: {dict(train_end_time_counts)}")
+    print(f"[DQN] learning-rate schedule enabled: {learning_rate_schedule_enabled}")
+    print(f"[DQN] learning-rate schedule: {learning_rate_schedule}")
     print(f"[DQN] requested device: {args.dqn_device}")
     print(f"[DQN] resolved device: {agent.device}")
     print(f"[DQN] torch version: {torch.__version__}")
@@ -2334,6 +2431,11 @@ def main() -> None:
 
     global_step = 0
     for episode in range(args.episodes):
+        current_learning_rate = _learning_rate_for_episode(
+            episode=episode,
+            schedule=learning_rate_schedule,
+        )
+        agent.set_learning_rate(current_learning_rate)
         # elite_active 由“是否启用 elite replay”与“是否达到起始 episode”共同决定。
         # 这里按 0-based episode 索引判断：episode >= elite_start_episode 时激活。
         elite_active = bool(args.use_elite_replay and episode >= args.elite_start_episode)
@@ -2749,6 +2851,7 @@ def main() -> None:
                 "selected_action_count": episode_selected_action_count,
                 "total_reward": episode_reward,
                 "epsilon": agent.current_epsilon,
+                "learning_rate": agent.get_learning_rate(),
                 "loss_mean": loss_mean,
                 "loss_last": loss_last,
                 "accepted_actions": episode_accepted_actions,
@@ -3384,6 +3487,7 @@ def main() -> None:
             "selected_action_count",
             "total_reward",
             "epsilon",
+            "learning_rate",
             "loss_mean",
             "loss_last",
             "accepted_actions",
@@ -3873,6 +3977,11 @@ def main() -> None:
                     json.dump(metadata, f, ensure_ascii=False, indent=2)
     config_payload = {
         "dqn_config": asdict(config),
+        "learning_rate_schedule": [
+            {"start_episode": int(start), "learning_rate": float(lr)}
+            for start, lr in learning_rate_schedule
+        ],
+        "learning_rate_schedule_enabled": learning_rate_schedule_enabled,
         "workload": args.workload,
         "scenario": args.scenario,
         "scenario_name": initial_bundle.scenario.name,

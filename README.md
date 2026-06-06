@@ -1374,6 +1374,7 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py
 - `--batch-size`
 - `--hidden-layers`
 - `--learning-rate`
+- `--learning-rate-schedule`
 - `--gamma`
 - `--target-update-freq`
 - `--epsilon-start`
@@ -1392,6 +1393,34 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py
 会额外记录 `dqn_device_requested`、`dqn_device_resolved`、`torch_version`、
 `torch_cuda_available`、`torch_cuda_device_count` 和 `torch_cuda_device_name`，方便回看训练到底跑在什么设备上。
 
+### 12.4.1 episode-level learning-rate 退火
+
+`scripts/train_dqn_amc.py` 现在支持按 episode 切换优化器学习率，用于阶段 4 后续训练稳定化实验。
+
+默认行为保持不变：
+
+- 不传 `--learning-rate-schedule` 时，全程使用 `--learning-rate`
+- 训练开始时只在每个 episode 的开头更新一次学习率
+- `train_metrics.csv` 会新增 `learning_rate` 列，`config.json` 会记录完整 schedule
+
+`--learning-rate-schedule` 的格式是：
+
+```text
+0:5e-5,450:2.5e-5,900:1e-5
+```
+
+含义是：
+
+- `episode >= 0` 使用 `5e-5`
+- `episode >= 450` 使用 `2.5e-5`
+- `episode >= 900` 使用 `1e-5`
+
+注意：
+
+- schedule 必须从 episode `0` 开始
+- schedule 的最后一个断点必须小于 `--episodes`
+- 训练脚本不会在 episode 中途额外改学习率，只会在 episode 开始时切换
+
 输出文件：
 
 - `outputs/dqn_amc/train_log.csv`
@@ -1399,7 +1428,7 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py
 - `outputs/dqn_amc/config.json`
 - `outputs/dqn_amc/checkpoints/model_episode_XXXX.pt`（当 `--checkpoint > 0` 时）
 
-### 12.4.1 `--save-best-by` 策略说明
+### 12.4.2 `--save-best-by` 策略说明
 
 `train_dqn_amc.py` 会在 validation 过程中维护 `model_best.pt`。  
 `--save-best-by` 用于决定“什么叫更好的 checkpoint”。
