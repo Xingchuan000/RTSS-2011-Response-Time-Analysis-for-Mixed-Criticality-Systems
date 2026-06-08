@@ -20,6 +20,52 @@ from amc_py.runtime_models import RuntimeConfig, SimulationResult
 from amc_py.runtime_scenarios import ExecutionScenario
 
 
+RECOVERY_REWARD_DEFAULT_VARIABLES: dict[str, float | bool] = {
+    "budget_under_drift_mean": 0.0,
+    "budget_over_drift_mean": 0.0,
+    "budget_abs_drift_deadzone_mean": 0.0,
+    "budget_over_drift_deadzone_mean": 0.0,
+    "budget_abs_drift_mean": 0.0,
+    "budget_abs_drift_deadzone": 0.05,
+    "budget_abs_drift_penalty": 0.0,
+    "budget_abs_drift_penalty_value": 0.0,
+    "budget_drift_mean": 0.0,
+    "budget_drift_penalty_value": 0.0,
+    "budget_change_norm": 0.0,
+    "budget_change_penalty": 0.0,
+    "over_budget_dwell_penalty": 0.0,
+    "over_budget_dwell_deadzone": 0.05,
+    "over_increase_penalty": 0.0,
+    "over_increase_deadzone": 0.05,
+    "over_increase_excess": 0.0,
+    "safe_recovery_decrease": 0.0,
+    "recovery_decrease_target_count": 0.0,
+    "recovery_decrease_excess_before_mean": 0.0,
+    "unsafe_decrease_full": 0.0,
+    "unsafe_decrease_penalty": 0.0,
+    "unsafe_decrease_lo_near_cancel_threshold": 0.95,
+    "unsafe_decrease_hi_pressure_threshold": 0.9,
+    "pingpong_action": 0.0,
+    "pingpong_penalty": 0.0,
+    "concentration_penalty": 0.0,
+    "concentration_window": 3.0,
+    "increase_concentration_excess": 0.0,
+    "consecutive_increase_count_for_target": 0.0,
+    "lo_pressure_mean": 0.0,
+    "lo_pressure_max": 0.0,
+    "lo_near_cancel_rate": 0.0,
+    "hi_mode_pressure_mean": 0.0,
+    "lo_pressure_penalty": 0.0,
+    "lo_pressure_threshold": 0.8,
+    "lo_pressure_max_penalty": 0.0,
+    "lo_near_cancel_penalty": 0.0,
+    "lo_near_cancel_threshold": 0.9,
+    "hi_mode_pressure_penalty": 0.0,
+    "hi_mode_pressure_threshold": 0.8,
+    "is_explicit_noop_action": 0.0,
+}
+
+
 @dataclass(frozen=True, slots=True)
 class AgentRuntimeConfig:
     """agent 驱动仿真的配置。"""
@@ -79,6 +125,18 @@ def _budget_floor_violation(
         if candidate_budget < floor_value:
             return f"budget_floor_violation:{task_name}"
     return None
+
+
+def _ensure_reward_variables(reward_variables: dict[str, float | bool]) -> dict[str, float | bool]:
+    """补齐 reward expression 需要的默认变量。
+
+    runtime wrapper 的 baseline / noop 路径没有 env.py 那么完整的 shaping 上下文，
+    因此这里用默认值兜底，避免新 reward mode 因变量缺失直接崩溃。
+    """
+
+    for key, value in RECOVERY_REWARD_DEFAULT_VARIABLES.items():
+        reward_variables.setdefault(key, value)
+    return reward_variables
 
 
 def simulate_ordered_taskset_with_agent(
@@ -214,6 +272,7 @@ def simulate_ordered_taskset_with_agent(
         }
         # 奖励参数也并入变量表，使 JSON 公式可直接引用参数名（如 mode_change_spike_penalty）。
         reward_variables.update(reward_mode_config.reward_parameters)
+        _ensure_reward_variables(reward_variables)
         step_reward = evaluate_reward_expression(
             reward_mode_config.step_reward_formula,
             reward_variables,
@@ -368,6 +427,14 @@ def simulate_ordered_taskset_with_agent(
     final_event_job_start_reward = monitor.reward_weights.job_start * final_delta_job_start
     final_event_lo_overrun_reward = monitor.reward_weights.lo_overrun * final_delta_lo_overrun
     final_event_hi_overrun_reward = monitor.reward_weights.hi_overrun * final_delta_hi_overrun
+    final_delta_total_jobs = max(1.0, float(final_delta_job_start))
+    final_interval_time = 1.0
+    final_lo_overrun_rate = float(final_delta_lo_overrun) / final_delta_total_jobs
+    final_hi_overrun_rate = float(final_delta_hi_overrun) / final_delta_total_jobs
+    final_mode_change_rate = float(final_delta_mode_changes) / final_interval_time
+    final_mode_change_per_job = float(final_delta_mode_changes) / final_delta_total_jobs
+    final_lo_cancellation_rate = float(final_delta_lo_cancellations) / final_delta_total_jobs
+    final_deadline_miss_rate = float(final_delta_deadline_misses) / final_delta_total_jobs
     final_paper_reward = evaluate_reward_expression(
         reward_mode_config.paper_reward_formula,
         {
@@ -381,21 +448,36 @@ def simulate_ordered_taskset_with_agent(
     )
     total_reward += evaluate_reward_expression(
         reward_mode_config.step_reward_formula,
-        {
-            "paper_reward": float(final_paper_reward),
-            "noop_bonus_if_noop": 0.0,
-            "budget_change_penalty": float(reward_mode_config.reward_parameters.get("budget_change_penalty", 0.0)),
-            "budget_change_norm": 0.0,
-            "budget_drift_penalty": float(reward_mode_config.reward_parameters.get("budget_drift_penalty", 0.0)),
-            "budget_drift_mean": 0.0,
-            "is_explicit_noop_action": False,
-            "event_job_start_reward": float(final_event_job_start_reward),
-            "event_lo_overrun_reward": float(final_event_lo_overrun_reward),
-            "event_hi_overrun_reward": float(final_event_hi_overrun_reward),
-            "delta_job_start": float(final_delta_job_start),
-            "delta_lo_overrun": float(final_delta_lo_overrun),
-            "delta_hi_overrun": float(final_delta_hi_overrun),
-        },
+        _ensure_reward_variables(
+            {
+                "paper_reward": float(final_paper_reward),
+                "noop_bonus_if_noop": 0.0,
+                "budget_change_penalty": float(reward_mode_config.reward_parameters.get("budget_change_penalty", 0.0)),
+                "budget_change_norm": 0.0,
+                "budget_drift_penalty": float(reward_mode_config.reward_parameters.get("budget_drift_penalty", 0.0)),
+                "budget_drift_mean": 0.0,
+                "is_explicit_noop_action": False,
+                "event_job_start_reward": float(final_event_job_start_reward),
+                "event_lo_overrun_reward": float(final_event_lo_overrun_reward),
+                "event_hi_overrun_reward": float(final_event_hi_overrun_reward),
+                "delta_job_start": float(final_delta_job_start),
+                "delta_lo_overrun": float(final_delta_lo_overrun),
+                "delta_hi_overrun": float(final_delta_hi_overrun),
+                "delta_mode_changes": float(final_delta_mode_changes),
+                "delta_lo_cancellations": float(final_delta_lo_cancellations),
+                "delta_deadline_misses": float(final_delta_deadline_misses),
+                "delta_total_jobs": float(final_delta_total_jobs),
+                "interval_time": float(final_interval_time),
+                "lo_overrun_rate": float(final_lo_overrun_rate),
+                "hi_overrun_rate": float(final_hi_overrun_rate),
+                "mode_change_rate": float(final_mode_change_rate),
+                "mode_change_per_job": float(final_mode_change_per_job),
+                "lo_cancellation_rate": float(final_lo_cancellation_rate),
+                "deadline_miss_rate": float(final_deadline_miss_rate),
+                "invalid_action": 0.0,
+                **reward_mode_config.reward_parameters,
+            }
+        ),
     )
 
     return AgentRuntimeResult(
