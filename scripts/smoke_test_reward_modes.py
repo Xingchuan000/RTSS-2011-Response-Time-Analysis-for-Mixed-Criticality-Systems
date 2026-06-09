@@ -55,6 +55,13 @@ def build_dummy_variables() -> dict[str, float | bool]:
         "over_increase_deadzone": 0.05,
         "over_increase_excess": 0.0,
         "is_over_increase_action": 0.0,
+        # soft upper cap reward 新增变量：
+        # 这里只补齐表达式求值所需的 dummy 变量，不改变 smoke test 的执行逻辑。
+        "budget_soft_cap_ratio": 0.0,
+        "budget_soft_cap_penalty": 0.0,
+        "budget_soft_cap_increase_excess": 0.0,
+        "budget_soft_cap_penalty_value": 0.0,
+        "is_soft_cap_increase_action": 0.0,
         "safe_recovery_decrease": 0.0,
         "recovery_decrease_target_count": 0.0,
         "recovery_decrease_excess_before_mean": 0.0,

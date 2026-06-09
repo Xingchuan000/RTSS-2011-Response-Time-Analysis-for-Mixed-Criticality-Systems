@@ -245,6 +245,9 @@ def _eval_summary_fieldnames() -> list[str]:
         "state_dim",
         "mean_over_increase_excess",
         "over_increase_action_count",
+        "mean_budget_soft_cap_increase_excess",
+        "soft_cap_increase_action_count",
+        "mean_budget_soft_cap_penalty_value",
         "safe_recovery_decrease_count",
         "unsafe_decrease_full_count",
         "mean_budget_over_drift_deadzone",
@@ -268,6 +271,9 @@ def _aggregate_action_log_metrics(action_log: list[dict[str, object]]) -> dict[s
         return {
             "mean_over_increase_excess": 0.0,
             "over_increase_action_count": 0,
+            "mean_budget_soft_cap_increase_excess": 0.0,
+            "soft_cap_increase_action_count": 0,
+            "mean_budget_soft_cap_penalty_value": 0.0,
             "safe_recovery_decrease_count": 0,
             "unsafe_decrease_full_count": 0,
             "mean_budget_over_drift_deadzone": 0.0,
@@ -277,6 +283,15 @@ def _aggregate_action_log_metrics(action_log: list[dict[str, object]]) -> dict[s
 
     mean_over_increase_excess = mean(float(row.get("over_increase_excess", 0.0)) for row in action_log)
     over_increase_action_count = sum(int(bool(row.get("is_over_increase_action", False))) for row in action_log)
+    mean_budget_soft_cap_increase_excess = mean(
+        float(row.get("budget_soft_cap_increase_excess", 0.0)) for row in action_log
+    )
+    soft_cap_increase_action_count = sum(
+        int(bool(row.get("is_soft_cap_increase_action", False))) for row in action_log
+    )
+    mean_budget_soft_cap_penalty_value = mean(
+        float(row.get("budget_soft_cap_penalty_value", 0.0)) for row in action_log
+    )
     safe_recovery_decrease_count = sum(int(bool(row.get("safe_recovery_decrease", False))) for row in action_log)
     unsafe_decrease_full_count = sum(int(bool(row.get("unsafe_decrease_full", False))) for row in action_log)
     mean_budget_over_drift_deadzone = mean(
@@ -289,6 +304,9 @@ def _aggregate_action_log_metrics(action_log: list[dict[str, object]]) -> dict[s
     return {
         "mean_over_increase_excess": mean_over_increase_excess,
         "over_increase_action_count": over_increase_action_count,
+        "mean_budget_soft_cap_increase_excess": mean_budget_soft_cap_increase_excess,
+        "soft_cap_increase_action_count": soft_cap_increase_action_count,
+        "mean_budget_soft_cap_penalty_value": mean_budget_soft_cap_penalty_value,
         "safe_recovery_decrease_count": safe_recovery_decrease_count,
         "unsafe_decrease_full_count": unsafe_decrease_full_count,
         "mean_budget_over_drift_deadzone": mean_budget_over_drift_deadzone,
@@ -492,6 +510,13 @@ def _evaluate_dqn_once(
             "state_dim": int(last_info.get("state_dim", len(obs.state_vector))),
             "mean_over_increase_excess": float(action_log_metrics["mean_over_increase_excess"]),
             "over_increase_action_count": int(action_log_metrics["over_increase_action_count"]),
+            "mean_budget_soft_cap_increase_excess": float(
+                action_log_metrics["mean_budget_soft_cap_increase_excess"]
+            ),
+            "soft_cap_increase_action_count": int(action_log_metrics["soft_cap_increase_action_count"]),
+            "mean_budget_soft_cap_penalty_value": float(
+                action_log_metrics["mean_budget_soft_cap_penalty_value"]
+            ),
             "safe_recovery_decrease_count": int(action_log_metrics["safe_recovery_decrease_count"]),
             "unsafe_decrease_full_count": int(action_log_metrics["unsafe_decrease_full_count"]),
             "mean_budget_over_drift_deadzone": float(action_log_metrics["mean_budget_over_drift_deadzone"]),

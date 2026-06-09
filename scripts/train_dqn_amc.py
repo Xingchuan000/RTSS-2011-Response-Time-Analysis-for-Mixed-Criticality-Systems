@@ -133,6 +133,11 @@ STEP_LOG_FIELDNAMES = [
     "over_increase_deadzone",
     "over_increase_excess",
     "is_over_increase_action",
+    "budget_soft_cap_ratio",
+    "budget_soft_cap_penalty",
+    "budget_soft_cap_increase_excess",
+    "budget_soft_cap_penalty_value",
+    "is_soft_cap_increase_action",
     "safe_recovery_decrease",
     "recovery_decrease_target_count",
     "recovery_decrease_excess_before_mean",
@@ -937,6 +942,9 @@ def _evaluate_agent_on_validation_seed(
     validation_action_unsafe_decrease_sum: defaultdict[int, int] = defaultdict(int)
     validation_action_over_increase_sum: defaultdict[int, int] = defaultdict(int)
     validation_action_over_increase_excess_sum: defaultdict[int, float] = defaultdict(float)
+    # soft cap 统计与 over-increase 分开记录，便于区分“超过硬预算附近”和“超过软上限”的行为。
+    validation_action_soft_cap_increase_sum: defaultdict[int, int] = defaultdict(int)
+    validation_action_soft_cap_increase_excess_sum: defaultdict[int, float] = defaultdict(float)
     validation_action_safe_recovery_decrease_sum: defaultdict[int, int] = defaultdict(int)
     validation_action_unsafe_decrease_full_sum: defaultdict[int, int] = defaultdict(int)
     validation_action_budget_over_drift_deadzone_sum: defaultdict[int, float] = defaultdict(float)
@@ -999,6 +1007,12 @@ def _evaluate_agent_on_validation_seed(
             validation_action_over_increase_sum[action_key] += int(bool(result.info.get("is_over_increase_action", False)))
             validation_action_over_increase_excess_sum[action_key] += float(
                 result.info.get("over_increase_excess", 0.0)
+            )
+            validation_action_soft_cap_increase_sum[action_key] += int(
+                bool(result.info.get("is_soft_cap_increase_action", False))
+            )
+            validation_action_soft_cap_increase_excess_sum[action_key] += float(
+                result.info.get("budget_soft_cap_increase_excess", 0.0)
             )
             validation_action_safe_recovery_decrease_sum[action_key] += int(
                 bool(result.info.get("safe_recovery_decrease", False))
@@ -1146,6 +1160,16 @@ def _evaluate_agent_on_validation_seed(
         )
         row["validation_action_over_increase_excess_sum_json"] = json.dumps(
             {str(k): float(v) for k, v in validation_action_over_increase_excess_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_soft_cap_increase_sum_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_action_soft_cap_increase_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_soft_cap_increase_excess_sum_json"] = json.dumps(
+            {str(k): float(v) for k, v in validation_action_soft_cap_increase_excess_sum.items()},
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -1633,6 +1657,16 @@ def _run_validation(
         )
         validation_row["policy_action_over_increase_excess_sum_json"] = json.dumps(
             _merge_counter_json(dqn_rows, "validation_action_over_increase_excess_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_soft_cap_increase_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_soft_cap_increase_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_soft_cap_increase_excess_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_soft_cap_increase_excess_sum_json"),
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -2967,6 +3001,17 @@ def main() -> None:
                         "over_increase_deadzone": float(result.info.get("over_increase_deadzone", 0.0)),
                         "over_increase_excess": float(result.info.get("over_increase_excess", 0.0)),
                         "is_over_increase_action": bool(result.info.get("is_over_increase_action", False)),
+                        "budget_soft_cap_ratio": float(result.info.get("budget_soft_cap_ratio", 0.0)),
+                        "budget_soft_cap_penalty": float(result.info.get("budget_soft_cap_penalty", 0.0)),
+                        "budget_soft_cap_increase_excess": float(
+                            result.info.get("budget_soft_cap_increase_excess", 0.0)
+                        ),
+                        "budget_soft_cap_penalty_value": float(
+                            result.info.get("budget_soft_cap_penalty_value", 0.0)
+                        ),
+                        "is_soft_cap_increase_action": bool(
+                            result.info.get("is_soft_cap_increase_action", False)
+                        ),
                         "safe_recovery_decrease": bool(result.info.get("safe_recovery_decrease", False)),
                         "recovery_decrease_target_count": int(result.info.get("recovery_decrease_target_count", 0)),
                         "recovery_decrease_excess_before_mean": float(
@@ -3957,6 +4002,8 @@ def main() -> None:
                     "policy_action_unsafe_decrease_sum_json",
                     "policy_action_over_increase_sum_json",
                     "policy_action_over_increase_excess_sum_json",
+                    "policy_action_soft_cap_increase_sum_json",
+                    "policy_action_soft_cap_increase_excess_sum_json",
                     "policy_action_safe_recovery_decrease_sum_json",
                     "policy_action_unsafe_decrease_full_sum_json",
                     "policy_action_budget_over_drift_deadzone_sum_json",

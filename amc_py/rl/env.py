@@ -2858,6 +2858,10 @@ class AmcBudgetEnv:
         budget_abs_drift_deadzone = float(reward_parameters.get("budget_abs_drift_deadzone", 0.0))
         over_budget_dwell_penalty = float(reward_parameters.get("over_budget_dwell_penalty", 0.0))
         over_increase_penalty = float(reward_parameters.get("over_increase_penalty", 0.0))
+        # soft cap 只作为 reward shaping 变量暴露给 JSON 公式。
+        # 默认值保持 0.0，确保未配置时旧 reward mode 的行为完全不变。
+        budget_soft_cap_ratio = float(reward_parameters.get("budget_soft_cap_ratio", 0.0))
+        budget_soft_cap_penalty = float(reward_parameters.get("budget_soft_cap_penalty", 0.0))
         recovery_decrease_bonus = float(reward_parameters.get("recovery_decrease_bonus", 0.0))
         unsafe_decrease_penalty = float(reward_parameters.get("unsafe_decrease_penalty", 0.0))
         pingpong_penalty = float(reward_parameters.get("pingpong_penalty", 0.0))
@@ -2931,6 +2935,19 @@ class AmcBudgetEnv:
                 self._episode_over_increase_count_by_task[resolved_increase_task] += int(
                     is_over_increase_action
                 )
+        # soft cap 只观察 increase 动作执行前的预算比例，不改变 mask、accepted 和 budget update。
+        # 这里单独算出 excess 和 penalty value，供 reward JSON 与日志复用，避免在 Python 侧重复叠加奖励。
+        budget_soft_cap_increase_excess = 0.0
+        is_soft_cap_increase_action = False
+        if (
+            budget_soft_cap_ratio > 0.0
+            and is_increase_action
+            and resolved_increase_task is not None
+        ):
+            ratio_before = self._budget_ratio(budget_before, resolved_increase_task)
+            budget_soft_cap_increase_excess = max(0.0, ratio_before - budget_soft_cap_ratio)
+            is_soft_cap_increase_action = budget_soft_cap_increase_excess > 0.0
+        budget_soft_cap_penalty_value = budget_soft_cap_penalty * budget_soft_cap_increase_excess
 
         recovery_deadzone = float(reward_parameters.get("recovery_deadzone", 0.05))
         recovery_floor_ratio = float(reward_parameters.get("recovery_floor_ratio", 1.00))
@@ -3065,6 +3082,11 @@ class AmcBudgetEnv:
             "over_increase_deadzone": float(over_increase_deadzone),
             "over_increase_excess": float(over_increase_excess),
             "is_over_increase_action": float(is_over_increase_action),
+            "budget_soft_cap_ratio": float(budget_soft_cap_ratio),
+            "budget_soft_cap_penalty": float(budget_soft_cap_penalty),
+            "budget_soft_cap_increase_excess": float(budget_soft_cap_increase_excess),
+            "budget_soft_cap_penalty_value": float(budget_soft_cap_penalty_value),
+            "is_soft_cap_increase_action": float(is_soft_cap_increase_action),
             "safe_recovery_decrease": float(safe_recovery_decrease),
             "recovery_decrease_target_count": float(recovery_decrease_target_count),
             "recovery_decrease_excess_before_mean": float(recovery_decrease_excess_before_mean),
@@ -3303,6 +3325,11 @@ class AmcBudgetEnv:
             "over_increase_deadzone": over_increase_deadzone,
             "over_increase_excess": over_increase_excess,
             "is_over_increase_action": bool(is_over_increase_action),
+            "budget_soft_cap_ratio": budget_soft_cap_ratio,
+            "budget_soft_cap_penalty": budget_soft_cap_penalty,
+            "budget_soft_cap_increase_excess": budget_soft_cap_increase_excess,
+            "budget_soft_cap_penalty_value": budget_soft_cap_penalty_value,
+            "is_soft_cap_increase_action": bool(is_soft_cap_increase_action),
             "safe_recovery_decrease": bool(safe_recovery_decrease),
             "recovery_decrease_target_count": recovery_decrease_target_count,
             "recovery_decrease_excess_before_mean": recovery_decrease_excess_before_mean,

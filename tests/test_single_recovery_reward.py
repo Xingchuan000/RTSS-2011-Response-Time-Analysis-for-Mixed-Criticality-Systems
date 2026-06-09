@@ -22,11 +22,10 @@ def _pick_valid_action(env) -> int | None:
     return None
 
 
-def test_single_recovery_reward_mode_loads_and_evaluates() -> None:
-    """新 reward mode 必须可加载，并且表达式可在 dummy 变量表上求值。"""
+def _dummy_recovery_reward_variables() -> dict[str, float | bool | str]:
+    """构造 single recovery reward 表达式求值所需的完整 dummy 变量表。"""
 
-    config = load_reward_mode_config("interval_qos_v2_single_recovery_full")
-    variables = {
+    return {
         "paper_reward": 0.0,
         "noop_bonus_if_noop": 0.0,
         "budget_change_penalty": 0.0,
@@ -46,6 +45,11 @@ def test_single_recovery_reward_mode_loads_and_evaluates() -> None:
         "over_increase_deadzone": 0.05,
         "over_increase_excess": 0.0,
         "is_over_increase_action": 0.0,
+        "budget_soft_cap_ratio": 0.0,
+        "budget_soft_cap_penalty": 0.0,
+        "budget_soft_cap_increase_excess": 0.0,
+        "budget_soft_cap_penalty_value": 0.0,
+        "is_soft_cap_increase_action": 0.0,
         "safe_recovery_decrease": 0.0,
         "recovery_decrease_target_count": 0.0,
         "recovery_decrease_excess_before_mean": 0.0,
@@ -104,6 +108,13 @@ def test_single_recovery_reward_mode_loads_and_evaluates() -> None:
         "last_budget_action_direction": "",
         "last_budget_action_task": "",
     }
+
+
+def test_single_recovery_reward_mode_loads_and_evaluates() -> None:
+    """新 reward mode 必须可加载，并且表达式可在 dummy 变量表上求值。"""
+
+    config = load_reward_mode_config("interval_qos_v2_single_recovery_full")
+    variables = _dummy_recovery_reward_variables()
     variables.update(config.reward_parameters)
     reward = evaluate_reward_expression(config.step_reward_formula, variables)
     assert math.isfinite(reward)
@@ -133,6 +144,11 @@ def test_single_recovery_reward_env_step_exposes_new_fields() -> None:
         "over_increase_deadzone",
         "over_increase_excess",
         "is_over_increase_action",
+        "budget_soft_cap_ratio",
+        "budget_soft_cap_penalty",
+        "budget_soft_cap_increase_excess",
+        "budget_soft_cap_penalty_value",
+        "is_soft_cap_increase_action",
         "safe_recovery_decrease",
         "recovery_decrease_target_count",
         "recovery_decrease_excess_before_mean",
@@ -158,3 +174,23 @@ def test_single_recovery_reward_env_step_exposes_new_fields() -> None:
     for task_name, final_ratio in final_ratios.items():
         assert float(min_ratios[task_name]) <= float(final_ratio) + 1e-9
         assert float(final_ratio) <= float(max_ratios[task_name]) + 1e-9
+
+
+def test_soft_cap_reward_expression_penalizes_cap_excess() -> None:
+    """soft cap reward 配置必须能使用新增变量完成表达式求值。"""
+
+    config = load_reward_mode_config(
+        "interval_qos_v2_single_recovery_full_C5_overinc016_abs005_softcap3_p002"
+    )
+    variables = _dummy_recovery_reward_variables()
+    variables.update(
+        {
+            "budget_soft_cap_ratio": 3.0,
+            "budget_soft_cap_penalty": 0.002,
+            "budget_soft_cap_increase_excess": 1.5,
+            "is_soft_cap_increase_action": 1.0,
+        }
+    )
+    variables.update(config.reward_parameters)
+    reward = evaluate_reward_expression(config.step_reward_formula, variables)
+    assert math.isfinite(reward)

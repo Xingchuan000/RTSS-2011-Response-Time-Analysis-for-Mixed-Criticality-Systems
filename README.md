@@ -691,6 +691,11 @@ python scripts/smoke_test_reward_modes.py --modes interval_qos_v2_single_recover
   - `over_increase_deadzone`
   - `over_increase_excess`
   - `is_over_increase_action`
+  - `budget_soft_cap_ratio`
+  - `budget_soft_cap_penalty`
+  - `budget_soft_cap_increase_excess`
+  - `budget_soft_cap_penalty_value`
+  - `is_soft_cap_increase_action`
   - `safe_recovery_decrease`
   - `recovery_decrease_target_count`
   - `recovery_decrease_excess_before_mean`
@@ -709,6 +714,11 @@ python scripts/smoke_test_reward_modes.py --modes interval_qos_v2_single_recover
   - `over_increase_deadzone`
   - `over_increase_excess`
   - `is_over_increase_action`
+  - `budget_soft_cap_ratio`
+  - `budget_soft_cap_penalty`
+  - `budget_soft_cap_increase_excess`
+  - `budget_soft_cap_penalty_value`
+  - `is_soft_cap_increase_action`
   - `safe_recovery_decrease`
   - `recovery_decrease_target_count`
   - `recovery_decrease_excess_before_mean`
@@ -724,26 +734,52 @@ python scripts/smoke_test_reward_modes.py --modes interval_qos_v2_single_recover
   - `consecutive_increase_max_by_task_json`
   - `over_budget_dwell_steps_by_task_json`
 
-- `validation_policy_actions.csv` 新增字段：
-  - `over_increase_count`
-  - `over_increase_rate`
-  - `over_increase_excess_mean`
-  - `safe_recovery_decrease_count`
-  - `safe_recovery_decrease_rate`
-  - `unsafe_decrease_full_count`
-  - `unsafe_decrease_full_rate`
-  - `budget_over_drift_deadzone_mean`
-  - `increase_concentration_excess_mean`
-  - `pingpong_action_rate`
+- `validation_metrics.csv` 中与策略动作聚合相关的 JSON 字段新增：
+  - `policy_action_soft_cap_increase_sum_json`
+  - `policy_action_soft_cap_increase_excess_sum_json`
 
 - `evaluate_dqn_amc.py` 的 `eval_summary.csv` 新增聚合字段：
   - `mean_over_increase_excess`
   - `over_increase_action_count`
+  - `mean_budget_soft_cap_increase_excess`
+  - `soft_cap_increase_action_count`
+  - `mean_budget_soft_cap_penalty_value`
   - `safe_recovery_decrease_count`
   - `unsafe_decrease_full_count`
   - `mean_budget_over_drift_deadzone`
   - `mean_increase_concentration_excess`
   - `pingpong_action_count`
+
+新增 soft upper cap reward 配置使用说明：
+
+- 配置文件：
+  - `configs/reward_modes/interval_qos_v2_single_recovery_full_C5_overinc016_abs005_softcap3_p002.json`
+  - `configs/reward_modes/interval_qos_v2_single_recovery_full_C5_overinc016_abs005_softcap3_p005.json`
+- 新增参数含义：
+  - `budget_soft_cap_ratio`：soft cap 阈值；当 increase 动作发生前的 `budget_before / initial_budget` 超过该值时开始产生 soft cap excess。
+  - `budget_soft_cap_penalty`：soft cap excess 的线性惩罚系数。
+- 重要行为边界：
+  - soft cap 只影响 reward 公式变量，不修改 action mask。
+  - soft cap 不拒绝动作，不改变 `accepted` 判定。
+  - soft cap 使用 increase 前的 `budget_before` 计算，不使用 `budget_after`。
+- 训练命令示例：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. python scripts/train_dqn_amc.py \
+  --workload mc_fairgen \
+  --action-space single \
+  --reward-mode interval_qos_v2_single_recovery_full_C5_overinc016_abs005_softcap3_p002 \
+  --include-explicit-noop \
+  --forbid-decreasing-hi-budgets \
+  --log-validation-policy-actions \
+  --episodes 1
+```
+
+- action log / validation / HOUT 观察重点：
+  - `budget_soft_cap_increase_excess`：本次 increase 在 soft cap 之上的超出量。
+  - `budget_soft_cap_penalty_value`：按参数折算后的 soft cap 惩罚值。
+  - `is_soft_cap_increase_action`：当前 increase 是否触发 soft cap。
 
 ## 12. DQN 训练、评估与绘图
 
