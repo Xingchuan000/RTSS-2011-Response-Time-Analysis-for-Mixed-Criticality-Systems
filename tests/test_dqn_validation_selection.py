@@ -5,7 +5,10 @@ from __future__ import annotations
 from amc_py.model_selection import (
     is_conservative_qos_valid,
     is_qos_best_valid,
+    is_qos_recovery_stable_valid,
     is_qos_stable_valid,
+    qos_recovery_stable_sort_key,
+    recovery_action_stats,
 )
 from scripts.train_dqn_amc import (
     _is_better_validation_row,
@@ -259,3 +262,68 @@ def test_qos_selection_rules_match_plan() -> None:
         save_best_by="qos_best",
         qos_stable_mode_delta=0.05,
     ) is True
+
+
+def test_qos_recovery_stable_rules_and_sort_key_match_plan() -> None:
+    """qos_recovery_stable 应按计划先筛选，再以恢复健康度和 QoS 排序。"""
+
+    valid_row = {
+        "episode": 8,
+        "mode_changes_mean": 10.4,
+        "baseline_mode_changes_mean": 10.0,
+        "hi_deadline_misses_sum": 0,
+        "lc_service_loss_mean": 0.10,
+        "relative_lc_loss_reduction": 0.12,
+        "policy_action_hist_json": "{\"0\": 50, \"1\": 50}",
+        "policy_action_is_increase_sum_json": "{\"inc\": 55}",
+        "policy_action_is_decrease_sum_json": "{\"dec\": 45}",
+        "policy_action_safe_recovery_decrease_sum_json": "{\"safe\": 4}",
+        "policy_action_over_increase_sum_json": "{\"over\": 2}",
+    }
+    weaker_row = {
+        "episode": 9,
+        "mode_changes_mean": 10.4,
+        "baseline_mode_changes_mean": 10.0,
+        "hi_deadline_misses_sum": 0,
+        "lc_service_loss_mean": 0.12,
+        "relative_lc_loss_reduction": 0.08,
+        "policy_action_hist_json": "{\"0\": 40, \"1\": 60}",
+        "policy_action_is_increase_sum_json": "{\"inc\": 70}",
+        "policy_action_is_decrease_sum_json": "{\"dec\": 30}",
+        "policy_action_safe_recovery_decrease_sum_json": "{\"safe\": 3}",
+        "policy_action_over_increase_sum_json": "{\"over\": 3}",
+    }
+    invalid_row = {
+        "episode": 10,
+        "mode_changes_mean": 10.6,
+        "baseline_mode_changes_mean": 10.0,
+        "hi_deadline_misses_sum": 0,
+        "lc_service_loss_mean": 0.05,
+        "relative_lc_loss_reduction": 0.10,
+        "policy_action_hist_json": "{\"0\": 100}",
+        "policy_action_is_increase_sum_json": "{\"inc\": 100}",
+        "policy_action_is_decrease_sum_json": "{\"dec\": 0}",
+        "policy_action_safe_recovery_decrease_sum_json": "{\"safe\": 0}",
+        "policy_action_over_increase_sum_json": "{\"over\": 0}",
+    }
+
+    stats = recovery_action_stats(valid_row)
+    assert stats["selected_action_count"] == 100.0
+    assert stats["increase_rate"] == 0.55
+    assert stats["recovery_decrease_rate"] == 0.04
+    assert is_qos_recovery_stable_valid(valid_row) is True
+    assert is_qos_recovery_stable_valid(weaker_row) is True
+    assert is_qos_recovery_stable_valid(invalid_row) is False
+    assert qos_recovery_stable_sort_key(valid_row) < qos_recovery_stable_sort_key(weaker_row)
+    assert _is_better_validation_row(
+        candidate_row=valid_row,
+        best_row=weaker_row,
+        save_best_by="qos_recovery_stable",
+        qos_stable_mode_delta=0.05,
+    ) is True
+    assert _is_better_validation_row(
+        candidate_row=invalid_row,
+        best_row=valid_row,
+        save_best_by="qos_recovery_stable",
+        qos_stable_mode_delta=0.05,
+    ) is False

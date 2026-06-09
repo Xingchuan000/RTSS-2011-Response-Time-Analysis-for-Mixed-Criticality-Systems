@@ -7,11 +7,16 @@ import csv
 import json
 import math
 import random
+import sys
 from collections import Counter, defaultdict, deque
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import torch
 
@@ -38,8 +43,11 @@ from amc_py.metrics import (
 from amc_py.model_selection import (
     is_conservative_qos_valid,
     is_qos_best_valid,
+    is_qos_recovery_stable_valid,
     is_qos_stable_valid,
+    recovery_action_stats,
     qos_sort_key,
+    qos_recovery_stable_sort_key,
 )
 from amc_py.models import Task
 from amc_py.rl.actions import describe_budget_action
@@ -214,6 +222,25 @@ def _qos_validation_metadata_row(
         "is_qos_stable_valid": is_qos_stable_valid(row, delta=qos_stable_mode_delta),
         "is_qos_best_valid": is_qos_best_valid(row),
     }
+    stats = recovery_action_stats(row)
+    metadata.update(
+        {
+            # 这组字段直接记录 policy action 的恢复分布，便于后续人工检查“为什么被选中/淘汰”。
+            "policy_selected_action_count": stats["selected_action_count"],
+            "policy_increase_count": stats["increase_count"],
+            "policy_decrease_count": stats["decrease_count"],
+            "policy_recovery_decrease_count": stats["recovery_decrease_count"],
+            "policy_over_increase_count": stats["over_increase_count"],
+            "policy_increase_rate": stats["increase_rate"],
+            "policy_decrease_rate": stats["decrease_rate"],
+            "policy_recovery_decrease_rate": stats["recovery_decrease_rate"],
+            "policy_over_increase_rate": stats["over_increase_rate"],
+            "is_qos_recovery_stable_valid": is_qos_recovery_stable_valid(
+                row,
+                mode_delta=qos_stable_mode_delta,
+            ),
+        }
+    )
     return metadata
 
 
@@ -226,6 +253,10 @@ def _build_best_metadata(
     relative_score_alpha: float,
     require_better_than_baseline_for_best: bool,
     qos_stable_mode_delta: float,
+    qos_recovery_max_increase_rate: float,
+    qos_recovery_min_recovery_decrease_rate: float,
+    qos_recovery_max_over_increase_rate: float,
+    qos_recovery_require_positive_qos: bool,
     best_type: str,
     best_row: dict[str, int | float | None] | None,
 ) -> dict[str, object]:
@@ -239,6 +270,10 @@ def _build_best_metadata(
             "relative_score_alpha": relative_score_alpha,
             "require_better_than_baseline_for_best": require_better_than_baseline_for_best,
             "qos_stable_mode_delta": qos_stable_mode_delta,
+            "qos_recovery_max_increase_rate": qos_recovery_max_increase_rate,
+            "qos_recovery_min_recovery_decrease_rate": qos_recovery_min_recovery_decrease_rate,
+            "qos_recovery_max_over_increase_rate": qos_recovery_max_over_increase_rate,
+            "qos_recovery_require_positive_qos": qos_recovery_require_positive_qos,
             "reward_mode": reward_mode,
             "reward_definition": reward_definition,
             "double_dqn": double_dqn,
@@ -261,6 +296,10 @@ def _build_best_metadata(
         "relative_score_alpha": relative_score_alpha,
         "require_better_than_baseline_for_best": require_better_than_baseline_for_best,
         "qos_stable_mode_delta": qos_stable_mode_delta,
+        "qos_recovery_max_increase_rate": qos_recovery_max_increase_rate,
+        "qos_recovery_min_recovery_decrease_rate": qos_recovery_min_recovery_decrease_rate,
+        "qos_recovery_max_over_increase_rate": qos_recovery_max_over_increase_rate,
+        "qos_recovery_require_positive_qos": qos_recovery_require_positive_qos,
         "best_validation_episode": int(best_row["episode"]),
         "best_relative_score": best_relative_score,
         "dqn_lo_cancellations_mean": float(best_row["lo_cancellations_mean"]),
@@ -1633,6 +1672,10 @@ def _is_better_validation_row(
     relative_score_alpha: float = 1.0,
     require_better_than_baseline_for_best: bool = False,
     qos_stable_mode_delta: float = 0.05,
+    qos_recovery_max_increase_rate: float = 0.90,
+    qos_recovery_min_recovery_decrease_rate: float = 0.03,
+    qos_recovery_max_over_increase_rate: float = 0.90,
+    qos_recovery_require_positive_qos: bool = True,
 ) -> bool:
     """判断候选验证结果是否优于当前 best。"""
 
@@ -1679,6 +1722,30 @@ def _is_better_validation_row(
         if best_row is None or not is_qos_best_valid(best_row):
             return True
         return qos_sort_key(candidate_row) < qos_sort_key(best_row)
+    if save_best_by == "qos_recovery_stable":
+        candidate_valid = is_qos_recovery_stable_valid(
+            candidate_row,
+            mode_delta=qos_stable_mode_delta,
+            max_increase_rate=qos_recovery_max_increase_rate,
+            min_recovery_decrease_rate=qos_recovery_min_recovery_decrease_rate,
+            max_over_increase_rate=qos_recovery_max_over_increase_rate,
+            require_positive_qos=qos_recovery_require_positive_qos,
+        )
+        if not candidate_valid:
+            return False
+        if best_row is None:
+            return True
+        best_valid = is_qos_recovery_stable_valid(
+            best_row,
+            mode_delta=qos_stable_mode_delta,
+            max_increase_rate=qos_recovery_max_increase_rate,
+            min_recovery_decrease_rate=qos_recovery_min_recovery_decrease_rate,
+            max_over_increase_rate=qos_recovery_max_over_increase_rate,
+            require_positive_qos=qos_recovery_require_positive_qos,
+        )
+        if not best_valid:
+            return True
+        return qos_recovery_stable_sort_key(candidate_row) < qos_recovery_stable_sort_key(best_row)
     if save_best_by == "relative_score":
         # relative_score 越小越好，<0 表示综合优于 baseline。
         # 本轮要求：即便 relative_score>=0，也要保留“验证集里最好的那个”checkpoint。
@@ -2136,10 +2203,19 @@ def build_parser() -> argparse.ArgumentParser:
             "qos_stable",
             "conservative_qos",
             "qos_best",
+            "qos_recovery_stable",
         ],
         default="mode_changes",
     )
     parser.add_argument("--qos-stable-mode-delta", type=float, default=0.05)
+    parser.add_argument("--qos-recovery-max-increase-rate", type=float, default=0.90)
+    parser.add_argument("--qos-recovery-min-recovery-decrease-rate", type=float, default=0.03)
+    parser.add_argument("--qos-recovery-max-over-increase-rate", type=float, default=0.90)
+    parser.add_argument(
+        "--qos-recovery-allow-nonpositive-qos",
+        action="store_true",
+        help="Allow qos_recovery_stable selection to consider checkpoints with non-positive relative_lc_loss_reduction.",
+    )
     parser.add_argument("--save-all-best-types", action="store_true")
     parser.add_argument(
         "--reward-mode",
@@ -2526,6 +2602,7 @@ def main() -> None:
         "conservative_qos": None,
         "qos_stable": None,
         "qos_best": None,
+        "qos_recovery_stable": None,
     }
     baseline_validation_cache: dict[str, int | float | None] | None = None
     # `pareto_relative_score` 两阶段选模状态：
@@ -3578,6 +3655,10 @@ def main() -> None:
                             relative_score_alpha=args.relative_score_alpha,
                             require_better_than_baseline_for_best=args.require_better_than_baseline_for_best,
                             qos_stable_mode_delta=args.qos_stable_mode_delta,
+                            qos_recovery_max_increase_rate=args.qos_recovery_max_increase_rate,
+                            qos_recovery_min_recovery_decrease_rate=args.qos_recovery_min_recovery_decrease_rate,
+                            qos_recovery_max_over_increase_rate=args.qos_recovery_max_over_increase_rate,
+                            qos_recovery_require_positive_qos=not args.qos_recovery_allow_nonpositive_qos,
                         )
                     else:
                         # 已见到 Pareto-valid 后，非 Pareto-valid 候选直接丢弃，不参与 best 竞争。
@@ -3590,6 +3671,10 @@ def main() -> None:
                     relative_score_alpha=args.relative_score_alpha,
                     require_better_than_baseline_for_best=args.require_better_than_baseline_for_best,
                     qos_stable_mode_delta=args.qos_stable_mode_delta,
+                    qos_recovery_max_increase_rate=args.qos_recovery_max_increase_rate,
+                    qos_recovery_min_recovery_decrease_rate=args.qos_recovery_min_recovery_decrease_rate,
+                    qos_recovery_max_over_increase_rate=args.qos_recovery_max_over_increase_rate,
+                    qos_recovery_require_positive_qos=not args.qos_recovery_allow_nonpositive_qos,
                 )
 
             if should_update_best:
@@ -3597,7 +3682,7 @@ def main() -> None:
                 agent.save(model_best_path)
                 best_model_saved = True
             if args.save_all_best_types:
-                for best_type in ("conservative_qos", "qos_stable", "qos_best"):
+                for best_type in ("conservative_qos", "qos_stable", "qos_best", "qos_recovery_stable"):
                     should_update_aux_best = _is_better_validation_row(
                         candidate_row=validation_row,
                         best_row=best_rows_by_type[best_type],
@@ -3605,6 +3690,10 @@ def main() -> None:
                         relative_score_alpha=args.relative_score_alpha,
                         require_better_than_baseline_for_best=args.require_better_than_baseline_for_best,
                         qos_stable_mode_delta=args.qos_stable_mode_delta,
+                        qos_recovery_max_increase_rate=args.qos_recovery_max_increase_rate,
+                        qos_recovery_min_recovery_decrease_rate=args.qos_recovery_min_recovery_decrease_rate,
+                        qos_recovery_max_over_increase_rate=args.qos_recovery_max_over_increase_rate,
+                        qos_recovery_require_positive_qos=not args.qos_recovery_allow_nonpositive_qos,
                     )
                     if should_update_aux_best:
                         best_rows_by_type[best_type] = validation_row
@@ -4178,6 +4267,10 @@ def main() -> None:
             relative_score_alpha=args.relative_score_alpha,
             require_better_than_baseline_for_best=args.require_better_than_baseline_for_best,
             qos_stable_mode_delta=args.qos_stable_mode_delta,
+            qos_recovery_max_increase_rate=args.qos_recovery_max_increase_rate,
+            qos_recovery_min_recovery_decrease_rate=args.qos_recovery_min_recovery_decrease_rate,
+            qos_recovery_max_over_increase_rate=args.qos_recovery_max_over_increase_rate,
+            qos_recovery_require_positive_qos=not args.qos_recovery_allow_nonpositive_qos,
             best_type=args.save_best_by,
             best_row=best_validation_row,
         )
@@ -4191,7 +4284,7 @@ def main() -> None:
             print("WARNING: Best available checkpoint is still worse than baseline on validation.")
             print("Saved anyway for trend analysis: model_best.pt")
         if args.save_all_best_types:
-            for best_type in ("conservative_qos", "qos_stable", "qos_best"):
+            for best_type in ("conservative_qos", "qos_stable", "qos_best", "qos_recovery_stable"):
                 metadata_path = output_dir / f"best_model_metadata_{best_type}.json"
                 metadata = _build_best_metadata(
                     save_best_by=args.save_best_by,
@@ -4201,6 +4294,10 @@ def main() -> None:
                     relative_score_alpha=args.relative_score_alpha,
                     require_better_than_baseline_for_best=args.require_better_than_baseline_for_best,
                     qos_stable_mode_delta=args.qos_stable_mode_delta,
+                    qos_recovery_max_increase_rate=args.qos_recovery_max_increase_rate,
+                    qos_recovery_min_recovery_decrease_rate=args.qos_recovery_min_recovery_decrease_rate,
+                    qos_recovery_max_over_increase_rate=args.qos_recovery_max_over_increase_rate,
+                    qos_recovery_require_positive_qos=not args.qos_recovery_allow_nonpositive_qos,
                     best_type=best_type,
                     best_row=best_rows_by_type[best_type],
                 )
@@ -4269,6 +4366,10 @@ def main() -> None:
         "max_q_diagnostic_samples": args.max_q_diagnostic_samples,
         "save_best_by": args.save_best_by,
         "qos_stable_mode_delta": args.qos_stable_mode_delta,
+        "qos_recovery_max_increase_rate": args.qos_recovery_max_increase_rate,
+        "qos_recovery_min_recovery_decrease_rate": args.qos_recovery_min_recovery_decrease_rate,
+        "qos_recovery_max_over_increase_rate": args.qos_recovery_max_over_increase_rate,
+        "qos_recovery_require_positive_qos": not args.qos_recovery_allow_nonpositive_qos,
         "save_all_best_types": args.save_all_best_types,
         "relative_score_alpha": args.relative_score_alpha,
         "relative_score_normalization": "baseline_mean_denominator",

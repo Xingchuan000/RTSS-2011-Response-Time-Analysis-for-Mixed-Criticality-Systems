@@ -1565,11 +1565,27 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py
 - 目标：只要求 `HI` 安全，然后按 `lc_service_loss_mean -> min_lc_service_mean -> mode_changes_mean -> budget_adjust_count_mean -> episode` 排序。
 - 约束：`hi_deadline_misses_sum == 0`。
 
+9. `--save-best-by qos_recovery_stable`
+- 目标：先满足 `qos_stable` 的 QoS 约束，再优先选出恢复动作分布更健康的 checkpoint，最终仍以 `lc_service_loss_mean` 作为主排序项。
+- 默认约束：
+  - `hi_deadline_misses_sum == 0`
+  - `relative_lc_loss_reduction > 0`
+  - `mode_changes_mean <= baseline_mode_changes_mean * (1 + --qos-stable-mode-delta)`
+  - `increase_rate <= --qos-recovery-max-increase-rate`
+  - `recovery_decrease_rate >= --qos-recovery-min-recovery-decrease-rate`
+  - `over_increase_rate <= --qos-recovery-max-over-increase-rate`
+- 其中 `increase_rate / decrease_rate / recovery_decrease_rate / over_increase_rate` 都从 validation 里的 `policy_action_*_json` 计数字段汇总得到。
+- 如果加上 `--qos-recovery-allow-nonpositive-qos`，则不再强制 `relative_lc_loss_reduction > 0`。
+
 新增参数：
 
 - `--qos-stable-mode-delta`：控制 `qos_stable` 的 mode-change 放宽比例，默认 `0.05`。
+- `--qos-recovery-max-increase-rate`：控制 `qos_recovery_stable` 的 increase 比例上限，默认 `0.90`。
+- `--qos-recovery-min-recovery-decrease-rate`：控制 `qos_recovery_stable` 的 recovery decrease 比例下限，默认 `0.03`。
+- `--qos-recovery-max-over-increase-rate`：控制 `qos_recovery_stable` 的 over increase 比例上限，默认 `0.90`。
+- `--qos-recovery-allow-nonpositive-qos`：允许 `qos_recovery_stable` 选择 `relative_lc_loss_reduction <= 0` 的 checkpoint。
 - `--save-all-best-types`：除主 `model_best.pt` 外，额外输出
-  `model_best_conservative_qos.pt`、`model_best_qos_stable.pt`、`model_best_qos_best.pt`
+  `model_best_conservative_qos.pt`、`model_best_qos_stable.pt`、`model_best_qos_best.pt`、`model_best_qos_recovery_stable.pt`
   以及对应 metadata JSON。若某类型没有合格 checkpoint，只会写 `found_valid_checkpoint=false` 的 metadata，不会伪造 best 模型。
 
 常用示例：
@@ -1586,6 +1602,17 @@ cd /Users/x1ngchuan/Documents/AMC
 KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py \
   --save-best-by qos_stable \
   --qos-stable-mode-delta 0.05 \
+  --save-all-best-types
+```
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py \
+  --save-best-by qos_recovery_stable \
+  --qos-stable-mode-delta 0.05 \
+  --qos-recovery-max-increase-rate 0.90 \
+  --qos-recovery-min-recovery-decrease-rate 0.03 \
+  --qos-recovery-max-over-increase-rate 0.90 \
   --save-all-best-types
 ```
 

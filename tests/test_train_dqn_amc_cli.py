@@ -306,6 +306,48 @@ def test_train_cli_supports_plateau_balanced_exploration_fields(tmp_path: Path) 
     assert "plateau_balanced_triggered" in validation_rows[0]
 
 
+def test_train_cli_supports_qos_recovery_stable_selection(tmp_path: Path) -> None:
+    """训练 CLI 应接受 qos_recovery_stable 选模并写出对应配置与元数据。"""
+
+    output_dir = tmp_path / "qos_recovery_stable"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--workload",
+            "small",
+            "--episodes",
+            "2",
+            "--end-time",
+            "80",
+            "--validate-every",
+            "1",
+            "--validation-seeds",
+            "100:100",
+            "--save-best-by",
+            "qos_recovery_stable",
+            "--save-all-best-types",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+
+    with (output_dir / "config.json").open("r", encoding="utf-8") as f:
+        config_payload = json.load(f)
+    assert config_payload["save_best_by"] == "qos_recovery_stable"
+    assert config_payload["qos_recovery_max_increase_rate"] == 0.9
+    assert config_payload["qos_recovery_min_recovery_decrease_rate"] == 0.03
+    assert config_payload["qos_recovery_max_over_increase_rate"] == 0.9
+    assert config_payload["qos_recovery_require_positive_qos"] is True
+
+    assert (output_dir / "best_model_metadata.json").exists()
+    assert (output_dir / "best_model_metadata_qos_recovery_stable.json").exists()
+
+
 def test_train_cli_rejects_invalid_validation_workers(tmp_path: Path) -> None:
     """validation worker 数小于 1 时，训练 CLI 应显式报错。"""
 
