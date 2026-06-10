@@ -211,6 +211,7 @@ class AmcBudgetEnv:
     _episode_consecutive_increase_by_task: dict[str, int] = field(init=False, repr=False)
     _episode_consecutive_increase_max_by_task: dict[str, int] = field(init=False, repr=False)
     _episode_over_budget_dwell_steps_by_task: dict[str, int] = field(init=False, repr=False)
+    _episode_soft_cap_dwell_steps_by_task: dict[str, int] = field(init=False, repr=False)
     _episode_max_budget_ratio_by_task: dict[str, float] = field(init=False, repr=False)
     _episode_min_budget_ratio_by_task: dict[str, float] = field(init=False, repr=False)
     _task_index: dict[str, int] = field(init=False, repr=False)
@@ -287,6 +288,9 @@ class AmcBudgetEnv:
         self._episode_consecutive_increase_by_task = {task.name: 0 for task in self.ordered_tasks}
         self._episode_consecutive_increase_max_by_task = {task.name: 0 for task in self.ordered_tasks}
         self._episode_over_budget_dwell_steps_by_task = {task.name: 0 for task in self.ordered_tasks}
+        # 该计数器只记录“当前 episode 内 LO 任务预算处于 soft cap 以上的 step 数”，
+        # 仅用于日志与诊断，不参与动作可行性判断和预算更新规则。
+        self._episode_soft_cap_dwell_steps_by_task = {task.name: 0 for task in self.ordered_tasks}
         self._episode_max_budget_ratio_by_task = {
             task.name: self._budget_ratio(self._initial_budgets, task.name) for task in self.ordered_tasks
         }
@@ -997,6 +1001,51 @@ class AmcBudgetEnv:
             "budget_over_drift_deadzone_mean": over_deadzone_total / denom,
             "budget_abs_drift_mean": abs_total / denom,
             "budget_abs_drift_deadzone_mean": abs_deadzone_total / denom,
+        }
+
+    def _compute_lo_budget_soft_cap_dwell_stats(
+        self,
+        *,
+        budgets: dict[str, int],
+        cap_ratio: float,
+    ) -> dict[str, float]:
+        """计算 LO task 当前状态超过 soft cap 的 dwell excess。
+
+        口径严格按计划执行：
+        - 只统计 Criticality.LO task；
+        - excess_i = max(0, budget_ratio_i - cap_ratio)；
+        - mean 对所有 LO task 求平均，包括 excess=0 的任务；
+        - max 取所有 LO task 中的最大 excess；
+        - task_count 统计超过 cap 的 LO task 数量；
+        - task_rate = task_count / LO task 总数。
+        """
+
+        zeros = {
+            "budget_soft_cap_dwell_excess_mean": 0.0,
+            "budget_soft_cap_dwell_excess_max": 0.0,
+            "budget_soft_cap_dwell_task_count": 0.0,
+            "budget_soft_cap_dwell_task_rate": 0.0,
+        }
+        if cap_ratio <= 0.0:
+            return zeros
+
+        lo_task_names = [
+            task.name for task in self.ordered_tasks if task.criticality is Criticality.LO
+        ]
+        if not lo_task_names:
+            return zeros
+
+        excess_values: list[float] = []
+        for task_name in lo_task_names:
+            ratio = self._budget_ratio(budgets, task_name)
+            excess_values.append(max(0.0, ratio - cap_ratio))
+
+        exceed_count = sum(1 for value in excess_values if value > 0.0)
+        return {
+            "budget_soft_cap_dwell_excess_mean": float(sum(excess_values) / len(excess_values)),
+            "budget_soft_cap_dwell_excess_max": float(max(excess_values) if excess_values else 0.0),
+            "budget_soft_cap_dwell_task_count": float(exceed_count),
+            "budget_soft_cap_dwell_task_rate": float(exceed_count / len(excess_values)),
         }
 
     def _compute_lo_pressure_mean(
@@ -2862,6 +2911,12 @@ class AmcBudgetEnv:
         # 默认值保持 0.0，确保未配置时旧 reward mode 的行为完全不变。
         budget_soft_cap_ratio = float(reward_parameters.get("budget_soft_cap_ratio", 0.0))
         budget_soft_cap_penalty = float(reward_parameters.get("budget_soft_cap_penalty", 0.0))
+        budget_soft_cap_dwell_penalty = float(
+            reward_parameters.get("budget_soft_cap_dwell_penalty", 0.0)
+        )
+        budget_soft_cap_dwell_max_penalty = float(
+            reward_parameters.get("budget_soft_cap_dwell_max_penalty", 0.0)
+        )
         recovery_decrease_bonus = float(reward_parameters.get("recovery_decrease_bonus", 0.0))
         unsafe_decrease_penalty = float(reward_parameters.get("unsafe_decrease_penalty", 0.0))
         pingpong_penalty = float(reward_parameters.get("pingpong_penalty", 0.0))
@@ -2923,6 +2978,13 @@ class AmcBudgetEnv:
         for task in self.ordered_tasks:
             if self._budget_ratio(budget_after, task.name) > 1.0 + over_budget_dwell_deadzone:
                 self._episode_over_budget_dwell_steps_by_task[task.name] += 1
+        if budget_soft_cap_ratio > 0.0:
+            # 只统计 LO task 的 soft cap 驻留步数，HI task 在该统计口径中始终保持 0。
+            for task in self.ordered_tasks:
+                if task.criticality is not Criticality.LO:
+                    continue
+                if self._budget_ratio(budget_after, task.name) > budget_soft_cap_ratio:
+                    self._episode_soft_cap_dwell_steps_by_task[task.name] += 1
 
         over_increase_deadzone = float(reward_parameters.get("over_increase_deadzone", 0.05))
         over_increase_excess = 0.0
@@ -2948,6 +3010,34 @@ class AmcBudgetEnv:
             budget_soft_cap_increase_excess = max(0.0, ratio_before - budget_soft_cap_ratio)
             is_soft_cap_increase_action = budget_soft_cap_increase_excess > 0.0
         budget_soft_cap_penalty_value = budget_soft_cap_penalty * budget_soft_cap_increase_excess
+        budget_soft_cap_dwell_stats = self._compute_lo_budget_soft_cap_dwell_stats(
+            budgets=budget_after,
+            cap_ratio=budget_soft_cap_ratio,
+        )
+        budget_soft_cap_dwell_excess_mean = float(
+            budget_soft_cap_dwell_stats["budget_soft_cap_dwell_excess_mean"]
+        )
+        budget_soft_cap_dwell_excess_max = float(
+            budget_soft_cap_dwell_stats["budget_soft_cap_dwell_excess_max"]
+        )
+        budget_soft_cap_dwell_task_count = float(
+            budget_soft_cap_dwell_stats["budget_soft_cap_dwell_task_count"]
+        )
+        budget_soft_cap_dwell_task_rate = float(
+            budget_soft_cap_dwell_stats["budget_soft_cap_dwell_task_rate"]
+        )
+        # 两个 penalty value 只用于日志与 JSON reward formula 复用；
+        # 总 reward 仍统一由 step_reward_formula 决定。
+        budget_soft_cap_dwell_penalty_value = (
+            budget_soft_cap_dwell_penalty * budget_soft_cap_dwell_excess_mean
+        )
+        budget_soft_cap_dwell_max_penalty_value = (
+            budget_soft_cap_dwell_max_penalty * budget_soft_cap_dwell_excess_max
+        )
+        budget_soft_cap_dwell_total_penalty_value = (
+            budget_soft_cap_dwell_penalty_value + budget_soft_cap_dwell_max_penalty_value
+        )
+        is_soft_cap_dwell_state = budget_soft_cap_dwell_excess_max > 0.0
 
         recovery_deadzone = float(reward_parameters.get("recovery_deadzone", 0.05))
         recovery_floor_ratio = float(reward_parameters.get("recovery_floor_ratio", 1.00))
@@ -3087,6 +3177,20 @@ class AmcBudgetEnv:
             "budget_soft_cap_increase_excess": float(budget_soft_cap_increase_excess),
             "budget_soft_cap_penalty_value": float(budget_soft_cap_penalty_value),
             "is_soft_cap_increase_action": float(is_soft_cap_increase_action),
+            "budget_soft_cap_dwell_penalty": float(budget_soft_cap_dwell_penalty),
+            "budget_soft_cap_dwell_max_penalty": float(budget_soft_cap_dwell_max_penalty),
+            "budget_soft_cap_dwell_excess_mean": float(budget_soft_cap_dwell_excess_mean),
+            "budget_soft_cap_dwell_excess_max": float(budget_soft_cap_dwell_excess_max),
+            "budget_soft_cap_dwell_task_count": float(budget_soft_cap_dwell_task_count),
+            "budget_soft_cap_dwell_task_rate": float(budget_soft_cap_dwell_task_rate),
+            "budget_soft_cap_dwell_penalty_value": float(budget_soft_cap_dwell_penalty_value),
+            "budget_soft_cap_dwell_max_penalty_value": float(
+                budget_soft_cap_dwell_max_penalty_value
+            ),
+            "budget_soft_cap_dwell_total_penalty_value": float(
+                budget_soft_cap_dwell_total_penalty_value
+            ),
+            "is_soft_cap_dwell_state": float(is_soft_cap_dwell_state),
             "safe_recovery_decrease": float(safe_recovery_decrease),
             "recovery_decrease_target_count": float(recovery_decrease_target_count),
             "recovery_decrease_excess_before_mean": float(recovery_decrease_excess_before_mean),
@@ -3203,6 +3307,9 @@ class AmcBudgetEnv:
             ),
             "over_budget_dwell_steps_by_task_json": json.dumps(
                 self._episode_over_budget_dwell_steps_by_task, ensure_ascii=False, sort_keys=True
+            ),
+            "soft_cap_dwell_steps_by_task_json": json.dumps(
+                self._episode_soft_cap_dwell_steps_by_task, ensure_ascii=False, sort_keys=True
             ),
         }
 
@@ -3330,6 +3437,16 @@ class AmcBudgetEnv:
             "budget_soft_cap_increase_excess": budget_soft_cap_increase_excess,
             "budget_soft_cap_penalty_value": budget_soft_cap_penalty_value,
             "is_soft_cap_increase_action": bool(is_soft_cap_increase_action),
+            "budget_soft_cap_dwell_penalty": budget_soft_cap_dwell_penalty,
+            "budget_soft_cap_dwell_max_penalty": budget_soft_cap_dwell_max_penalty,
+            "budget_soft_cap_dwell_excess_mean": budget_soft_cap_dwell_excess_mean,
+            "budget_soft_cap_dwell_excess_max": budget_soft_cap_dwell_excess_max,
+            "budget_soft_cap_dwell_task_count": budget_soft_cap_dwell_task_count,
+            "budget_soft_cap_dwell_task_rate": budget_soft_cap_dwell_task_rate,
+            "budget_soft_cap_dwell_penalty_value": budget_soft_cap_dwell_penalty_value,
+            "budget_soft_cap_dwell_max_penalty_value": budget_soft_cap_dwell_max_penalty_value,
+            "budget_soft_cap_dwell_total_penalty_value": budget_soft_cap_dwell_total_penalty_value,
+            "is_soft_cap_dwell_state": bool(is_soft_cap_dwell_state),
             "safe_recovery_decrease": bool(safe_recovery_decrease),
             "recovery_decrease_target_count": recovery_decrease_target_count,
             "recovery_decrease_excess_before_mean": recovery_decrease_excess_before_mean,

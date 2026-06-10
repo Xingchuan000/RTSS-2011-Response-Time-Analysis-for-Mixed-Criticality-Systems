@@ -138,6 +138,16 @@ STEP_LOG_FIELDNAMES = [
     "budget_soft_cap_increase_excess",
     "budget_soft_cap_penalty_value",
     "is_soft_cap_increase_action",
+    "budget_soft_cap_dwell_penalty",
+    "budget_soft_cap_dwell_max_penalty",
+    "budget_soft_cap_dwell_excess_mean",
+    "budget_soft_cap_dwell_excess_max",
+    "budget_soft_cap_dwell_task_count",
+    "budget_soft_cap_dwell_task_rate",
+    "budget_soft_cap_dwell_penalty_value",
+    "budget_soft_cap_dwell_max_penalty_value",
+    "budget_soft_cap_dwell_total_penalty_value",
+    "is_soft_cap_dwell_state",
     "safe_recovery_decrease",
     "recovery_decrease_target_count",
     "recovery_decrease_excess_before_mean",
@@ -156,6 +166,7 @@ STEP_LOG_FIELDNAMES = [
     "over_increase_count_by_task_json",
     "consecutive_increase_max_by_task_json",
     "over_budget_dwell_steps_by_task_json",
+    "soft_cap_dwell_steps_by_task_json",
     "reward_after_regularization",
     "workload",
     "total_util",
@@ -945,6 +956,10 @@ def _evaluate_agent_on_validation_seed(
     # soft cap 统计与 over-increase 分开记录，便于区分“超过硬预算附近”和“超过软上限”的行为。
     validation_action_soft_cap_increase_sum: defaultdict[int, int] = defaultdict(int)
     validation_action_soft_cap_increase_excess_sum: defaultdict[int, float] = defaultdict(float)
+    validation_action_soft_cap_dwell_state_sum: defaultdict[int, int] = defaultdict(int)
+    validation_action_soft_cap_dwell_mean_sum: defaultdict[int, float] = defaultdict(float)
+    validation_action_soft_cap_dwell_max_sum: defaultdict[int, float] = defaultdict(float)
+    validation_action_soft_cap_dwell_total_penalty_sum: defaultdict[int, float] = defaultdict(float)
     validation_action_safe_recovery_decrease_sum: defaultdict[int, int] = defaultdict(int)
     validation_action_unsafe_decrease_full_sum: defaultdict[int, int] = defaultdict(int)
     validation_action_budget_over_drift_deadzone_sum: defaultdict[int, float] = defaultdict(float)
@@ -1013,6 +1028,18 @@ def _evaluate_agent_on_validation_seed(
             )
             validation_action_soft_cap_increase_excess_sum[action_key] += float(
                 result.info.get("budget_soft_cap_increase_excess", 0.0)
+            )
+            validation_action_soft_cap_dwell_state_sum[action_key] += int(
+                bool(result.info.get("is_soft_cap_dwell_state", False))
+            )
+            validation_action_soft_cap_dwell_mean_sum[action_key] += float(
+                result.info.get("budget_soft_cap_dwell_excess_mean", 0.0)
+            )
+            validation_action_soft_cap_dwell_max_sum[action_key] += float(
+                result.info.get("budget_soft_cap_dwell_excess_max", 0.0)
+            )
+            validation_action_soft_cap_dwell_total_penalty_sum[action_key] += float(
+                result.info.get("budget_soft_cap_dwell_total_penalty_value", 0.0)
             )
             validation_action_safe_recovery_decrease_sum[action_key] += int(
                 bool(result.info.get("safe_recovery_decrease", False))
@@ -1170,6 +1197,26 @@ def _evaluate_agent_on_validation_seed(
         )
         row["validation_action_soft_cap_increase_excess_sum_json"] = json.dumps(
             {str(k): float(v) for k, v in validation_action_soft_cap_increase_excess_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_soft_cap_dwell_state_sum_json"] = json.dumps(
+            {str(k): int(v) for k, v in validation_action_soft_cap_dwell_state_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_soft_cap_dwell_mean_sum_json"] = json.dumps(
+            {str(k): float(v) for k, v in validation_action_soft_cap_dwell_mean_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_soft_cap_dwell_max_sum_json"] = json.dumps(
+            {str(k): float(v) for k, v in validation_action_soft_cap_dwell_max_sum.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        row["validation_action_soft_cap_dwell_total_penalty_sum_json"] = json.dumps(
+            {str(k): float(v) for k, v in validation_action_soft_cap_dwell_total_penalty_sum.items()},
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -1667,6 +1714,26 @@ def _run_validation(
         )
         validation_row["policy_action_soft_cap_increase_excess_sum_json"] = json.dumps(
             _merge_counter_json(dqn_rows, "validation_action_soft_cap_increase_excess_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_soft_cap_dwell_state_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_soft_cap_dwell_state_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_soft_cap_dwell_mean_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_soft_cap_dwell_mean_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_soft_cap_dwell_max_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_soft_cap_dwell_max_sum_json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        validation_row["policy_action_soft_cap_dwell_total_penalty_sum_json"] = json.dumps(
+            _merge_counter_json(dqn_rows, "validation_action_soft_cap_dwell_total_penalty_sum_json"),
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -2748,6 +2815,13 @@ def main() -> None:
         reward_budget_change_norm_sum = 0.0
         reward_budget_drift_penalty_sum = 0.0
         reward_budget_drift_mean_sum = 0.0
+        # 这些 episode 级统计只做日志聚合，便于观察 state-level soft cap dwell 惩罚的强度与覆盖率。
+        reward_budget_soft_cap_dwell_penalty_sum = 0.0
+        reward_budget_soft_cap_dwell_max_penalty_sum = 0.0
+        reward_budget_soft_cap_dwell_total_penalty_sum = 0.0
+        budget_soft_cap_dwell_excess_mean_sum = 0.0
+        budget_soft_cap_dwell_excess_max_sum = 0.0
+        budget_soft_cap_dwell_state_count = 0
         # v11 诊断：记录每个 step 的 safety margin，再聚合为 episode 级 mean/p05。
         feature_safety_margin_min_values: list[float] = []
         # Elite Replay v1：按 episode 收集 transition，供 validation 后按窗口批量入池。
@@ -2894,6 +2968,24 @@ def main() -> None:
             reward_budget_change_norm_sum += float(result.info.get("budget_change_norm", 0.0))
             reward_budget_drift_penalty_sum += float(result.info.get("budget_drift_penalty_value", 0.0))
             reward_budget_drift_mean_sum += float(result.info.get("budget_drift_mean", 0.0))
+            reward_budget_soft_cap_dwell_penalty_sum += float(
+                result.info.get("budget_soft_cap_dwell_penalty_value", 0.0)
+            )
+            reward_budget_soft_cap_dwell_max_penalty_sum += float(
+                result.info.get("budget_soft_cap_dwell_max_penalty_value", 0.0)
+            )
+            reward_budget_soft_cap_dwell_total_penalty_sum += float(
+                result.info.get("budget_soft_cap_dwell_total_penalty_value", 0.0)
+            )
+            budget_soft_cap_dwell_excess_mean_sum += float(
+                result.info.get("budget_soft_cap_dwell_excess_mean", 0.0)
+            )
+            budget_soft_cap_dwell_excess_max_sum += float(
+                result.info.get("budget_soft_cap_dwell_excess_max", 0.0)
+            )
+            budget_soft_cap_dwell_state_count += int(
+                bool(result.info.get("is_soft_cap_dwell_state", False))
+            )
             feature_safety_margin_min_values.append(float(result.info.get("feature_safety_margin_min", 1.0)))
             # `global_step` 是跨 episode 的全局步号。
             # 文档要求只对 step-level 明细日志做采样，不改变任何训练统计与优化逻辑。
@@ -3012,6 +3104,36 @@ def main() -> None:
                         "is_soft_cap_increase_action": bool(
                             result.info.get("is_soft_cap_increase_action", False)
                         ),
+                        "budget_soft_cap_dwell_penalty": float(
+                            result.info.get("budget_soft_cap_dwell_penalty", 0.0)
+                        ),
+                        "budget_soft_cap_dwell_max_penalty": float(
+                            result.info.get("budget_soft_cap_dwell_max_penalty", 0.0)
+                        ),
+                        "budget_soft_cap_dwell_excess_mean": float(
+                            result.info.get("budget_soft_cap_dwell_excess_mean", 0.0)
+                        ),
+                        "budget_soft_cap_dwell_excess_max": float(
+                            result.info.get("budget_soft_cap_dwell_excess_max", 0.0)
+                        ),
+                        "budget_soft_cap_dwell_task_count": float(
+                            result.info.get("budget_soft_cap_dwell_task_count", 0.0)
+                        ),
+                        "budget_soft_cap_dwell_task_rate": float(
+                            result.info.get("budget_soft_cap_dwell_task_rate", 0.0)
+                        ),
+                        "budget_soft_cap_dwell_penalty_value": float(
+                            result.info.get("budget_soft_cap_dwell_penalty_value", 0.0)
+                        ),
+                        "budget_soft_cap_dwell_max_penalty_value": float(
+                            result.info.get("budget_soft_cap_dwell_max_penalty_value", 0.0)
+                        ),
+                        "budget_soft_cap_dwell_total_penalty_value": float(
+                            result.info.get("budget_soft_cap_dwell_total_penalty_value", 0.0)
+                        ),
+                        "is_soft_cap_dwell_state": bool(
+                            result.info.get("is_soft_cap_dwell_state", False)
+                        ),
                         "safe_recovery_decrease": bool(result.info.get("safe_recovery_decrease", False)),
                         "recovery_decrease_target_count": int(result.info.get("recovery_decrease_target_count", 0)),
                         "recovery_decrease_excess_before_mean": float(
@@ -3043,6 +3165,9 @@ def main() -> None:
                         ),
                         "over_budget_dwell_steps_by_task_json": result.info.get(
                             "over_budget_dwell_steps_by_task_json", "{}"
+                        ),
+                        "soft_cap_dwell_steps_by_task_json": result.info.get(
+                            "soft_cap_dwell_steps_by_task_json", "{}"
                         ),
                         "reward_after_regularization": float(result.info.get("reward_after_regularization", 0.0)),
                         "workload": args.workload,
@@ -3219,6 +3344,17 @@ def main() -> None:
                 "reward_budget_change_norm_sum": reward_budget_change_norm_sum,
                 "reward_budget_drift_penalty_sum": reward_budget_drift_penalty_sum,
                 "reward_budget_drift_mean_sum": reward_budget_drift_mean_sum,
+                "reward_budget_soft_cap_dwell_penalty_sum": reward_budget_soft_cap_dwell_penalty_sum,
+                "reward_budget_soft_cap_dwell_max_penalty_sum": reward_budget_soft_cap_dwell_max_penalty_sum,
+                "reward_budget_soft_cap_dwell_total_penalty_sum": (
+                    reward_budget_soft_cap_dwell_total_penalty_sum
+                ),
+                "budget_soft_cap_dwell_excess_mean_sum": budget_soft_cap_dwell_excess_mean_sum,
+                "budget_soft_cap_dwell_excess_max_sum": budget_soft_cap_dwell_excess_max_sum,
+                "budget_soft_cap_dwell_state_count": budget_soft_cap_dwell_state_count,
+                "budget_soft_cap_dwell_state_rate": (
+                    budget_soft_cap_dwell_state_count / float(max(episode_step_count, 1))
+                ),
                 # Elite Replay v1 训练期统计：用于观察 elite buffer 是否生效以及采样占比。
                 "elite_replay_enabled": bool(args.use_elite_replay),
                 "elite_replay_active": bool(elite_active),
@@ -3844,6 +3980,13 @@ def main() -> None:
             "reward_budget_change_norm_sum",
             "reward_budget_drift_penalty_sum",
             "reward_budget_drift_mean_sum",
+            "reward_budget_soft_cap_dwell_penalty_sum",
+            "reward_budget_soft_cap_dwell_max_penalty_sum",
+            "reward_budget_soft_cap_dwell_total_penalty_sum",
+            "budget_soft_cap_dwell_excess_mean_sum",
+            "budget_soft_cap_dwell_excess_max_sum",
+            "budget_soft_cap_dwell_state_count",
+            "budget_soft_cap_dwell_state_rate",
             "elite_replay_enabled",
             "elite_replay_active",
             "elite_replay_buffer_size",
@@ -4004,6 +4147,10 @@ def main() -> None:
                     "policy_action_over_increase_excess_sum_json",
                     "policy_action_soft_cap_increase_sum_json",
                     "policy_action_soft_cap_increase_excess_sum_json",
+                    "policy_action_soft_cap_dwell_state_sum_json",
+                    "policy_action_soft_cap_dwell_mean_sum_json",
+                    "policy_action_soft_cap_dwell_max_sum_json",
+                    "policy_action_soft_cap_dwell_total_penalty_sum_json",
                     "policy_action_safe_recovery_decrease_sum_json",
                     "policy_action_unsafe_decrease_full_sum_json",
                     "policy_action_budget_over_drift_deadzone_sum_json",

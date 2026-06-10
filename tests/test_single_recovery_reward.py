@@ -50,6 +50,16 @@ def _dummy_recovery_reward_variables() -> dict[str, float | bool | str]:
         "budget_soft_cap_increase_excess": 0.0,
         "budget_soft_cap_penalty_value": 0.0,
         "is_soft_cap_increase_action": 0.0,
+        "budget_soft_cap_dwell_penalty": 0.0,
+        "budget_soft_cap_dwell_max_penalty": 0.0,
+        "budget_soft_cap_dwell_excess_mean": 0.0,
+        "budget_soft_cap_dwell_excess_max": 0.0,
+        "budget_soft_cap_dwell_task_count": 0.0,
+        "budget_soft_cap_dwell_task_rate": 0.0,
+        "budget_soft_cap_dwell_penalty_value": 0.0,
+        "budget_soft_cap_dwell_max_penalty_value": 0.0,
+        "budget_soft_cap_dwell_total_penalty_value": 0.0,
+        "is_soft_cap_dwell_state": 0.0,
         "safe_recovery_decrease": 0.0,
         "recovery_decrease_target_count": 0.0,
         "recovery_decrease_excess_before_mean": 0.0,
@@ -149,6 +159,16 @@ def test_single_recovery_reward_env_step_exposes_new_fields() -> None:
         "budget_soft_cap_increase_excess",
         "budget_soft_cap_penalty_value",
         "is_soft_cap_increase_action",
+        "budget_soft_cap_dwell_penalty",
+        "budget_soft_cap_dwell_max_penalty",
+        "budget_soft_cap_dwell_excess_mean",
+        "budget_soft_cap_dwell_excess_max",
+        "budget_soft_cap_dwell_task_count",
+        "budget_soft_cap_dwell_task_rate",
+        "budget_soft_cap_dwell_penalty_value",
+        "budget_soft_cap_dwell_max_penalty_value",
+        "budget_soft_cap_dwell_total_penalty_value",
+        "is_soft_cap_dwell_state",
         "safe_recovery_decrease",
         "recovery_decrease_target_count",
         "recovery_decrease_excess_before_mean",
@@ -165,6 +185,7 @@ def test_single_recovery_reward_env_step_exposes_new_fields() -> None:
         "over_increase_count_by_task_json",
         "consecutive_increase_max_by_task_json",
         "over_budget_dwell_steps_by_task_json",
+        "soft_cap_dwell_steps_by_task_json",
     ):
         assert key in result.info
 
@@ -192,5 +213,29 @@ def test_soft_cap_reward_expression_penalizes_cap_excess() -> None:
         }
     )
     variables.update(config.reward_parameters)
+    reward = evaluate_reward_expression(config.step_reward_formula, variables)
+    assert math.isfinite(reward)
+
+
+def test_soft_cap_dwell_reward_expression_penalizes_state_excess() -> None:
+    """dwell max reward 配置必须能引用新增状态级 soft cap 变量。"""
+
+    config = load_reward_mode_config(
+        "interval_qos_v2_single_recovery_full_C5_overinc016_abs005_softcap3_p005_dwellmax_p001"
+    )
+    variables = _dummy_recovery_reward_variables()
+    variables.update(config.reward_parameters)
+    variables.update(
+        {
+            "budget_soft_cap_ratio": 3.0,
+            "budget_soft_cap_penalty": 0.005,
+            "budget_soft_cap_dwell_max_penalty": 0.001,
+            "budget_soft_cap_dwell_excess_mean": 0.5,
+            "budget_soft_cap_dwell_excess_max": 2.0,
+            "budget_soft_cap_dwell_task_count": 1.0,
+            "budget_soft_cap_dwell_task_rate": 1.0 / 6.0,
+            "is_soft_cap_dwell_state": 1.0,
+        }
+    )
     reward = evaluate_reward_expression(config.step_reward_formula, variables)
     assert math.isfinite(reward)

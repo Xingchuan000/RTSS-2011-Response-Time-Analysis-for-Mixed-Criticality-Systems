@@ -258,6 +258,89 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONP
   --learnable-fast-end-time 500000 \
   --learnable-fast-eval-seeds 3 \
   --learnable-fast-event-min 0 \
+
+## 13. State-Level Soft Cap Dwell Penalty 使用说明
+
+本次更新在现有 action-level `budget_soft_cap_penalty` 基础上，新增了 state-level 的 soft cap dwell penalty。
+实现严格限定在 reward shaping 层：
+
+- 只统计 `Criticality.LO` task。
+- 只惩罚 `budget_ratio > budget_soft_cap_ratio` 的状态驻留。
+- 不修改动作空间。
+- 不修改 `valid_action_mask`。
+- 不修改预算更新规则。
+- 不新增 hard cap。
+
+### 13.1 新增 reward mode
+
+新增两个 reward mode 配置文件：
+
+- `interval_qos_v2_single_recovery_full_C5_overinc016_abs005_softcap3_p005_dwellmean_p001`
+  - 通过 `budget_soft_cap_dwell_penalty * budget_soft_cap_dwell_excess_mean` 惩罚所有 LO task 的平均 soft cap 超界状态。
+- `interval_qos_v2_single_recovery_full_C5_overinc016_abs005_softcap3_p005_dwellmax_p001`
+  - 通过 `budget_soft_cap_dwell_max_penalty * budget_soft_cap_dwell_excess_max` 惩罚单个 LO task 的最大 soft cap 超界状态。
+
+原有以下 reward mode 保持不变，未被覆盖：
+
+- `interval_qos_v2_single_recovery_full_C5_overinc016_abs005_softcap3_p002`
+- `interval_qos_v2_single_recovery_full_C5_overinc016_abs005_softcap3_p005`
+
+### 13.2 训练时如何使用
+
+训练脚本可直接指定新的 reward mode：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/train_dqn_amc.py \
+  --reward-mode interval_qos_v2_single_recovery_full_C5_overinc016_abs005_softcap3_p005_dwellmean_p001
+```
+
+或：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/train_dqn_amc.py \
+  --reward-mode interval_qos_v2_single_recovery_full_C5_overinc016_abs005_softcap3_p005_dwellmax_p001
+```
+
+### 13.3 新增日志字段
+
+环境 `step().info`、训练 step CSV、训练 episode summary、validation policy action 聚合、evaluate 输出中已新增以下 dwell 相关字段：
+
+- `budget_soft_cap_dwell_penalty`
+- `budget_soft_cap_dwell_max_penalty`
+- `budget_soft_cap_dwell_excess_mean`
+- `budget_soft_cap_dwell_excess_max`
+- `budget_soft_cap_dwell_task_count`
+- `budget_soft_cap_dwell_task_rate`
+- `budget_soft_cap_dwell_penalty_value`
+- `budget_soft_cap_dwell_max_penalty_value`
+- `budget_soft_cap_dwell_total_penalty_value`
+- `is_soft_cap_dwell_state`
+- `soft_cap_dwell_steps_by_task_json`
+
+其中：
+
+- `*_excess_mean` 用于观察所有 LO task 的平均 soft cap 超界程度。
+- `*_excess_max` 用于观察是否存在单个 LO task 的极端上漂。
+- `soft_cap_dwell_steps_by_task_json` 记录当前 episode 内每个 task 的 soft cap 驻留步数；非 LO task 的值保持为 `0`。
+
+### 13.4 计划内验证命令
+
+先运行 reward mode smoke test：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. conda run --no-capture-output -n amc-repro python scripts/smoke_test_reward_modes.py \
+  --modes interval_qos_v2_single_recovery_full_C5_overinc016_abs005_softcap3_p005_dwellmean_p001,interval_qos_v2_single_recovery_full_C5_overinc016_abs005_softcap3_p005_dwellmax_p001
+```
+
+再运行对应单测：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+PYTHONPATH=. conda run --no-capture-output -n amc-repro python -m pytest -q tests/test_single_recovery_reward.py
+```
   --learnable-fast-event-max 120 \
   --learnable-fast-min-valid-increase 1 \
   --learnable-fast-min-valid-decrease 3 \

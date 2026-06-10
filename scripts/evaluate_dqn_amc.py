@@ -73,6 +73,7 @@ TASK_LEVEL_INFO_KEYS = [
     "over_increase_count_by_task_json",
     "consecutive_increase_max_by_task_json",
     "over_budget_dwell_steps_by_task_json",
+    "soft_cap_dwell_steps_by_task_json",
 ]
 
 
@@ -248,6 +249,14 @@ def _eval_summary_fieldnames() -> list[str]:
         "mean_budget_soft_cap_increase_excess",
         "soft_cap_increase_action_count",
         "mean_budget_soft_cap_penalty_value",
+        "mean_budget_soft_cap_dwell_excess_mean",
+        "mean_budget_soft_cap_dwell_excess_max",
+        "max_budget_soft_cap_dwell_excess_max",
+        "soft_cap_dwell_state_count",
+        "soft_cap_dwell_state_rate",
+        "mean_budget_soft_cap_dwell_penalty_value",
+        "mean_budget_soft_cap_dwell_max_penalty_value",
+        "mean_budget_soft_cap_dwell_total_penalty_value",
         "safe_recovery_decrease_count",
         "unsafe_decrease_full_count",
         "mean_budget_over_drift_deadzone",
@@ -274,6 +283,14 @@ def _aggregate_action_log_metrics(action_log: list[dict[str, object]]) -> dict[s
             "mean_budget_soft_cap_increase_excess": 0.0,
             "soft_cap_increase_action_count": 0,
             "mean_budget_soft_cap_penalty_value": 0.0,
+            "mean_budget_soft_cap_dwell_excess_mean": 0.0,
+            "mean_budget_soft_cap_dwell_excess_max": 0.0,
+            "max_budget_soft_cap_dwell_excess_max": 0.0,
+            "soft_cap_dwell_state_count": 0,
+            "soft_cap_dwell_state_rate": 0.0,
+            "mean_budget_soft_cap_dwell_penalty_value": 0.0,
+            "mean_budget_soft_cap_dwell_max_penalty_value": 0.0,
+            "mean_budget_soft_cap_dwell_total_penalty_value": 0.0,
             "safe_recovery_decrease_count": 0,
             "unsafe_decrease_full_count": 0,
             "mean_budget_over_drift_deadzone": 0.0,
@@ -292,6 +309,28 @@ def _aggregate_action_log_metrics(action_log: list[dict[str, object]]) -> dict[s
     mean_budget_soft_cap_penalty_value = mean(
         float(row.get("budget_soft_cap_penalty_value", 0.0)) for row in action_log
     )
+    mean_budget_soft_cap_dwell_excess_mean = mean(
+        float(row.get("budget_soft_cap_dwell_excess_mean", 0.0)) for row in action_log
+    )
+    mean_budget_soft_cap_dwell_excess_max = mean(
+        float(row.get("budget_soft_cap_dwell_excess_max", 0.0)) for row in action_log
+    )
+    max_budget_soft_cap_dwell_excess_max = max(
+        float(row.get("budget_soft_cap_dwell_excess_max", 0.0)) for row in action_log
+    )
+    soft_cap_dwell_state_count = sum(
+        int(bool(row.get("is_soft_cap_dwell_state", False))) for row in action_log
+    )
+    soft_cap_dwell_state_rate = soft_cap_dwell_state_count / float(max(step_count, 1))
+    mean_budget_soft_cap_dwell_penalty_value = mean(
+        float(row.get("budget_soft_cap_dwell_penalty_value", 0.0)) for row in action_log
+    )
+    mean_budget_soft_cap_dwell_max_penalty_value = mean(
+        float(row.get("budget_soft_cap_dwell_max_penalty_value", 0.0)) for row in action_log
+    )
+    mean_budget_soft_cap_dwell_total_penalty_value = mean(
+        float(row.get("budget_soft_cap_dwell_total_penalty_value", 0.0)) for row in action_log
+    )
     safe_recovery_decrease_count = sum(int(bool(row.get("safe_recovery_decrease", False))) for row in action_log)
     unsafe_decrease_full_count = sum(int(bool(row.get("unsafe_decrease_full", False))) for row in action_log)
     mean_budget_over_drift_deadzone = mean(
@@ -307,6 +346,16 @@ def _aggregate_action_log_metrics(action_log: list[dict[str, object]]) -> dict[s
         "mean_budget_soft_cap_increase_excess": mean_budget_soft_cap_increase_excess,
         "soft_cap_increase_action_count": soft_cap_increase_action_count,
         "mean_budget_soft_cap_penalty_value": mean_budget_soft_cap_penalty_value,
+        "mean_budget_soft_cap_dwell_excess_mean": mean_budget_soft_cap_dwell_excess_mean,
+        "mean_budget_soft_cap_dwell_excess_max": mean_budget_soft_cap_dwell_excess_max,
+        "max_budget_soft_cap_dwell_excess_max": max_budget_soft_cap_dwell_excess_max,
+        "soft_cap_dwell_state_count": soft_cap_dwell_state_count,
+        "soft_cap_dwell_state_rate": soft_cap_dwell_state_rate,
+        "mean_budget_soft_cap_dwell_penalty_value": mean_budget_soft_cap_dwell_penalty_value,
+        "mean_budget_soft_cap_dwell_max_penalty_value": mean_budget_soft_cap_dwell_max_penalty_value,
+        "mean_budget_soft_cap_dwell_total_penalty_value": (
+            mean_budget_soft_cap_dwell_total_penalty_value
+        ),
         "safe_recovery_decrease_count": safe_recovery_decrease_count,
         "unsafe_decrease_full_count": unsafe_decrease_full_count,
         "mean_budget_over_drift_deadzone": mean_budget_over_drift_deadzone,
@@ -516,6 +565,26 @@ def _evaluate_dqn_once(
             "soft_cap_increase_action_count": int(action_log_metrics["soft_cap_increase_action_count"]),
             "mean_budget_soft_cap_penalty_value": float(
                 action_log_metrics["mean_budget_soft_cap_penalty_value"]
+            ),
+            "mean_budget_soft_cap_dwell_excess_mean": float(
+                action_log_metrics["mean_budget_soft_cap_dwell_excess_mean"]
+            ),
+            "mean_budget_soft_cap_dwell_excess_max": float(
+                action_log_metrics["mean_budget_soft_cap_dwell_excess_max"]
+            ),
+            "max_budget_soft_cap_dwell_excess_max": float(
+                action_log_metrics["max_budget_soft_cap_dwell_excess_max"]
+            ),
+            "soft_cap_dwell_state_count": int(action_log_metrics["soft_cap_dwell_state_count"]),
+            "soft_cap_dwell_state_rate": float(action_log_metrics["soft_cap_dwell_state_rate"]),
+            "mean_budget_soft_cap_dwell_penalty_value": float(
+                action_log_metrics["mean_budget_soft_cap_dwell_penalty_value"]
+            ),
+            "mean_budget_soft_cap_dwell_max_penalty_value": float(
+                action_log_metrics["mean_budget_soft_cap_dwell_max_penalty_value"]
+            ),
+            "mean_budget_soft_cap_dwell_total_penalty_value": float(
+                action_log_metrics["mean_budget_soft_cap_dwell_total_penalty_value"]
             ),
             "safe_recovery_decrease_count": int(action_log_metrics["safe_recovery_decrease_count"]),
             "unsafe_decrease_full_count": int(action_log_metrics["unsafe_decrease_full_count"]),
