@@ -257,7 +257,54 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONP
   --learnable-min-static-decrease-reserve 4 \
   --learnable-fast-end-time 500000 \
   --learnable-fast-eval-seeds 3 \
-  --learnable-fast-event-min 0 \
+  --learnable-fast-event-min 0
+```
+
+## 12.1 Deploy Cap Increase Mask 使用说明
+
+训练与评估入口已支持一个可开关的 deploy cap increase mask。其作用是：
+
+- 当某个任务的“当前预算 / 初始预算”达到阈值后，禁止继续选择该任务的 increase 动作。
+- 默认只作用于 `LO` 任务；`decrease` 和 `noop` 不受影响。
+- 该约束会同时进入训练期动作选择、replay 的 next mask、validation/HOUT 评估，以及 `env.step()` 的执行兜底。
+
+训练脚本 `scripts/train_dqn_amc.py` 新增参数：
+
+- `--enable-deploy-cap-mask`：开启 deploy cap increase mask。
+- `--deploy-cap-mask-ratio`：触发阈值，必须大于 `1.0`，默认 `4.0`。
+- `--deploy-cap-mask-criticality {lo,all}`：指定只限制 `LO` 任务，或限制全部任务，默认 `lo`。
+
+评估脚本 `scripts/evaluate_dqn_amc.py` 使用完全同名同义的三个参数，确保训练与评估动作可行域一致。
+
+示例：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/train_dqn_amc.py \
+  --episodes 10 \
+  --end-time 100 \
+  --enable-deploy-cap-mask \
+  --deploy-cap-mask-ratio 4.0 \
+  --deploy-cap-mask-criticality lo
+```
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/evaluate_dqn_amc.py \
+  --model outputs/dqn_amc/model_final.pt \
+  --seeds 0,1,2 \
+  --enable-deploy-cap-mask \
+  --deploy-cap-mask-ratio 4.0 \
+  --deploy-cap-mask-criticality lo
+```
+
+相关输出说明：
+
+- `config.json` 会记录 `enable_deploy_cap_mask`、`deploy_cap_mask_ratio`、`deploy_cap_mask_criticality`。
+- `train_metrics.csv` 与 validation 输出会记录：
+  - `masked_deploy_cap_increase_count`
+  - `masked_deploy_cap_increase_rate`
+- `eval_summary.csv` 与 unified summary 也会包含同名统计字段，便于判断 deploy cap mask 对动作空间的实际压缩强度。
 
 ## 13. State-Level Soft Cap Dwell Penalty 使用说明
 

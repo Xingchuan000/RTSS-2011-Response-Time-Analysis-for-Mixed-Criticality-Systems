@@ -242,6 +242,8 @@ def _eval_summary_fieldnames() -> list[str]:
         "no_safe_action_steps",
         "masked_budget_floor_violation_count",
         "masked_budget_floor_violation_rate",
+        "masked_deploy_cap_increase_count",
+        "masked_deploy_cap_increase_rate",
         "observation_mode",
         "state_dim",
         "mean_over_increase_excess",
@@ -380,6 +382,9 @@ def _evaluate_dqn_once(
     budget_floor_ratio: float,
     forbid_decreasing_hi_budgets: bool,
     mask_detail_mode: str,
+    enable_deploy_cap_mask: bool,
+    deploy_cap_mask_ratio: float,
+    deploy_cap_mask_criticality: str,
     feature_config: FeatureConfig,
     trace_dir: Path | None = None,
     debug_log_dir: Path | None = None,
@@ -409,6 +414,9 @@ def _evaluate_dqn_once(
         budget_floor_ratio=budget_floor_ratio,
         forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
         mask_detail_mode=mask_detail_mode,
+        enable_deploy_cap_mask=enable_deploy_cap_mask,
+        deploy_cap_mask_ratio=deploy_cap_mask_ratio,
+        deploy_cap_mask_criticality=deploy_cap_mask_criticality,
         feature_config=feature_config,
         constraint_guided_pair_top_k_risk=constraint_guided_pair_top_k_risk,
         constraint_guided_pair_top_k_decrease=constraint_guided_pair_top_k_decrease,
@@ -555,6 +563,8 @@ def _evaluate_dqn_once(
             "no_safe_action_steps": int(debug_stats["no_safe_action_steps"]),
             "masked_budget_floor_violation_count": int(debug_stats["masked_budget_floor_violation_count"]),
             "masked_budget_floor_violation_rate": float(debug_stats["masked_budget_floor_violation_rate"]),
+            "masked_deploy_cap_increase_count": int(debug_stats["masked_deploy_cap_increase_count"]),
+            "masked_deploy_cap_increase_rate": float(debug_stats["masked_deploy_cap_increase_rate"]),
             "observation_mode": str(last_info.get("observation_mode", feature_config.observation_mode)),
             "state_dim": int(last_info.get("state_dim", len(obs.state_vector))),
             "mean_over_increase_excess": float(action_log_metrics["mean_over_increase_excess"]),
@@ -961,6 +971,9 @@ def _evaluate_enabled_methods_for_seed(
     budget_floor_ratio: float,
     forbid_decreasing_hi_budgets: bool,
     mask_detail_mode: str,
+    enable_deploy_cap_mask: bool,
+    deploy_cap_mask_ratio: float,
+    deploy_cap_mask_criticality: str,
     feature_config: FeatureConfig,
     trace_dir: Path | None,
     debug_log_dir: Path | None,
@@ -1081,6 +1094,8 @@ def _evaluate_enabled_methods_for_seed(
                 "no_safe_action_steps": 0,
                 "masked_budget_floor_violation_count": 0,
                 "masked_budget_floor_violation_rate": 0.0,
+                "masked_deploy_cap_increase_count": 0,
+                "masked_deploy_cap_increase_rate": 0.0,
                 **service_metrics_to_row(baseline_service_metrics),
             }
         )
@@ -1161,6 +1176,8 @@ def _evaluate_enabled_methods_for_seed(
                 "no_safe_action_steps": 0,
                 "masked_budget_floor_violation_count": 0,
                 "masked_budget_floor_violation_rate": 0.0,
+                "masked_deploy_cap_increase_count": 0,
+                "masked_deploy_cap_increase_rate": 0.0,
                 **service_metrics_to_row(noop_service_metrics),
             }
         )
@@ -1250,6 +1267,8 @@ def _evaluate_enabled_methods_for_seed(
                 "no_safe_action_steps": 0,
                 "masked_budget_floor_violation_count": 0,
                 "masked_budget_floor_violation_rate": 0.0,
+                "masked_deploy_cap_increase_count": 0,
+                "masked_deploy_cap_increase_rate": 0.0,
                 **service_metrics_to_row(random_service_metrics),
             }
         )
@@ -1353,6 +1372,8 @@ def _evaluate_enabled_methods_for_seed(
                 "no_safe_action_steps": 0,
                 "masked_budget_floor_violation_count": 0,
                 "masked_budget_floor_violation_rate": 0.0,
+                "masked_deploy_cap_increase_count": 0,
+                "masked_deploy_cap_increase_rate": 0.0,
                 **service_metrics_to_row(heuristic_service_metrics),
             }
         )
@@ -1390,6 +1411,9 @@ def _evaluate_enabled_methods_for_seed(
             budget_floor_ratio=budget_floor_ratio,
             forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
             mask_detail_mode=mask_detail_mode,
+            enable_deploy_cap_mask=enable_deploy_cap_mask,
+            deploy_cap_mask_ratio=deploy_cap_mask_ratio,
+            deploy_cap_mask_criticality=deploy_cap_mask_criticality,
             trace_dir=trace_dir,
             debug_log_dir=debug_log_dir,
             trace_enabled=trace_enabled_for_seed and (not trace_method_set or "dqn_agent" in trace_method_set),
@@ -1438,6 +1462,9 @@ def _evaluate_seed_worker(
         float,
         bool,
         str,
+        bool,
+        float,
+        str,
         FeatureConfig,
         Path | None,
         Path | None,
@@ -1480,6 +1507,9 @@ def _evaluate_seed_worker(
         budget_floor_ratio,
         forbid_decreasing_hi_budgets,
         mask_detail_mode,
+        enable_deploy_cap_mask,
+        deploy_cap_mask_ratio,
+        deploy_cap_mask_criticality,
         feature_config,
         trace_dir,
         debug_log_dir,
@@ -1514,6 +1544,9 @@ def _evaluate_seed_worker(
         budget_floor_ratio=budget_floor_ratio,
         forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
         mask_detail_mode=mask_detail_mode,
+        enable_deploy_cap_mask=enable_deploy_cap_mask,
+        deploy_cap_mask_ratio=deploy_cap_mask_ratio,
+        deploy_cap_mask_criticality=deploy_cap_mask_criticality,
         feature_config=feature_config,
         trace_dir=trace_dir,
         debug_log_dir=debug_log_dir,
@@ -1631,6 +1664,9 @@ def build_parser() -> argparse.ArgumentParser:
         # 如果训练时开启但评估时关闭，会导致动作可行域不一致，比较结果失真。
         help="If set, action masks reject budget actions whose decrease tasks include any HI-criticality task.",
     )
+    parser.add_argument("--enable-deploy-cap-mask", action="store_true")
+    parser.add_argument("--deploy-cap-mask-ratio", type=float, default=4.0)
+    parser.add_argument("--deploy-cap-mask-criticality", choices=["lo", "all"], default="lo")
     # automotive workload 允许从 CLI 显式切换 runnable 数量与 workload 语义模式，
     # 保证评估入口与训练入口能使用相同的 automotive 配置。
     parser.add_argument("--automotive-num-runnables", type=int, choices=[150, 250], default=150)
@@ -1705,6 +1741,8 @@ def main() -> None:
         raise ValueError("--max-q-diagnostic-samples 必须为非负整数")
     if args.budget_floor_ratio < 0.0 or args.budget_floor_ratio > 1.0:
         raise ValueError("--budget-floor-ratio must be in [0, 1]")
+    if args.deploy_cap_mask_ratio <= 1.0:
+        raise ValueError("--deploy-cap-mask-ratio must be > 1.0")
     feature_config = FeatureConfig(
         observation_mode=args.observation_mode,
         ema_alpha=args.ema_alpha,
@@ -1813,6 +1851,9 @@ def main() -> None:
                 budget_floor_ratio=args.budget_floor_ratio,
                 forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
                 mask_detail_mode=args.mask_detail_mode,
+                enable_deploy_cap_mask=args.enable_deploy_cap_mask,
+                deploy_cap_mask_ratio=args.deploy_cap_mask_ratio,
+                deploy_cap_mask_criticality=args.deploy_cap_mask_criticality,
                 feature_config=feature_config,
                 trace_dir=args.trace_dir,
                 debug_log_dir=args.debug_log_dir,
@@ -1855,6 +1896,9 @@ def main() -> None:
                 args.budget_floor_ratio,
                 args.forbid_decreasing_hi_budgets,
                 args.mask_detail_mode,
+                args.enable_deploy_cap_mask,
+                args.deploy_cap_mask_ratio,
+                args.deploy_cap_mask_criticality,
                 feature_config,
                 args.trace_dir,
                 args.debug_log_dir,

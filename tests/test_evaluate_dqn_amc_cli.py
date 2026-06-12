@@ -98,6 +98,8 @@ def test_evaluate_dqn_amc_cli_runs_after_training(tmp_path: Path) -> None:
     assert "budget_floor_ratio" in rows[0]
     assert "masked_budget_floor_violation_count" in rows[0]
     assert "masked_budget_floor_violation_rate" in rows[0]
+    assert "masked_deploy_cap_increase_count" in rows[0]
+    assert "masked_deploy_cap_increase_rate" in rows[0]
 
 
 def test_evaluate_cli_rejects_legacy_reward_mode(tmp_path: Path) -> None:
@@ -174,6 +176,49 @@ def test_evaluate_cli_rejects_invalid_budget_floor_ratio(tmp_path: Path) -> None
             "0",
             "--budget-floor-ratio",
             "-0.1",
+            "--output",
+            str(output_dir / "eval.csv"),
+        ],
+        check=False,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    assert result.returncode != 0
+
+
+def test_evaluate_cli_rejects_invalid_deploy_cap_mask_ratio(tmp_path: Path) -> None:
+    """评估 CLI 应拒绝小于等于 1.0 的 deploy cap ratio。"""
+
+    output_dir = tmp_path / "dqn_amc_invalid_deploy_cap_eval"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--episodes",
+            "1",
+            "--end-time",
+            "20",
+            "--seed",
+            "0",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate_dqn_amc.py",
+            "--model",
+            str(output_dir / "model_final.pt"),
+            "--seeds",
+            "0",
+            "--enable-deploy-cap-mask",
+            "--deploy-cap-mask-ratio",
+            "1.0",
             "--output",
             str(output_dir / "eval.csv"),
         ],

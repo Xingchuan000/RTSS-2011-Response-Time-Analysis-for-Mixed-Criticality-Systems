@@ -866,6 +866,9 @@ def _evaluate_agent_on_validation_seed(
     budget_floor_ratio: float,
     forbid_decreasing_hi_budgets: bool,
     mask_detail_mode: str,
+    enable_deploy_cap_mask: bool,
+    deploy_cap_mask_ratio: float,
+    deploy_cap_mask_criticality: str,
     feature_config: FeatureConfig,
     max_q_diagnostic_samples: int,
     constraint_guided_pair_top_k_risk: int,
@@ -904,6 +907,9 @@ def _evaluate_agent_on_validation_seed(
         budget_floor_ratio=budget_floor_ratio,
         forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
         mask_detail_mode=mask_detail_mode,
+        enable_deploy_cap_mask=enable_deploy_cap_mask,
+        deploy_cap_mask_ratio=deploy_cap_mask_ratio,
+        deploy_cap_mask_criticality=deploy_cap_mask_criticality,
         feature_config=feature_config,
         constraint_guided_pair_top_k_risk=constraint_guided_pair_top_k_risk,
         constraint_guided_pair_top_k_decrease=constraint_guided_pair_top_k_decrease,
@@ -1092,6 +1098,8 @@ def _evaluate_agent_on_validation_seed(
         "rejected_action_rate": rejected_actions / step_count if step_count > 0 else 0.0,
         "valid_action_count_mean": float(debug_stats["valid_action_count_mean"]),
         "masked_action_count_mean": float(debug_stats["masked_action_count_mean"]),
+        "masked_deploy_cap_increase_count": int(debug_stats["masked_deploy_cap_increase_count"]),
+        "masked_deploy_cap_increase_rate": float(debug_stats["masked_deploy_cap_increase_rate"]),
         "no_safe_action_steps": int(debug_stats["no_safe_action_steps"]),
         "reward": float(total_reward),
         "observation_mode": str(last_info.get("observation_mode", feature_config.observation_mode)),
@@ -1263,6 +1271,9 @@ def _run_dqn_validation_seed_worker(
         float,
         bool,
         str,
+        bool,
+        float,
+        str,
         FeatureConfig,
         int,
         int,
@@ -1299,6 +1310,9 @@ def _run_dqn_validation_seed_worker(
         budget_floor_ratio,
         forbid_decreasing_hi_budgets,
         mask_detail_mode,
+        enable_deploy_cap_mask,
+        deploy_cap_mask_ratio,
+        deploy_cap_mask_criticality,
         feature_config,
         max_q_diagnostic_samples,
         constraint_guided_pair_top_k_risk,
@@ -1328,6 +1342,9 @@ def _run_dqn_validation_seed_worker(
         budget_floor_ratio=budget_floor_ratio,
         forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
         mask_detail_mode=mask_detail_mode,
+        enable_deploy_cap_mask=enable_deploy_cap_mask,
+        deploy_cap_mask_ratio=deploy_cap_mask_ratio,
+        deploy_cap_mask_criticality=deploy_cap_mask_criticality,
         feature_config=feature_config,
         max_q_diagnostic_samples=max_q_diagnostic_samples,
         constraint_guided_pair_top_k_risk=constraint_guided_pair_top_k_risk,
@@ -1426,6 +1443,9 @@ def _run_validation(
     budget_floor_ratio: float,
     forbid_decreasing_hi_budgets: bool,
     mask_detail_mode: str,
+    enable_deploy_cap_mask: bool = False,
+    deploy_cap_mask_ratio: float = 4.0,
+    deploy_cap_mask_criticality: str = "lo",
     feature_config: FeatureConfig = FeatureConfig(),
     validation_workers: int = 1,
     baseline_cache: dict[str, float] | None = None,
@@ -1509,6 +1529,9 @@ def _run_validation(
                 budget_floor_ratio=budget_floor_ratio,
                 forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
                 mask_detail_mode=mask_detail_mode,
+                enable_deploy_cap_mask=enable_deploy_cap_mask,
+                deploy_cap_mask_ratio=deploy_cap_mask_ratio,
+                deploy_cap_mask_criticality=deploy_cap_mask_criticality,
                 feature_config=feature_config,
                 max_q_diagnostic_samples=max_q_diagnostic_samples,
                 constraint_guided_pair_top_k_risk=constraint_guided_pair_top_k_risk,
@@ -1547,6 +1570,9 @@ def _run_validation(
                     budget_floor_ratio,
                     forbid_decreasing_hi_budgets,
                     mask_detail_mode,
+                    enable_deploy_cap_mask,
+                    deploy_cap_mask_ratio,
+                    deploy_cap_mask_criticality,
                     feature_config,
                     max_q_diagnostic_samples,
                     constraint_guided_pair_top_k_risk,
@@ -1602,6 +1628,12 @@ def _run_validation(
         "valid_action_count_mean": sum(row["valid_action_count_mean"] for row in dqn_rows) / seed_count,
         "masked_action_count_mean": sum(row["masked_action_count_mean"] for row in dqn_rows) / seed_count,
         "no_safe_action_steps_mean": sum(row["no_safe_action_steps"] for row in dqn_rows) / seed_count,
+        "masked_deploy_cap_increase_count": (
+            sum(row["masked_deploy_cap_increase_count"] for row in dqn_rows) / seed_count
+        ),
+        "masked_deploy_cap_increase_rate": (
+            sum(row["masked_deploy_cap_increase_rate"] for row in dqn_rows) / seed_count
+        ),
         "reward_mean": sum(row["reward"] for row in dqn_rows) / seed_count,
         "observation_mode": str(feature_config.observation_mode),
         "state_dim_mean": sum(row["state_dim"] for row in dqn_rows) / seed_count,
@@ -2409,6 +2441,23 @@ def build_parser() -> argparse.ArgumentParser:
         # 这是硬约束，不是软惩罚，不依赖 reward 权重调节。
         help="If set, action masks reject budget actions whose decrease tasks include any HI-criticality task.",
     )
+    parser.add_argument(
+        "--enable-deploy-cap-mask",
+        action="store_true",
+        help="Enable hard action mask: block increase actions for tasks whose budget ratio reaches deploy cap.",
+    )
+    parser.add_argument(
+        "--deploy-cap-mask-ratio",
+        type=float,
+        default=4.0,
+        help="Budget ratio threshold for deploy cap increase mask.",
+    )
+    parser.add_argument(
+        "--deploy-cap-mask-criticality",
+        choices=["lo", "all"],
+        default="lo",
+        help="Apply deploy cap mask to LO tasks only or all tasks.",
+    )
     parser.add_argument("--mask-detail-mode", choices=["minimal", "full"], default="minimal")
     parser.add_argument(
         "--observation-mode",
@@ -2511,6 +2560,8 @@ def main() -> None:
         args.target_update_freq = int(args.target_update_frequency)
     if args.budget_floor_ratio < 0.0 or args.budget_floor_ratio > 1.0:
         raise ValueError("--budget-floor-ratio must be in [0, 1]")
+    if args.deploy_cap_mask_ratio <= 1.0:
+        raise ValueError("--deploy-cap-mask-ratio must be > 1.0")
     if args.q_network_type == "action_aware" and args.action_space != "single":
         raise ValueError("第一版 action_aware 仅支持 --action-space single；请勿用于其他动作空间。")
     if args.action_aware_mask_mode != "none" and (
@@ -2623,6 +2674,9 @@ def main() -> None:
         budget_floor_ratio=args.budget_floor_ratio,
         forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
         mask_detail_mode=args.mask_detail_mode,
+        enable_deploy_cap_mask=args.enable_deploy_cap_mask,
+        deploy_cap_mask_ratio=args.deploy_cap_mask_ratio,
+        deploy_cap_mask_criticality=args.deploy_cap_mask_criticality,
         feature_config=feature_config,
         constraint_guided_pair_top_k_risk=args.constraint_guided_pair_top_k_risk,
         constraint_guided_pair_top_k_decrease=args.constraint_guided_pair_top_k_decrease,
@@ -2759,6 +2813,9 @@ def main() -> None:
             budget_floor_ratio=args.budget_floor_ratio,
             forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
             mask_detail_mode=args.mask_detail_mode,
+            enable_deploy_cap_mask=args.enable_deploy_cap_mask,
+            deploy_cap_mask_ratio=args.deploy_cap_mask_ratio,
+            deploy_cap_mask_criticality=args.deploy_cap_mask_criticality,
             feature_config=feature_config,
             constraint_guided_pair_top_k_risk=args.constraint_guided_pair_top_k_risk,
             constraint_guided_pair_top_k_decrease=args.constraint_guided_pair_top_k_decrease,
@@ -3322,6 +3379,8 @@ def main() -> None:
                 "masked_decrease_hi_forbidden_rate": float(debug_stats["masked_decrease_hi_forbidden_rate"]),
                 "masked_budget_floor_violation_count": int(debug_stats["masked_budget_floor_violation_count"]),
                 "masked_budget_floor_violation_rate": float(debug_stats["masked_budget_floor_violation_rate"]),
+                "masked_deploy_cap_increase_count": int(debug_stats["masked_deploy_cap_increase_count"]),
+                "masked_deploy_cap_increase_rate": float(debug_stats["masked_deploy_cap_increase_rate"]),
                 "no_safe_action_steps": int(debug_stats["no_safe_action_steps"]),
                 "selected_explicit_noop_actions": int(debug_stats["selected_explicit_noop_actions"]),
                 "selected_explicit_noop_rate": float(debug_stats["selected_explicit_noop_rate"]),
@@ -3504,6 +3563,9 @@ def main() -> None:
                 budget_floor_ratio=args.budget_floor_ratio,
                 forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
                 mask_detail_mode=args.mask_detail_mode,
+                enable_deploy_cap_mask=args.enable_deploy_cap_mask,
+                deploy_cap_mask_ratio=args.deploy_cap_mask_ratio,
+                deploy_cap_mask_criticality=args.deploy_cap_mask_criticality,
                 feature_config=feature_config,
                 validation_workers=args.validation_workers,
                 baseline_cache=baseline_validation_cache,
@@ -3958,6 +4020,8 @@ def main() -> None:
             "masked_decrease_hi_forbidden_rate",
             "masked_budget_floor_violation_count",
             "masked_budget_floor_violation_rate",
+            "masked_deploy_cap_increase_count",
+            "masked_deploy_cap_increase_rate",
             "no_safe_action_steps",
             "selected_explicit_noop_actions",
             "selected_explicit_noop_rate",
@@ -4071,6 +4135,8 @@ def main() -> None:
             "valid_action_count_mean",
             "masked_action_count_mean",
             "no_safe_action_steps_mean",
+            "masked_deploy_cap_increase_count",
+            "masked_deploy_cap_increase_rate",
             "reward_mean",
             "observation_mode",
             "state_dim_mean",
@@ -4570,6 +4636,10 @@ def main() -> None:
         "reward_mode": args.reward_mode,
         "reward_definition": reward_mode_config.describe(),
         "double_dqn": args.double_dqn,
+        "budget_floor_ratio": args.budget_floor_ratio,
+        "enable_deploy_cap_mask": args.enable_deploy_cap_mask,
+        "deploy_cap_mask_ratio": args.deploy_cap_mask_ratio,
+        "deploy_cap_mask_criticality": args.deploy_cap_mask_criticality,
         "use_elite_replay": args.use_elite_replay,
         "elite_start_episode": args.elite_start_episode,
         "elite_replay_capacity": args.elite_replay_capacity,

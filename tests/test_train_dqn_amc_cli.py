@@ -47,6 +47,9 @@ def test_train_dqn_amc_cli_runs_and_writes_expected_outputs(tmp_path: Path) -> N
     assert "dqn_config" in config_payload
     assert "normalization_bounds" in config_payload
     assert "budget_floor_ratio" in config_payload
+    assert "enable_deploy_cap_mask" in config_payload
+    assert "deploy_cap_mask_ratio" in config_payload
+    assert "deploy_cap_mask_criticality" in config_payload
     assert config_payload["validation_workers"] == 1
     assert config_payload["log_step_every"] == 1
 
@@ -168,6 +171,32 @@ def test_train_cli_rejects_invalid_budget_floor_ratio(tmp_path: Path) -> None:
             str(output_dir),
             "--budget-floor-ratio",
             "1.1",
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        check=False,
+    )
+    assert result.returncode != 0
+
+
+def test_train_cli_rejects_invalid_deploy_cap_mask_ratio(tmp_path: Path) -> None:
+    """训练 CLI 应拒绝小于等于 1.0 的 deploy cap ratio。"""
+
+    output_dir = tmp_path / "invalid_deploy_cap_ratio"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--episodes",
+            "1",
+            "--end-time",
+            "20",
+            "--output-dir",
+            str(output_dir),
+            "--enable-deploy-cap-mask",
+            "--deploy-cap-mask-ratio",
+            "1.0",
         ],
         cwd=PROJECT_ROOT,
         env=env,

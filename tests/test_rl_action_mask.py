@@ -144,3 +144,83 @@ def test_residual_ranked_mask_applies_residual_guard_rejection() -> None:
         isinstance(row.get("reject_reason"), str) and str(row.get("reject_reason")).startswith("residual_guard_")
         for row in env._last_mask_details
     )
+
+
+def test_deploy_cap_mask_blocks_lo_increase_when_ratio_reaches_cap() -> None:
+    """当 LO 任务预算达到 deploy cap 后，对应 increase 动作必须被 mask。"""
+
+    env = AmcBudgetEnv(
+        ordered_tasks=_tasks_with_bound_pressure(),
+        scenario=make_nominal_scenario(),
+        runtime_config=RuntimeConfig(end_time=30, semantics=RuntimeSemantics.AMC_PLUS),
+        agent_period=10,
+        action_space="single",
+        enable_deploy_cap_mask=True,
+        deploy_cap_mask_ratio=4.0,
+    )
+    env.reset(seed=0)
+    # 这里直接把当前运行时预算抬到初始预算的 4 倍，严格复现计划文档里的触发条件。
+    env._engine.runtime_budgets.budgets["l1"] = 4  # noqa: SLF001
+
+    mask = env.valid_action_mask()
+    increase_action = next(
+        action for action in env._actions if action.increase_task == "l1" and not action.decrease_indices  # noqa: SLF001
+    )
+    assert mask[increase_action.action_id] is False
+    reject_reason_counts = env.mask_log[-1]["reject_reason_counts"]
+    assert int(reject_reason_counts.get("deploy_cap_increase_mask", 0)) > 0
+
+
+def test_deploy_cap_mask_does_not_block_lo_increase_below_cap() -> None:
+    """当 LO 任务预算比值未达到阈值时，不应额外触发 deploy cap mask。"""
+
+    env = AmcBudgetEnv(
+        ordered_tasks=_tasks_with_bound_pressure(),
+        scenario=make_nominal_scenario(),
+        runtime_config=RuntimeConfig(end_time=30, semantics=RuntimeSemantics.AMC_PLUS),
+        agent_period=10,
+        action_space="single",
+        enable_deploy_cap_mask=True,
+        deploy_cap_mask_ratio=4.0,
+        mask_detail_mode="full",
+    )
+    env.reset(seed=0)
+    env._engine.runtime_budgets.budgets["l1"] = 3  # noqa: SLF001
+
+    _ = env.valid_action_mask()
+    increase_action = next(
+        action for action in env._actions if action.increase_task == "l1" and not action.decrease_indices  # noqa: SLF001
+    )
+    detail = env._last_mask_details[increase_action.action_id]  # noqa: SLF001
+    assert str(detail.get("reject_reason", "") or "") != "deploy_cap_increase_mask"
+    assert not str(detail.get("reject_reason", "") or "").startswith("deploy_cap_increase_mask")
+
+
+def test_deploy_cap_mask_does_not_block_decrease_and_step_fallback_rejects_increase() -> None:
+    """deploy cap 只限制 increase；同时 step() 兜底也必须拒绝被 cap 的 increase 动作。"""
+
+    env = AmcBudgetEnv(
+        ordered_tasks=_tasks_with_bound_pressure(),
+        scenario=make_nominal_scenario(),
+        runtime_config=RuntimeConfig(end_time=30, semantics=RuntimeSemantics.AMC_PLUS),
+        agent_period=10,
+        action_space="single",
+        enable_deploy_cap_mask=True,
+        deploy_cap_mask_ratio=4.0,
+    )
+    env.reset(seed=0)
+    env._engine.runtime_budgets.budgets["l1"] = 4  # noqa: SLF001
+
+    decrease_action = next(
+        action for action in env._actions if action.decrease_tasks == ("l1",)  # noqa: SLF001
+    )
+    increase_action = next(
+        action for action in env._actions if action.increase_task == "l1" and not action.decrease_indices  # noqa: SLF001
+    )
+
+    mask = env.valid_action_mask()
+    assert mask[decrease_action.action_id] is True
+
+    result = env.step(increase_action.action_id)
+    assert bool(result.info["accepted"]) is False
+    assert str(result.info["reject_reason"]).startswith("deploy_cap_increase_mask")
