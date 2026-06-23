@@ -7,10 +7,12 @@ import csv
 from pathlib import Path
 
 from amc_py.event_runtime import simulate_ordered_taskset_event_driven
+from amc_py.metrics import compute_runtime_degradation_metrics
 from amc_py.models import Criticality, Task
 from amc_py.rl.actions import build_budget_action_space
 from amc_py.rl.agents import HeuristicBudgetAgent, NoOpBudgetAgent, RandomBudgetAgent
 from amc_py.rl.runtime_wrapper import AgentRuntimeConfig, simulate_ordered_taskset_with_agent
+from amc_py.runtime_models import SimulationResult
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics
 from amc_py.runtime_scenarios import ExecutionScenario, make_nominal_scenario, make_table_scenario
 
@@ -53,6 +55,45 @@ def _build_scenarios(scenario_name: str) -> list[tuple[str, ExecutionScenario]]:
     return [("nominal", make_nominal_scenario()), ("stress", _build_stress_scenario())]
 
 
+def _build_runtime_row(
+    *,
+    scenario_label: str,
+    method: str,
+    seed: int,
+    end_time: int,
+    agent_period: int,
+    runtime_result: SimulationResult,
+    accepted_actions: int,
+    rejected_actions: int,
+    noop_actions: int,
+    total_reward: float,
+) -> dict[str, int | float | str]:
+    """把一次 runtime 结果展平成 CSV 行，并补齐 degraded-service 指标。"""
+
+    degradation = compute_runtime_degradation_metrics(runtime_result)
+    return {
+        "scenario": scenario_label,
+        "method": method,
+        "seed": seed,
+        "end_time": end_time,
+        "agent_period": agent_period,
+        "mode_changes": runtime_result.mode_change_count(),
+        "lo_cancellations": runtime_result.lo_job_cancellation_count(),
+        "deadline_misses": len(runtime_result.deadline_misses),
+        "hdm": degradation.hdm,
+        "jne": degradation.jne,
+        "ldm": degradation.ldm,
+        "nid": degradation.nid,
+        "tid": degradation.tid,
+        "total_time": degradation.total_time,
+        "jne_plus_ldm": degradation.jne + degradation.ldm,
+        "accepted_actions": accepted_actions,
+        "rejected_actions": rejected_actions,
+        "noop_actions": noop_actions,
+        "total_reward": total_reward,
+    }
+
+
 def main() -> None:
     """命令行入口。"""
 
@@ -61,11 +102,25 @@ def main() -> None:
     parser.add_argument("--agent-period", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--scenario", choices=["nominal", "stress", "all"], default="all")
+    parser.add_argument(
+        "--runtime-semantics",
+        choices=["AMC_PLUS", "AMC_RA", "AMC_RH"],
+        default="AMC_PLUS",
+    )
+    parser.add_argument("--record-dropped-lo-releases", action="store_true")
     parser.add_argument("--output", type=Path, default=Path("outputs/pre_dqn_baselines.csv"))
     args = parser.parse_args()
 
     tasks = _build_small_taskset()
-    runtime_config = RuntimeConfig(end_time=args.end_time, semantics=RuntimeSemantics.AMC_PLUS)
+    record_dropped = (
+        args.record_dropped_lo_releases
+        or args.runtime_semantics in {"AMC_RA", "AMC_RH"}
+    )
+    runtime_config = RuntimeConfig(
+        end_time=args.end_time,
+        semantics=RuntimeSemantics(args.runtime_semantics),
+        record_dropped_lo_releases=record_dropped,
+    )
     rows: list[dict[str, int | float | str]] = []
     actions = build_budget_action_space(tasks)
     for scenario_label, scenario in _build_scenarios(args.scenario):
@@ -109,62 +164,54 @@ def main() -> None:
         )
         rows.extend(
             [
-                {
-                    "scenario": scenario_label,
-                    "method": "amc_plus_baseline",
-                    "seed": args.seed,
-                    "end_time": args.end_time,
-                    "agent_period": args.agent_period,
-                    "mode_changes": baseline_result.mode_change_count(),
-                    "lo_cancellations": baseline_result.lo_job_cancellation_count(),
-                    "deadline_misses": len(baseline_result.deadline_misses),
-                    "accepted_actions": 0,
-                    "rejected_actions": 0,
-                    "noop_actions": 0,
-                    "total_reward": 0.0,
-                },
-                {
-                    "scenario": scenario_label,
-                    "method": "noop_agent",
-                    "seed": args.seed,
-                    "end_time": args.end_time,
-                    "agent_period": args.agent_period,
-                    "mode_changes": noop_result.runtime_result.mode_change_count(),
-                    "lo_cancellations": noop_result.runtime_result.lo_job_cancellation_count(),
-                    "deadline_misses": len(noop_result.runtime_result.deadline_misses),
-                    "accepted_actions": noop_result.accepted_actions,
-                    "rejected_actions": noop_result.rejected_actions,
-                    "noop_actions": noop_result.noop_actions,
-                    "total_reward": noop_result.total_reward,
-                },
-                {
-                    "scenario": scenario_label,
-                    "method": "random_agent",
-                    "seed": args.seed,
-                    "end_time": args.end_time,
-                    "agent_period": args.agent_period,
-                    "mode_changes": random_result.runtime_result.mode_change_count(),
-                    "lo_cancellations": random_result.runtime_result.lo_job_cancellation_count(),
-                    "deadline_misses": len(random_result.runtime_result.deadline_misses),
-                    "accepted_actions": random_result.accepted_actions,
-                    "rejected_actions": random_result.rejected_actions,
-                    "noop_actions": random_result.noop_actions,
-                    "total_reward": random_result.total_reward,
-                },
-                {
-                    "scenario": scenario_label,
-                    "method": "heuristic_agent",
-                    "seed": args.seed,
-                    "end_time": args.end_time,
-                    "agent_period": args.agent_period,
-                    "mode_changes": heuristic_result.runtime_result.mode_change_count(),
-                    "lo_cancellations": heuristic_result.runtime_result.lo_job_cancellation_count(),
-                    "deadline_misses": len(heuristic_result.runtime_result.deadline_misses),
-                    "accepted_actions": heuristic_result.accepted_actions,
-                    "rejected_actions": heuristic_result.rejected_actions,
-                    "noop_actions": heuristic_result.noop_actions,
-                    "total_reward": heuristic_result.total_reward,
-                },
+                _build_runtime_row(
+                    scenario_label=scenario_label,
+                    method=f"{args.runtime_semantics.lower()}_baseline",
+                    seed=args.seed,
+                    end_time=args.end_time,
+                    agent_period=args.agent_period,
+                    runtime_result=baseline_result,
+                    accepted_actions=0,
+                    rejected_actions=0,
+                    noop_actions=0,
+                    total_reward=0.0,
+                ),
+                _build_runtime_row(
+                    scenario_label=scenario_label,
+                    method="noop_agent",
+                    seed=args.seed,
+                    end_time=args.end_time,
+                    agent_period=args.agent_period,
+                    runtime_result=noop_result.runtime_result,
+                    accepted_actions=noop_result.accepted_actions,
+                    rejected_actions=noop_result.rejected_actions,
+                    noop_actions=noop_result.noop_actions,
+                    total_reward=noop_result.total_reward,
+                ),
+                _build_runtime_row(
+                    scenario_label=scenario_label,
+                    method="random_agent",
+                    seed=args.seed,
+                    end_time=args.end_time,
+                    agent_period=args.agent_period,
+                    runtime_result=random_result.runtime_result,
+                    accepted_actions=random_result.accepted_actions,
+                    rejected_actions=random_result.rejected_actions,
+                    noop_actions=random_result.noop_actions,
+                    total_reward=random_result.total_reward,
+                ),
+                _build_runtime_row(
+                    scenario_label=scenario_label,
+                    method="heuristic_agent",
+                    seed=args.seed,
+                    end_time=args.end_time,
+                    agent_period=args.agent_period,
+                    runtime_result=heuristic_result.runtime_result,
+                    accepted_actions=heuristic_result.accepted_actions,
+                    rejected_actions=heuristic_result.rejected_actions,
+                    noop_actions=heuristic_result.noop_actions,
+                    total_reward=heuristic_result.total_reward,
+                ),
             ]
         )
 
@@ -178,6 +225,13 @@ def main() -> None:
         "mode_changes",
         "lo_cancellations",
         "deadline_misses",
+        "hdm",
+        "jne",
+        "ldm",
+        "nid",
+        "tid",
+        "total_time",
+        "jne_plus_ldm",
         "accepted_actions",
         "rejected_actions",
         "noop_actions",

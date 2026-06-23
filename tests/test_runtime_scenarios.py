@@ -445,10 +445,12 @@ def test_runtime_config_defaults_and_validation() -> None:
     default_cfg = RuntimeConfig()
     assert default_cfg.end_time is None
     assert default_cfg.jobs_per_task == 5
-    assert default_cfg.capture_trace is True
+    assert default_cfg.capture_trace is False
+    assert default_cfg.capture_debug_events is False
     assert default_cfg.stop_at_first_miss is False
     assert default_cfg.drop_lo_jobs_on_hi_switch is True
     assert default_cfg.semantics is RuntimeSemantics.AMC_PLUS
+    assert default_cfg.record_dropped_lo_releases is False
 
     # end_time 允许为 None 或正整数。
     RuntimeConfig(end_time=100)

@@ -29,6 +29,7 @@ from collections.abc import Sequence
 from functools import reduce
 from math import lcm
 
+from .amc import build_design_r_lo_map
 from .models import Criticality, Task
 from .budget_runtime import BudgetState, BudgetUpdate
 from .runtime_models import (
@@ -71,6 +72,22 @@ def _validate_runtime_bridge_method(method: str) -> None:
             "simulate_taskset_with_policy() / compare_static_and_runtime() "
             "当前采用 AMC 运行时语义，不应用于 SMC/SMC-NO/其它方法的‘对应 runtime’解释。"
         )
+
+
+def _is_response_based_semantics(semantics: RuntimeSemantics) -> bool:
+    """判断当前语义是否以 response expiry 作为 degraded mode 入口。"""
+
+    return semantics in {RuntimeSemantics.AMC_RA, RuntimeSemantics.AMC_RH}
+
+
+def _uses_idle_recovery(semantics: RuntimeSemantics) -> bool:
+    """判断当前语义是否使用 idle recovery。"""
+
+    return semantics in {
+        RuntimeSemantics.AMC,
+        RuntimeSemantics.AMC_PLUS,
+        RuntimeSemantics.AMC_RA,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -155,14 +172,43 @@ def _build_job(task: Task, release_index: int, scenario: ExecutionScenario) -> J
     )
 
 
-def _release_jobs_at_time(
+def _compute_busy_period_start_for_new_job(
+    *,
+    active_jobs: Sequence[Job],
+    new_task: Task,
+    priority_map: dict[str, int],
+    now: int,
+) -> int:
+    """计算 tick runtime 中新 job 的 busy period 起点。"""
+
+    new_prio = priority_map[new_task.name]
+    candidates: list[Job] = []
+    for job in active_jobs:
+        if job.finished():
+            continue
+        if priority_map[job.task.name] <= new_prio:
+            candidates.append(job)
+    if not candidates:
+        return now
+    predecessor = max(candidates, key=lambda job: priority_map[job.task.name])
+    if predecessor.busy_period_start is None:
+        return predecessor.release_time
+    return predecessor.busy_period_start
+
+
+def _release_jobs_at_time_with_busy_periods(
     current_time: int,
     ordered_tasks: Sequence[Task],
     next_release_index: dict[str, int],
     scenario: ExecutionScenario,
+    active_jobs: Sequence[Job],
+    priority_map: dict[str, int],
+    semantics: RuntimeSemantics,
+    design_r_lo: dict[str, int],
+    record_dropped_lo_releases: bool = False,
     suppress_lo_releases: bool = False,
-) -> list[Job]:
-    """在 `current_time` 释放所有应当释放的 job，并推进每个任务的释放计数。
+) -> tuple[list[Job], list[JobCancellationEvent]]:
+    """在 `current_time` 释放所有应当释放的 job，并按优先级填充 busy period 信息。
 
     - 仅当 `release_index * task.period == current_time` 时才释放；
     - 返回本次新释放的 job 列表，由调用方统一并入 active / all 集合；
@@ -180,19 +226,74 @@ def _release_jobs_at_time(
     """
 
     released: list[Job] = []
+    dropped_release_cancellations: list[JobCancellationEvent] = []
+    due_tasks: list[tuple[int, Task]] = []
     for task in ordered_tasks:
-        # HI 模式下（suppress 打开）禁止 LO 任务继续释放未来 job。
         idx = next_release_index[task.name]
         release_time = idx * task.period
+        if release_time == current_time:
+            next_release_index[task.name] = idx + 1
+            due_tasks.append((idx, task))
+
+    due_tasks.sort(key=lambda item: priority_map[item[1].name])
+    for release_index, task in due_tasks:
         if suppress_lo_releases and task.criticality is Criticality.LO:
-            if release_time == current_time:
-                next_release_index[task.name] = idx + 1
+            if not record_dropped_lo_releases:
+                continue
+            job = _build_job(task, release_index, scenario)
+            job.dropped = True
+            job.drop_time = current_time
+            released.append(job)
+            # degraded mode 中被直接 dropped 的 LO release 不是“执行超预算取消”，
+            # 但为了与 event runtime 结果口径一致，这里仍需记录一条专门的
+            # JobCancellationEvent，reason 固定为 lo_release_dropped_in_degraded_mode。
+            dropped_release_cancellations.append(
+                JobCancellationEvent(
+                    cancel_time=current_time,
+                    task=job.task.name,
+                    release_index=job.release_index,
+                    executed_at_cancel=0,
+                    budget_at_cancel=job.task.c_lo,
+                    reason="lo_release_dropped_in_degraded_mode",
+                )
+            )
             continue
 
-        if release_time == current_time:
-            job = _build_job(task, idx, scenario)
-            released.append(job)
-            next_release_index[task.name] = idx + 1
+        job = _build_job(task, release_index, scenario)
+        job.busy_period_start = _compute_busy_period_start_for_new_job(
+            active_jobs=[*active_jobs, *released],
+            new_task=task,
+            priority_map=priority_map,
+            now=current_time,
+        )
+        if _is_response_based_semantics(semantics) and task.criticality is Criticality.HI:
+            job.response_time_expiry = job.busy_period_start + design_r_lo[task.name]
+        released.append(job)
+    return released, dropped_release_cancellations
+
+
+def _release_jobs_at_time(
+    current_time: int,
+    ordered_tasks: Sequence[Task],
+    next_release_index: dict[str, int],
+    scenario: ExecutionScenario,
+    suppress_lo_releases: bool = False,
+) -> list[Job]:
+    """兼容旧测试的简单 release helper，不计算 busy period / response expiry。"""
+
+    priority_map = {task.name: idx for idx, task in enumerate(ordered_tasks)}
+    released, _ = _release_jobs_at_time_with_busy_periods(
+        current_time=current_time,
+        ordered_tasks=ordered_tasks,
+        next_release_index=next_release_index,
+        scenario=scenario,
+        active_jobs=[],
+        priority_map=priority_map,
+        semantics=RuntimeSemantics.AMC_PLUS,
+        design_r_lo={},
+        record_dropped_lo_releases=False,
+        suppress_lo_releases=suppress_lo_releases,
+    )
     return released
 
 
@@ -324,6 +425,39 @@ def _drop_active_lo_jobs(active_jobs: list[Job], current_time: int) -> list[Job]
     return dropped
 
 
+def _find_expired_active_hi_job(
+    active_jobs: Sequence[Job],
+    now: int,
+    priority_map: dict[str, int],
+) -> Job | None:
+    """找出当前已经达到 response expiry 的 active HI job。"""
+
+    expired = [
+        job
+        for job in active_jobs
+        if job.task.criticality is Criticality.HI
+        and not job.finished()
+        and job.response_time_expiry is not None
+        and job.response_time_expiry <= now
+    ]
+    if not expired:
+        return None
+    return min(expired, key=lambda job: (job.response_time_expiry, priority_map[job.task.name]))
+
+
+def _has_expired_active_hi_job(active_jobs: Sequence[Job], now: int) -> bool:
+    """判断 RH 恢复检查时，是否仍有 expired active HI job。"""
+
+    for job in active_jobs:
+        if job.task.criticality is not Criticality.HI:
+            continue
+        if job.finished():
+            continue
+        if job.response_time_expiry is not None and job.response_time_expiry <= now:
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # 主仿真循环
 # ---------------------------------------------------------------------------
@@ -377,6 +511,8 @@ def simulate_ordered_taskset(
             hyperperiod_limit=cfg.hyperperiod_limit,
         )
     )
+    response_based = _is_response_based_semantics(cfg.semantics)
+    design_r_lo = build_design_r_lo_map(ordered_tasks) if response_based else {}
 
     # 任务名 -> 优先级索引（0 最高）。由输入顺序直接推导，不再重新排序。
     priority_map: dict[str, int] = {task.name: idx for idx, task in enumerate(ordered_tasks)}
@@ -415,20 +551,63 @@ def simulate_ordered_taskset(
             runtime_budgets.apply_updates(update.updates)
             budget_update_events.append(BudgetUpdateEvent(time=t, updates=dict(update.updates)))
 
-        # ---- 1. 在 tick 起点释放到期的 job ----
-        newly_released = _release_jobs_at_time(
+        # ---- 1. RA/RH 先检查“已存在 active HI job 是否在本时刻达到 response expiry” ----
+        if response_based and mode is SystemMode.LO:
+            expired_job = _find_expired_active_hi_job(active_jobs, t, priority_map)
+            if expired_job is not None:
+                mode = SystemMode.HI
+                mode_switches.append(
+                    ModeSwitchEvent(
+                        switch_time=t,
+                        triggering_task=expired_job.task.name,
+                        triggering_release_index=expired_job.release_index,
+                        executed_at_switch=expired_job.executed_time,
+                        budget_at_switch=expired_job.runtime_budget_at_release,
+                        reason="hi_response_time_expiry",
+                    )
+                )
+                if cfg.drop_lo_jobs_on_hi_switch:
+                    _drop_active_lo_jobs(active_jobs, current_time=t)
+
+        # ---- 2. 在 tick 起点释放到期的 job ----
+        newly_released, dropped_release_cancellations = _release_jobs_at_time_with_busy_periods(
             current_time=t,
             ordered_tasks=ordered_tasks,
             next_release_index=next_release_index,
             scenario=scenario,
+            active_jobs=active_jobs,
+            priority_map=priority_map,
+            semantics=cfg.semantics,
+            design_r_lo=design_r_lo,
+            record_dropped_lo_releases=cfg.record_dropped_lo_releases,
             # 只有进入 HI 模式后才抑制 LO 未来释放。
             suppress_lo_releases=(mode is SystemMode.HI),
         )
-        # 新释放的 job 既进入活动队列（参与调度），也进入全量历史集合。
-        active_jobs.extend(newly_released)
+        job_cancellations.extend(dropped_release_cancellations)
+        # 新释放的 normal jobs 进入活动队列；若是 degraded mode 中被直接 dropped 的
+        # LO release，则只进入历史集合，不进入 active_jobs。
+        active_jobs.extend([job for job in newly_released if not job.dropped])
         all_jobs.extend(newly_released)
 
-        # ---- 2. 检查当前 tick 是否有 job 正好踩到 deadline 但未完成 ----
+        # ---- 3. RA/RH 在完成同刻 arrival 后再次检查 expiry，覆盖 inherited busy period 已过期的边界 ----
+        if response_based and mode is SystemMode.LO:
+            expired_job = _find_expired_active_hi_job(active_jobs, t, priority_map)
+            if expired_job is not None:
+                mode = SystemMode.HI
+                mode_switches.append(
+                    ModeSwitchEvent(
+                        switch_time=t,
+                        triggering_task=expired_job.task.name,
+                        triggering_release_index=expired_job.release_index,
+                        executed_at_switch=expired_job.executed_time,
+                        budget_at_switch=expired_job.runtime_budget_at_release,
+                        reason="hi_response_time_expiry",
+                    )
+                )
+                if cfg.drop_lo_jobs_on_hi_switch:
+                    _drop_active_lo_jobs(active_jobs, current_time=t)
+
+        # ---- 4. 检查当前 tick 是否有 job 正好踩到 deadline 但未完成 ----
         misses_at_t = _check_deadline_misses(t, active_jobs, mode)
         deadline_misses.extend(misses_at_t)
         if misses_at_t and cfg.stop_at_first_miss:
@@ -437,10 +616,10 @@ def simulate_ordered_taskset(
             stopped_early = True
             break
 
-        # ---- 3. 选出最高优先级可运行 job ----
+        # ---- 5. 选出最高优先级可运行 job ----
         running = _select_highest_priority_ready_job(active_jobs, priority_map)
 
-        # ---- 4. 记录本 tick 的执行快照（可选） ----
+        # ---- 6. 记录本 tick 的执行快照（可选） ----
         if cfg.capture_trace:
             trace.append(
                 ScheduleTick(
@@ -453,22 +632,28 @@ def simulate_ordered_taskset(
                 )
             )
 
-        # ---- 5. 推进被选中 job 一个 tick，如完成则登记 completion_time ----
+        # ---- 7. 推进被选中 job 一个 tick，如完成则登记 completion_time ----
+        completed_hi_job = False
         if running is not None:
             running.executed_time += 1
 
             if running.executed_time >= running.actual_cost:
                 # 完成时刻记作“tick 结束的那一刻”，即 t + 1。
                 running.completion_time = t + 1
+                completed_hi_job = running.task.criticality is Criticality.HI
                 # 从活动集合移除，减少后续选择 / miss 扫描的范围。
                 active_jobs.remove(running)
 
-        # ---- 6. 检查是否触发 LO -> HI 切换，并执行切换后动作 ----
+        # ---- 8. 检查是否触发 LO -> HI 切换，并执行切换后动作 ----
         if running is not None:
             current_budget = runtime_budgets.budget_of(running.task)
 
             if _should_cancel_lo_job(running, mode, current_budget):
-                if cfg.semantics is RuntimeSemantics.AMC_PLUS:
+                if cfg.semantics in {
+                    RuntimeSemantics.AMC_PLUS,
+                    RuntimeSemantics.AMC_RA,
+                    RuntimeSemantics.AMC_RH,
+                }:
                     cancel_time = t + 1
                     event = _cancel_lo_job(
                         active_jobs=active_jobs,
@@ -494,7 +679,10 @@ def simulate_ordered_taskset(
                     if cfg.drop_lo_jobs_on_hi_switch:
                         _drop_active_lo_jobs(active_jobs, current_time=switch_time)
 
-            elif _should_switch_to_hi(running, mode, current_budget):
+            elif (
+                not response_based
+                and _should_switch_to_hi(running, mode, current_budget)
+            ):
                 # 切换时刻定义为“触发 tick 结束边界”，即 t + 1。
                 switch_time = t + 1
                 mode = SystemMode.HI
@@ -512,11 +700,17 @@ def simulate_ordered_taskset(
                 if cfg.drop_lo_jobs_on_hi_switch:
                     _drop_active_lo_jobs(active_jobs, current_time=switch_time)
 
-        # ---- 7. HI 模式在 tick 边界若无活动 job，则恢复到 LO 模式 ----
-        if mode is SystemMode.HI and not active_jobs:
+        # ---- 9. 恢复规则：AMC/A+/RA 用 idle，RH 仅在 HI completion 后检查 response-aware recovery ----
+        if cfg.semantics is RuntimeSemantics.AMC_RH:
+            if completed_hi_job and mode is SystemMode.HI and not _has_expired_active_hi_job(active_jobs, t + 1):
+                mode = SystemMode.LO
+                mode_recoveries.append(
+                    ModeRecoveryEvent(recovery_time=t + 1, reason="rh_no_expired_hi_job")
+                )
+        elif _uses_idle_recovery(cfg.semantics) and mode is SystemMode.HI and not active_jobs:
             recovery_time = t + 1
             mode = SystemMode.LO
-            mode_recoveries.append(ModeRecoveryEvent(recovery_time=recovery_time))
+            mode_recoveries.append(ModeRecoveryEvent(recovery_time=recovery_time, reason="idle"))
 
     # ---- 8. 主循环外的“终点 miss 扫描” ----
     # 主循环 range(end_time) 只迭代到 t = end_time - 1，这里补一次检查，
@@ -573,8 +767,12 @@ def simulate_taskset_with_policy(
       `simulate_ordered_taskset()`，并自行说明排序与运行时语义的对应关系。
     """
 
+    cfg = config if config is not None else RuntimeConfig()
+
     # 入口先做 method 语义限制，避免误导性调用继续执行。
     _validate_runtime_bridge_method(method)
+    if _is_response_based_semantics(cfg.semantics) and method != "amc_rtb":
+        raise ValueError("AMC_RA/AMC_RH runtime semantics must be used with method='amc_rtb'")
 
     # 懒加载导入：避免在导入 runtime 模块时就触发 experiments 里的重型依赖初始化。
     from .experiments import resolve_ordering
@@ -584,7 +782,7 @@ def simulate_taskset_with_policy(
     return simulate_ordered_taskset(
         ordered_tasks=ordered_tasks,
         scenario=scenario,
-        config=config,
+        config=cfg,
         budget_state=budget_state,
         budget_updates=budget_updates,
     )
@@ -620,8 +818,12 @@ def compare_static_and_runtime(
       method/policy 元数据，便于脚本和实验层直接消费。
     """
 
+    cfg = config if config is not None else RuntimeConfig()
+
     # 在任何静态分析或排序解析前先 fail-fast，避免语义误导。
     _validate_runtime_bridge_method(method)
+    if _is_response_based_semantics(cfg.semantics) and method != "amc_rtb":
+        raise ValueError("AMC_RA/AMC_RH runtime semantics must be used with method='amc_rtb'")
 
     # 懒加载导入：保持 runtime 核心仿真模块在导入阶段尽量轻量。
     from .experiments import evaluate_taskset, resolve_ordering
@@ -640,7 +842,7 @@ def compare_static_and_runtime(
     runtime_result = simulate_ordered_taskset(
         ordered_tasks=ordered_tasks,
         scenario=scenario,
-        config=config,
+        config=cfg,
         budget_state=budget_state,
         budget_updates=budget_updates,
     )
@@ -663,6 +865,7 @@ __all__ = [
     # 以下为内部辅助函数，但暴露出来便于测试与第 4 轮扩展。
     "_build_job",
     "_release_jobs_at_time",
+    "_release_jobs_at_time_with_busy_periods",
     "_select_highest_priority_ready_job",
     "_check_deadline_misses",
     "_should_switch_to_hi",

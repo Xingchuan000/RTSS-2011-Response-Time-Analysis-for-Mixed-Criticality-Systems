@@ -1,8 +1,13 @@
-"""AMC+ 运行时结果模型测试（阶段 1）。"""
+"""AMC family 运行时结果模型测试。"""
 
 from __future__ import annotations
 
-from amc_py.runtime_models import JobCancellationEvent, ModeSwitchEvent, SimulationResult
+from amc_py.runtime_models import (
+    JobCancellationEvent,
+    ModeSwitchEvent,
+    RuntimeSemantics,
+    SimulationResult,
+)
 
 
 def test_simulation_result_default_counts_are_zero() -> None:
@@ -45,3 +50,9 @@ def test_job_cancellation_events_are_counted() -> None:
     result = SimulationResult(job_cancellations=[cancellation])
     assert result.lo_job_cancellation_count() == 1
 
+
+def test_runtime_semantics_contains_ra_and_rh() -> None:
+    """运行时语义枚举中应包含 AMC_RA / AMC_RH。"""
+
+    assert RuntimeSemantics.AMC_RA.value == "AMC_RA"
+    assert RuntimeSemantics.AMC_RH.value == "AMC_RH"

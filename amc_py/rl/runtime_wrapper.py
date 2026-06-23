@@ -174,9 +174,11 @@ def simulate_ordered_taskset_with_agent(
         jobs_per_task=runtime_config.jobs_per_task,
         hyperperiod_limit=runtime_config.hyperperiod_limit,
         capture_trace=runtime_config.capture_trace,
+        capture_debug_events=runtime_config.capture_debug_events,
         stop_at_first_miss=runtime_config.stop_at_first_miss,
         drop_lo_jobs_on_hi_switch=runtime_config.drop_lo_jobs_on_hi_switch,
         semantics=runtime_config.semantics,
+        record_dropped_lo_releases=runtime_config.record_dropped_lo_releases,
     )
     engine = EventRuntimeEngine.build(
         ordered_tasks=ordered_tasks,

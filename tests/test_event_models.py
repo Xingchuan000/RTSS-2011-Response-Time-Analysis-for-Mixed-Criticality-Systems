@@ -25,14 +25,35 @@ def test_event_queue_orders_by_event_type_at_same_time() -> None:
 
     queue = EventQueue()
     queue.push(Event(time=10, event_type=EventType.JOB_ARRIVAL))
+    queue.push(Event(time=10, event_type=EventType.DEADLINE_CHECK))
     queue.push(Event(time=10, event_type=EventType.BUDGET_OVERRUN))
+    queue.push(Event(time=10, event_type=EventType.RESPONSE_TIME_EXPIRY))
     queue.push(Event(time=10, event_type=EventType.JOB_COMPLETION))
     queue.push(Event(time=10, event_type=EventType.BUDGET_UPDATE))
 
     assert queue.pop().event_type is EventType.BUDGET_UPDATE
     assert queue.pop().event_type is EventType.JOB_COMPLETION
+    assert queue.pop().event_type is EventType.RESPONSE_TIME_EXPIRY
     assert queue.pop().event_type is EventType.BUDGET_OVERRUN
+    assert queue.pop().event_type is EventType.DEADLINE_CHECK
     assert queue.pop().event_type is EventType.JOB_ARRIVAL
+
+
+def test_event_queue_peek_and_pop_all_matching() -> None:
+    """peek / pop_all_matching 应支持批量提取同刻 arrival。"""
+
+    queue = EventQueue()
+    first = Event(time=3, event_type=EventType.JOB_ARRIVAL, task_name="a")
+    second = Event(time=3, event_type=EventType.JOB_ARRIVAL, task_name="b")
+    third = Event(time=3, event_type=EventType.DEADLINE_CHECK, task_name="c")
+    queue.push(first)
+    queue.push(second)
+    queue.push(third)
+
+    assert queue.peek() == third
+    popped = queue.pop_all_matching(time=3, event_type=EventType.JOB_ARRIVAL)
+    assert [event.task_name for event in popped] == ["a", "b"]
+    assert queue.pop() == third
 
 
 def test_event_queue_keeps_fifo_for_identical_keys() -> None:

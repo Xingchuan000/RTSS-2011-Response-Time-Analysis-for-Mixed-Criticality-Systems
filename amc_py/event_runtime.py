@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from .amc import build_design_r_lo_map
 from .budget_runtime import BudgetState, BudgetUpdate
 from .event_models import Event, EventQueue, EventType
 from .models import Criticality, Task
@@ -44,6 +45,22 @@ def _validate_event_runtime_bridge_method(method: str) -> None:
             "当前 event runtime bridge 仅支持 AMC family methods "
             f"({supported})；收到 method={method!r}。"
         )
+
+
+def _is_response_based_semantics(semantics: RuntimeSemantics) -> bool:
+    """判断当前语义是否使用 `s_i + R_i(LO)` 作为 degraded mode 入口。"""
+
+    return semantics in {RuntimeSemantics.AMC_RA, RuntimeSemantics.AMC_RH}
+
+
+def _uses_idle_recovery(semantics: RuntimeSemantics) -> bool:
+    """判断当前语义是否使用“系统空闲即恢复”的规则。"""
+
+    return semantics in {
+        RuntimeSemantics.AMC,
+        RuntimeSemantics.AMC_PLUS,
+        RuntimeSemantics.AMC_RA,
+    }
 
 
 def _build_job(
@@ -102,6 +119,7 @@ class _RuntimeState:
     event_token_counter: int
     valid_completion_tokens: dict[tuple[str, int], int]
     valid_overrun_tokens: dict[tuple[str, int], int]
+    valid_response_expiry_tokens: dict[tuple[str, int], int]
     started_jobs: set[tuple[str, int]]
 
     def next_token(self) -> int:
@@ -125,19 +143,129 @@ def _update_running_progress(state: _RuntimeState, now: int) -> None:
 
 
 def _invalidate_job_events(state: _RuntimeState, job: Job) -> None:
-    """使某个 job 的 completion/overrun 事件全部失效。"""
+    """使某个 job 的 completion/overrun/response-expiry 事件全部失效。"""
 
     key = _job_key(job.task.name, job.release_index)
     state.valid_completion_tokens.pop(key, None)
     state.valid_overrun_tokens.pop(key, None)
+    state.valid_response_expiry_tokens.pop(key, None)
+
+def _has_expired_active_hi_job(active_jobs: Sequence[Job], now: int) -> bool:
+    """判断当前是否仍存在已经达到自身 response expiry 的 active HI job。"""
+
+    for job in active_jobs:
+        if job.task.criticality is not Criticality.HI:
+            continue
+        if job.finished():
+            continue
+        if job.response_time_expiry is not None and job.response_time_expiry <= now:
+            return True
+    return False
 
 
-def _maybe_recover_to_lo(state: _RuntimeState, result: SimulationResult, now: int) -> None:
-    """HI 模式下若系统空闲，则恢复到 LO 模式。"""
+def _maybe_recover_to_lo(
+    state: _RuntimeState,
+    result: SimulationResult,
+    now: int,
+    cfg: RuntimeConfig,
+) -> None:
+    """对使用 idle recovery 的语义，在系统空闲时恢复到 LO 模式。"""
 
+    if not _uses_idle_recovery(cfg.semantics):
+        return
     if state.mode is SystemMode.HI and not state.active_jobs and state.running_job is None:
         state.mode = SystemMode.LO
-        result.mode_recoveries.append(ModeRecoveryEvent(recovery_time=now))
+        result.mode_recoveries.append(ModeRecoveryEvent(recovery_time=now, reason="idle"))
+
+
+def _maybe_recover_rh_to_lo(state: _RuntimeState, result: SimulationResult, now: int) -> None:
+    """AMC-RH：当某个 HI job 完成后，若不存在 expired active HI job，则恢复到 LO。"""
+
+    if state.mode is not SystemMode.HI:
+        return
+    if _has_expired_active_hi_job(state.active_jobs, now):
+        return
+    state.mode = SystemMode.LO
+    result.mode_recoveries.append(
+        ModeRecoveryEvent(recovery_time=now, reason="rh_no_expired_hi_job")
+    )
+
+
+def _compute_busy_period_start_for_new_job(
+    *,
+    active_jobs: Sequence[Job],
+    new_task: Task,
+    priority_map: dict[str, int],
+    now: int,
+) -> int:
+    """计算新 job 所属 priority-level busy period 的起点。"""
+
+    new_prio = priority_map[new_task.name]
+    candidates: list[Job] = []
+    for job in active_jobs:
+        if job.finished():
+            continue
+        if priority_map[job.task.name] <= new_prio:
+            candidates.append(job)
+    if not candidates:
+        return now
+    predecessor = max(candidates, key=lambda job: priority_map[job.task.name])
+    if predecessor.busy_period_start is None:
+        return predecessor.release_time
+    return predecessor.busy_period_start
+
+
+def _schedule_response_time_expiry_for_hi_job(
+    state: _RuntimeState,
+    queue: EventQueue,
+    job: Job,
+    now: int,
+) -> None:
+    """为 RA/RH 语义下的 HI job 安排 response-time expiry 事件。"""
+
+    if job.task.criticality is not Criticality.HI:
+        return
+    if job.response_time_expiry is None:
+        return
+    token = state.next_token()
+    key = _job_key(job.task.name, job.release_index)
+    state.valid_response_expiry_tokens[key] = token
+    queue.push(
+        Event(
+            time=max(now, job.response_time_expiry),
+            event_type=EventType.RESPONSE_TIME_EXPIRY,
+            task_name=job.task.name,
+            release_index=job.release_index,
+            token=token,
+        )
+    )
+
+
+def _enter_degraded_mode_due_to_response_expiry(
+    *,
+    state: _RuntimeState,
+    result: SimulationResult,
+    job: Job,
+    now: int,
+    cfg: RuntimeConfig,
+) -> None:
+    """RA/RH：由 HI job 的 response-time expiry 触发 degraded mode。"""
+
+    if state.mode is SystemMode.HI:
+        return
+    state.mode = SystemMode.HI
+    result.mode_switches.append(
+        ModeSwitchEvent(
+            switch_time=now,
+            triggering_task=job.task.name,
+            triggering_release_index=job.release_index,
+            executed_at_switch=job.executed_time,
+            budget_at_switch=job.runtime_budget_at_release,
+            reason="hi_response_time_expiry",
+        )
+    )
+    if cfg.drop_lo_jobs_on_hi_switch:
+        _drop_active_lo_jobs(state.active_jobs, now)
 
 
 def _schedule_running_job_events(
@@ -167,6 +295,12 @@ def _schedule_running_job_events(
     )
 
     if state.mode is not SystemMode.LO:
+        return
+
+    if _is_response_based_semantics(cfg.semantics) and job.task.criticality is Criticality.HI:
+        # AMC-RA / AMC-RH 中，HI 任务不能通过 budget overrun 触发 degraded mode；
+        # 它们统一由 RESPONSE_TIME_EXPIRY 事件负责切换。
+        state.valid_overrun_tokens.pop(key, None)
         return
 
     budget = job.runtime_budget_at_release
@@ -204,15 +338,18 @@ def _schedule_running_job_events(
         state.valid_overrun_tokens.pop(key, None)
 
 
-def _drop_active_lo_jobs(active_jobs: list[Job], now: int) -> None:
-    """切入 HI 模式时，丢弃所有未完成 LO job。"""
+def _drop_active_lo_jobs(active_jobs: list[Job], now: int) -> list[Job]:
+    """切入 HI 模式时，丢弃所有未完成 LO job，并返回被丢弃的 job 列表。"""
 
+    dropped_jobs: list[Job] = []
     for job in list(active_jobs):
         if job.task.criticality is not Criticality.LO or job.finished():
             continue
         job.dropped = True
         job.drop_time = now
         active_jobs.remove(job)
+        dropped_jobs.append(job)
+    return dropped_jobs
 
 
 def _reschedule(
@@ -259,6 +396,7 @@ class EventRuntimeEngine:
     budget_state: BudgetState
     end_time: int
     monitor: RuntimeMonitor | None = None
+    design_r_lo: dict[str, int] = None  # type: ignore[assignment]
     task_names: list[str] = None  # type: ignore[assignment]
     priority_map: dict[str, int] = None  # type: ignore[assignment]
     task_map: dict[str, Task] = None  # type: ignore[assignment]
@@ -275,6 +413,11 @@ class EventRuntimeEngine:
         self.task_names = [task.name for task in self.ordered_tasks]
         self.priority_map = {task.name: idx for idx, task in enumerate(self.ordered_tasks)}
         self.task_map = {task.name: task for task in self.ordered_tasks}
+        self.design_r_lo = (
+            build_design_r_lo_map(self.ordered_tasks)
+            if _is_response_based_semantics(self.config.semantics)
+            else {}
+        )
         self.queue = EventQueue()
         self.result = SimulationResult()
         self.state = _RuntimeState(
@@ -286,6 +429,7 @@ class EventRuntimeEngine:
             event_token_counter=0,
             valid_completion_tokens={},
             valid_overrun_tokens={},
+            valid_response_expiry_tokens={},
             started_jobs=set(),
         )
         self.all_jobs: list[Job] = []
@@ -376,6 +520,9 @@ class EventRuntimeEngine:
         这里统一补齐 runtime 上下文，避免各事件分支分别拼装同一批字段，
         也保证导出的 debug 日志在结构上稳定可解析。
         """
+
+        if not self.config.capture_debug_events:
+            return
 
         running_job = self.state.running_job
         current_budget: dict[str, int] = dict(self.budget_state.budgets)
@@ -488,6 +635,136 @@ class EventRuntimeEngine:
         self._append_debug_event("budget_update", updates=update_payload)
         self._reschedule(self.state.current_time, force=True)
 
+    def _record_or_suppress_dropped_lo_release(
+        self,
+        task: Task,
+        release_index: int,
+        now: int,
+    ) -> None:
+        """在 degraded mode 中处理 LO release：默认 suppress，可选记录为 dropped job。"""
+
+        if not self.config.record_dropped_lo_releases:
+            self._append_debug_event(
+                "lo_release_suppressed",
+                task=task.name,
+                release_index=release_index,
+            )
+            return
+
+        job = _build_job(
+            task,
+            release_index,
+            self.scenario,
+            runtime_budget_at_release=self.budget_state.budget_of(task),
+        )
+        job.dropped = True
+        job.drop_time = now
+        self.all_jobs.append(job)
+        self.jobs_by_key[_job_key(task.name, release_index)] = job
+        self.result.job_cancellations.append(
+            JobCancellationEvent(
+                cancel_time=now,
+                task=task.name,
+                release_index=release_index,
+                executed_at_cancel=0,
+                budget_at_cancel=job.runtime_budget_at_release or task.c_lo,
+                reason="lo_release_dropped_in_degraded_mode",
+            )
+        )
+        self._append_debug_event(
+            "lo_release_dropped",
+            task=task.name,
+            release_index=release_index,
+        )
+
+    def _schedule_next_release(self, task: Task, release_index: int) -> None:
+        """安排某个任务的下一次周期释放。"""
+
+        next_release_index = release_index + 1
+        next_release_time = next_release_index * task.period
+        if next_release_time < self.end_time:
+            self.queue.push(
+                Event(
+                    time=next_release_time,
+                    event_type=EventType.JOB_ARRIVAL,
+                    task_name=task.name,
+                    release_index=next_release_index,
+                )
+            )
+
+    def _process_single_arrival_in_priority_order(self, event: Event) -> None:
+        """按优先级顺序处理同一时刻的单个 arrival。"""
+
+        assert event.task_name is not None
+        assert event.release_index is not None
+        task = self.task_map[event.task_name]
+        now = event.time
+
+        # 先安排下一次 release，确保 degraded mode 中被 dropped 的 release
+        # 也会继续推进 release_index，不会阻断未来周期行为。
+        self._schedule_next_release(task, event.release_index)
+
+        if self.state.mode is SystemMode.HI and task.criticality is Criticality.LO:
+            self._record_or_suppress_dropped_lo_release(task, event.release_index, now)
+            return
+
+        job = _build_job(
+            task,
+            event.release_index,
+            self.scenario,
+            runtime_budget_at_release=self.budget_state.budget_of(task),
+        )
+        job.busy_period_start = _compute_busy_period_start_for_new_job(
+            active_jobs=self.state.active_jobs,
+            new_task=task,
+            priority_map=self.priority_map,
+            now=now,
+        )
+        if _is_response_based_semantics(self.config.semantics) and task.criticality is Criticality.HI:
+            job.response_time_expiry = job.busy_period_start + self.design_r_lo[task.name]
+
+        self.state.active_jobs.append(job)
+        self.all_jobs.append(job)
+        self.jobs_by_key[_job_key(task.name, event.release_index)] = job
+        self._append_debug_event(
+            "job_arrival",
+            task=job.task.name,
+            criticality=job.task.criticality.value,
+            release_index=job.release_index,
+            release_time=job.release_time,
+            absolute_deadline=job.absolute_deadline,
+            actual_cost=job.actual_cost,
+            runtime_budget_at_release=job.runtime_budget_at_release,
+            busy_period_start=job.busy_period_start,
+            response_time_expiry=job.response_time_expiry,
+        )
+        self.queue.push(
+            Event(
+                time=job.absolute_deadline,
+                event_type=EventType.DEADLINE_CHECK,
+                task_name=job.task.name,
+                release_index=job.release_index,
+            )
+        )
+        if _is_response_based_semantics(self.config.semantics) and task.criticality is Criticality.HI:
+            _schedule_response_time_expiry_for_hi_job(self.state, self.queue, job, now)
+
+    def _process_job_arrival_batch(self, first_event: Event) -> bool:
+        """把同一时刻的全部 arrival 取出后按优先级顺序处理。"""
+
+        now = first_event.time
+        events = [first_event]
+        events.extend(
+            self.queue.pop_all_matching(time=now, event_type=EventType.JOB_ARRIVAL)
+        )
+        events.sort(
+            key=lambda event: self.priority_map[event.task_name]  # type: ignore[index]
+        )
+        for arrival in events:
+            self._process_single_arrival_in_priority_order(arrival)
+        self._reschedule(now)
+        return True
+
     def _process_event(self, event: Event) -> bool:
         """处理单个事件。返回 False 表示应终止运行。"""
 
@@ -504,67 +781,7 @@ class EventRuntimeEngine:
             return True
 
         if event.event_type is EventType.JOB_ARRIVAL:
-            assert event.task_name is not None
-            assert event.release_index is not None
-            task = self.task_map[event.task_name]
-
-            if self.state.mode is SystemMode.HI and task.criticality is Criticality.LO:
-                next_release_index = event.release_index + 1
-                next_release_time = next_release_index * task.period
-                if next_release_time < self.end_time:
-                    self.queue.push(
-                        Event(
-                            time=next_release_time,
-                            event_type=EventType.JOB_ARRIVAL,
-                            task_name=task.name,
-                            release_index=next_release_index,
-                        )
-                    )
-                self._reschedule(event.time)
-                return True
-
-            job = _build_job(
-                task,
-                event.release_index,
-                self.scenario,
-                runtime_budget_at_release=self.budget_state.budget_of(task),
-            )
-            self.state.active_jobs.append(job)
-            self.all_jobs.append(job)
-            self.jobs_by_key[_job_key(task.name, event.release_index)] = job
-            self._append_debug_event(
-                "job_arrival",
-                task=job.task.name,
-                criticality=job.task.criticality.value,
-                release_index=job.release_index,
-                release_time=job.release_time,
-                absolute_deadline=job.absolute_deadline,
-                actual_cost=job.actual_cost,
-                runtime_budget_at_release=job.runtime_budget_at_release,
-            )
-            self.queue.push(
-                Event(
-                    time=job.absolute_deadline,
-                    event_type=EventType.DEADLINE_CHECK,
-                    task_name=job.task.name,
-                    release_index=job.release_index,
-                )
-            )
-
-            next_release_index = event.release_index + 1
-            next_release_time = next_release_index * task.period
-            if next_release_time < self.end_time:
-                self.queue.push(
-                    Event(
-                        time=next_release_time,
-                        event_type=EventType.JOB_ARRIVAL,
-                        task_name=task.name,
-                        release_index=next_release_index,
-                    )
-                )
-
-            self._reschedule(event.time)
-            return True
+            return self._process_job_arrival_batch(event)
 
         if event.event_type is EventType.DEADLINE_CHECK:
             assert event.task_name is not None
@@ -625,13 +842,57 @@ class EventRuntimeEngine:
             )
             if self.monitor is not None:
                 self.monitor.record_job_completion(job.task.name, job.executed_time)
+            completed_job_was_hi = job.task.criticality is Criticality.HI
             if job in self.state.active_jobs:
                 self.state.active_jobs.remove(job)
             _invalidate_job_events(self.state, job)
             self.state.running_job = None
             self.state.run_started_at = None
-            _maybe_recover_to_lo(self.state, self.result, event.time)
+            if self.config.semantics is RuntimeSemantics.AMC_RH and completed_job_was_hi:
+                _maybe_recover_rh_to_lo(self.state, self.result, event.time)
+            else:
+                _maybe_recover_to_lo(self.state, self.result, event.time, self.config)
             self._reschedule(event.time)
+            return True
+
+        if event.event_type is EventType.RESPONSE_TIME_EXPIRY:
+            assert event.task_name is not None
+            assert event.release_index is not None
+            assert event.token is not None
+            key = _job_key(event.task_name, event.release_index)
+            if self.state.valid_response_expiry_tokens.get(key) != event.token:
+                return True
+
+            job = self.jobs_by_key.get(key)
+            if job is None:
+                return True
+            if job.finished():
+                return True
+            if job.task.criticality is not Criticality.HI:
+                return True
+
+            self._append_debug_event(
+                "response_time_expiry",
+                task=job.task.name,
+                release_index=job.release_index,
+                busy_period_start=job.busy_period_start,
+                response_time_expiry=job.response_time_expiry,
+                executed_time=job.executed_time,
+            )
+
+            if self.state.mode is SystemMode.LO:
+                _enter_degraded_mode_due_to_response_expiry(
+                    state=self.state,
+                    result=self.result,
+                    job=job,
+                    now=event.time,
+                    cfg=self.config,
+                )
+                if self.state.running_job is not None and self.state.running_job.dropped:
+                    _invalidate_job_events(self.state, self.state.running_job)
+                    self.state.running_job = None
+                    self.state.run_started_at = None
+                self._reschedule(event.time, force=True)
             return True
 
         if event.event_type is EventType.BUDGET_OVERRUN:
@@ -646,6 +907,9 @@ class EventRuntimeEngine:
             if job is None or self.state.running_job is not job:
                 return True
 
+            if _is_response_based_semantics(self.config.semantics) and job.task.criticality is Criticality.HI:
+                return True
+
             budget = job.runtime_budget_at_release
             if budget is None:
                 budget = self.budget_state.budget_of(job.task)
@@ -653,7 +917,11 @@ class EventRuntimeEngine:
                 return True
 
             if (
-                self.config.semantics is RuntimeSemantics.AMC_PLUS
+                self.config.semantics in {
+                    RuntimeSemantics.AMC_PLUS,
+                    RuntimeSemantics.AMC_RA,
+                    RuntimeSemantics.AMC_RH,
+                }
                 and job.task.criticality is Criticality.LO
             ):
                 self._append_debug_event(
@@ -683,7 +951,7 @@ class EventRuntimeEngine:
                 _invalidate_job_events(self.state, job)
                 self.state.running_job = None
                 self.state.run_started_at = None
-                _maybe_recover_to_lo(self.state, self.result, event.time)
+                _maybe_recover_to_lo(self.state, self.result, event.time, self.config)
                 self._reschedule(event.time)
                 return True
 
@@ -730,7 +998,7 @@ class EventRuntimeEngine:
                 self.state.running_job = None
                 self.state.run_started_at = None
 
-            _maybe_recover_to_lo(self.state, self.result, event.time)
+            _maybe_recover_to_lo(self.state, self.result, event.time, self.config)
             self._reschedule(event.time)
             return True
 
@@ -807,6 +1075,9 @@ def simulate_taskset_with_policy_event_driven(
     """事件驱动 runtime 的策略桥接入口。"""
 
     _validate_event_runtime_bridge_method(method)
+    cfg = config or RuntimeConfig()
+    if _is_response_based_semantics(cfg.semantics) and method != "amc_rtb":
+        raise ValueError("AMC_RA/AMC_RH runtime semantics must be used with method='amc_rtb'")
 
     from .experiments import resolve_ordering
 
@@ -814,7 +1085,7 @@ def simulate_taskset_with_policy_event_driven(
     return simulate_ordered_taskset_event_driven(
         ordered_tasks=ordered_tasks,
         scenario=scenario,
-        config=config,
+        config=cfg,
         budget_state=budget_state,
         budget_updates=budget_updates,
         monitor=monitor,

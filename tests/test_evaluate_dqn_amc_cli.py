@@ -18,6 +18,46 @@ def _read_csv_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
+def test_evaluate_fieldnames_include_degradation_metrics() -> None:
+    """正式评估 CSV 必须稳定包含论文 degraded-service 指标列。"""
+
+    from scripts.evaluate_dqn_amc import _eval_summary_fieldnames
+
+    fields = set(_eval_summary_fieldnames())
+    required = {
+        "hdm",
+        "jne",
+        "ldm",
+        "nid",
+        "tid",
+        "total_time",
+        "jne_plus_ldm",
+    }
+    assert required.issubset(fields)
+
+
+def test_formal_evaluate_runtime_configs_disable_trace_and_record_dropped_lo_releases() -> None:
+    """正式 HOUT 评估使用的 runtime 配置应统一关闭 trace 并记录 dropped LO release。"""
+
+    from scripts.evaluate_dqn_amc import _baseline_runtime_config, _formal_agent_runtime_config
+    from amc_py.runtime_models import RuntimeSemantics
+
+    for semantics in (
+        RuntimeSemantics.AMC_PLUS,
+        RuntimeSemantics.AMC_RA,
+        RuntimeSemantics.AMC_RH,
+    ):
+        baseline_cfg = _baseline_runtime_config(end_time=100, semantics=semantics)
+        assert baseline_cfg.capture_trace is False
+        assert baseline_cfg.capture_debug_events is False
+        assert baseline_cfg.record_dropped_lo_releases is True
+
+    agent_cfg = _formal_agent_runtime_config(end_time=100, semantics=RuntimeSemantics.AMC_PLUS)
+    assert agent_cfg.capture_trace is False
+    assert agent_cfg.capture_debug_events is False
+    assert agent_cfg.record_dropped_lo_releases is True
+
+
 def test_evaluate_dqn_amc_cli_runs_after_training(tmp_path: Path) -> None:
     """训练后的正式模型应可被评估 CLI 加载并输出汇总。"""
 
@@ -102,6 +142,130 @@ def test_evaluate_dqn_amc_cli_runs_after_training(tmp_path: Path) -> None:
     assert "masked_deploy_cap_increase_rate" in rows[0]
 
 
+def test_evaluate_cli_supports_amc_ra_rh_baselines(tmp_path: Path) -> None:
+    """评估 CLI 显式启用 AMC-RA/AMC-RH baseline 后应输出对应方法行与退化指标列。"""
+
+    output_dir = tmp_path / "dqn_amc_ra_rh_eval"
+    model_path = output_dir / "model_final.pt"
+    eval_path = output_dir / "eval_ra_rh.csv"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--episodes",
+            "1",
+            "--end-time",
+            "50",
+            "--seed",
+            "0",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate_dqn_amc.py",
+            "--model",
+            str(model_path),
+            "--seeds",
+            "0",
+            "--end-time",
+            "100",
+            "--baselines",
+            "amc_plus_baseline,amc_ra_baseline,amc_rh_baseline,dqn_agent",
+            "--output",
+            str(eval_path),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+
+    rows = _read_csv_rows(eval_path)
+    methods = {row["method"] for row in rows}
+    assert "amc_plus_baseline" in methods
+    assert "amc_ra_baseline" in methods
+    assert "amc_rh_baseline" in methods
+    assert "dqn_agent" in methods
+
+    required = {"hdm", "jne", "ldm", "nid", "tid", "total_time", "jne_plus_ldm"}
+    for row in rows:
+        assert required.issubset(row.keys())
+        assert int(row["jne_plus_ldm"]) == int(row["jne"]) + int(row["ldm"])
+
+
+def test_evaluate_cli_short_hout_smoke_outputs_ra_rh_and_dqn_methods(tmp_path: Path) -> None:
+    """短时域 smoke 应能同时输出 AMC+、RA、RH 与 DQN 的正式评估结果。"""
+
+    output_dir = tmp_path / "dqn_amc_hout_smoke"
+    model_path = output_dir / "model_final.pt"
+    eval_path = output_dir / "eval_hout_smoke.csv"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--episodes",
+            "1",
+            "--end-time",
+            "40",
+            "--seed",
+            "0",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate_dqn_amc.py",
+            "--model",
+            str(model_path),
+            "--seeds",
+            "0",
+            "--end-time",
+            "40",
+            "--evaluation-workers",
+            "1",
+            "--baselines",
+            "amc_plus_baseline,amc_ra_baseline,amc_rh_baseline,dqn_agent",
+            "--output",
+            str(eval_path),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+
+    rows = _read_csv_rows(eval_path)
+    methods = {row["method"] for row in rows}
+    assert methods >= {
+        "amc_plus_baseline",
+        "amc_ra_baseline",
+        "amc_rh_baseline",
+        "dqn_agent",
+    }
+    for row in rows:
+        assert "hdm" in row
+        assert "jne" in row
+        assert "ldm" in row
+        assert "nid" in row
+        assert "tid" in row
+        assert "jne_plus_ldm" in row
+
+
 def test_evaluate_cli_rejects_legacy_reward_mode(tmp_path: Path) -> None:
     """评估 CLI 不应再接受旧 reward mode。"""
 
@@ -176,6 +340,48 @@ def test_evaluate_cli_rejects_invalid_budget_floor_ratio(tmp_path: Path) -> None
             "0",
             "--budget-floor-ratio",
             "-0.1",
+            "--output",
+            str(output_dir / "eval.csv"),
+        ],
+        check=False,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    assert result.returncode != 0
+
+
+def test_evaluate_cli_rejects_unknown_baseline(tmp_path: Path) -> None:
+    """评估 CLI 仍应拒绝计划外的未知 baseline 名称。"""
+
+    output_dir = tmp_path / "dqn_amc_unknown_baseline_eval"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--episodes",
+            "1",
+            "--end-time",
+            "20",
+            "--seed",
+            "0",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate_dqn_amc.py",
+            "--model",
+            str(output_dir / "model_final.pt"),
+            "--seeds",
+            "0",
+            "--baselines",
+            "amc_ra_baseline,unknown_baseline",
             "--output",
             str(output_dir / "eval.csv"),
         ],
@@ -264,6 +470,8 @@ def test_evaluate_cli_supports_parallel_seed_workers(tmp_path: Path) -> None:
             "50",
             "--evaluation-workers",
             "2",
+            "--baselines",
+            "amc_plus_baseline,amc_ra_baseline,amc_rh_baseline,dqn_agent",
             "--output",
             str(eval_path),
         ],
@@ -274,7 +482,12 @@ def test_evaluate_cli_supports_parallel_seed_workers(tmp_path: Path) -> None:
 
     rows = _read_csv_rows(eval_path)
     assert rows
-    assert {row["method"] for row in rows} >= {"dqn_agent", "amc_plus_baseline"}
+    assert {row["method"] for row in rows} >= {
+        "dqn_agent",
+        "amc_plus_baseline",
+        "amc_ra_baseline",
+        "amc_rh_baseline",
+    }
 
 
 def test_evaluate_cli_parallel_and_serial_outputs_match(tmp_path: Path) -> None:
@@ -311,6 +524,8 @@ def test_evaluate_cli_parallel_and_serial_outputs_match(tmp_path: Path) -> None:
         "0,1",
         "--end-time",
         "50",
+        "--baselines",
+        "amc_plus_baseline,amc_ra_baseline,amc_rh_baseline,dqn_agent",
     ]
     subprocess.run(
         base_cmd + ["--evaluation-workers", "1", "--output", str(serial_eval_path)],

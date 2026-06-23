@@ -42,6 +42,8 @@ class RuntimeSemantics(str, Enum):
 
     AMC = "AMC"
     AMC_PLUS = "AMC_PLUS"
+    AMC_RA = "AMC_RA"
+    AMC_RH = "AMC_RH"
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,11 +58,17 @@ class RuntimeConfig:
       上限，避免输入任务周期过大导致仿真范围爆炸。
     - `capture_trace`: 是否记录每个 tick 的执行快照（便于调试/可视化，
       但会增加内存开销）。
+    - `capture_debug_events`: 是否记录事件级 debug 日志。它通常比逐 tick trace
+      更稀疏，但在长时域 HOUT 中仍可能累计出较大内存占用，因此默认关闭。
     - `stop_at_first_miss`: 是否在首次出现 deadline miss 时立即停止仿真。
     - `drop_lo_jobs_on_hi_switch`: 进入 HI 模式时是否丢弃所有未完成的 LO job。
     - `semantics`: 运行时语义开关：
       `AMC_PLUS` 表示 LO 超预算仅局部取消，HI 超预算触发模式切换；
-      `AMC` 表示任意任务超 LO 预算都触发模式切换。
+      `AMC` 表示任意任务超 LO 预算都触发模式切换；
+      `AMC_RA` / `AMC_RH` 表示 HI 任务通过 `s_i + R_i(LO)` 触发退化模式。
+    - `record_dropped_lo_releases`: 是否把 degraded mode 中被直接 dropped 的
+      LO release 也记入 `SimulationResult.jobs` 与 `job_cancellations`，用于
+      论文里的 JNE（jobs not executed）统计。
 
     设计上使用 frozen dataclass，是为了强调“配置对象一经创建不再可变”，
     避免仿真器内部无意篡改用户传入的配置。
@@ -69,10 +77,12 @@ class RuntimeConfig:
     end_time: int | None = None
     jobs_per_task: int = 5
     hyperperiod_limit: int = 100_000
-    capture_trace: bool = True
+    capture_trace: bool = False
+    capture_debug_events: bool = False
     stop_at_first_miss: bool = False
     drop_lo_jobs_on_hi_switch: bool = True
     semantics: RuntimeSemantics = RuntimeSemantics.AMC_PLUS
+    record_dropped_lo_releases: bool = False
 
     def __post_init__(self) -> None:
         # 基本的范围校验：避免在仿真过程中才报错，尽量把问题前置。
@@ -105,6 +115,8 @@ class Job:
       的下一 tick 起点），未完成时为 None；
     - `dropped`: 是否因 HI 模式切换被丢弃；
     - `drop_time`: 被丢弃的绝对时刻（None 表示没被丢弃）。
+    - `busy_period_start`: 该 job 所属 priority-level busy period 的起点 `s_i`；
+    - `response_time_expiry`: `s_i + R_i(LO)`，仅 RA/RH 语义下的 HI job 有意义。
 
     该类是可变的，因为 job 状态必须随仿真 tick 演化。
     """
@@ -119,6 +131,8 @@ class Job:
     completion_time: int | None = None
     dropped: bool = False
     drop_time: int | None = None
+    busy_period_start: int | None = None
+    response_time_expiry: int | None = None
 
     def remaining(self) -> int:
         """返回本 job 还需执行的时间，下限为 0。

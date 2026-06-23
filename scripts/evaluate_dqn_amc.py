@@ -24,6 +24,7 @@ from amc_py.dqn import (
 from amc_py.event_runtime import simulate_ordered_taskset_event_driven
 from amc_py.experiments import evaluate_taskset
 from amc_py.metrics import (
+    compute_runtime_degradation_metrics,
     compute_service_quality_metrics,
     mean_optional as mean_optional_service_metric,
     safe_relative_reduction,
@@ -48,6 +49,16 @@ NOOP_Q_DIAGNOSTIC_FIELDNAMES = [
     "noop_q_is_best_rate",
     "noop_valid_rate",
     "noop_q_sample_count",
+]
+
+DEGRADATION_FIELDNAMES = [
+    "hdm",
+    "jne",
+    "ldm",
+    "nid",
+    "tid",
+    "total_time",
+    "jne_plus_ldm",
 ]
 
 QOS_FIELDNAMES = [
@@ -141,6 +152,66 @@ def _empty_noop_q_diagnostics_row() -> dict[str, float | int | None]:
     return {fieldname: None for fieldname in NOOP_Q_DIAGNOSTIC_FIELDNAMES}
 
 
+def _degradation_metrics_to_row(result: SimulationResult) -> dict[str, int]:
+    """把论文 degraded-service 指标展平成 evaluate CSV 行字段。
+
+    这里严格复用统一指标实现，避免在评估脚本中重复推导 hdm/jne/ldm/nid/tid，
+    从而保证与 pre-DQN baseline 脚本和其他分析工具的统计口径完全一致。
+    """
+
+    degradation = compute_runtime_degradation_metrics(result)
+    return {
+        "hdm": degradation.hdm,
+        "jne": degradation.jne,
+        "ldm": degradation.ldm,
+        "nid": degradation.nid,
+        "tid": degradation.tid,
+        "total_time": degradation.total_time,
+        "jne_plus_ldm": degradation.jne + degradation.ldm,
+    }
+
+
+def _baseline_runtime_config(
+    *,
+    end_time: int,
+    semantics: RuntimeSemantics,
+    capture_trace: bool = False,
+    capture_debug_events: bool = False,
+) -> RuntimeConfig:
+    """构造正式 HOUT 评估使用的 baseline runtime 配置。
+
+    正式长时域评估必须显式关闭逐 tick trace，避免 `end_time=2e7/5e7` 时产生
+    巨量内存与 IO 开销。同时所有语义都统一记录 degraded mode 中被丢弃/抑制的
+    LO release，确保 `JNE + LDM` 在 AMC+、RA、RH 之间可公平横向比较。
+    """
+
+    return RuntimeConfig(
+        end_time=end_time,
+        semantics=semantics,
+        capture_trace=capture_trace,
+        capture_debug_events=capture_debug_events,
+        record_dropped_lo_releases=True,
+    )
+
+
+def _formal_agent_runtime_config(
+    *,
+    end_time: int,
+    semantics: RuntimeSemantics,
+    capture_trace: bool = False,
+    capture_debug_events: bool = False,
+) -> RuntimeConfig:
+    """构造正式评估下 agent/DQN 共用的 runtime 配置。"""
+
+    return RuntimeConfig(
+        end_time=end_time,
+        semantics=semantics,
+        capture_trace=capture_trace,
+        capture_debug_events=capture_debug_events,
+        record_dropped_lo_releases=True,
+    )
+
+
 def _noop_q_diagnostics_to_row(agent: DqnBudgetAgent, states: list[tuple[float, ...]], masks: list[tuple[bool, ...]]) -> dict[str, float | int | None]:
     """把评估期采集的决策状态转换为 explicit noop Q 诊断字段。
 
@@ -210,65 +281,135 @@ def _eval_summary_fieldnames() -> list[str]:
         "lo_cancellations",
         "deadline_misses",
         "budget_overruns",
-        "accepted_actions",
-        "rejected_actions",
-        "step_count",
-        "selected_action_count",
-        "noop_actions",
-        "explicit_noop_actions",
-        "noop_action_rate",
-        "explicit_noop_action_rate",
-        "accepted_action_rate",
-        "rejection_rate",
-        "total_reward",
-        "check_safety",
-        "safety_checked_actions",
-        "safety_accepted_actions",
-        "safety_rejected_actions",
-        "valid_action_count_mean",
-        "masked_action_count_mean",
-        "masked_decrease_hi_forbidden_count",
-        "masked_decrease_hi_forbidden_rate",
-        "masked_action_count_max",
-        "mask_rejection_rate_mean",
-        "selected_invalid_mask_actions",
-        "selected_explicit_noop_actions",
-        "selected_explicit_noop_rate",
-        "action_space_type",
-        "action_count",
-        "budget_increase_ratio",
-        "budget_decrease_ratio",
-        "budget_floor_ratio",
-        "no_safe_action_steps",
-        "masked_budget_floor_violation_count",
-        "masked_budget_floor_violation_rate",
-        "masked_deploy_cap_increase_count",
-        "masked_deploy_cap_increase_rate",
-        "observation_mode",
-        "state_dim",
-        "mean_over_increase_excess",
-        "over_increase_action_count",
-        "mean_budget_soft_cap_increase_excess",
-        "soft_cap_increase_action_count",
-        "mean_budget_soft_cap_penalty_value",
-        "mean_budget_soft_cap_dwell_excess_mean",
-        "mean_budget_soft_cap_dwell_excess_max",
-        "max_budget_soft_cap_dwell_excess_max",
-        "soft_cap_dwell_state_count",
-        "soft_cap_dwell_state_rate",
-        "mean_budget_soft_cap_dwell_penalty_value",
-        "mean_budget_soft_cap_dwell_max_penalty_value",
-        "mean_budget_soft_cap_dwell_total_penalty_value",
-        "safe_recovery_decrease_count",
-        "unsafe_decrease_full_count",
-        "mean_budget_over_drift_deadzone",
-        "mean_increase_concentration_excess",
-        "pingpong_action_count",
     ]
+    fieldnames.extend(DEGRADATION_FIELDNAMES)
+    fieldnames.extend(
+        [
+            "accepted_actions",
+            "rejected_actions",
+            "step_count",
+            "selected_action_count",
+            "noop_actions",
+            "explicit_noop_actions",
+            "noop_action_rate",
+            "explicit_noop_action_rate",
+            "accepted_action_rate",
+            "rejection_rate",
+            "total_reward",
+            "check_safety",
+            "safety_checked_actions",
+            "safety_accepted_actions",
+            "safety_rejected_actions",
+            "valid_action_count_mean",
+            "masked_action_count_mean",
+            "masked_decrease_hi_forbidden_count",
+            "masked_decrease_hi_forbidden_rate",
+            "masked_action_count_max",
+            "mask_rejection_rate_mean",
+            "selected_invalid_mask_actions",
+            "selected_explicit_noop_actions",
+            "selected_explicit_noop_rate",
+            "action_space_type",
+            "action_count",
+            "budget_increase_ratio",
+            "budget_decrease_ratio",
+            "budget_floor_ratio",
+            "no_safe_action_steps",
+            "masked_budget_floor_violation_count",
+            "masked_budget_floor_violation_rate",
+            "masked_deploy_cap_increase_count",
+            "masked_deploy_cap_increase_rate",
+            "observation_mode",
+            "state_dim",
+            "mean_over_increase_excess",
+            "over_increase_action_count",
+            "mean_budget_soft_cap_increase_excess",
+            "soft_cap_increase_action_count",
+            "mean_budget_soft_cap_penalty_value",
+            "mean_budget_soft_cap_dwell_excess_mean",
+            "mean_budget_soft_cap_dwell_excess_max",
+            "max_budget_soft_cap_dwell_excess_max",
+            "soft_cap_dwell_state_count",
+            "soft_cap_dwell_state_rate",
+            "mean_budget_soft_cap_dwell_penalty_value",
+            "mean_budget_soft_cap_dwell_max_penalty_value",
+            "mean_budget_soft_cap_dwell_total_penalty_value",
+            "safe_recovery_decrease_count",
+            "unsafe_decrease_full_count",
+            "mean_budget_over_drift_deadzone",
+            "mean_increase_concentration_excess",
+            "pingpong_action_count",
+        ]
+    )
     fieldnames.extend(TASK_LEVEL_INFO_KEYS)
     fieldnames.extend(QOS_FIELDNAMES)
     fieldnames.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
     return fieldnames
+
+
+def _build_pure_runtime_baseline_row(
+    *,
+    row_base: dict[str, int | float | str | bool],
+    method: str,
+    runtime_result: SimulationResult,
+    action_space: str,
+    action_count: int,
+    budget_increase_ratio: float,
+    budget_decrease_ratio: float,
+    budget_floor_ratio: float,
+) -> dict[str, int | float | str | bool | None]:
+    """构造不经过 agent 决策的纯 runtime baseline 结果行。
+
+    AMC+、AMC-RA、AMC-RH 都属于“仅切换 runtime 语义、不引入动作决策”的 baseline。
+    因此这里统一把动作、mask、Q 诊断相关字段置为 0 或空值，避免三处复制粘贴后口径漂移。
+    """
+
+    service_metrics = compute_service_quality_metrics(runtime_result)
+    return {
+        **row_base,
+        **_empty_noop_q_diagnostics_row(),
+        "method": method,
+        "mode_changes": runtime_result.mode_change_count(),
+        "lo_cancellations": runtime_result.lo_job_cancellation_count(),
+        "deadline_misses": len(runtime_result.deadline_misses),
+        "budget_overruns": _budget_overruns_from_result(runtime_result),
+        "accepted_actions": 0,
+        "rejected_actions": 0,
+        "step_count": 0,
+        "selected_action_count": 0,
+        "noop_actions": 0,
+        "explicit_noop_actions": 0,
+        "noop_action_rate": 0.0,
+        "explicit_noop_action_rate": 0.0,
+        "accepted_action_rate": 0.0,
+        "rejection_rate": 0.0,
+        "total_reward": 0.0,
+        "check_safety": True,
+        "safety_checked_actions": 0,
+        "safety_accepted_actions": 0,
+        "safety_rejected_actions": 0,
+        "valid_action_count_mean": 0.0,
+        "masked_action_count_mean": 0.0,
+        "masked_decrease_hi_forbidden_count": 0,
+        "masked_decrease_hi_forbidden_rate": 0.0,
+        "masked_action_count_max": 0,
+        "mask_rejection_rate_mean": 0.0,
+        "selected_invalid_mask_actions": 0,
+        "selected_explicit_noop_actions": 0,
+        "selected_explicit_noop_rate": 0.0,
+        "action_space_type": action_space,
+        "action_count": action_count,
+        "budget_increase_ratio": budget_increase_ratio,
+        "budget_decrease_ratio": budget_decrease_ratio,
+        "budget_floor_ratio": budget_floor_ratio,
+        "no_safe_action_steps": 0,
+        "masked_budget_floor_violation_count": 0,
+        "masked_budget_floor_violation_rate": 0.0,
+        "masked_deploy_cap_increase_count": 0,
+        "masked_deploy_cap_increase_rate": 0.0,
+        **_degradation_metrics_to_row(runtime_result),
+        **service_metrics_to_row(service_metrics),
+    }
 
 
 def _aggregate_action_log_metrics(action_log: list[dict[str, object]]) -> dict[str, float | int]:
@@ -389,6 +530,8 @@ def _evaluate_dqn_once(
     trace_dir: Path | None = None,
     debug_log_dir: Path | None = None,
     trace_enabled: bool = False,
+    capture_trace: bool = False,
+    capture_debug_events: bool = False,
     agent_device: str | None = None,
     double_dqn: bool = True,
     max_q_diagnostic_samples: int = 1000,
@@ -417,6 +560,9 @@ def _evaluate_dqn_once(
         enable_deploy_cap_mask=enable_deploy_cap_mask,
         deploy_cap_mask_ratio=deploy_cap_mask_ratio,
         deploy_cap_mask_criticality=deploy_cap_mask_criticality,
+        capture_trace=capture_trace,
+        capture_debug_events=capture_debug_events,
+        record_dropped_lo_releases=True,
         feature_config=feature_config,
         constraint_guided_pair_top_k_risk=constraint_guided_pair_top_k_risk,
         constraint_guided_pair_top_k_decrease=constraint_guided_pair_top_k_decrease,
@@ -603,6 +749,7 @@ def _evaluate_dqn_once(
                 action_log_metrics["mean_increase_concentration_excess"]
             ),
             "pingpong_action_count": int(action_log_metrics["pingpong_action_count"]),
+            **_degradation_metrics_to_row(runtime_result),
             **service_metrics_to_row(dqn_service_metrics),
             **_task_level_info_row(last_info),
         }
@@ -1000,7 +1147,6 @@ def _evaluate_enabled_methods_for_seed(
     """
 
     bundle = resolve_experiment_bundle(experiment_config, seed)
-    runtime_config = RuntimeConfig(end_time=end_time, semantics=RuntimeSemantics.AMC_PLUS)
     actions = build_budget_action_space(
         list(bundle.ordered_tasks),
         action_space=action_space,
@@ -1035,11 +1181,20 @@ def _evaluate_enabled_methods_for_seed(
         "end_time": end_time,
         "agent_period": agent_period,
     }
-    # trace 的开关粒度仍然保持“按 seed、按 method 控制”，
-    # 这样并行后也不会改变原有调试文件的生成规则。
+    # trace / debug 的开关粒度仍然保持“按 seed、按 method 控制”，
+    # 这样并行后也不会改变原有调试文件的生成规则，同时正式 HOUT 默认不积累
+    # 逐 tick trace 与事件级 debug 日志，仅在显式调试时再打开。
     trace_enabled_for_seed = (
         (trace_dir is not None or debug_log_dir is not None)
         and (not trace_seed_set or seed in trace_seed_set)
+    )
+    capture_runtime_trace_for_seed = trace_dir is not None and trace_enabled_for_seed
+    capture_debug_events_for_seed = (trace_dir is not None or debug_log_dir is not None) and trace_enabled_for_seed
+    runtime_config = _formal_agent_runtime_config(
+        end_time=end_time,
+        semantics=RuntimeSemantics.AMC_PLUS,
+        capture_trace=capture_runtime_trace_for_seed,
+        capture_debug_events=capture_debug_events_for_seed,
     )
 
     rows: list[dict[str, int | float | str | bool]] = []
@@ -1049,55 +1204,24 @@ def _evaluate_enabled_methods_for_seed(
         baseline_result = simulate_ordered_taskset_event_driven(
             ordered_tasks=list(bundle.ordered_tasks),
             scenario=bundle.scenario,
-            config=runtime_config,
+            config=_baseline_runtime_config(
+                end_time=end_time,
+                semantics=RuntimeSemantics.AMC_PLUS,
+                capture_trace=capture_runtime_trace_for_seed,
+                capture_debug_events=capture_debug_events_for_seed,
+            ),
         )
-        baseline_service_metrics = compute_service_quality_metrics(baseline_result)
-        baseline_rejection_rate = 0.0
         rows.append(
-            {
-                **row_base,
-                **_empty_noop_q_diagnostics_row(),
-                "method": "amc_plus_baseline",
-                "mode_changes": baseline_result.mode_change_count(),
-                "lo_cancellations": baseline_result.lo_job_cancellation_count(),
-                "deadline_misses": len(baseline_result.deadline_misses),
-                "budget_overruns": _budget_overruns_from_result(baseline_result),
-                "accepted_actions": 0,
-                "rejected_actions": 0,
-                "step_count": 0,
-                "selected_action_count": 0,
-                "noop_actions": 0,
-                "explicit_noop_actions": 0,
-                "noop_action_rate": 0.0,
-                "explicit_noop_action_rate": 0.0,
-                "accepted_action_rate": 0.0,
-                "rejection_rate": baseline_rejection_rate,
-                "total_reward": 0.0,
-                "check_safety": True,
-                "safety_checked_actions": 0,
-                "safety_accepted_actions": 0,
-                "safety_rejected_actions": 0,
-                "valid_action_count_mean": 0.0,
-                "masked_action_count_mean": 0.0,
-                "masked_decrease_hi_forbidden_count": 0,
-                "masked_decrease_hi_forbidden_rate": 0.0,
-                "masked_action_count_max": 0,
-                "mask_rejection_rate_mean": 0.0,
-                "selected_invalid_mask_actions": 0,
-                "selected_explicit_noop_actions": 0,
-                "selected_explicit_noop_rate": 0.0,
-                "action_space_type": action_space,
-                "action_count": len(actions),
-                "budget_increase_ratio": budget_increase_ratio,
-                "budget_decrease_ratio": budget_decrease_ratio,
-                "budget_floor_ratio": budget_floor_ratio,
-                "no_safe_action_steps": 0,
-                "masked_budget_floor_violation_count": 0,
-                "masked_budget_floor_violation_rate": 0.0,
-                "masked_deploy_cap_increase_count": 0,
-                "masked_deploy_cap_increase_rate": 0.0,
-                **service_metrics_to_row(baseline_service_metrics),
-            }
+            _build_pure_runtime_baseline_row(
+                row_base=row_base,
+                method="amc_plus_baseline",
+                runtime_result=baseline_result,
+                action_space=action_space,
+                action_count=len(actions),
+                budget_increase_ratio=budget_increase_ratio,
+                budget_decrease_ratio=budget_decrease_ratio,
+                budget_floor_ratio=budget_floor_ratio,
+            )
         )
         deadline_miss_details.extend(
             _deadline_miss_detail_rows(
@@ -1107,6 +1231,62 @@ def _evaluate_enabled_methods_for_seed(
                 action_log=[],
             )
         )
+        if trace_enabled_for_seed and (not trace_method_set or "amc_plus_baseline" in trace_method_set):
+            _write_agent_debug_files(
+                trace_dir=trace_dir,
+                debug_log_dir=debug_log_dir,
+                seed=seed,
+                method="amc_plus_baseline",
+                action_log=[],
+                runtime_result=baseline_result,
+            )
+
+    runtime_baseline_specs = [
+        ("amc_ra_baseline", RuntimeSemantics.AMC_RA),
+        ("amc_rh_baseline", RuntimeSemantics.AMC_RH),
+    ]
+    for method_name, semantics in runtime_baseline_specs:
+        if method_name not in enabled_methods:
+            continue
+        runtime_baseline_result = simulate_ordered_taskset_event_driven(
+            ordered_tasks=list(bundle.ordered_tasks),
+            scenario=bundle.scenario,
+            config=_baseline_runtime_config(
+                end_time=end_time,
+                semantics=semantics,
+                capture_trace=capture_runtime_trace_for_seed,
+                capture_debug_events=capture_debug_events_for_seed,
+            ),
+        )
+        rows.append(
+            _build_pure_runtime_baseline_row(
+                row_base=row_base,
+                method=method_name,
+                runtime_result=runtime_baseline_result,
+                action_space=action_space,
+                action_count=len(actions),
+                budget_increase_ratio=budget_increase_ratio,
+                budget_decrease_ratio=budget_decrease_ratio,
+                budget_floor_ratio=budget_floor_ratio,
+            )
+        )
+        deadline_miss_details.extend(
+            _deadline_miss_detail_rows(
+                row_base=row_base,
+                method=method_name,
+                runtime_result=runtime_baseline_result,
+                action_log=[],
+            )
+        )
+        if trace_enabled_for_seed and (not trace_method_set or method_name in trace_method_set):
+            _write_agent_debug_files(
+                trace_dir=trace_dir,
+                debug_log_dir=debug_log_dir,
+                seed=seed,
+                method=method_name,
+                action_log=[],
+                runtime_result=runtime_baseline_result,
+            )
 
     if "noop_agent" in enabled_methods:
         noop_result = simulate_ordered_taskset_with_agent(
@@ -1178,6 +1358,7 @@ def _evaluate_enabled_methods_for_seed(
                 "masked_budget_floor_violation_rate": 0.0,
                 "masked_deploy_cap_increase_count": 0,
                 "masked_deploy_cap_increase_rate": 0.0,
+                **_degradation_metrics_to_row(noop_result.runtime_result),
                 **service_metrics_to_row(noop_service_metrics),
             }
         )
@@ -1269,6 +1450,7 @@ def _evaluate_enabled_methods_for_seed(
                 "masked_budget_floor_violation_rate": 0.0,
                 "masked_deploy_cap_increase_count": 0,
                 "masked_deploy_cap_increase_rate": 0.0,
+                **_degradation_metrics_to_row(random_result.runtime_result),
                 **service_metrics_to_row(random_service_metrics),
             }
         )
@@ -1374,6 +1556,7 @@ def _evaluate_enabled_methods_for_seed(
                 "masked_budget_floor_violation_rate": 0.0,
                 "masked_deploy_cap_increase_count": 0,
                 "masked_deploy_cap_increase_rate": 0.0,
+                **_degradation_metrics_to_row(heuristic_result.runtime_result),
                 **service_metrics_to_row(heuristic_service_metrics),
             }
         )
@@ -1417,6 +1600,8 @@ def _evaluate_enabled_methods_for_seed(
             trace_dir=trace_dir,
             debug_log_dir=debug_log_dir,
             trace_enabled=trace_enabled_for_seed and (not trace_method_set or "dqn_agent" in trace_method_set),
+            capture_trace=capture_runtime_trace_for_seed,
+            capture_debug_events=capture_debug_events_for_seed,
             agent_device=dqn_agent_device,
             double_dqn=double_dqn,
             max_q_diagnostic_samples=max_q_diagnostic_samples,
@@ -1820,7 +2005,15 @@ def main() -> None:
     enabled_methods = set(_parse_baselines(args.baselines))
     trace_seed_set = {int(s) for s in _parse_csv_set(args.trace_seeds)}
     trace_method_set = _parse_csv_set(args.trace_methods)
-    valid_methods = {"amc_plus_baseline", "noop_agent", "random_agent", "heuristic_agent", "dqn_agent"}
+    valid_methods = {
+        "amc_plus_baseline",
+        "amc_ra_baseline",
+        "amc_rh_baseline",
+        "noop_agent",
+        "random_agent",
+        "heuristic_agent",
+        "dqn_agent",
+    }
     unsupported_methods = sorted(enabled_methods - valid_methods)
     if unsupported_methods:
         raise ValueError(f"不支持的 baselines: {unsupported_methods}")

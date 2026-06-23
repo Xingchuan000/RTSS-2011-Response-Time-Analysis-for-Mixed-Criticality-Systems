@@ -25,6 +25,18 @@ class ServiceQualityMetrics:
     mean_abs_budget_change: float | None
 
 
+@dataclass(frozen=True)
+class RuntimeDegradationMetrics:
+    """论文风格的 degraded mode 统计指标。"""
+
+    hdm: int
+    jne: int
+    ldm: int
+    nid: int
+    tid: int
+    total_time: int
+
+
 def safe_relative_reduction(baseline: float, method: float) -> float | None:
     """安全计算相对损失下降比例。
 
@@ -124,6 +136,61 @@ def compute_service_quality_metrics(
         min_lc_service=min_lc_service,
         budget_adjust_count=budget_adjust_count,
         mean_abs_budget_change=mean_abs_budget_change,
+    )
+
+
+def compute_degraded_intervals(result: SimulationResult) -> list[tuple[int, int]]:
+    """按 mode switch / recovery 序列还原 degraded mode 的时间区间。"""
+
+    intervals: list[tuple[int, int]] = []
+    recovery_index = 0
+    recoveries = result.mode_recoveries
+
+    for switch in result.mode_switches:
+        while (
+            recovery_index < len(recoveries)
+            and recoveries[recovery_index].recovery_time < switch.switch_time
+        ):
+            recovery_index += 1
+        if recovery_index < len(recoveries):
+            end = recoveries[recovery_index].recovery_time
+            recovery_index += 1
+        else:
+            end = result.end_time
+        intervals.append((switch.switch_time, end))
+    return intervals
+
+
+def compute_runtime_degradation_metrics(result: SimulationResult) -> RuntimeDegradationMetrics:
+    """计算 AMC-RA / AMC-RH baseline 对照所需的 degraded mode 指标。"""
+
+    task_criticality = {job.task.name: job.task.criticality for job in result.jobs}
+    hdm = sum(
+        1
+        for miss in result.deadline_misses
+        if task_criticality.get(miss.task) is Criticality.HI
+    )
+    ldm = sum(
+        1
+        for miss in result.deadline_misses
+        if task_criticality.get(miss.task) is Criticality.LO
+    )
+    jne = sum(
+        1
+        for job in result.jobs
+        if job.task.criticality is Criticality.LO
+        and job.dropped
+        and job.completion_time is None
+    )
+    intervals = compute_degraded_intervals(result)
+    tid = sum(end - start for start, end in intervals)
+    return RuntimeDegradationMetrics(
+        hdm=hdm,
+        jne=jne,
+        ldm=ldm,
+        nid=len(result.mode_switches),
+        tid=tid,
+        total_time=result.end_time,
     )
 
 

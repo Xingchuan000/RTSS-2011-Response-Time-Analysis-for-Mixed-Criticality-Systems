@@ -26,7 +26,7 @@ from amc_py import (
 )
 from amc_py.experiments import resolve_ordering
 from amc_py.models import Criticality, Task
-from amc_py.runtime_models import RuntimeComparisonResult
+from amc_py.runtime_models import RuntimeComparisonResult, RuntimeSemantics
 
 
 def _integration_taskset() -> list[Task]:
@@ -229,3 +229,16 @@ def test_compare_overrun_scenario_reports_mode_switch() -> None:
     assert result.mode_switched() is True
     assert result.runtime_result.mode_switch is not None
     assert result.runtime_result.mode_switch.triggering_task == "tau_hi"
+
+
+def test_runtime_bridge_rejects_amc_max_with_ra_rh_semantics() -> None:
+    """AMC_RA / AMC_RH 不允许与 amc_max 桥接入口组合。"""
+
+    with pytest.raises(ValueError, match="must be used with method='amc_rtb'"):
+        simulate_taskset_with_policy(
+            tasks=_integration_taskset(),
+            method="amc_max",
+            priority_policy="dm",
+            scenario=make_nominal_scenario(),
+            config=RuntimeConfig(end_time=20, semantics=RuntimeSemantics.AMC_RA),
+        )

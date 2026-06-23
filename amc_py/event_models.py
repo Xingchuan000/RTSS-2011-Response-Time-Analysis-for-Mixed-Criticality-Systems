@@ -22,6 +22,7 @@ class EventType(str, Enum):
 
     BUDGET_UPDATE = "BUDGET_UPDATE"
     JOB_COMPLETION = "JOB_COMPLETION"
+    RESPONSE_TIME_EXPIRY = "RESPONSE_TIME_EXPIRY"
     BUDGET_OVERRUN = "BUDGET_OVERRUN"
     DEADLINE_CHECK = "DEADLINE_CHECK"
     JOB_ARRIVAL = "JOB_ARRIVAL"
@@ -58,16 +59,18 @@ class EventQueue:
     排序规则：
     1. `time` 小的优先；
     2. 同时刻下按事件优先级：
-       BUDGET_UPDATE < JOB_COMPLETION < BUDGET_OVERRUN < DEADLINE_CHECK < JOB_ARRIVAL；
+       BUDGET_UPDATE < JOB_COMPLETION < RESPONSE_TIME_EXPIRY < BUDGET_OVERRUN
+       < DEADLINE_CHECK < JOB_ARRIVAL；
     3. 若仍相同，按插入顺序 FIFO。
     """
 
     _TYPE_PRIORITY: dict[EventType, int] = {
         EventType.BUDGET_UPDATE: 0,
         EventType.JOB_COMPLETION: 1,
-        EventType.BUDGET_OVERRUN: 2,
-        EventType.DEADLINE_CHECK: 3,
-        EventType.JOB_ARRIVAL: 4,
+        EventType.RESPONSE_TIME_EXPIRY: 2,
+        EventType.BUDGET_OVERRUN: 3,
+        EventType.DEADLINE_CHECK: 4,
+        EventType.JOB_ARRIVAL: 5,
     }
 
     def __init__(self) -> None:
@@ -88,6 +91,30 @@ class EventQueue:
 
         _, _, _, event = heapq.heappop(self._heap)
         return event
+
+    def peek(self) -> Event | None:
+        """查看堆顶事件但不弹出；空队列时返回 None。"""
+
+        if not self._heap:
+            return None
+        return self._heap[0][3]
+
+    def pop_all_matching(self, *, time: int, event_type: EventType) -> list[Event]:
+        """弹出所有“同一时刻 + 同一类型”的事件，便于批处理 simultaneous arrivals。"""
+
+        matched_entries: list[tuple[int, int, int, Event]] = []
+        remaining_entries: list[tuple[int, int, int, Event]] = []
+        for entry in self._heap:
+            event = entry[3]
+            if event.time == time and event.event_type is event_type:
+                matched_entries.append(entry)
+            else:
+                remaining_entries.append(entry)
+        self._heap = remaining_entries
+        heapq.heapify(self._heap)
+        matched_entries.sort(key=lambda entry: (entry[0], entry[1], entry[2]))
+        matched = [entry[3] for entry in matched_entries]
+        return matched
 
     def empty(self) -> bool:
         """队列是否为空。"""

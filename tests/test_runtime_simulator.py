@@ -495,7 +495,7 @@ def test_simulate_single_task_nominal_completes_all_releases() -> None:
     """单任务在 nominal 场景下，所有释放都按时完成，且不会 miss 或 switch。"""
 
     tasks = [_lo("a", period=5, c_lo=2)]
-    cfg = RuntimeConfig(end_time=20)
+    cfg = RuntimeConfig(end_time=20, capture_trace=True)
     result = simulate_ordered_taskset(tasks, make_nominal_scenario(), cfg)
 
     # end_time=20，周期 5，理应有 4 次释放（t=0,5,10,15）。
@@ -511,7 +511,7 @@ def test_simulate_single_task_nominal_completes_all_releases() -> None:
     assert result.mode_switched() is False
     assert result.final_mode is SystemMode.LO
     assert result.end_time == 20
-    # trace 默认开启：tick 数 == end_time。
+    # 这里显式开启 trace：tick 数应等于 end_time。
     assert len(result.trace) == 20
 
 
@@ -559,7 +559,7 @@ def test_simulate_two_task_preemption_trace_matches_expected_pattern() -> None:
         _lo("hi", period=4, c_lo=1),   # 优先级 0：周期短、任务轻
         _lo("lo", period=10, c_lo=5),  # 优先级 1：周期长、任务重
     ]
-    cfg = RuntimeConfig(end_time=10)
+    cfg = RuntimeConfig(end_time=10, capture_trace=True)
     result = simulate_ordered_taskset(tasks, make_nominal_scenario(), cfg)
 
     # 按推理：
@@ -657,7 +657,7 @@ def test_simulate_stop_at_first_miss_true_ends_at_first_miss_time() -> None:
         _lo("a", period=3, c_lo=2),
         _lo("b", period=4, c_lo=3),
     ]
-    cfg = RuntimeConfig(end_time=50, stop_at_first_miss=True)
+    cfg = RuntimeConfig(end_time=50, stop_at_first_miss=True, capture_trace=True)
     result = simulate_ordered_taskset(tasks, make_nominal_scenario(), cfg)
 
     # 必须命中 miss；end_time 应该提前（小于配置的 50）。

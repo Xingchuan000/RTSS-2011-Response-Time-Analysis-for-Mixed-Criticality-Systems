@@ -50,7 +50,7 @@ def test_hi_mode_recovers_to_lo_when_idle() -> None:
     result = simulate_ordered_taskset(
         tasks,
         make_single_hi_overrun_scenario("h", release_index=0, overrun_to="c_hi"),
-        RuntimeConfig(end_time=8, semantics=RuntimeSemantics.AMC_PLUS),
+        RuntimeConfig(end_time=8, semantics=RuntimeSemantics.AMC_PLUS, capture_trace=True),
     )
 
     assert result.mode_change_count() == 1
@@ -74,4 +74,3 @@ def test_suppressed_lo_releases_do_not_catch_up_after_recovery() -> None:
     assert 3 not in lo_release_indexes
     assert 4 in lo_release_indexes
     assert 5 in lo_release_indexes
-
