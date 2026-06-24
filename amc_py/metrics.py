@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from amc_py.models import Criticality
-from amc_py.runtime_models import SimulationResult
+from amc_py.runtime_models import (
+    LO_LOSS_ACTIVE_DROPPED_ON_MODE_SWITCH,
+    LO_LOSS_BUDGET_CANCELLATION,
+    LO_LOSS_RELEASE_DROPPED_IN_DEGRADED_MODE,
+    SimulationResult,
+)
 
 
 @dataclass(frozen=True)
@@ -35,6 +40,18 @@ class RuntimeDegradationMetrics:
     nid: int
     tid: int
     total_time: int
+
+
+@dataclass(frozen=True)
+class LoJobLossBreakdownMetrics:
+    """LO job loss 的原因级拆分指标。"""
+
+    lo_job_losses_total: int
+    lo_budget_cancellations: int
+    lo_release_dropped_in_degraded_mode: int
+    lo_active_dropped_on_mode_switch: int
+    jne_residual_not_in_cancellations: int
+    active_drop_share_of_jne: float | None
 
 
 def safe_relative_reduction(baseline: float, method: float) -> float | None:
@@ -194,6 +211,75 @@ def compute_runtime_degradation_metrics(result: SimulationResult) -> RuntimeDegr
     )
 
 
+def compute_lo_job_loss_breakdown_metrics(
+    result: SimulationResult,
+    degradation: RuntimeDegradationMetrics | None = None,
+) -> LoJobLossBreakdownMetrics:
+    """计算 LO job loss 的 reason-level breakdown。
+
+    新结果优先读取 `result.lo_job_losses`。
+    当读取到旧结果对象时，允许从 `job_cancellations` 与 `JNE` 做最小兼容回推，
+    但该 fallback 仅用于旧数据兼容，不作为新口径主来源。
+    """
+
+    if degradation is None:
+        degradation = compute_runtime_degradation_metrics(result)
+
+    losses = result.lo_job_losses
+    if losses:
+        lo_budget_cancellations = sum(
+            1 for loss in losses if loss.reason == LO_LOSS_BUDGET_CANCELLATION
+        )
+        lo_release_dropped_in_degraded_mode = sum(
+            1
+            for loss in losses
+            if loss.reason == LO_LOSS_RELEASE_DROPPED_IN_DEGRADED_MODE
+        )
+        lo_active_dropped_on_mode_switch = sum(
+            1
+            for loss in losses
+            if loss.reason == LO_LOSS_ACTIVE_DROPPED_ON_MODE_SWITCH
+        )
+        lo_job_losses_total = len(losses)
+    else:
+        lo_budget_cancellations = sum(
+            1
+            for cancellation in result.job_cancellations
+            if cancellation.reason
+            in {
+                "lo_budget_overrun",
+                "lo_budget_overrun_standard_amc",
+                LO_LOSS_BUDGET_CANCELLATION,
+            }
+        )
+        lo_release_dropped_in_degraded_mode = sum(
+            1
+            for cancellation in result.job_cancellations
+            if cancellation.reason == LO_LOSS_RELEASE_DROPPED_IN_DEGRADED_MODE
+        )
+        lo_active_dropped_on_mode_switch = max(0, degradation.jne - len(result.job_cancellations))
+        lo_job_losses_total = (
+            lo_budget_cancellations
+            + lo_release_dropped_in_degraded_mode
+            + lo_active_dropped_on_mode_switch
+        )
+
+    jne_residual_not_in_cancellations = max(0, degradation.jne - len(result.job_cancellations))
+    active_drop_share_of_jne = (
+        None
+        if degradation.jne == 0
+        else lo_active_dropped_on_mode_switch / degradation.jne
+    )
+    return LoJobLossBreakdownMetrics(
+        lo_job_losses_total=lo_job_losses_total,
+        lo_budget_cancellations=lo_budget_cancellations,
+        lo_release_dropped_in_degraded_mode=lo_release_dropped_in_degraded_mode,
+        lo_active_dropped_on_mode_switch=lo_active_dropped_on_mode_switch,
+        jne_residual_not_in_cancellations=jne_residual_not_in_cancellations,
+        active_drop_share_of_jne=active_drop_share_of_jne,
+    )
+
+
 def service_metrics_to_row(
     metrics: ServiceQualityMetrics,
     prefix: str = "",
@@ -215,6 +301,22 @@ def service_metrics_to_row(
         f"{prefix}min_lc_service": metrics.min_lc_service,
         f"{prefix}budget_adjust_count": metrics.budget_adjust_count,
         f"{prefix}mean_abs_budget_change": metrics.mean_abs_budget_change,
+    }
+
+
+def lo_job_loss_breakdown_to_row(
+    metrics: LoJobLossBreakdownMetrics,
+    prefix: str = "",
+) -> dict[str, int | float | None]:
+    """把 reason-level LO loss 指标展平成 row。"""
+
+    return {
+        f"{prefix}lo_job_losses_total": metrics.lo_job_losses_total,
+        f"{prefix}lo_budget_cancellations": metrics.lo_budget_cancellations,
+        f"{prefix}lo_release_dropped_in_degraded_mode": metrics.lo_release_dropped_in_degraded_mode,
+        f"{prefix}lo_active_dropped_on_mode_switch": metrics.lo_active_dropped_on_mode_switch,
+        f"{prefix}jne_residual_not_in_cancellations": metrics.jne_residual_not_in_cancellations,
+        f"{prefix}active_drop_share_of_jne": metrics.active_drop_share_of_jne,
     }
 
 

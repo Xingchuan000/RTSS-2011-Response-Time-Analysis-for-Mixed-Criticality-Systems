@@ -26,6 +26,10 @@ def test_hidden_layers_and_replay_related_params_are_applied(tmp_path: Path) -> 
             "50",
             "--seed",
             "0",
+            "--dqn-runtime-semantics",
+            "AMC_RH",
+            "--validation-baseline-semantics",
+            "AMC_RH",
             "--dqn-device",
             "cpu",
             "--batch-size",
@@ -64,6 +68,8 @@ def test_hidden_layers_and_replay_related_params_are_applied(tmp_path: Path) -> 
     assert payload["torch_cuda_available"] in {True, False}
     assert isinstance(payload["torch_cuda_device_count"], int)
     assert payload["torch_cuda_device_name"] is None
+    assert payload["runtime_config"]["semantics"] == "AMC_RH"
+    assert payload["runtime_config"]["validation_baseline_semantics"] == "AMC_RH"
 
 
 def test_train_dqn_amc_help_shows_dqn_device_option() -> None:

@@ -32,6 +32,13 @@ def test_evaluate_fieldnames_include_degradation_metrics() -> None:
         "tid",
         "total_time",
         "jne_plus_ldm",
+        "dqn_runtime_semantics",
+        "lo_job_losses_total",
+        "lo_budget_cancellations",
+        "lo_release_dropped_in_degraded_mode",
+        "lo_active_dropped_on_mode_switch",
+        "jne_residual_not_in_cancellations",
+        "active_drop_share_of_jne",
     }
     assert required.issubset(fields)
 
@@ -116,12 +123,15 @@ def test_evaluate_dqn_amc_cli_runs_after_training(tmp_path: Path) -> None:
     assert "amc_plus_baseline" in methods
     assert "noop_agent" in methods
     expected_summary_fields = {
-        "baseline_mode_changes_mean",
-        "baseline_lo_cancellations_mean",
-        "dqn_mode_changes_mean",
-        "dqn_lo_cancellations_mean",
-        "mode_change_ratio",
-        "lo_cancellation_ratio",
+        "row_type",
+        "method",
+        "reference_method",
+        "mode_changes_mean",
+        "lo_cancellations_mean",
+        "lo_job_losses_total_mean",
+        "lo_active_dropped_on_mode_switch_mean",
+        "delta_lc_service_loss",
+        "relative_lc_loss_reduction",
         "accepted_action_count_mean",
         "rejected_action_count_mean",
         "noop_action_count_mean",
@@ -132,9 +142,12 @@ def test_evaluate_dqn_amc_cli_runs_after_training(tmp_path: Path) -> None:
         "valid_action_count_mean",
     }
     assert expected_summary_fields.issubset(set(unified_rows[0].keys()))
+    row_types = {row["row_type"] for row in unified_rows}
+    assert row_types >= {"method_summary", "dqn_vs_reference"}
     assert "noop_q_rank_mean" in rows[0]
     baseline_row = next(row for row in rows if row["method"] == "amc_plus_baseline")
     assert baseline_row["noop_q_rank_mean"] == ""
+    assert baseline_row["dqn_runtime_semantics"] == "AMC_PLUS"
     assert "budget_floor_ratio" in rows[0]
     assert "masked_budget_floor_violation_count" in rows[0]
     assert "masked_budget_floor_violation_rate" in rows[0]
@@ -199,6 +212,60 @@ def test_evaluate_cli_supports_amc_ra_rh_baselines(tmp_path: Path) -> None:
     for row in rows:
         assert required.issubset(row.keys())
         assert int(row["jne_plus_ldm"]) == int(row["jne"]) + int(row["ldm"])
+
+
+def test_evaluate_cli_supports_dqn_on_rh_runtime_semantics(tmp_path: Path) -> None:
+    """显式指定 AMC_RH 时，dqn_agent 与 wrapper baselines 应写出 AMC_RH 语义。"""
+
+    output_dir = tmp_path / "dqn_on_rh_eval"
+    model_path = output_dir / "model_final.pt"
+    eval_path = output_dir / "eval_dqn_on_rh.csv"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--episodes",
+            "1",
+            "--end-time",
+            "40",
+            "--seed",
+            "0",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate_dqn_amc.py",
+            "--model",
+            str(model_path),
+            "--seeds",
+            "0",
+            "--end-time",
+            "40",
+            "--dqn-runtime-semantics",
+            "AMC_RH",
+            "--baselines",
+            "amc_plus_baseline,amc_ra_baseline,amc_rh_baseline,noop_agent,dqn_agent",
+            "--output",
+            str(eval_path),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+
+    rows = _read_csv_rows(eval_path)
+    by_method = {row["method"]: row for row in rows}
+    assert by_method["dqn_agent"]["dqn_runtime_semantics"] == "AMC_RH"
+    assert by_method["noop_agent"]["dqn_runtime_semantics"] == "AMC_RH"
 
 
 def test_evaluate_cli_short_hout_smoke_outputs_ra_rh_and_dqn_methods(tmp_path: Path) -> None:

@@ -275,11 +275,17 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run --no-capture-output -n amc-repro env PYTHONP
 
 ## 13. `evaluate_dqn_amc.py` 中 AMC-RA / AMC-RH baseline 的使用说明
 
-正式评估入口 `scripts/evaluate_dqn_amc.py` 已支持把 `AMC_PLUS`、`AMC_RA`、`AMC_RH` 与 DQN/agent 方法放到同一份评估 CSV 中统一导出。
+正式评估入口 `scripts/evaluate_dqn_amc.py` 已支持把 `AMC_PLUS`、`AMC_RA`、`AMC_RH` 与 DQN/agent 方法放到同一份评估 CSV 中统一导出，并支持通过 `--dqn-runtime-semantics` 指定 `dqn_agent` 及 wrapper-based agent baseline 的 runtime semantics。
 
 ### 13.1 启用方式
 
-默认 `--baselines` 仍保持旧行为，不会自动加入 `AMC_RA` / `AMC_RH`。如果需要显式评估这两个 runtime baseline，请传入：
+当前默认 `--baselines` 为：
+
+```text
+amc_plus_baseline,amc_ra_baseline,amc_rh_baseline,noop_agent,dqn_agent
+```
+
+如果需要显式指定 DQN-on-RH，请同时传入 `--dqn-runtime-semantics AMC_RH`：
 
 ```bash
 cd /Users/x1ngchuan/Documents/AMC
@@ -288,13 +294,14 @@ conda run -n amc-repro python scripts/evaluate_dqn_amc.py \
   --seeds 0:3 \
   --scenario stress \
   --end-time 100 \
+  --dqn-runtime-semantics AMC_RH \
   --baselines "amc_plus_baseline,amc_ra_baseline,amc_rh_baseline,noop_agent,dqn_agent" \
   --output outputs/dqn_amc/eval_with_ra_rh.csv
 ```
 
 ### 13.2 输出说明
 
-明细 CSV 现在会为所有 `method` 统一输出以下论文 degraded-service 指标列：
+明细 CSV 现在会为所有 `method` 统一输出以下 degraded-service / reason-level JNE 字段：
 
 - `hdm`
 - `jne`
@@ -303,6 +310,13 @@ conda run -n amc-repro python scripts/evaluate_dqn_amc.py \
 - `tid`
 - `total_time`
 - `jne_plus_ldm`
+- `dqn_runtime_semantics`
+- `lo_job_losses_total`
+- `lo_budget_cancellations`
+- `lo_release_dropped_in_degraded_mode`
+- `lo_active_dropped_on_mode_switch`
+- `jne_residual_not_in_cancellations`
+- `active_drop_share_of_jne`
 
 其中 `jne_plus_ldm` 满足：
 
@@ -315,12 +329,29 @@ jne_plus_ldm = jne + ldm
 - `amc_plus_baseline` 使用 `RuntimeSemantics.AMC_PLUS`。
 - `amc_ra_baseline` 使用 `RuntimeSemantics.AMC_RA`，并启用 `record_dropped_lo_releases=True`。
 - `amc_rh_baseline` 使用 `RuntimeSemantics.AMC_RH`，并启用 `record_dropped_lo_releases=True`。
-- `noop_agent`、`random_agent`、`heuristic_agent`、`dqn_agent` 的 runtime 语义保持 `RuntimeSemantics.AMC_PLUS`，不会因为新增 RA/RH baseline 而被改变。
-- `_unified_summary.csv` 仍保持原口径，只汇总 `amc_plus_baseline` 与 `dqn_agent` 的对比结果。
+- `noop_agent`、`random_agent`、`heuristic_agent`、`dqn_agent` 会统一使用 `--dqn-runtime-semantics` 指定的 runtime semantics；例如传入 `AMC_RH` 时，上述方法都会运行在 `RuntimeSemantics.AMC_RH`。
+- `_unified_summary.csv` 已改为长表格式，包含 `row_type=method_summary` 与 `row_type=dqn_vs_reference` 两类行，可直接比较 `amc_plus_baseline / amc_ra_baseline / amc_rh_baseline / noop_agent / dqn_agent`。
 - 正式评估路径会显式使用 `capture_trace=False`，避免长时域 HOUT 在 `end_time=2e7/5e7` 时因逐 tick trace 产生明显的速度与内存开销。
 - 正式评估路径也会显式使用 `capture_debug_events=False`，避免事件级 `debug_events` 在长时域 HOUT 中持续累积。
 - 正式评估路径会统一使用 `record_dropped_lo_releases=True`，使 `AMC_PLUS / AMC_RA / AMC_RH / dqn_agent` 的 `JNE + LDM` 统计口径保持一致。
 - 只有在显式设置 `--trace-dir` 或 `--debug-log-dir` 并命中对应调试 seed 时，评估脚本才会重新打开 trace/debug 采集。
+
+训练入口 `scripts/train_dqn_amc.py` 现在也支持：
+
+- `--dqn-runtime-semantics {AMC_PLUS,AMC_RA,AMC_RH}`：指定训练环境语义。
+- `--validation-baseline-semantics {AMC_PLUS,AMC_RA,AMC_RH}`：指定 validation baseline 语义；默认跟随 `--dqn-runtime-semantics`。
+
+例如执行 DQN-on-RH 训练：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/train_dqn_amc.py \
+  --episodes 100 \
+  --end-time 1000 \
+  --dqn-runtime-semantics AMC_RH \
+  --validation-baseline-semantics AMC_RH \
+  --output-dir outputs/dqn_on_rh/example
+```
 
 ## 12.1 Deploy Cap Increase Mask 使用说明
 

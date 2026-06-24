@@ -22,6 +22,10 @@ from .runtime_models import (
     DeadlineMiss,
     Job,
     JobCancellationEvent,
+    LoJobLossEvent,
+    LO_LOSS_ACTIVE_DROPPED_ON_MODE_SWITCH,
+    LO_LOSS_BUDGET_CANCELLATION,
+    LO_LOSS_RELEASE_DROPPED_IN_DEGRADED_MODE,
     ModeRecoveryEvent,
     ModeSwitchEvent,
     RuntimeConfig,
@@ -265,7 +269,8 @@ def _enter_degraded_mode_due_to_response_expiry(
         )
     )
     if cfg.drop_lo_jobs_on_hi_switch:
-        _drop_active_lo_jobs(state.active_jobs, now)
+        dropped_lo_jobs = _drop_active_lo_jobs(state.active_jobs, now)
+        _record_active_lo_drops_on_mode_switch(result, dropped_lo_jobs, now)
 
 
 def _schedule_running_job_events(
@@ -350,6 +355,46 @@ def _drop_active_lo_jobs(active_jobs: list[Job], now: int) -> list[Job]:
         active_jobs.remove(job)
         dropped_jobs.append(job)
     return dropped_jobs
+
+
+def _record_lo_job_loss(
+    result: SimulationResult,
+    *,
+    loss_time: int,
+    job: Job,
+    reason: str,
+    budget_at_loss: int | None = None,
+) -> None:
+    """把单个 LO job 的未正常完成事件追加到 reason-level 结果列表。"""
+
+    result.lo_job_losses.append(
+        LoJobLossEvent(
+            loss_time=loss_time,
+            task=job.task.name,
+            release_index=job.release_index,
+            release_time=job.release_time,
+            executed_at_loss=job.executed_time,
+            budget_at_loss=budget_at_loss,
+            reason=reason,
+        )
+    )
+
+
+def _record_active_lo_drops_on_mode_switch(
+    result: SimulationResult,
+    dropped_jobs: list[Job],
+    now: int,
+) -> None:
+    """把模式切换时被直接丢弃的 active LO job 逐个写入 reason-level 统计。"""
+
+    for job in dropped_jobs:
+        _record_lo_job_loss(
+            result,
+            loss_time=now,
+            job=job,
+            reason=LO_LOSS_ACTIVE_DROPPED_ON_MODE_SWITCH,
+            budget_at_loss=job.runtime_budget_at_release,
+        )
 
 
 def _reschedule(
@@ -668,8 +713,15 @@ class EventRuntimeEngine:
                 release_index=release_index,
                 executed_at_cancel=0,
                 budget_at_cancel=job.runtime_budget_at_release or task.c_lo,
-                reason="lo_release_dropped_in_degraded_mode",
+                reason=LO_LOSS_RELEASE_DROPPED_IN_DEGRADED_MODE,
             )
+        )
+        _record_lo_job_loss(
+            self.result,
+            loss_time=now,
+            job=job,
+            reason=LO_LOSS_RELEASE_DROPPED_IN_DEGRADED_MODE,
+            budget_at_loss=job.runtime_budget_at_release or task.c_lo,
         )
         self._append_debug_event(
             "lo_release_dropped",
@@ -946,7 +998,15 @@ class EventRuntimeEngine:
                         release_index=job.release_index,
                         executed_at_cancel=job.executed_time,
                         budget_at_cancel=budget,
+                        reason=LO_LOSS_BUDGET_CANCELLATION,
                     )
+                )
+                _record_lo_job_loss(
+                    self.result,
+                    loss_time=event.time,
+                    job=job,
+                    reason=LO_LOSS_BUDGET_CANCELLATION,
+                    budget_at_loss=budget,
                 )
                 _invalidate_job_events(self.state, job)
                 self.state.running_job = None
@@ -989,7 +1049,12 @@ class EventRuntimeEngine:
             )
 
             if self.config.drop_lo_jobs_on_hi_switch:
-                _drop_active_lo_jobs(self.state.active_jobs, event.time)
+                dropped_lo_jobs = _drop_active_lo_jobs(self.state.active_jobs, event.time)
+                _record_active_lo_drops_on_mode_switch(
+                    self.result,
+                    dropped_lo_jobs,
+                    event.time,
+                )
 
             if self.state.running_job is not None and (
                 self.state.running_job.dropped or self.state.running_job.finished()

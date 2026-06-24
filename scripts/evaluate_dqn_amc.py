@@ -24,8 +24,10 @@ from amc_py.dqn import (
 from amc_py.event_runtime import simulate_ordered_taskset_event_driven
 from amc_py.experiments import evaluate_taskset
 from amc_py.metrics import (
+    compute_lo_job_loss_breakdown_metrics,
     compute_runtime_degradation_metrics,
     compute_service_quality_metrics,
+    lo_job_loss_breakdown_to_row,
     mean_optional as mean_optional_service_metric,
     safe_relative_reduction,
     service_metrics_to_row,
@@ -59,6 +61,12 @@ DEGRADATION_FIELDNAMES = [
     "tid",
     "total_time",
     "jne_plus_ldm",
+    "lo_job_losses_total",
+    "lo_budget_cancellations",
+    "lo_release_dropped_in_degraded_mode",
+    "lo_active_dropped_on_mode_switch",
+    "jne_residual_not_in_cancellations",
+    "active_drop_share_of_jne",
 ]
 
 QOS_FIELDNAMES = [
@@ -152,7 +160,7 @@ def _empty_noop_q_diagnostics_row() -> dict[str, float | int | None]:
     return {fieldname: None for fieldname in NOOP_Q_DIAGNOSTIC_FIELDNAMES}
 
 
-def _degradation_metrics_to_row(result: SimulationResult) -> dict[str, int]:
+def _degradation_metrics_to_row(result: SimulationResult) -> dict[str, int | float | None]:
     """把论文 degraded-service 指标展平成 evaluate CSV 行字段。
 
     这里严格复用统一指标实现，避免在评估脚本中重复推导 hdm/jne/ldm/nid/tid，
@@ -160,6 +168,7 @@ def _degradation_metrics_to_row(result: SimulationResult) -> dict[str, int]:
     """
 
     degradation = compute_runtime_degradation_metrics(result)
+    loss_breakdown = compute_lo_job_loss_breakdown_metrics(result, degradation)
     return {
         "hdm": degradation.hdm,
         "jne": degradation.jne,
@@ -168,6 +177,7 @@ def _degradation_metrics_to_row(result: SimulationResult) -> dict[str, int]:
         "tid": degradation.tid,
         "total_time": degradation.total_time,
         "jne_plus_ldm": degradation.jne + degradation.ldm,
+        **lo_job_loss_breakdown_to_row(loss_breakdown),
     }
 
 
@@ -277,6 +287,14 @@ def _eval_summary_fieldnames() -> list[str]:
         "q_network_type",
         "amc_rtb_schedulable",
         "attempts",
+        "end_time",
+        "agent_period",
+        "dqn_runtime_semantics",
+        "reward_mode",
+        "forbid_decreasing_hi_budgets",
+        "enable_deploy_cap_mask",
+        "deploy_cap_mask_ratio",
+        "deploy_cap_mask_criticality",
         "mode_changes",
         "lo_cancellations",
         "deadline_misses",
@@ -516,6 +534,7 @@ def _evaluate_dqn_once(
     end_time: int,
     row_base: dict[str, int | float | str | bool],
     reward_mode: str,
+    dqn_runtime_semantics: RuntimeSemantics,
     action_space: str,
     budget_increase_ratio: float,
     budget_decrease_ratio: float,
@@ -548,7 +567,7 @@ def _evaluate_dqn_once(
         seed=seed,
         end_time=end_time,
         agent_period=agent_period,
-        semantics=RuntimeSemantics.AMC_PLUS,
+        semantics=dqn_runtime_semantics,
         reward_mode=reward_mode,
         action_space=action_space,
         budget_increase_ratio=budget_increase_ratio,
@@ -761,8 +780,327 @@ def _evaluate_dqn_once(
     )
 
 
-def _build_unified_summary_rows(rows: list[dict[str, int | float | str | bool]]) -> list[dict[str, int | float | str]]:
-    """按阶段 0 约定，从评估明细构建统一 summary 行。"""
+UNIFIED_SUMMARY_FIELDNAMES = [
+    "workload",
+    "total_util",
+    "num_tasks",
+    "cf",
+    "cp",
+    "end_time",
+    "agent_period",
+    "dqn_runtime_semantics",
+    "reward_mode",
+    "action_space_type",
+    "budget_increase_ratio",
+    "budget_decrease_ratio",
+    "budget_floor_ratio",
+    "forbid_decreasing_hi_budgets",
+    "enable_deploy_cap_mask",
+    "deploy_cap_mask_ratio",
+    "deploy_cap_mask_criticality",
+    "row_type",
+    "method",
+    "reference_method",
+    "seed_count",
+    "mode_changes_mean",
+    "lo_cancellations_mean",
+    "released_lo_jobs_mean",
+    "lc_service_loss_mean",
+    "lc_qos_mean",
+    "min_lc_service_mean",
+    "deadline_misses_sum",
+    "hi_deadline_misses_sum",
+    "lo_deadline_misses_sum",
+    "jne_mean",
+    "ldm_mean",
+    "jne_plus_ldm_mean",
+    "nid_mean",
+    "tid_mean",
+    "lo_job_losses_total_mean",
+    "lo_budget_cancellations_mean",
+    "lo_release_dropped_in_degraded_mode_mean",
+    "lo_active_dropped_on_mode_switch_mean",
+    "jne_residual_not_in_cancellations_mean",
+    "active_drop_share_of_jne_mean",
+    "delta_lc_service_loss",
+    "relative_lc_loss_reduction",
+    "delta_lo_cancellations",
+    "relative_lo_cancellation_reduction",
+    "delta_jne_plus_ldm",
+    "relative_jne_plus_ldm_reduction",
+    "delta_nid",
+    "relative_nid_reduction",
+    "delta_tid",
+    "relative_tid_reduction",
+    "delta_lo_budget_cancellations",
+    "delta_lo_release_dropped_in_degraded_mode",
+    "delta_lo_active_dropped_on_mode_switch",
+    "delta_jne_residual_not_in_cancellations",
+    "accepted_action_count_mean",
+    "rejected_action_count_mean",
+    "noop_action_count_mean",
+    "explicit_noop_action_count_mean",
+    "accepted_action_rate_mean",
+    "rejected_action_rate_mean",
+    "noop_action_rate_mean",
+    "explicit_noop_action_rate_mean",
+    "masked_action_count_mean",
+    "valid_action_count_mean",
+]
+
+
+def _mean_metric(rows: list[dict[str, int | float | str | bool]], key: str) -> float:
+    """对非空数值字段求均值。"""
+
+    return mean(_to_float(row, key) for row in rows)
+
+
+def _group_summary_context(
+    sample_row: dict[str, int | float | str | bool],
+) -> dict[str, int | float | str | bool]:
+    """抽取 unified summary 每个 workload group 共享的上下文字段。"""
+
+    return {
+        "workload": str(sample_row.get("workload", "")),
+        "total_util": str(sample_row.get("total_util", "")),
+        "num_tasks": str(sample_row.get("num_tasks", "")),
+        "cf": str(sample_row.get("cf", "")),
+        "cp": str(sample_row.get("cp", "")),
+        "end_time": int(_to_float(sample_row, "end_time")),
+        "agent_period": int(_to_float(sample_row, "agent_period")),
+        "dqn_runtime_semantics": str(sample_row.get("dqn_runtime_semantics", "")),
+        "reward_mode": str(sample_row.get("reward_mode", "")),
+        "action_space_type": str(sample_row.get("action_space_type", "")),
+        "budget_increase_ratio": _to_float(sample_row, "budget_increase_ratio"),
+        "budget_decrease_ratio": _to_float(sample_row, "budget_decrease_ratio"),
+        "budget_floor_ratio": _to_float(sample_row, "budget_floor_ratio"),
+        "forbid_decreasing_hi_budgets": bool(sample_row.get("forbid_decreasing_hi_budgets", False)),
+        "enable_deploy_cap_mask": bool(sample_row.get("enable_deploy_cap_mask", False)),
+        "deploy_cap_mask_ratio": _to_float(sample_row, "deploy_cap_mask_ratio"),
+        "deploy_cap_mask_criticality": str(sample_row.get("deploy_cap_mask_criticality", "")),
+    }
+
+
+def _aggregate_method_summary_rows(
+    group_rows: list[dict[str, int | float | str | bool]],
+) -> list[dict[str, int | float | str | bool | None]]:
+    """对每个 method 聚合一行 method_summary。"""
+
+    rows_by_method: dict[str, list[dict[str, int | float | str | bool]]] = {}
+    for row in group_rows:
+        rows_by_method.setdefault(str(row.get("method", "")), []).append(row)
+
+    summary_rows: list[dict[str, int | float | str | bool | None]] = []
+    context = _group_summary_context(group_rows[0])
+    for method, method_rows in sorted(rows_by_method.items()):
+        summary_row: dict[str, int | float | str | bool | None] = {
+            **context,
+            "row_type": "method_summary",
+            "method": method,
+            "reference_method": "",
+            "seed_count": len(method_rows),
+            "mode_changes_mean": _mean_metric(method_rows, "mode_changes"),
+            "lo_cancellations_mean": _mean_metric(method_rows, "lo_cancellations"),
+            "released_lo_jobs_mean": _mean_metric(method_rows, "released_lo_jobs"),
+            "lc_service_loss_mean": _mean_metric(method_rows, "lc_service_loss"),
+            "lc_qos_mean": _mean_metric(method_rows, "lc_qos"),
+            "min_lc_service_mean": mean_optional_service_metric(method_rows, "min_lc_service"),
+            "deadline_misses_sum": sum(int(_to_float(row, "deadline_misses")) for row in method_rows),
+            "hi_deadline_misses_sum": sum(int(_to_float(row, "hi_deadline_misses")) for row in method_rows),
+            "lo_deadline_misses_sum": sum(int(_to_float(row, "lo_deadline_misses")) for row in method_rows),
+            "jne_mean": _mean_metric(method_rows, "jne"),
+            "ldm_mean": _mean_metric(method_rows, "ldm"),
+            "jne_plus_ldm_mean": _mean_metric(method_rows, "jne_plus_ldm"),
+            "nid_mean": _mean_metric(method_rows, "nid"),
+            "tid_mean": _mean_metric(method_rows, "tid"),
+            "lo_job_losses_total_mean": _mean_metric(method_rows, "lo_job_losses_total"),
+            "lo_budget_cancellations_mean": _mean_metric(method_rows, "lo_budget_cancellations"),
+            "lo_release_dropped_in_degraded_mode_mean": _mean_metric(
+                method_rows,
+                "lo_release_dropped_in_degraded_mode",
+            ),
+            "lo_active_dropped_on_mode_switch_mean": _mean_metric(
+                method_rows,
+                "lo_active_dropped_on_mode_switch",
+            ),
+            "jne_residual_not_in_cancellations_mean": _mean_metric(
+                method_rows,
+                "jne_residual_not_in_cancellations",
+            ),
+            "active_drop_share_of_jne_mean": mean_optional_service_metric(
+                method_rows,
+                "active_drop_share_of_jne",
+            ),
+            "delta_lc_service_loss": None,
+            "relative_lc_loss_reduction": None,
+            "delta_lo_cancellations": None,
+            "relative_lo_cancellation_reduction": None,
+            "delta_jne_plus_ldm": None,
+            "relative_jne_plus_ldm_reduction": None,
+            "delta_nid": None,
+            "relative_nid_reduction": None,
+            "delta_tid": None,
+            "relative_tid_reduction": None,
+            "delta_lo_budget_cancellations": None,
+            "delta_lo_release_dropped_in_degraded_mode": None,
+            "delta_lo_active_dropped_on_mode_switch": None,
+            "delta_jne_residual_not_in_cancellations": None,
+            "accepted_action_count_mean": _mean_metric(method_rows, "accepted_actions"),
+            "rejected_action_count_mean": _mean_metric(method_rows, "rejected_actions"),
+            "noop_action_count_mean": _mean_metric(method_rows, "noop_actions"),
+            "explicit_noop_action_count_mean": _mean_metric(method_rows, "explicit_noop_actions"),
+            "accepted_action_rate_mean": _mean_metric(method_rows, "accepted_action_rate"),
+            "rejected_action_rate_mean": _mean_metric(method_rows, "rejection_rate"),
+            "noop_action_rate_mean": _mean_metric(method_rows, "noop_action_rate"),
+            "explicit_noop_action_rate_mean": _mean_metric(method_rows, "explicit_noop_action_rate"),
+            "masked_action_count_mean": _mean_metric(method_rows, "masked_action_count_mean"),
+            "valid_action_count_mean": _mean_metric(method_rows, "valid_action_count_mean"),
+            **_task_level_info_row(method_rows[0]),
+        }
+        for fieldname in NOOP_Q_DIAGNOSTIC_FIELDNAMES:
+            summary_row[fieldname] = (
+                sum(int(row.get(fieldname) or 0) for row in method_rows)
+                if fieldname == "noop_q_sample_count"
+                else _mean_optional_metric(method_rows, fieldname)
+            )
+        summary_rows.append(summary_row)
+    return summary_rows
+
+
+def _build_dqn_reference_comparison_rows(
+    method_summary_rows: list[dict[str, int | float | str | bool | None]],
+) -> list[dict[str, int | float | str | bool | None]]:
+    """基于 method_summary 生成 dqn_vs_reference 行。"""
+
+    summary_by_method = {
+        str(row["method"]): row
+        for row in method_summary_rows
+        if str(row.get("row_type", "")) == "method_summary"
+    }
+    dqn_row = summary_by_method.get("dqn_agent")
+    if dqn_row is None:
+        return []
+
+    comparison_rows: list[dict[str, int | float | str | bool | None]] = []
+    for reference_method in [
+        "amc_plus_baseline",
+        "amc_ra_baseline",
+        "amc_rh_baseline",
+        "noop_agent",
+    ]:
+        reference_row = summary_by_method.get(reference_method)
+        if reference_row is None:
+            continue
+        comparison_rows.append(
+            {
+                **{
+                    key: dqn_row[key]
+                    for key in (
+                        "workload",
+                        "total_util",
+                        "num_tasks",
+                        "cf",
+                        "cp",
+                        "end_time",
+                        "agent_period",
+                        "dqn_runtime_semantics",
+                        "reward_mode",
+                        "action_space_type",
+                        "budget_increase_ratio",
+                        "budget_decrease_ratio",
+                        "budget_floor_ratio",
+                        "forbid_decreasing_hi_budgets",
+                        "enable_deploy_cap_mask",
+                        "deploy_cap_mask_ratio",
+                        "deploy_cap_mask_criticality",
+                    )
+                },
+                "row_type": "dqn_vs_reference",
+                "method": "dqn_agent",
+                "reference_method": reference_method,
+                "seed_count": dqn_row["seed_count"],
+                "mode_changes_mean": dqn_row["mode_changes_mean"],
+                "lo_cancellations_mean": dqn_row["lo_cancellations_mean"],
+                "released_lo_jobs_mean": dqn_row["released_lo_jobs_mean"],
+                "lc_service_loss_mean": dqn_row["lc_service_loss_mean"],
+                "lc_qos_mean": dqn_row["lc_qos_mean"],
+                "min_lc_service_mean": dqn_row["min_lc_service_mean"],
+                "deadline_misses_sum": dqn_row["deadline_misses_sum"],
+                "hi_deadline_misses_sum": dqn_row["hi_deadline_misses_sum"],
+                "lo_deadline_misses_sum": dqn_row["lo_deadline_misses_sum"],
+                "jne_mean": dqn_row["jne_mean"],
+                "ldm_mean": dqn_row["ldm_mean"],
+                "jne_plus_ldm_mean": dqn_row["jne_plus_ldm_mean"],
+                "nid_mean": dqn_row["nid_mean"],
+                "tid_mean": dqn_row["tid_mean"],
+                "lo_job_losses_total_mean": dqn_row["lo_job_losses_total_mean"],
+                "lo_budget_cancellations_mean": dqn_row["lo_budget_cancellations_mean"],
+                "lo_release_dropped_in_degraded_mode_mean": dqn_row[
+                    "lo_release_dropped_in_degraded_mode_mean"
+                ],
+                "lo_active_dropped_on_mode_switch_mean": dqn_row[
+                    "lo_active_dropped_on_mode_switch_mean"
+                ],
+                "jne_residual_not_in_cancellations_mean": dqn_row[
+                    "jne_residual_not_in_cancellations_mean"
+                ],
+                "active_drop_share_of_jne_mean": dqn_row["active_drop_share_of_jne_mean"],
+                "delta_lc_service_loss": float(dqn_row["lc_service_loss_mean"]) - float(reference_row["lc_service_loss_mean"]),
+                "relative_lc_loss_reduction": safe_relative_reduction(
+                    float(reference_row["lc_service_loss_mean"]),
+                    float(dqn_row["lc_service_loss_mean"]),
+                ),
+                "delta_lo_cancellations": float(dqn_row["lo_cancellations_mean"]) - float(reference_row["lo_cancellations_mean"]),
+                "relative_lo_cancellation_reduction": safe_relative_reduction(
+                    float(reference_row["lo_cancellations_mean"]),
+                    float(dqn_row["lo_cancellations_mean"]),
+                ),
+                "delta_jne_plus_ldm": float(dqn_row["jne_plus_ldm_mean"]) - float(reference_row["jne_plus_ldm_mean"]),
+                "relative_jne_plus_ldm_reduction": safe_relative_reduction(
+                    float(reference_row["jne_plus_ldm_mean"]),
+                    float(dqn_row["jne_plus_ldm_mean"]),
+                ),
+                "delta_nid": float(dqn_row["nid_mean"]) - float(reference_row["nid_mean"]),
+                "relative_nid_reduction": safe_relative_reduction(
+                    float(reference_row["nid_mean"]),
+                    float(dqn_row["nid_mean"]),
+                ),
+                "delta_tid": float(dqn_row["tid_mean"]) - float(reference_row["tid_mean"]),
+                "relative_tid_reduction": safe_relative_reduction(
+                    float(reference_row["tid_mean"]),
+                    float(dqn_row["tid_mean"]),
+                ),
+                "delta_lo_budget_cancellations": float(dqn_row["lo_budget_cancellations_mean"]) - float(reference_row["lo_budget_cancellations_mean"]),
+                "delta_lo_release_dropped_in_degraded_mode": float(
+                    dqn_row["lo_release_dropped_in_degraded_mode_mean"]
+                ) - float(reference_row["lo_release_dropped_in_degraded_mode_mean"]),
+                "delta_lo_active_dropped_on_mode_switch": float(
+                    dqn_row["lo_active_dropped_on_mode_switch_mean"]
+                ) - float(reference_row["lo_active_dropped_on_mode_switch_mean"]),
+                "delta_jne_residual_not_in_cancellations": float(
+                    dqn_row["jne_residual_not_in_cancellations_mean"]
+                ) - float(reference_row["jne_residual_not_in_cancellations_mean"]),
+                "accepted_action_count_mean": dqn_row["accepted_action_count_mean"],
+                "rejected_action_count_mean": dqn_row["rejected_action_count_mean"],
+                "noop_action_count_mean": dqn_row["noop_action_count_mean"],
+                "explicit_noop_action_count_mean": dqn_row["explicit_noop_action_count_mean"],
+                "accepted_action_rate_mean": dqn_row["accepted_action_rate_mean"],
+                "rejected_action_rate_mean": dqn_row["rejected_action_rate_mean"],
+                "noop_action_rate_mean": dqn_row["noop_action_rate_mean"],
+                "explicit_noop_action_rate_mean": dqn_row["explicit_noop_action_rate_mean"],
+                "masked_action_count_mean": dqn_row["masked_action_count_mean"],
+                "valid_action_count_mean": dqn_row["valid_action_count_mean"],
+                **_task_level_info_row(dqn_row),
+                **{fieldname: dqn_row.get(fieldname) for fieldname in NOOP_Q_DIAGNOSTIC_FIELDNAMES},
+            }
+        )
+    return comparison_rows
+
+
+def _build_unified_summary_rows(
+    rows: list[dict[str, int | float | str | bool]],
+) -> list[dict[str, int | float | str | bool | None]]:
+    """从评估明细构建新的长表 unified summary。"""
 
     grouped: dict[tuple[str, str, str, str, str], list[dict[str, int | float | str | bool]]] = {}
     for row in rows:
@@ -775,98 +1113,11 @@ def _build_unified_summary_rows(rows: list[dict[str, int | float | str | bool]])
         )
         grouped.setdefault(key, []).append(row)
 
-    summary_rows: list[dict[str, int | float | str]] = []
-    for key, group_rows in sorted(grouped.items()):
-        workload, total_util, num_tasks, cf, cp = key
-        baseline_rows = [row for row in group_rows if str(row.get("method", "")) == "amc_plus_baseline"]
-        dqn_rows = [row for row in group_rows if str(row.get("method", "")) == "dqn_agent"]
-        if not baseline_rows or not dqn_rows:
-            # 没有 baseline 或 dqn 时无法按阶段 0 口径对比，直接跳过。
-            continue
-
-        baseline_mode_changes_mean = mean(_to_float(row, "mode_changes") for row in baseline_rows)
-        baseline_lo_cancellations_mean = mean(_to_float(row, "lo_cancellations") for row in baseline_rows)
-        baseline_released_lo_jobs_mean = mean(_to_float(row, "released_lo_jobs") for row in baseline_rows)
-        baseline_lc_service_loss_mean = mean(_to_float(row, "lc_service_loss") for row in baseline_rows)
-        baseline_lc_qos_mean = mean(_to_float(row, "lc_qos") for row in baseline_rows)
-        baseline_min_lc_service_mean = mean_optional_service_metric(baseline_rows, "min_lc_service")
-        dqn_mode_changes_mean = mean(_to_float(row, "mode_changes") for row in dqn_rows)
-        dqn_lo_cancellations_mean = mean(_to_float(row, "lo_cancellations") for row in dqn_rows)
-        dqn_released_lo_jobs_mean = mean(_to_float(row, "released_lo_jobs") for row in dqn_rows)
-        dqn_deadline_misses_sum = sum(int(_to_float(row, "deadline_misses")) for row in dqn_rows)
-        dqn_lc_service_loss_mean = mean(_to_float(row, "lc_service_loss") for row in dqn_rows)
-        dqn_lc_qos_mean = mean(_to_float(row, "lc_qos") for row in dqn_rows)
-        dqn_min_lc_service_mean = mean_optional_service_metric(dqn_rows, "min_lc_service")
-        accepted_action_count_mean = mean(_to_float(row, "accepted_actions") for row in dqn_rows)
-        rejected_action_count_mean = mean(_to_float(row, "rejected_actions") for row in dqn_rows)
-        noop_action_count_mean = mean(_to_float(row, "noop_actions") for row in dqn_rows)
-        explicit_noop_action_count_mean = mean(_to_float(row, "explicit_noop_actions") for row in dqn_rows)
-        masked_action_count_mean = mean(_to_float(row, "masked_action_count_mean") for row in dqn_rows)
-        valid_action_count_mean = mean(_to_float(row, "valid_action_count_mean") for row in dqn_rows)
-        noop_action_rate_mean = mean(_to_float(row, "noop_action_rate") for row in dqn_rows)
-        explicit_noop_action_rate_mean = mean(_to_float(row, "explicit_noop_action_rate") for row in dqn_rows)
-        accepted_action_rate_mean = mean(_to_float(row, "accepted_action_rate") for row in dqn_rows)
-        rejected_action_rate_mean = mean(_to_float(row, "rejection_rate") for row in dqn_rows)
-        noop_q_diagnostic_summary = {
-            fieldname: (
-                sum(int(row.get(fieldname) or 0) for row in dqn_rows)
-                if fieldname == "noop_q_sample_count"
-                else _mean_optional_metric(dqn_rows, fieldname)
-            )
-            for fieldname in NOOP_Q_DIAGNOSTIC_FIELDNAMES
-        }
-
-        summary_rows.append(
-            {
-                "workload": workload,
-                "total_util": total_util,
-                "num_tasks": num_tasks,
-                "cf": cf,
-                "cp": cp,
-                "seed_count": len(dqn_rows),
-                "baseline_mode_changes_mean": baseline_mode_changes_mean,
-                "baseline_lo_cancellations_mean": baseline_lo_cancellations_mean,
-                "baseline_released_lo_jobs_mean": baseline_released_lo_jobs_mean,
-                "baseline_lc_service_loss_mean": baseline_lc_service_loss_mean,
-                "baseline_lc_qos_mean": baseline_lc_qos_mean,
-                "baseline_min_lc_service_mean": baseline_min_lc_service_mean,
-                "dqn_mode_changes_mean": dqn_mode_changes_mean,
-                "dqn_lo_cancellations_mean": dqn_lo_cancellations_mean,
-                "dqn_released_lo_jobs_mean": dqn_released_lo_jobs_mean,
-                "dqn_lc_service_loss_mean": dqn_lc_service_loss_mean,
-                "dqn_lc_qos_mean": dqn_lc_qos_mean,
-                "dqn_min_lc_service_mean": dqn_min_lc_service_mean,
-                "dqn_deadline_misses_sum": dqn_deadline_misses_sum,
-                "mode_change_ratio": _safe_ratio(baseline_mode_changes_mean, dqn_mode_changes_mean),
-                "lo_cancellation_ratio": _safe_ratio(baseline_lo_cancellations_mean, dqn_lo_cancellations_mean),
-                "relative_lc_loss_reduction": safe_relative_reduction(
-                    baseline_lc_service_loss_mean,
-                    dqn_lc_service_loss_mean,
-                ),
-                "lc_service_loss_delta": dqn_lc_service_loss_mean - baseline_lc_service_loss_mean,
-                "lc_qos_delta": dqn_lc_qos_mean - baseline_lc_qos_mean,
-                "mode_change_delta_ratio": (
-                    (dqn_mode_changes_mean - baseline_mode_changes_mean) / max(1.0, baseline_mode_changes_mean)
-                ),
-                "qos_stable_valid_delta005": (
-                    dqn_deadline_misses_sum == 0
-                    and dqn_mode_changes_mean <= baseline_mode_changes_mean * 1.05
-                ),
-                "accepted_action_count_mean": accepted_action_count_mean,
-                "rejected_action_count_mean": rejected_action_count_mean,
-                "noop_action_count_mean": noop_action_count_mean,
-                "explicit_noop_action_count_mean": explicit_noop_action_count_mean,
-                # 下列 rate 全部使用 step_count 口径，便于跨方法横向比较。
-                "noop_action_rate_mean": noop_action_rate_mean,
-                "explicit_noop_action_rate_mean": explicit_noop_action_rate_mean,
-                "accepted_action_rate_mean": accepted_action_rate_mean,
-                "rejected_action_rate_mean": rejected_action_rate_mean,
-                "masked_action_count_mean": masked_action_count_mean,
-                "valid_action_count_mean": valid_action_count_mean,
-                **_task_level_info_row(dqn_rows[0]),
-                **noop_q_diagnostic_summary,
-            }
-        )
+    summary_rows: list[dict[str, int | float | str | bool | None]] = []
+    for _, group_rows in sorted(grouped.items()):
+        method_summary_rows = _aggregate_method_summary_rows(group_rows)
+        summary_rows.extend(method_summary_rows)
+        summary_rows.extend(_build_dqn_reference_comparison_rows(method_summary_rows))
     return summary_rows
 
 
@@ -874,48 +1125,11 @@ def _write_unified_summary_csv(
     output_path: Path,
     rows: list[dict[str, int | float | str | bool]],
 ) -> None:
-    """把阶段 0/1 所需统一 summary 写成独立 CSV 文件。"""
+    """把新的长表 unified summary 写成独立 CSV 文件。"""
 
     summary_rows = _build_unified_summary_rows(rows)
     summary_path = output_path.with_name(f"{output_path.stem}_unified_summary.csv")
-    fieldnames = [
-        "workload",
-        "total_util",
-        "num_tasks",
-        "cf",
-        "cp",
-        "seed_count",
-        "baseline_mode_changes_mean",
-        "baseline_lo_cancellations_mean",
-        "baseline_released_lo_jobs_mean",
-        "baseline_lc_service_loss_mean",
-        "baseline_lc_qos_mean",
-        "baseline_min_lc_service_mean",
-        "dqn_mode_changes_mean",
-        "dqn_lo_cancellations_mean",
-        "dqn_released_lo_jobs_mean",
-        "dqn_lc_service_loss_mean",
-        "dqn_lc_qos_mean",
-        "dqn_min_lc_service_mean",
-        "dqn_deadline_misses_sum",
-        "mode_change_ratio",
-        "lo_cancellation_ratio",
-        "relative_lc_loss_reduction",
-        "lc_service_loss_delta",
-        "lc_qos_delta",
-        "mode_change_delta_ratio",
-        "qos_stable_valid_delta005",
-        "accepted_action_count_mean",
-        "rejected_action_count_mean",
-        "noop_action_count_mean",
-        "explicit_noop_action_count_mean",
-        "noop_action_rate_mean",
-        "explicit_noop_action_rate_mean",
-        "accepted_action_rate_mean",
-        "rejected_action_rate_mean",
-        "masked_action_count_mean",
-        "valid_action_count_mean",
-    ]
+    fieldnames = list(UNIFIED_SUMMARY_FIELDNAMES)
     fieldnames.extend(TASK_LEVEL_INFO_KEYS)
     fieldnames.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
     with summary_path.open("w", encoding="utf-8", newline="") as f:
@@ -1111,6 +1325,7 @@ def _evaluate_enabled_methods_for_seed(
     end_time: int,
     agent_period: int,
     reward_mode: str,
+    dqn_runtime_semantics: RuntimeSemantics,
     action_space: str,
     budget_increase_ratio: float,
     budget_decrease_ratio: float,
@@ -1180,6 +1395,16 @@ def _evaluate_enabled_methods_for_seed(
         "attempts": attempts,
         "end_time": end_time,
         "agent_period": agent_period,
+        "dqn_runtime_semantics": dqn_runtime_semantics.value,
+        "reward_mode": reward_mode,
+        "action_space_type": action_space,
+        "budget_increase_ratio": budget_increase_ratio,
+        "budget_decrease_ratio": budget_decrease_ratio,
+        "budget_floor_ratio": budget_floor_ratio,
+        "forbid_decreasing_hi_budgets": forbid_decreasing_hi_budgets,
+        "enable_deploy_cap_mask": enable_deploy_cap_mask,
+        "deploy_cap_mask_ratio": deploy_cap_mask_ratio,
+        "deploy_cap_mask_criticality": deploy_cap_mask_criticality,
     }
     # trace / debug 的开关粒度仍然保持“按 seed、按 method 控制”，
     # 这样并行后也不会改变原有调试文件的生成规则，同时正式 HOUT 默认不积累
@@ -1192,7 +1417,7 @@ def _evaluate_enabled_methods_for_seed(
     capture_debug_events_for_seed = (trace_dir is not None or debug_log_dir is not None) and trace_enabled_for_seed
     runtime_config = _formal_agent_runtime_config(
         end_time=end_time,
-        semantics=RuntimeSemantics.AMC_PLUS,
+        semantics=dqn_runtime_semantics,
         capture_trace=capture_runtime_trace_for_seed,
         capture_debug_events=capture_debug_events_for_seed,
     )
@@ -1587,6 +1812,7 @@ def _evaluate_enabled_methods_for_seed(
             end_time=end_time,
             row_base=row_base,
             reward_mode=reward_mode,
+            dqn_runtime_semantics=dqn_runtime_semantics,
             action_space=action_space,
             budget_increase_ratio=budget_increase_ratio,
             budget_decrease_ratio=budget_decrease_ratio,
@@ -1640,6 +1866,7 @@ def _evaluate_seed_worker(
         int,
         int,
         str,
+        RuntimeSemantics,
         str,
         float,
         float,
@@ -1685,6 +1912,7 @@ def _evaluate_seed_worker(
         end_time,
         agent_period,
         reward_mode,
+        dqn_runtime_semantics,
         action_space,
         budget_increase_ratio,
         budget_decrease_ratio,
@@ -1722,6 +1950,7 @@ def _evaluate_seed_worker(
         end_time=end_time,
         agent_period=agent_period,
         reward_mode=reward_mode,
+        dqn_runtime_semantics=dqn_runtime_semantics,
         action_space=action_space,
         budget_increase_ratio=budget_increase_ratio,
         budget_decrease_ratio=budget_decrease_ratio,
@@ -1778,11 +2007,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--end-time", type=int, default=100)
     parser.add_argument("--agent-period", type=int, default=1000)
+    parser.add_argument(
+        "--dqn-runtime-semantics",
+        choices=["AMC_PLUS", "AMC_RA", "AMC_RH"],
+        default="AMC_PLUS",
+        help="Runtime semantics used by dqn_agent and wrapper-based agent baselines.",
+    )
     parser.add_argument("--scenario", choices=["nominal", "stress"], default="stress")
     parser.add_argument(
         "--baselines",
         type=str,
-        default="amc_plus_baseline,noop_agent,random_agent,heuristic_agent,dqn_agent",
+        default="amc_plus_baseline,amc_ra_baseline,amc_rh_baseline,noop_agent,dqn_agent",
     )
     parser.add_argument("--output", type=Path, default=Path("outputs/dqn_amc/eval_summary.csv"))
     parser.add_argument("--fail-on-deadline-miss", action=argparse.BooleanOptionalAction, default=False)
@@ -1938,6 +2173,7 @@ def main() -> None:
         risk_max_scale=args.risk_max_scale,
         include_safety_margin=args.include_safety_margin,
     )
+    dqn_runtime_semantics = RuntimeSemantics(args.dqn_runtime_semantics)
     if args.workload == "small":
         experiment_config = (
             build_small_nominal_experiment_config()
@@ -2037,6 +2273,7 @@ def main() -> None:
                 end_time=args.end_time,
                 agent_period=args.agent_period,
                 reward_mode=args.reward_mode,
+                dqn_runtime_semantics=dqn_runtime_semantics,
                 action_space=args.action_space,
                 budget_increase_ratio=args.budget_increase_ratio,
                 budget_decrease_ratio=args.budget_decrease_ratio,
@@ -2082,6 +2319,7 @@ def main() -> None:
                 args.end_time,
                 args.agent_period,
                 args.reward_mode,
+                dqn_runtime_semantics,
                 args.action_space,
                 args.budget_increase_ratio,
                 args.budget_decrease_ratio,
@@ -2120,7 +2358,7 @@ def main() -> None:
         deadline_miss_details.extend(seed_deadline_miss_details)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = _eval_summary_fieldnames() + ["end_time", "agent_period"]
+    fieldnames = _eval_summary_fieldnames()
     with args.output.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()

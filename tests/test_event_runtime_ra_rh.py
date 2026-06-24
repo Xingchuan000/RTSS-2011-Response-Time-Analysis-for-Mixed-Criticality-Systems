@@ -8,6 +8,7 @@ from amc_py.amc import build_design_r_lo_map
 from amc_py.event_runtime import simulate_ordered_taskset_event_driven, simulate_taskset_with_policy_event_driven
 from amc_py.models import Criticality, Task
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics
+from amc_py.runtime_models import LO_LOSS_ACTIVE_DROPPED_ON_MODE_SWITCH
 from amc_py.runtime_scenarios import make_nominal_scenario, make_table_scenario
 
 
@@ -151,6 +152,10 @@ def test_mode_switch_active_lo_drops_contribute_to_jne() -> None:
         config=RuntimeConfig(end_time=10, semantics=RuntimeSemantics.AMC_RA),
     )
     assert any(job.task.name == "L" and job.dropped for job in result.jobs)
+    assert any(
+        loss.reason == LO_LOSS_ACTIVE_DROPPED_ON_MODE_SWITCH
+        for loss in result.lo_job_losses
+    )
     assert compute_runtime_degradation_metrics(result).jne >= 1
 
 

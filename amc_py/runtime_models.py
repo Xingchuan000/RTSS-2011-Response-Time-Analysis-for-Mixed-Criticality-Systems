@@ -191,6 +191,24 @@ class JobCancellationEvent:
     reason: str = "lo_budget_overrun"
 
 
+LO_LOSS_BUDGET_CANCELLATION = "lo_budget_overrun_cancellation"
+LO_LOSS_RELEASE_DROPPED_IN_DEGRADED_MODE = "lo_release_dropped_in_degraded_mode"
+LO_LOSS_ACTIVE_DROPPED_ON_MODE_SWITCH = "lo_active_dropped_on_mode_switch"
+
+
+@dataclass(frozen=True, slots=True)
+class LoJobLossEvent:
+    """记录 LO job 没有正常完成的原因级事件。"""
+
+    loss_time: int
+    task: str
+    release_index: int
+    release_time: int
+    executed_at_loss: int
+    budget_at_loss: int | None
+    reason: str
+
+
 @dataclass(frozen=True, slots=True)
 class ModeRecoveryEvent:
     """记录一次 HI 模式在空闲后恢复到 LO 模式的事件。"""
@@ -276,6 +294,7 @@ class SimulationResult:
     mode_recoveries: list[ModeRecoveryEvent] = field(default_factory=list)
     budget_update_events: list[BudgetUpdateEvent] = field(default_factory=list)
     job_cancellations: list[JobCancellationEvent] = field(default_factory=list)
+    lo_job_losses: list[LoJobLossEvent] = field(default_factory=list)
     deadline_misses: list[DeadlineMiss] = field(default_factory=list)
     end_time: int = 0
     final_mode: SystemMode = SystemMode.LO
@@ -301,6 +320,11 @@ class SimulationResult:
         """返回 LO job 局部取消事件总次数。"""
 
         return len(self.job_cancellations)
+
+    def lo_job_loss_count(self) -> int:
+        """返回 reason-level LO job loss 事件总次数。"""
+
+        return len(self.lo_job_losses)
 
     def mode_recovery_count(self) -> int:
         """返回 HI->LO 模式恢复事件总次数。"""
@@ -382,6 +406,10 @@ __all__ = [
     "ModeRecoveryEvent",
     "BudgetUpdateEvent",
     "JobCancellationEvent",
+    "LoJobLossEvent",
+    "LO_LOSS_BUDGET_CANCELLATION",
+    "LO_LOSS_RELEASE_DROPPED_IN_DEGRADED_MODE",
+    "LO_LOSS_ACTIVE_DROPPED_ON_MODE_SWITCH",
     "DeadlineMiss",
     "ScheduleTick",
     "SimulationResult",

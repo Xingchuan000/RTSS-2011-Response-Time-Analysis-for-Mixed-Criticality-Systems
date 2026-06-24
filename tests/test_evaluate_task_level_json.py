@@ -81,7 +81,10 @@ def test_unified_summary_csv_includes_task_level_json_columns(tmp_path: Path) ->
     _write_unified_summary_csv(output, rows)
     summary_path = output.with_name(f"{output.stem}_unified_summary.csv")
     with summary_path.open("r", encoding="utf-8", newline="") as f:
-        header = next(csv.reader(f))
+        reader = csv.DictReader(f)
+        header = list(reader.fieldnames or [])
+        summary_rows = list(reader)
 
     for key in TASK_LEVEL_INFO_KEYS:
         assert key in header
+    assert any(row["row_type"] == "method_summary" for row in summary_rows)
