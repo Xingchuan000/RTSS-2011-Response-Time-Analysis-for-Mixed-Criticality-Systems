@@ -44,6 +44,7 @@ class RuntimeSemantics(str, Enum):
     AMC_PLUS = "AMC_PLUS"
     AMC_RA = "AMC_RA"
     AMC_RH = "AMC_RH"
+    C_AMC_SEM = "C_AMC_SEM"
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +84,7 @@ class RuntimeConfig:
     drop_lo_jobs_on_hi_switch: bool = True
     semantics: RuntimeSemantics = RuntimeSemantics.AMC_PLUS
     record_dropped_lo_releases: bool = False
+    c_amc_sem_lo_degradation_ratio: float = 0.5
 
     def __post_init__(self) -> None:
         # 基本的范围校验：避免在仿真过程中才报错，尽量把问题前置。
@@ -92,6 +94,8 @@ class RuntimeConfig:
             raise ValueError("jobs_per_task 必须为正整数")
         if self.hyperperiod_limit <= 0:
             raise ValueError("hyperperiod_limit 必须为正整数")
+        if not (0.0 < self.c_amc_sem_lo_degradation_ratio <= 1.0):
+            raise ValueError("c_amc_sem_lo_degradation_ratio must be in (0, 1]")
 
 
 @dataclass(slots=True)

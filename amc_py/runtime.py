@@ -80,6 +80,12 @@ def _is_response_based_semantics(semantics: RuntimeSemantics) -> bool:
     return semantics in {RuntimeSemantics.AMC_RA, RuntimeSemantics.AMC_RH}
 
 
+def _is_c_amc_semantics(semantics: RuntimeSemantics) -> bool:
+    """判断当前语义是否为 C-AMC-sem without DVFS。"""
+
+    return semantics is RuntimeSemantics.C_AMC_SEM
+
+
 def _uses_idle_recovery(semantics: RuntimeSemantics) -> bool:
     """判断当前语义是否使用 idle recovery。"""
 
@@ -87,6 +93,7 @@ def _uses_idle_recovery(semantics: RuntimeSemantics) -> bool:
         RuntimeSemantics.AMC,
         RuntimeSemantics.AMC_PLUS,
         RuntimeSemantics.AMC_RA,
+        RuntimeSemantics.C_AMC_SEM,
     }
 
 
@@ -152,7 +159,12 @@ def compute_default_end_time(
 # ---------------------------------------------------------------------------
 
 
-def _build_job(task: Task, release_index: int, scenario: ExecutionScenario) -> Job:
+def _build_job(
+    task: Task,
+    release_index: int,
+    scenario: ExecutionScenario,
+    actual_cost_override: int | None = None,
+) -> Job:
     """根据任务定义 + release_index + 场景构造出一个 Job 实例。
 
     - release_time 按“绝对时刻 = release_index * period”推导，保证周期释放；
@@ -162,7 +174,11 @@ def _build_job(task: Task, release_index: int, scenario: ExecutionScenario) -> J
 
     release_time = release_index * task.period
     absolute_deadline = release_time + task.deadline
-    actual_cost = scenario.actual_cost_for(task, release_index)
+    actual_cost = (
+        actual_cost_override
+        if actual_cost_override is not None
+        else scenario.actual_cost_for(task, release_index)
+    )
     return Job(
         task=task,
         release_index=release_index,
@@ -170,6 +186,13 @@ def _build_job(task: Task, release_index: int, scenario: ExecutionScenario) -> J
         absolute_deadline=absolute_deadline,
         actual_cost=actual_cost,
     )
+
+
+def _c_amc_sem_degraded_lo_budget(task: Task, cfg: RuntimeConfig) -> int:
+    """计算 C-AMC-sem 中 HI mode 新释放 LO job 的 degraded budget。"""
+
+    budget = int(round(task.c_lo * cfg.c_amc_sem_lo_degradation_ratio))
+    return max(1, min(task.c_lo, budget))
 
 
 def _compute_busy_period_start_for_new_job(
@@ -207,6 +230,8 @@ def _release_jobs_at_time_with_busy_periods(
     design_r_lo: dict[str, int],
     record_dropped_lo_releases: bool = False,
     suppress_lo_releases: bool = False,
+    mode: SystemMode = SystemMode.LO,
+    c_amc_sem_lo_degradation_ratio: float = 0.5,
 ) -> tuple[list[Job], list[JobCancellationEvent]]:
     """在 `current_time` 释放所有应当释放的 job，并按优先级填充 busy period 信息。
 
@@ -237,6 +262,25 @@ def _release_jobs_at_time_with_busy_periods(
 
     due_tasks.sort(key=lambda item: priority_map[item[1].name])
     for release_index, task in due_tasks:
+        if mode is SystemMode.HI and _is_c_amc_semantics(semantics) and task.criticality is Criticality.LO:
+            # 只有 C-AMC-sem 会在 HI mode 中继续释放 LO job。该分支用
+            # XF 计算 imprecise/degraded budget，并把本次实际执行需求截断到
+            # degraded budget，避免把旧 runtime 改成计划外的“原始成本继续执行”。
+            degraded_budget = max(
+                1,
+                min(task.c_lo, int(round(task.c_lo * c_amc_sem_lo_degradation_ratio))),
+            )
+            original_actual_cost = scenario.actual_cost_for(task, release_index)
+            job = _build_job(
+                task,
+                release_index,
+                scenario,
+                actual_cost_override=min(original_actual_cost, degraded_budget),
+            )
+            job.runtime_budget_at_release = degraded_budget
+            released.append(job)
+            continue
+
         if suppress_lo_releases and task.criticality is Criticality.LO:
             if not record_dropped_lo_releases:
                 continue
@@ -366,10 +410,24 @@ def _should_switch_to_hi(job: Job, mode: SystemMode, budget: int) -> bool:
     return job.executed_time > budget
 
 
-def _should_cancel_lo_job(job: Job, mode: SystemMode, budget: int) -> bool:
-    """判断 LO job 是否在 LO 模式下超过其运行时预算并应被局部取消。"""
+def _should_cancel_lo_job(
+    job: Job,
+    mode: SystemMode,
+    budget: int,
+    semantics: RuntimeSemantics = RuntimeSemantics.AMC_PLUS,
+) -> bool:
+    """判断 LO job 是否超过其运行时预算并应被局部取消。
 
-    if mode is not SystemMode.LO:
+    兼容性说明：
+    - AMC+/RA/RH 保持旧行为：只在 LO mode 下检查 LO budget cancellation；
+    - C-AMC-sem 额外允许 HI mode 中的 degraded LO job 继续沿用同一套取消口径，
+      这样 JNE/LDM/HDM/NID/TID 统计可与 event runtime 保持一致。
+    """
+
+    if not (
+        mode is SystemMode.LO
+        or (_is_c_amc_semantics(semantics) and mode is SystemMode.HI)
+    ):
         return False
     if job.task.criticality is not Criticality.LO:
         return False
@@ -456,6 +514,46 @@ def _has_expired_active_hi_job(active_jobs: Sequence[Job], now: int) -> bool:
         if job.response_time_expiry is not None and job.response_time_expiry <= now:
             return True
     return False
+
+
+def _peek_due_releases_at_time(
+    current_time: int,
+    ordered_tasks: Sequence[Task],
+    next_release_index: dict[str, int],
+) -> list[tuple[int, Task]]:
+    """查看当前 tick 将要释放的任务，但不推进 release_index。"""
+
+    due_tasks: list[tuple[int, Task]] = []
+    for task in ordered_tasks:
+        release_index = next_release_index[task.name]
+        if release_index * task.period == current_time:
+            due_tasks.append((release_index, task))
+    return due_tasks
+
+
+def _find_c_amc_sem_hi_abnormal_arrival(
+    *,
+    current_time: int,
+    ordered_tasks: Sequence[Task],
+    next_release_index: dict[str, int],
+    scenario: ExecutionScenario,
+    priority_map: dict[str, int],
+) -> tuple[int, Task] | None:
+    """找出当前 release time 会触发 C-AMC-sem 切换的最高优先级 HI arrival。"""
+
+    abnormal_arrivals: list[tuple[int, Task]] = []
+    for release_index, task in _peek_due_releases_at_time(
+        current_time,
+        ordered_tasks,
+        next_release_index,
+    ):
+        if task.criticality is not Criticality.HI:
+            continue
+        if scenario.actual_cost_for(task, release_index) > task.c_lo:
+            abnormal_arrivals.append((release_index, task))
+    if not abnormal_arrivals:
+        return None
+    return min(abnormal_arrivals, key=lambda item: priority_map[item[1].name])
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +667,30 @@ def simulate_ordered_taskset(
                 if cfg.drop_lo_jobs_on_hi_switch:
                     _drop_active_lo_jobs(active_jobs, current_time=t)
 
-        # ---- 2. 在 tick 起点释放到期的 job ----
+        # ---- 2. C-AMC-sem 在 release time 先做 semi-clairvoyant 模式切换 ----
+        if _is_c_amc_semantics(cfg.semantics) and mode is SystemMode.LO:
+            abnormal_arrival = _find_c_amc_sem_hi_abnormal_arrival(
+                current_time=t,
+                ordered_tasks=ordered_tasks,
+                next_release_index=next_release_index,
+                scenario=scenario,
+                priority_map=priority_map,
+            )
+            if abnormal_arrival is not None:
+                trigger_release_index, trigger_task = abnormal_arrival
+                mode = SystemMode.HI
+                mode_switches.append(
+                    ModeSwitchEvent(
+                        switch_time=t,
+                        triggering_task=trigger_task.name,
+                        triggering_release_index=trigger_release_index,
+                        executed_at_switch=0,
+                        budget_at_switch=trigger_task.c_lo,
+                        reason="semi_clairvoyant_hi_abnormal_arrival",
+                    )
+                )
+
+        # ---- 3. 在 tick 起点释放到期的 job ----
         newly_released, dropped_release_cancellations = _release_jobs_at_time_with_busy_periods(
             current_time=t,
             ordered_tasks=ordered_tasks,
@@ -580,8 +701,11 @@ def simulate_ordered_taskset(
             semantics=cfg.semantics,
             design_r_lo=design_r_lo,
             record_dropped_lo_releases=cfg.record_dropped_lo_releases,
-            # 只有进入 HI 模式后才抑制 LO 未来释放。
-            suppress_lo_releases=(mode is SystemMode.HI),
+            # 只有 AMC/AMC+/RA/RH 在 HI mode 中抑制未来 LO release；
+            # C-AMC-sem 的 LO release 会继续进入调度，但用 degraded budget/cost。
+            suppress_lo_releases=(mode is SystemMode.HI and not _is_c_amc_semantics(cfg.semantics)),
+            mode=mode,
+            c_amc_sem_lo_degradation_ratio=cfg.c_amc_sem_lo_degradation_ratio,
         )
         job_cancellations.extend(dropped_release_cancellations)
         # 新释放的 normal jobs 进入活动队列；若是 degraded mode 中被直接 dropped 的
@@ -589,7 +713,7 @@ def simulate_ordered_taskset(
         active_jobs.extend([job for job in newly_released if not job.dropped])
         all_jobs.extend(newly_released)
 
-        # ---- 3. RA/RH 在完成同刻 arrival 后再次检查 expiry，覆盖 inherited busy period 已过期的边界 ----
+        # ---- 4. RA/RH 在完成同刻 arrival 后再次检查 expiry，覆盖 inherited busy period 已过期的边界 ----
         if response_based and mode is SystemMode.LO:
             expired_job = _find_expired_active_hi_job(active_jobs, t, priority_map)
             if expired_job is not None:
@@ -607,7 +731,7 @@ def simulate_ordered_taskset(
                 if cfg.drop_lo_jobs_on_hi_switch:
                     _drop_active_lo_jobs(active_jobs, current_time=t)
 
-        # ---- 4. 检查当前 tick 是否有 job 正好踩到 deadline 但未完成 ----
+        # ---- 5. 检查当前 tick 是否有 job 正好踩到 deadline 但未完成 ----
         misses_at_t = _check_deadline_misses(t, active_jobs, mode)
         deadline_misses.extend(misses_at_t)
         if misses_at_t and cfg.stop_at_first_miss:
@@ -616,10 +740,10 @@ def simulate_ordered_taskset(
             stopped_early = True
             break
 
-        # ---- 5. 选出最高优先级可运行 job ----
+        # ---- 6. 选出最高优先级可运行 job ----
         running = _select_highest_priority_ready_job(active_jobs, priority_map)
 
-        # ---- 6. 记录本 tick 的执行快照（可选） ----
+        # ---- 7. 记录本 tick 的执行快照（可选） ----
         if cfg.capture_trace:
             trace.append(
                 ScheduleTick(
@@ -632,7 +756,7 @@ def simulate_ordered_taskset(
                 )
             )
 
-        # ---- 7. 推进被选中 job 一个 tick，如完成则登记 completion_time ----
+        # ---- 8. 推进被选中 job 一个 tick，如完成则登记 completion_time ----
         completed_hi_job = False
         if running is not None:
             running.executed_time += 1
@@ -644,15 +768,18 @@ def simulate_ordered_taskset(
                 # 从活动集合移除，减少后续选择 / miss 扫描的范围。
                 active_jobs.remove(running)
 
-        # ---- 8. 检查是否触发 LO -> HI 切换，并执行切换后动作 ----
+        # ---- 9. 检查是否触发 LO -> HI 切换，并执行切换后动作 ----
         if running is not None:
             current_budget = runtime_budgets.budget_of(running.task)
+            if running.runtime_budget_at_release is not None:
+                current_budget = running.runtime_budget_at_release
 
-            if _should_cancel_lo_job(running, mode, current_budget):
+            if _should_cancel_lo_job(running, mode, current_budget, cfg.semantics):
                 if cfg.semantics in {
                     RuntimeSemantics.AMC_PLUS,
                     RuntimeSemantics.AMC_RA,
                     RuntimeSemantics.AMC_RH,
+                    RuntimeSemantics.C_AMC_SEM,
                 }:
                     cancel_time = t + 1
                     event = _cancel_lo_job(
@@ -700,7 +827,7 @@ def simulate_ordered_taskset(
                 if cfg.drop_lo_jobs_on_hi_switch:
                     _drop_active_lo_jobs(active_jobs, current_time=switch_time)
 
-        # ---- 9. 恢复规则：AMC/A+/RA 用 idle，RH 仅在 HI completion 后检查 response-aware recovery ----
+        # ---- 10. 恢复规则：AMC/A+/RA/C-AMC-sem 用 idle，RH 仅在 HI completion 后检查 response-aware recovery ----
         if cfg.semantics is RuntimeSemantics.AMC_RH:
             if completed_hi_job and mode is SystemMode.HI and not _has_expired_active_hi_job(active_jobs, t + 1):
                 mode = SystemMode.LO

@@ -57,6 +57,12 @@ def _is_response_based_semantics(semantics: RuntimeSemantics) -> bool:
     return semantics in {RuntimeSemantics.AMC_RA, RuntimeSemantics.AMC_RH}
 
 
+def _is_c_amc_semantics(semantics: RuntimeSemantics) -> bool:
+    """判断当前语义是否为 C-AMC-sem without DVFS。"""
+
+    return semantics is RuntimeSemantics.C_AMC_SEM
+
+
 def _uses_idle_recovery(semantics: RuntimeSemantics) -> bool:
     """判断当前语义是否使用“系统空闲即恢复”的规则。"""
 
@@ -64,6 +70,7 @@ def _uses_idle_recovery(semantics: RuntimeSemantics) -> bool:
         RuntimeSemantics.AMC,
         RuntimeSemantics.AMC_PLUS,
         RuntimeSemantics.AMC_RA,
+        RuntimeSemantics.C_AMC_SEM,
     }
 
 
@@ -72,12 +79,17 @@ def _build_job(
     release_index: int,
     scenario: ExecutionScenario,
     runtime_budget_at_release: int,
+    actual_cost_override: int | None = None,
 ) -> Job:
     """按现有 tick runtime 的同等逻辑构建 job。"""
 
     release_time = release_index * task.period
     absolute_deadline = release_time + task.deadline
-    actual_cost = scenario.actual_cost_for(task, release_index)
+    actual_cost = (
+        actual_cost_override
+        if actual_cost_override is not None
+        else scenario.actual_cost_for(task, release_index)
+    )
     return Job(
         task=task,
         release_index=release_index,
@@ -86,6 +98,13 @@ def _build_job(
         actual_cost=actual_cost,
         runtime_budget_at_release=runtime_budget_at_release,
     )
+
+
+def _c_amc_sem_degraded_lo_budget(task: Task, cfg: RuntimeConfig) -> int:
+    """计算 C-AMC-sem 中 LO task 在 HI mode 释放时的 degraded budget。"""
+
+    budget = int(round(task.c_lo * cfg.c_amc_sem_lo_degradation_ratio))
+    return max(1, min(task.c_lo, budget))
 
 
 def _job_key(task_name: str, release_index: int) -> tuple[str, int]:
@@ -300,7 +319,14 @@ def _schedule_running_job_events(
     )
 
     if state.mode is not SystemMode.LO:
-        return
+        # C-AMC-sem 的计划边界要求：HI mode 中新释放的 LO job 仍然会运行，
+        # 因此必须继续安排预算超限事件，才能复用既有的取消统计口径。
+        # 除了这一种情况之外，其余语义在 HI mode 下保持原实现不变。
+        if not (
+            cfg.semantics is RuntimeSemantics.C_AMC_SEM
+            and job.task.criticality is Criticality.LO
+        ):
+            return
 
     if _is_response_based_semantics(cfg.semantics) and job.task.criticality is Criticality.HI:
         # AMC-RA / AMC-RH 中，HI 任务不能通过 budget overrun 触发 degraded mode；
@@ -729,6 +755,59 @@ class EventRuntimeEngine:
             release_index=release_index,
         )
 
+    def _maybe_enter_c_amc_sem_hi_mode_at_arrival(
+        self,
+        events: Sequence[Event],
+        now: int,
+    ) -> None:
+        """C-AMC-sem：HI abnormal job 在 release 时刻触发 LO->HI。"""
+
+        if not _is_c_amc_semantics(self.config.semantics):
+            return
+        if self.state.mode is not SystemMode.LO:
+            return
+
+        abnormal_arrivals: list[tuple[Event, Task, int]] = []
+        for event in events:
+            assert event.task_name is not None
+            assert event.release_index is not None
+            task = self.task_map[event.task_name]
+            if task.criticality is not Criticality.HI:
+                continue
+            actual_cost = self.scenario.actual_cost_for(task, event.release_index)
+            if actual_cost > task.c_lo:
+                abnormal_arrivals.append((event, task, actual_cost))
+
+        if not abnormal_arrivals:
+            return
+
+        # 同一时刻如果有多个 HI abnormal arrival，严格沿用当前固定优先级
+        # 顺序，选出优先级最高的触发者写入唯一一次 mode switch 记录。
+        trigger_event, trigger_task, trigger_actual_cost = min(
+            abnormal_arrivals,
+            key=lambda item: self.priority_map[item[1].name],
+        )
+        assert trigger_event.release_index is not None
+
+        self.state.mode = SystemMode.HI
+        self.result.mode_switches.append(
+            ModeSwitchEvent(
+                switch_time=now,
+                triggering_task=trigger_task.name,
+                triggering_release_index=trigger_event.release_index,
+                executed_at_switch=0,
+                budget_at_switch=trigger_task.c_lo,
+                reason="semi_clairvoyant_hi_abnormal_arrival",
+            )
+        )
+        self._append_debug_event(
+            "c_amc_sem_mode_switch",
+            triggering_task=trigger_task.name,
+            triggering_release_index=trigger_event.release_index,
+            trigger_actual_cost=trigger_actual_cost,
+            trigger_c_lo=trigger_task.c_lo,
+        )
+
     def _schedule_next_release(self, task: Task, release_index: int) -> None:
         """安排某个任务的下一次周期释放。"""
 
@@ -756,15 +835,39 @@ class EventRuntimeEngine:
         # 也会继续推进 release_index，不会阻断未来周期行为。
         self._schedule_next_release(task, event.release_index)
 
+        runtime_budget_at_release = self.budget_state.budget_of(task)
+        actual_cost_override: int | None = None
+
         if self.state.mode is SystemMode.HI and task.criticality is Criticality.LO:
-            self._record_or_suppress_dropped_lo_release(task, event.release_index, now)
-            return
+            if _is_c_amc_semantics(self.config.semantics):
+                # C-AMC-sem 下 HI mode 中的 LO release 不能被 suppress，而是要
+                # 用 XF 缩放后的 degraded budget 重新构造 job，并把实际执行需求
+                # 截断到该 budget，避免引入计划外的额外运行量。
+                runtime_budget_at_release = _c_amc_sem_degraded_lo_budget(
+                    task,
+                    self.config,
+                )
+                original_actual_cost = self.scenario.actual_cost_for(task, event.release_index)
+                actual_cost_override = min(original_actual_cost, runtime_budget_at_release)
+                self._append_debug_event(
+                    "c_amc_sem_degraded_lo_release",
+                    task=task.name,
+                    release_index=event.release_index,
+                    original_actual_cost=original_actual_cost,
+                    degraded_actual_cost=actual_cost_override,
+                    degraded_budget=runtime_budget_at_release,
+                    xf=self.config.c_amc_sem_lo_degradation_ratio,
+                )
+            else:
+                self._record_or_suppress_dropped_lo_release(task, event.release_index, now)
+                return
 
         job = _build_job(
             task,
             event.release_index,
             self.scenario,
-            runtime_budget_at_release=self.budget_state.budget_of(task),
+            runtime_budget_at_release=runtime_budget_at_release,
+            actual_cost_override=actual_cost_override,
         )
         job.busy_period_start = _compute_busy_period_start_for_new_job(
             active_jobs=self.state.active_jobs,
@@ -812,6 +915,7 @@ class EventRuntimeEngine:
         events.sort(
             key=lambda event: self.priority_map[event.task_name]  # type: ignore[index]
         )
+        self._maybe_enter_c_amc_sem_hi_mode_at_arrival(events, now)
         for arrival in events:
             self._process_single_arrival_in_priority_order(arrival)
         self._reschedule(now)
@@ -973,6 +1077,7 @@ class EventRuntimeEngine:
                     RuntimeSemantics.AMC_PLUS,
                     RuntimeSemantics.AMC_RA,
                     RuntimeSemantics.AMC_RH,
+                    RuntimeSemantics.C_AMC_SEM,
                 }
                 and job.task.criticality is Criticality.LO
             ):

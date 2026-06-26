@@ -33,6 +33,7 @@ def test_evaluate_fieldnames_include_degradation_metrics() -> None:
         "total_time",
         "jne_plus_ldm",
         "dqn_runtime_semantics",
+        "c_amc_sem_xf",
         "lo_job_losses_total",
         "lo_budget_cancellations",
         "lo_release_dropped_in_degraded_mode",
@@ -58,6 +59,17 @@ def test_formal_evaluate_runtime_configs_disable_trace_and_record_dropped_lo_rel
         assert baseline_cfg.capture_trace is False
         assert baseline_cfg.capture_debug_events is False
         assert baseline_cfg.record_dropped_lo_releases is True
+
+    c_amc_sem_cfg = _baseline_runtime_config(
+        end_time=100,
+        semantics=RuntimeSemantics.C_AMC_SEM,
+        c_amc_sem_xf=0.5,
+    )
+    assert c_amc_sem_cfg.capture_trace is False
+    assert c_amc_sem_cfg.capture_debug_events is False
+    assert c_amc_sem_cfg.record_dropped_lo_releases is True
+    assert c_amc_sem_cfg.drop_lo_jobs_on_hi_switch is False
+    assert c_amc_sem_cfg.c_amc_sem_lo_degradation_ratio == 0.5
 
     agent_cfg = _formal_agent_runtime_config(end_time=100, semantics=RuntimeSemantics.AMC_PLUS)
     assert agent_cfg.capture_trace is False
@@ -101,6 +113,10 @@ def test_evaluate_dqn_amc_cli_runs_after_training(tmp_path: Path) -> None:
             "0,1",
             "--end-time",
             "50",
+            "--baselines",
+            "amc_plus_baseline,amc_ra_baseline,amc_rh_baseline,c_amc_sem_baseline,dqn_agent",
+            "--c-amc-sem-xf",
+            "0.5",
             "--output",
             str(eval_path),
         ],
@@ -121,7 +137,8 @@ def test_evaluate_dqn_amc_cli_runs_after_training(tmp_path: Path) -> None:
     methods = {row["method"] for row in rows}
     assert "dqn_agent" in methods
     assert "amc_plus_baseline" in methods
-    assert "noop_agent" in methods
+    assert "c_amc_sem_baseline" in methods
+    assert all(row["c_amc_sem_xf"] == "0.5" for row in rows)
     expected_summary_fields = {
         "row_type",
         "method",
@@ -144,6 +161,13 @@ def test_evaluate_dqn_amc_cli_runs_after_training(tmp_path: Path) -> None:
     assert expected_summary_fields.issubset(set(unified_rows[0].keys()))
     row_types = {row["row_type"] for row in unified_rows}
     assert row_types >= {"method_summary", "dqn_vs_reference"}
+    unified_methods = {row["method"] for row in unified_rows}
+    assert "c_amc_sem_baseline" in unified_methods
+    assert any(
+        row["row_type"] == "dqn_vs_reference"
+        and row["reference_method"] == "c_amc_sem_baseline"
+        for row in unified_rows
+    )
     assert "noop_q_rank_mean" in rows[0]
     baseline_row = next(row for row in rows if row["method"] == "amc_plus_baseline")
     assert baseline_row["noop_q_rank_mean"] == ""

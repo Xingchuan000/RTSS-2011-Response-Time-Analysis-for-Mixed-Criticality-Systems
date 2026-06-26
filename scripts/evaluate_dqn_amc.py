@@ -5,9 +5,17 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from statistics import mean
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    # 与训练脚本保持一致：当用户直接执行
+    # `python scripts/evaluate_dqn_amc.py ...` 时，确保仓库根目录进入
+    # `sys.path`，这样 `amc_py` 包导入行为与测试/README 中的调用方式一致。
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import torch
 
@@ -187,6 +195,7 @@ def _baseline_runtime_config(
     semantics: RuntimeSemantics,
     capture_trace: bool = False,
     capture_debug_events: bool = False,
+    c_amc_sem_xf: float = 0.5,
 ) -> RuntimeConfig:
     """构造正式 HOUT 评估使用的 baseline runtime 配置。
 
@@ -201,6 +210,8 @@ def _baseline_runtime_config(
         capture_trace=capture_trace,
         capture_debug_events=capture_debug_events,
         record_dropped_lo_releases=True,
+        drop_lo_jobs_on_hi_switch=(semantics is not RuntimeSemantics.C_AMC_SEM),
+        c_amc_sem_lo_degradation_ratio=c_amc_sem_xf,
     )
 
 
@@ -219,6 +230,7 @@ def _formal_agent_runtime_config(
         capture_trace=capture_trace,
         capture_debug_events=capture_debug_events,
         record_dropped_lo_releases=True,
+        c_amc_sem_lo_degradation_ratio=0.5,
     )
 
 
@@ -290,6 +302,7 @@ def _eval_summary_fieldnames() -> list[str]:
         "end_time",
         "agent_period",
         "dqn_runtime_semantics",
+        "c_amc_sem_xf",
         "reward_mode",
         "forbid_decreasing_hi_budgets",
         "enable_deploy_cap_mask",
@@ -789,6 +802,7 @@ UNIFIED_SUMMARY_FIELDNAMES = [
     "end_time",
     "agent_period",
     "dqn_runtime_semantics",
+    "c_amc_sem_xf",
     "reward_mode",
     "action_space_type",
     "budget_increase_ratio",
@@ -869,6 +883,7 @@ def _group_summary_context(
         "end_time": int(_to_float(sample_row, "end_time")),
         "agent_period": int(_to_float(sample_row, "agent_period")),
         "dqn_runtime_semantics": str(sample_row.get("dqn_runtime_semantics", "")),
+        "c_amc_sem_xf": _to_float(sample_row, "c_amc_sem_xf"),
         "reward_mode": str(sample_row.get("reward_mode", "")),
         "action_space_type": str(sample_row.get("action_space_type", "")),
         "budget_increase_ratio": _to_float(sample_row, "budget_increase_ratio"),
@@ -986,6 +1001,7 @@ def _build_dqn_reference_comparison_rows(
         "amc_plus_baseline",
         "amc_ra_baseline",
         "amc_rh_baseline",
+        "c_amc_sem_baseline",
         "noop_agent",
     ]:
         reference_row = summary_by_method.get(reference_method)
@@ -1004,6 +1020,7 @@ def _build_dqn_reference_comparison_rows(
                         "end_time",
                         "agent_period",
                         "dqn_runtime_semantics",
+                        "c_amc_sem_xf",
                         "reward_mode",
                         "action_space_type",
                         "budget_increase_ratio",
@@ -1326,6 +1343,7 @@ def _evaluate_enabled_methods_for_seed(
     agent_period: int,
     reward_mode: str,
     dqn_runtime_semantics: RuntimeSemantics,
+    c_amc_sem_xf: float,
     action_space: str,
     budget_increase_ratio: float,
     budget_decrease_ratio: float,
@@ -1396,6 +1414,7 @@ def _evaluate_enabled_methods_for_seed(
         "end_time": end_time,
         "agent_period": agent_period,
         "dqn_runtime_semantics": dqn_runtime_semantics.value,
+        "c_amc_sem_xf": c_amc_sem_xf,
         "reward_mode": reward_mode,
         "action_space_type": action_space,
         "budget_increase_ratio": budget_increase_ratio,
@@ -1434,6 +1453,7 @@ def _evaluate_enabled_methods_for_seed(
                 semantics=RuntimeSemantics.AMC_PLUS,
                 capture_trace=capture_runtime_trace_for_seed,
                 capture_debug_events=capture_debug_events_for_seed,
+                c_amc_sem_xf=c_amc_sem_xf,
             ),
         )
         rows.append(
@@ -1469,6 +1489,7 @@ def _evaluate_enabled_methods_for_seed(
     runtime_baseline_specs = [
         ("amc_ra_baseline", RuntimeSemantics.AMC_RA),
         ("amc_rh_baseline", RuntimeSemantics.AMC_RH),
+        ("c_amc_sem_baseline", RuntimeSemantics.C_AMC_SEM),
     ]
     for method_name, semantics in runtime_baseline_specs:
         if method_name not in enabled_methods:
@@ -1481,6 +1502,7 @@ def _evaluate_enabled_methods_for_seed(
                 semantics=semantics,
                 capture_trace=capture_runtime_trace_for_seed,
                 capture_debug_events=capture_debug_events_for_seed,
+                c_amc_sem_xf=c_amc_sem_xf,
             ),
         )
         rows.append(
@@ -1867,6 +1889,7 @@ def _evaluate_seed_worker(
         int,
         str,
         RuntimeSemantics,
+        float,
         str,
         float,
         float,
@@ -1913,6 +1936,7 @@ def _evaluate_seed_worker(
         agent_period,
         reward_mode,
         dqn_runtime_semantics,
+        c_amc_sem_xf,
         action_space,
         budget_increase_ratio,
         budget_decrease_ratio,
@@ -1951,6 +1975,7 @@ def _evaluate_seed_worker(
         agent_period=agent_period,
         reward_mode=reward_mode,
         dqn_runtime_semantics=dqn_runtime_semantics,
+        c_amc_sem_xf=c_amc_sem_xf,
         action_space=action_space,
         budget_increase_ratio=budget_increase_ratio,
         budget_decrease_ratio=budget_decrease_ratio,
@@ -2012,6 +2037,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["AMC_PLUS", "AMC_RA", "AMC_RH"],
         default="AMC_PLUS",
         help="Runtime semantics used by dqn_agent and wrapper-based agent baselines.",
+    )
+    parser.add_argument(
+        "--c-amc-sem-xf",
+        type=float,
+        default=0.5,
+        help="LO-task degraded budget ratio used by c_amc_sem_baseline in HI mode.",
     )
     parser.add_argument("--scenario", choices=["nominal", "stress"], default="stress")
     parser.add_argument(
@@ -2161,6 +2192,8 @@ def main() -> None:
         raise ValueError("--max-q-diagnostic-samples 必须为非负整数")
     if args.budget_floor_ratio < 0.0 or args.budget_floor_ratio > 1.0:
         raise ValueError("--budget-floor-ratio must be in [0, 1]")
+    if not (0.0 < args.c_amc_sem_xf <= 1.0):
+        raise ValueError("--c-amc-sem-xf must be in (0, 1]")
     if args.deploy_cap_mask_ratio <= 1.0:
         raise ValueError("--deploy-cap-mask-ratio must be > 1.0")
     feature_config = FeatureConfig(
@@ -2245,6 +2278,7 @@ def main() -> None:
         "amc_plus_baseline",
         "amc_ra_baseline",
         "amc_rh_baseline",
+        "c_amc_sem_baseline",
         "noop_agent",
         "random_agent",
         "heuristic_agent",
@@ -2274,6 +2308,7 @@ def main() -> None:
                 agent_period=args.agent_period,
                 reward_mode=args.reward_mode,
                 dqn_runtime_semantics=dqn_runtime_semantics,
+                c_amc_sem_xf=args.c_amc_sem_xf,
                 action_space=args.action_space,
                 budget_increase_ratio=args.budget_increase_ratio,
                 budget_decrease_ratio=args.budget_decrease_ratio,
@@ -2320,6 +2355,7 @@ def main() -> None:
                 args.agent_period,
                 args.reward_mode,
                 dqn_runtime_semantics,
+                args.c_amc_sem_xf,
                 args.action_space,
                 args.budget_increase_ratio,
                 args.budget_decrease_ratio,
