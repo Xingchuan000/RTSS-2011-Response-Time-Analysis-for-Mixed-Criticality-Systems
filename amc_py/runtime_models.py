@@ -85,6 +85,7 @@ class RuntimeConfig:
     semantics: RuntimeSemantics = RuntimeSemantics.AMC_PLUS
     record_dropped_lo_releases: bool = False
     c_amc_sem_lo_degradation_ratio: float = 0.5
+    c_amc_sem_primary_on_switch_time: bool = False
 
     def __post_init__(self) -> None:
         # 基本的范围校验：避免在仿真过程中才报错，尽量把问题前置。
@@ -96,6 +97,8 @@ class RuntimeConfig:
             raise ValueError("hyperperiod_limit 必须为正整数")
         if not (0.0 < self.c_amc_sem_lo_degradation_ratio <= 1.0):
             raise ValueError("c_amc_sem_lo_degradation_ratio must be in (0, 1]")
+        if not isinstance(self.c_amc_sem_primary_on_switch_time, bool):
+            raise TypeError("c_amc_sem_primary_on_switch_time must be bool")
 
 
 @dataclass(slots=True)
@@ -137,6 +140,23 @@ class Job:
     drop_time: int | None = None
     busy_period_start: int | None = None
     response_time_expiry: int | None = None
+    # 记录 job 创建当刻采用的 release-mode 语义。
+    # 这个字段专门用于区分“系统当前已切到 HI，但同一 arrival batch 仍按 LO mode
+    # primary 语义释放”的边界场景，避免后处理只能从最终 mode 反推而丢失信息。
+    released_in_mode: SystemMode = SystemMode.LO
+    # 只有 C-AMC-sem 中严格以 degraded 语义释放的 LO job 才标记为 True。
+    # 其他语义下即便预算后来被调小，只要不是该计划定义的 degraded release，
+    # 都保持 False，确保指标口径不扩散。
+    is_degraded: bool = False
+    # 该 job 若按时完成，可为 LO 侧贡献的服务质量。
+    # 普通 job 固定为 1.0；C-AMC-sem degraded LO job 则为 XF。
+    service_quality_if_completed: float = 1.0
+    # 保留场景给出的原始 actual_cost，便于 degraded LO job 在被截断后仍能回溯
+    # “原始需求”和“降级后实际执行需求”之间的差异。
+    original_actual_cost: int | None = None
+    # 保留释放时的 full-quality budget，便于后处理直接计算 degraded/full 的预算比例。
+    # 对普通 job 也统一写入，减少调试和指标代码里的分支判断。
+    original_runtime_budget_at_release: int | None = None
 
     def remaining(self) -> int:
         """返回本 job 还需执行的时间，下限为 0。

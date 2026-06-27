@@ -13,6 +13,7 @@ from amc_py.runtime_models import (
     LO_LOSS_RELEASE_DROPPED_IN_DEGRADED_MODE,
     RuntimeConfig,
     RuntimeSemantics,
+    SystemMode,
 )
 from amc_py.runtime_scenarios import make_table_scenario
 
@@ -149,3 +150,75 @@ def test_c_amc_sem_metrics_use_existing_jne_breakdown() -> None:
     assert degradation.jne >= 0
     assert breakdown.lo_release_dropped_in_degraded_mode == 0
     assert breakdown.lo_active_dropped_on_mode_switch == 0
+
+
+def test_c_amc_sem_degraded_lo_job_records_quality_metadata() -> None:
+    """HI mode 中的 degraded LO job 应完整记录质量统计所需 metadata。"""
+
+    hi = _hi("H", period=20, c_lo=8, c_hi=12)
+    lo = _lo("L", period=5, c_lo=6)
+    result = simulate_ordered_taskset_event_driven(
+        [hi, lo],
+        make_table_scenario({("H", 0): 12, ("L", 1): 6}, default_hi="c_lo", default_lo="c_lo"),
+        config=RuntimeConfig(
+            end_time=15,
+            semantics=RuntimeSemantics.C_AMC_SEM,
+            record_dropped_lo_releases=True,
+            c_amc_sem_lo_degradation_ratio=0.5,
+        ),
+    )
+
+    l1 = next(job for job in result.jobs_of("L") if job.release_index == 1)
+    assert l1.released_in_mode is SystemMode.HI
+    assert l1.is_degraded is True
+    assert l1.service_quality_if_completed == 0.5
+    assert l1.original_actual_cost == 6
+    assert l1.original_runtime_budget_at_release == 6
+    assert l1.runtime_budget_at_release == 3
+    assert l1.actual_cost == 3
+
+
+def test_c_amc_sem_primary_on_switch_time_keeps_same_batch_lo_primary() -> None:
+    """开启 strict 边界后，同一 arrival batch 的 LO release 仍保持 primary。"""
+
+    hi = _hi("H", period=10, c_lo=2, c_hi=5)
+    lo = _lo("L", period=10, c_lo=6)
+    result = simulate_ordered_taskset_event_driven(
+        [hi, lo],
+        make_table_scenario({("H", 0): 5, ("L", 0): 6}, default_hi="c_lo", default_lo="c_lo"),
+        config=RuntimeConfig(
+            end_time=10,
+            semantics=RuntimeSemantics.C_AMC_SEM,
+            c_amc_sem_lo_degradation_ratio=0.5,
+            c_amc_sem_primary_on_switch_time=True,
+        ),
+    )
+
+    l0 = next(job for job in result.jobs_of("L") if job.release_index == 0)
+    assert l0.released_in_mode is SystemMode.LO
+    assert l0.is_degraded is False
+    assert l0.service_quality_if_completed == 1.0
+    assert l0.runtime_budget_at_release == 6
+    assert l0.actual_cost == 6
+
+
+def test_c_amc_sem_default_same_time_behavior_is_unchanged() -> None:
+    """默认配置必须保持旧的“同一时刻已切 HI 即 degraded”行为。"""
+
+    hi = _hi("H", period=10, c_lo=2, c_hi=5)
+    lo = _lo("L", period=10, c_lo=6)
+    result = simulate_ordered_taskset_event_driven(
+        [hi, lo],
+        make_table_scenario({("H", 0): 5, ("L", 0): 6}, default_hi="c_lo", default_lo="c_lo"),
+        config=RuntimeConfig(
+            end_time=10,
+            semantics=RuntimeSemantics.C_AMC_SEM,
+            c_amc_sem_lo_degradation_ratio=0.5,
+        ),
+    )
+
+    l0 = next(job for job in result.jobs_of("L") if job.release_index == 0)
+    assert l0.released_in_mode is SystemMode.HI
+    assert l0.is_degraded is True
+    assert l0.runtime_budget_at_release == 3
+    assert l0.actual_cost == 3

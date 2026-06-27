@@ -5,7 +5,7 @@ from __future__ import annotations
 from amc_py.event_runtime import simulate_ordered_taskset_event_driven
 from amc_py.models import Criticality, Task
 from amc_py.runtime import simulate_ordered_taskset
-from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics
+from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SystemMode
 from amc_py.runtime_scenarios import make_table_scenario
 
 
@@ -148,3 +148,56 @@ def test_c_amc_sem_tick_matches_event_runtime_core_semantics() -> None:
     event_l1 = next(job for job in event_result.jobs if job.task.name == "L" and job.release_index == 1)
     assert tick_l1.runtime_budget_at_release == event_l1.runtime_budget_at_release
     assert tick_l1.actual_cost == event_l1.actual_cost
+    assert tick_l1.released_in_mode == event_l1.released_in_mode
+    assert tick_l1.is_degraded == event_l1.is_degraded
+    assert tick_l1.service_quality_if_completed == event_l1.service_quality_if_completed
+
+
+def test_c_amc_sem_tick_degraded_lo_job_records_quality_metadata() -> None:
+    """tick runtime 的 degraded LO job 也应记录质量加权所需 metadata。"""
+
+    hi = _hi("H", period=20, c_lo=8, c_hi=12)
+    lo = _lo("L", period=5, c_lo=6)
+    result = simulate_ordered_taskset(
+        [hi, lo],
+        make_table_scenario({("H", 0): 12, ("L", 1): 6}, default_hi="c_lo", default_lo="c_lo"),
+        config=RuntimeConfig(
+            end_time=15,
+            semantics=RuntimeSemantics.C_AMC_SEM,
+            record_dropped_lo_releases=True,
+            c_amc_sem_lo_degradation_ratio=0.5,
+        ),
+    )
+
+    l1 = next(job for job in result.jobs if job.task.name == "L" and job.release_index == 1)
+    assert l1.released_in_mode is SystemMode.HI
+    assert l1.is_degraded is True
+    assert l1.service_quality_if_completed == 0.5
+    assert l1.original_actual_cost == 6
+    assert l1.original_runtime_budget_at_release == 6
+    assert l1.runtime_budget_at_release == 3
+    assert l1.actual_cost == 3
+
+
+def test_c_amc_sem_tick_primary_on_switch_time_keeps_same_batch_lo_primary() -> None:
+    """tick runtime 开启 strict 边界后，同一 batch 的 LO release 不应降级。"""
+
+    hi = _hi("H", period=10, c_lo=2, c_hi=5)
+    lo = _lo("L", period=10, c_lo=6)
+    result = simulate_ordered_taskset(
+        [hi, lo],
+        make_table_scenario({("H", 0): 5, ("L", 0): 6}, default_hi="c_lo", default_lo="c_lo"),
+        config=RuntimeConfig(
+            end_time=10,
+            semantics=RuntimeSemantics.C_AMC_SEM,
+            c_amc_sem_lo_degradation_ratio=0.5,
+            c_amc_sem_primary_on_switch_time=True,
+        ),
+    )
+
+    l0 = next(job for job in result.jobs if job.task.name == "L" and job.release_index == 0)
+    assert l0.released_in_mode is SystemMode.LO
+    assert l0.is_degraded is False
+    assert l0.service_quality_if_completed == 1.0
+    assert l0.runtime_budget_at_release == 6
+    assert l0.actual_cost == 6

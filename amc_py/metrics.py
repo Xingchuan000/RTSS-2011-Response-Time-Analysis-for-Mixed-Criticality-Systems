@@ -7,11 +7,19 @@ from typing import Mapping
 
 from amc_py.models import Criticality
 from amc_py.runtime_models import (
+    Job,
     LO_LOSS_ACTIVE_DROPPED_ON_MODE_SWITCH,
     LO_LOSS_BUDGET_CANCELLATION,
     LO_LOSS_RELEASE_DROPPED_IN_DEGRADED_MODE,
     SimulationResult,
 )
+
+
+LO_BUDGET_CANCELLATION_REASONS = {
+    LO_LOSS_BUDGET_CANCELLATION,
+    "lo_budget_overrun",
+    "lo_budget_overrun_standard_amc",
+}
 
 
 @dataclass(frozen=True)
@@ -40,6 +48,10 @@ class RuntimeDegradationMetrics:
     nid: int
     tid: int
     total_time: int
+    tid_ratio: float
+    nid_per_1e6_time: float
+    mean_degraded_interval: float | None
+    safety_feasible: int
 
 
 @dataclass(frozen=True)
@@ -52,6 +64,36 @@ class LoJobLossBreakdownMetrics:
     lo_active_dropped_on_mode_switch: int
     jne_residual_not_in_cancellations: int
     active_drop_share_of_jne: float | None
+
+
+@dataclass(frozen=True)
+class LoQualityWeightedMetrics:
+    """LO 任务按服务质量加权后的指标集合。"""
+
+    lo_equiv_jne: float
+    lo_equiv_jne_rate: float
+    lo_quality_qos: float
+    lo_quality_loss: float
+    lo_full_quality_completed: int
+    lo_full_quality_ratio: float
+    lo_degraded_released: int
+    lo_degraded_completed: int
+    lo_degraded_cancelled: int
+    lo_degraded_deadline_missed: int
+    lo_degraded_not_completed: int
+    lo_degraded_release_ratio: float
+    lo_degraded_completion_ratio: float
+    lo_degraded_among_completed_ratio: float | None
+    lo_degraded_quality_sum: float
+    lo_degraded_budget_sum: float
+    lo_degraded_original_budget_sum: float
+    lo_degraded_budget_ratio_mean: float | None
+    lo_degraded_exec_time_sum: float
+    lo_degraded_exec_time_ratio: float | None
+    lo_zero_service_jobs: int
+    lo_zero_service_ratio: float
+    lo_full_quality_service_sum: float
+    lo_total_service_sum: float
 
 
 def safe_relative_reduction(baseline: float, method: float) -> float | None:
@@ -201,13 +243,202 @@ def compute_runtime_degradation_metrics(result: SimulationResult) -> RuntimeDegr
     )
     intervals = compute_degraded_intervals(result)
     tid = sum(end - start for start, end in intervals)
+    total_time = result.end_time
+    tid_ratio = float(tid) / float(total_time) if total_time > 0 else 0.0
+    nid_per_1e6_time = (
+        float(len(result.mode_switches)) / float(total_time) * 1_000_000.0
+        if total_time > 0
+        else 0.0
+    )
+    mean_degraded_interval = (
+        None
+        if len(result.mode_switches) == 0
+        else float(tid) / float(len(result.mode_switches))
+    )
+    safety_feasible = 1 if hdm == 0 else 0
     return RuntimeDegradationMetrics(
         hdm=hdm,
         jne=jne,
         ldm=ldm,
         nid=len(result.mode_switches),
         tid=tid,
-        total_time=result.end_time,
+        total_time=total_time,
+        tid_ratio=tid_ratio,
+        nid_per_1e6_time=nid_per_1e6_time,
+        mean_degraded_interval=mean_degraded_interval,
+        safety_feasible=safety_feasible,
+    )
+
+
+def _lo_deadline_miss_keys(result: SimulationResult) -> set[tuple[str, int]]:
+    """提取所有 LO deadline miss 的 job 键。"""
+
+    task_criticality = {job.task.name: job.task.criticality for job in result.jobs}
+    return {
+        (miss.task, miss.release_index)
+        for miss in result.deadline_misses
+        if task_criticality.get(miss.task) is Criticality.LO
+    }
+
+
+def _loss_reason_by_job_key(result: SimulationResult) -> dict[tuple[str, int], str]:
+    """按 job 键汇总 LO loss / cancellation 的原因。"""
+
+    reasons: dict[tuple[str, int], str] = {}
+    for loss in result.lo_job_losses:
+        reasons[(loss.task, loss.release_index)] = loss.reason
+    for cancellation in result.job_cancellations:
+        reasons.setdefault((cancellation.task, cancellation.release_index), cancellation.reason)
+    return reasons
+
+
+def compute_lo_quality_weighted_metrics(result: SimulationResult) -> LoQualityWeightedMetrics:
+    """计算 LO 任务的质量加权服务指标。
+
+    旧口径 `lc_service_loss / lc_qos` 仍保持“取消即损失”的 binary 解释；
+    这里新增的是与其并行存在的 quality-weighted 口径，用于单独观察
+    degraded LO completion 给低关键任务侧带来的部分服务贡献。
+    """
+
+    lo_jobs = [job for job in result.jobs if job.task.criticality is Criticality.LO]
+    released_lo_jobs = len(lo_jobs)
+    lo_miss_keys = _lo_deadline_miss_keys(result)
+    loss_reason_by_key = _loss_reason_by_job_key(result)
+
+    def completed_on_time(job: Job) -> bool:
+        key = (job.task.name, job.release_index)
+        return (
+            job.completion_time is not None
+            and job.completion_time <= job.absolute_deadline
+            and not job.dropped
+            and key not in lo_miss_keys
+        )
+
+    lo_equiv_jne = 0.0
+    lo_full_quality_completed = 0
+    lo_degraded_released = 0
+    lo_degraded_completed = 0
+    lo_degraded_cancelled = 0
+    lo_degraded_deadline_missed = 0
+    lo_degraded_not_completed = 0
+    lo_degraded_quality_sum = 0.0
+    lo_degraded_budget_sum = 0.0
+    lo_degraded_original_budget_sum = 0.0
+    lo_degraded_exec_time_sum = 0.0
+    lo_zero_service_jobs = 0
+    lo_full_quality_service_sum = 0.0
+    lo_total_service_sum = 0.0
+    total_lo_exec_time_sum = 0.0
+    degraded_budget_ratios: list[float] = []
+    completed_lo_jobs = 0
+
+    for job in lo_jobs:
+        key = (job.task.name, job.release_index)
+        is_completed_on_time = completed_on_time(job)
+        if is_completed_on_time:
+            service = max(0.0, min(1.0, float(job.service_quality_if_completed)))
+            completed_lo_jobs += 1
+        else:
+            service = 0.0
+
+        lo_equiv_jne += 1.0 - service
+        lo_total_service_sum += service
+        total_lo_exec_time_sum += float(job.executed_time)
+
+        if service == 0.0:
+            lo_zero_service_jobs += 1
+
+        if is_completed_on_time and not job.is_degraded:
+            lo_full_quality_completed += 1
+            lo_full_quality_service_sum += service
+
+        if job.is_degraded:
+            lo_degraded_released += 1
+            degraded_budget = float(job.runtime_budget_at_release or 0)
+            original_budget = float(job.original_runtime_budget_at_release or job.task.c_lo)
+            lo_degraded_budget_sum += degraded_budget
+            lo_degraded_original_budget_sum += original_budget
+            lo_degraded_exec_time_sum += float(job.executed_time)
+            if original_budget > 0.0:
+                degraded_budget_ratios.append(degraded_budget / original_budget)
+            if is_completed_on_time:
+                lo_degraded_completed += 1
+                lo_degraded_quality_sum += service
+            else:
+                lo_degraded_not_completed += 1
+                # tick runtime 旧路径仍可能输出 legacy cancellation reason，
+                # 这里在 metrics 层兼容这些既有字符串，避免 degraded_cancelled
+                # 统计只在 event runtime 下正确、在 tick runtime 下被低估。
+                if loss_reason_by_key.get(key) in LO_BUDGET_CANCELLATION_REASONS:
+                    lo_degraded_cancelled += 1
+                if key in lo_miss_keys:
+                    lo_degraded_deadline_missed += 1
+
+    lo_quality_qos = (
+        lo_total_service_sum / float(released_lo_jobs)
+        if released_lo_jobs > 0
+        else 1.0
+    )
+    lo_quality_loss = 1.0 - lo_quality_qos
+    lo_equiv_jne_rate = (
+        lo_equiv_jne / float(released_lo_jobs)
+        if released_lo_jobs > 0
+        else 0.0
+    )
+
+    return LoQualityWeightedMetrics(
+        lo_equiv_jne=lo_equiv_jne,
+        lo_equiv_jne_rate=lo_equiv_jne_rate,
+        lo_quality_qos=lo_quality_qos,
+        lo_quality_loss=lo_quality_loss,
+        lo_full_quality_completed=lo_full_quality_completed,
+        lo_full_quality_ratio=(
+            float(lo_full_quality_completed) / float(released_lo_jobs)
+            if released_lo_jobs > 0
+            else 0.0
+        ),
+        lo_degraded_released=lo_degraded_released,
+        lo_degraded_completed=lo_degraded_completed,
+        lo_degraded_cancelled=lo_degraded_cancelled,
+        lo_degraded_deadline_missed=lo_degraded_deadline_missed,
+        lo_degraded_not_completed=lo_degraded_not_completed,
+        lo_degraded_release_ratio=(
+            float(lo_degraded_released) / float(released_lo_jobs)
+            if released_lo_jobs > 0
+            else 0.0
+        ),
+        lo_degraded_completion_ratio=(
+            float(lo_degraded_completed) / float(released_lo_jobs)
+            if released_lo_jobs > 0
+            else 0.0
+        ),
+        lo_degraded_among_completed_ratio=(
+            float(lo_degraded_completed) / float(completed_lo_jobs)
+            if completed_lo_jobs > 0
+            else None
+        ),
+        lo_degraded_quality_sum=lo_degraded_quality_sum,
+        lo_degraded_budget_sum=lo_degraded_budget_sum,
+        lo_degraded_original_budget_sum=lo_degraded_original_budget_sum,
+        lo_degraded_budget_ratio_mean=(
+            sum(degraded_budget_ratios) / float(len(degraded_budget_ratios))
+            if degraded_budget_ratios
+            else None
+        ),
+        lo_degraded_exec_time_sum=lo_degraded_exec_time_sum,
+        lo_degraded_exec_time_ratio=(
+            lo_degraded_exec_time_sum / float(total_lo_exec_time_sum)
+            if total_lo_exec_time_sum > 0.0
+            else None
+        ),
+        lo_zero_service_jobs=lo_zero_service_jobs,
+        lo_zero_service_ratio=(
+            float(lo_zero_service_jobs) / float(released_lo_jobs)
+            if released_lo_jobs > 0
+            else 0.0
+        ),
+        lo_full_quality_service_sum=lo_full_quality_service_sum,
+        lo_total_service_sum=lo_total_service_sum,
     )
 
 
@@ -317,6 +548,40 @@ def lo_job_loss_breakdown_to_row(
         f"{prefix}lo_active_dropped_on_mode_switch": metrics.lo_active_dropped_on_mode_switch,
         f"{prefix}jne_residual_not_in_cancellations": metrics.jne_residual_not_in_cancellations,
         f"{prefix}active_drop_share_of_jne": metrics.active_drop_share_of_jne,
+    }
+
+
+def lo_quality_weighted_metrics_to_row(
+    metrics: LoQualityWeightedMetrics,
+    prefix: str = "",
+) -> dict[str, int | float | None]:
+    """把质量加权 LO 指标展平成 CSV row。"""
+
+    return {
+        f"{prefix}lo_equiv_jne": metrics.lo_equiv_jne,
+        f"{prefix}lo_equiv_jne_rate": metrics.lo_equiv_jne_rate,
+        f"{prefix}lo_quality_qos": metrics.lo_quality_qos,
+        f"{prefix}lo_quality_loss": metrics.lo_quality_loss,
+        f"{prefix}lo_full_quality_completed": metrics.lo_full_quality_completed,
+        f"{prefix}lo_full_quality_ratio": metrics.lo_full_quality_ratio,
+        f"{prefix}lo_degraded_released": metrics.lo_degraded_released,
+        f"{prefix}lo_degraded_completed": metrics.lo_degraded_completed,
+        f"{prefix}lo_degraded_cancelled": metrics.lo_degraded_cancelled,
+        f"{prefix}lo_degraded_deadline_missed": metrics.lo_degraded_deadline_missed,
+        f"{prefix}lo_degraded_not_completed": metrics.lo_degraded_not_completed,
+        f"{prefix}lo_degraded_release_ratio": metrics.lo_degraded_release_ratio,
+        f"{prefix}lo_degraded_completion_ratio": metrics.lo_degraded_completion_ratio,
+        f"{prefix}lo_degraded_among_completed_ratio": metrics.lo_degraded_among_completed_ratio,
+        f"{prefix}lo_degraded_quality_sum": metrics.lo_degraded_quality_sum,
+        f"{prefix}lo_degraded_budget_sum": metrics.lo_degraded_budget_sum,
+        f"{prefix}lo_degraded_original_budget_sum": metrics.lo_degraded_original_budget_sum,
+        f"{prefix}lo_degraded_budget_ratio_mean": metrics.lo_degraded_budget_ratio_mean,
+        f"{prefix}lo_degraded_exec_time_sum": metrics.lo_degraded_exec_time_sum,
+        f"{prefix}lo_degraded_exec_time_ratio": metrics.lo_degraded_exec_time_ratio,
+        f"{prefix}lo_zero_service_jobs": metrics.lo_zero_service_jobs,
+        f"{prefix}lo_zero_service_ratio": metrics.lo_zero_service_ratio,
+        f"{prefix}lo_full_quality_service_sum": metrics.lo_full_quality_service_sum,
+        f"{prefix}lo_total_service_sum": metrics.lo_total_service_sum,
     }
 
 

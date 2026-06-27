@@ -32,10 +32,12 @@ from amc_py.dqn import (
 from amc_py.event_runtime import simulate_ordered_taskset_event_driven
 from amc_py.experiments import evaluate_taskset
 from amc_py.metrics import (
+    compute_lo_quality_weighted_metrics,
     compute_lo_job_loss_breakdown_metrics,
     compute_runtime_degradation_metrics,
     compute_service_quality_metrics,
     lo_job_loss_breakdown_to_row,
+    lo_quality_weighted_metrics_to_row,
     mean_optional as mean_optional_service_metric,
     safe_relative_reduction,
     service_metrics_to_row,
@@ -68,6 +70,10 @@ DEGRADATION_FIELDNAMES = [
     "nid",
     "tid",
     "total_time",
+    "tid_ratio",
+    "nid_per_1e6_time",
+    "mean_degraded_interval",
+    "safety_feasible",
     "jne_plus_ldm",
     "lo_job_losses_total",
     "lo_budget_cancellations",
@@ -88,6 +94,33 @@ QOS_FIELDNAMES = [
     "min_lc_service",
     "budget_adjust_count",
     "mean_abs_budget_change",
+]
+
+LO_QUALITY_WEIGHTED_FIELDNAMES = [
+    "lo_equiv_jne",
+    "lo_equiv_jne_rate",
+    "lo_quality_qos",
+    "lo_quality_loss",
+    "lo_full_quality_completed",
+    "lo_full_quality_ratio",
+    "lo_degraded_released",
+    "lo_degraded_completed",
+    "lo_degraded_cancelled",
+    "lo_degraded_deadline_missed",
+    "lo_degraded_not_completed",
+    "lo_degraded_release_ratio",
+    "lo_degraded_completion_ratio",
+    "lo_degraded_among_completed_ratio",
+    "lo_degraded_quality_sum",
+    "lo_degraded_budget_sum",
+    "lo_degraded_original_budget_sum",
+    "lo_degraded_budget_ratio_mean",
+    "lo_degraded_exec_time_sum",
+    "lo_degraded_exec_time_ratio",
+    "lo_zero_service_jobs",
+    "lo_zero_service_ratio",
+    "lo_full_quality_service_sum",
+    "lo_total_service_sum",
 ]
 
 TASK_LEVEL_INFO_KEYS = [
@@ -184,9 +217,22 @@ def _degradation_metrics_to_row(result: SimulationResult) -> dict[str, int | flo
         "nid": degradation.nid,
         "tid": degradation.tid,
         "total_time": degradation.total_time,
+        "tid_ratio": degradation.tid_ratio,
+        "nid_per_1e6_time": degradation.nid_per_1e6_time,
+        "mean_degraded_interval": degradation.mean_degraded_interval,
+        "safety_feasible": degradation.safety_feasible,
         "jne_plus_ldm": degradation.jne + degradation.ldm,
         **lo_job_loss_breakdown_to_row(loss_breakdown),
     }
+
+
+def _lo_quality_weighted_metrics_to_row_from_result(
+    result: SimulationResult,
+) -> dict[str, int | float | None]:
+    """把单次 runtime 结果转成质量加权 LO 指标行。"""
+
+    metrics = compute_lo_quality_weighted_metrics(result)
+    return lo_quality_weighted_metrics_to_row(metrics)
 
 
 def _baseline_runtime_config(
@@ -212,6 +258,7 @@ def _baseline_runtime_config(
         record_dropped_lo_releases=True,
         drop_lo_jobs_on_hi_switch=(semantics is not RuntimeSemantics.C_AMC_SEM),
         c_amc_sem_lo_degradation_ratio=c_amc_sem_xf,
+        c_amc_sem_primary_on_switch_time=(semantics is RuntimeSemantics.C_AMC_SEM),
     )
 
 
@@ -374,6 +421,7 @@ def _eval_summary_fieldnames() -> list[str]:
     )
     fieldnames.extend(TASK_LEVEL_INFO_KEYS)
     fieldnames.extend(QOS_FIELDNAMES)
+    fieldnames.extend(LO_QUALITY_WEIGHTED_FIELDNAMES)
     fieldnames.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
     return fieldnames
 
@@ -440,6 +488,7 @@ def _build_pure_runtime_baseline_row(
         "masked_deploy_cap_increase_rate": 0.0,
         **_degradation_metrics_to_row(runtime_result),
         **service_metrics_to_row(service_metrics),
+        **_lo_quality_weighted_metrics_to_row_from_result(runtime_result),
     }
 
 
@@ -783,6 +832,7 @@ def _evaluate_dqn_once(
             "pingpong_action_count": int(action_log_metrics["pingpong_action_count"]),
             **_degradation_metrics_to_row(runtime_result),
             **service_metrics_to_row(dqn_service_metrics),
+            **_lo_quality_weighted_metrics_to_row_from_result(runtime_result),
             **_task_level_info_row(last_info),
         }
     row.update(_noop_q_diagnostics_to_row(agent, diagnostic_states, diagnostic_valid_masks))
@@ -830,12 +880,41 @@ UNIFIED_SUMMARY_FIELDNAMES = [
     "jne_plus_ldm_mean",
     "nid_mean",
     "tid_mean",
+    "tid_ratio_mean",
+    "nid_per_1e6_time_mean",
+    "mean_degraded_interval_mean",
+    "safety_feasible_sum",
+    "safety_feasible_rate",
     "lo_job_losses_total_mean",
     "lo_budget_cancellations_mean",
     "lo_release_dropped_in_degraded_mode_mean",
     "lo_active_dropped_on_mode_switch_mean",
     "jne_residual_not_in_cancellations_mean",
     "active_drop_share_of_jne_mean",
+    "lo_equiv_jne_mean",
+    "lo_equiv_jne_rate_mean",
+    "lo_quality_qos_mean",
+    "lo_quality_loss_mean",
+    "lo_full_quality_completed_mean",
+    "lo_full_quality_ratio_mean",
+    "lo_degraded_released_mean",
+    "lo_degraded_completed_mean",
+    "lo_degraded_cancelled_mean",
+    "lo_degraded_deadline_missed_mean",
+    "lo_degraded_not_completed_mean",
+    "lo_degraded_release_ratio_mean",
+    "lo_degraded_completion_ratio_mean",
+    "lo_degraded_among_completed_ratio_mean",
+    "lo_degraded_quality_sum_mean",
+    "lo_degraded_budget_sum_mean",
+    "lo_degraded_original_budget_sum_mean",
+    "lo_degraded_budget_ratio_mean",
+    "lo_degraded_exec_time_sum_mean",
+    "lo_degraded_exec_time_ratio_mean",
+    "lo_zero_service_jobs_mean",
+    "lo_zero_service_ratio_mean",
+    "lo_full_quality_service_sum_mean",
+    "lo_total_service_sum_mean",
     "delta_lc_service_loss",
     "relative_lc_loss_reduction",
     "delta_lo_cancellations",
@@ -850,6 +929,16 @@ UNIFIED_SUMMARY_FIELDNAMES = [
     "delta_lo_release_dropped_in_degraded_mode",
     "delta_lo_active_dropped_on_mode_switch",
     "delta_jne_residual_not_in_cancellations",
+    "delta_lo_equiv_jne_rate",
+    "relative_lo_equiv_jne_rate_reduction",
+    "delta_lo_quality_qos",
+    "delta_lo_quality_loss",
+    "relative_lo_quality_loss_reduction",
+    "delta_lo_full_quality_ratio",
+    "delta_lo_degraded_release_ratio",
+    "delta_lo_degraded_completion_ratio",
+    "delta_lo_zero_service_ratio",
+    "delta_tid_ratio",
     "accepted_action_count_mean",
     "rejected_action_count_mean",
     "noop_action_count_mean",
@@ -928,6 +1017,11 @@ def _aggregate_method_summary_rows(
             "jne_plus_ldm_mean": _mean_metric(method_rows, "jne_plus_ldm"),
             "nid_mean": _mean_metric(method_rows, "nid"),
             "tid_mean": _mean_metric(method_rows, "tid"),
+            "tid_ratio_mean": _mean_metric(method_rows, "tid_ratio"),
+            "nid_per_1e6_time_mean": _mean_metric(method_rows, "nid_per_1e6_time"),
+            "mean_degraded_interval_mean": mean_optional_service_metric(method_rows, "mean_degraded_interval"),
+            "safety_feasible_sum": sum(int(_to_float(row, "safety_feasible")) for row in method_rows),
+            "safety_feasible_rate": _mean_metric(method_rows, "safety_feasible"),
             "lo_job_losses_total_mean": _mean_metric(method_rows, "lo_job_losses_total"),
             "lo_budget_cancellations_mean": _mean_metric(method_rows, "lo_budget_cancellations"),
             "lo_release_dropped_in_degraded_mode_mean": _mean_metric(
@@ -946,6 +1040,51 @@ def _aggregate_method_summary_rows(
                 method_rows,
                 "active_drop_share_of_jne",
             ),
+            "lo_equiv_jne_mean": _mean_metric(method_rows, "lo_equiv_jne"),
+            "lo_equiv_jne_rate_mean": _mean_metric(method_rows, "lo_equiv_jne_rate"),
+            "lo_quality_qos_mean": _mean_metric(method_rows, "lo_quality_qos"),
+            "lo_quality_loss_mean": _mean_metric(method_rows, "lo_quality_loss"),
+            "lo_full_quality_completed_mean": _mean_metric(method_rows, "lo_full_quality_completed"),
+            "lo_full_quality_ratio_mean": _mean_metric(method_rows, "lo_full_quality_ratio"),
+            "lo_degraded_released_mean": _mean_metric(method_rows, "lo_degraded_released"),
+            "lo_degraded_completed_mean": _mean_metric(method_rows, "lo_degraded_completed"),
+            "lo_degraded_cancelled_mean": _mean_metric(method_rows, "lo_degraded_cancelled"),
+            "lo_degraded_deadline_missed_mean": _mean_metric(
+                method_rows,
+                "lo_degraded_deadline_missed",
+            ),
+            "lo_degraded_not_completed_mean": _mean_metric(method_rows, "lo_degraded_not_completed"),
+            "lo_degraded_release_ratio_mean": _mean_metric(method_rows, "lo_degraded_release_ratio"),
+            "lo_degraded_completion_ratio_mean": _mean_metric(
+                method_rows,
+                "lo_degraded_completion_ratio",
+            ),
+            "lo_degraded_among_completed_ratio_mean": mean_optional_service_metric(
+                method_rows,
+                "lo_degraded_among_completed_ratio",
+            ),
+            "lo_degraded_quality_sum_mean": _mean_metric(method_rows, "lo_degraded_quality_sum"),
+            "lo_degraded_budget_sum_mean": _mean_metric(method_rows, "lo_degraded_budget_sum"),
+            "lo_degraded_original_budget_sum_mean": _mean_metric(
+                method_rows,
+                "lo_degraded_original_budget_sum",
+            ),
+            "lo_degraded_budget_ratio_mean": mean_optional_service_metric(
+                method_rows,
+                "lo_degraded_budget_ratio_mean",
+            ),
+            "lo_degraded_exec_time_sum_mean": _mean_metric(method_rows, "lo_degraded_exec_time_sum"),
+            "lo_degraded_exec_time_ratio_mean": mean_optional_service_metric(
+                method_rows,
+                "lo_degraded_exec_time_ratio",
+            ),
+            "lo_zero_service_jobs_mean": _mean_metric(method_rows, "lo_zero_service_jobs"),
+            "lo_zero_service_ratio_mean": _mean_metric(method_rows, "lo_zero_service_ratio"),
+            "lo_full_quality_service_sum_mean": _mean_metric(
+                method_rows,
+                "lo_full_quality_service_sum",
+            ),
+            "lo_total_service_sum_mean": _mean_metric(method_rows, "lo_total_service_sum"),
             "delta_lc_service_loss": None,
             "relative_lc_loss_reduction": None,
             "delta_lo_cancellations": None,
@@ -960,6 +1099,16 @@ def _aggregate_method_summary_rows(
             "delta_lo_release_dropped_in_degraded_mode": None,
             "delta_lo_active_dropped_on_mode_switch": None,
             "delta_jne_residual_not_in_cancellations": None,
+            "delta_lo_equiv_jne_rate": None,
+            "relative_lo_equiv_jne_rate_reduction": None,
+            "delta_lo_quality_qos": None,
+            "delta_lo_quality_loss": None,
+            "relative_lo_quality_loss_reduction": None,
+            "delta_lo_full_quality_ratio": None,
+            "delta_lo_degraded_release_ratio": None,
+            "delta_lo_degraded_completion_ratio": None,
+            "delta_lo_zero_service_ratio": None,
+            "delta_tid_ratio": None,
             "accepted_action_count_mean": _mean_metric(method_rows, "accepted_actions"),
             "rejected_action_count_mean": _mean_metric(method_rows, "rejected_actions"),
             "noop_action_count_mean": _mean_metric(method_rows, "noop_actions"),
@@ -1050,6 +1199,11 @@ def _build_dqn_reference_comparison_rows(
                 "jne_plus_ldm_mean": dqn_row["jne_plus_ldm_mean"],
                 "nid_mean": dqn_row["nid_mean"],
                 "tid_mean": dqn_row["tid_mean"],
+                "tid_ratio_mean": dqn_row["tid_ratio_mean"],
+                "nid_per_1e6_time_mean": dqn_row["nid_per_1e6_time_mean"],
+                "mean_degraded_interval_mean": dqn_row["mean_degraded_interval_mean"],
+                "safety_feasible_sum": dqn_row["safety_feasible_sum"],
+                "safety_feasible_rate": dqn_row["safety_feasible_rate"],
                 "lo_job_losses_total_mean": dqn_row["lo_job_losses_total_mean"],
                 "lo_budget_cancellations_mean": dqn_row["lo_budget_cancellations_mean"],
                 "lo_release_dropped_in_degraded_mode_mean": dqn_row[
@@ -1062,6 +1216,34 @@ def _build_dqn_reference_comparison_rows(
                     "jne_residual_not_in_cancellations_mean"
                 ],
                 "active_drop_share_of_jne_mean": dqn_row["active_drop_share_of_jne_mean"],
+                "lo_equiv_jne_mean": dqn_row["lo_equiv_jne_mean"],
+                "lo_equiv_jne_rate_mean": dqn_row["lo_equiv_jne_rate_mean"],
+                "lo_quality_qos_mean": dqn_row["lo_quality_qos_mean"],
+                "lo_quality_loss_mean": dqn_row["lo_quality_loss_mean"],
+                "lo_full_quality_completed_mean": dqn_row["lo_full_quality_completed_mean"],
+                "lo_full_quality_ratio_mean": dqn_row["lo_full_quality_ratio_mean"],
+                "lo_degraded_released_mean": dqn_row["lo_degraded_released_mean"],
+                "lo_degraded_completed_mean": dqn_row["lo_degraded_completed_mean"],
+                "lo_degraded_cancelled_mean": dqn_row["lo_degraded_cancelled_mean"],
+                "lo_degraded_deadline_missed_mean": dqn_row["lo_degraded_deadline_missed_mean"],
+                "lo_degraded_not_completed_mean": dqn_row["lo_degraded_not_completed_mean"],
+                "lo_degraded_release_ratio_mean": dqn_row["lo_degraded_release_ratio_mean"],
+                "lo_degraded_completion_ratio_mean": dqn_row["lo_degraded_completion_ratio_mean"],
+                "lo_degraded_among_completed_ratio_mean": dqn_row[
+                    "lo_degraded_among_completed_ratio_mean"
+                ],
+                "lo_degraded_quality_sum_mean": dqn_row["lo_degraded_quality_sum_mean"],
+                "lo_degraded_budget_sum_mean": dqn_row["lo_degraded_budget_sum_mean"],
+                "lo_degraded_original_budget_sum_mean": dqn_row[
+                    "lo_degraded_original_budget_sum_mean"
+                ],
+                "lo_degraded_budget_ratio_mean": dqn_row["lo_degraded_budget_ratio_mean"],
+                "lo_degraded_exec_time_sum_mean": dqn_row["lo_degraded_exec_time_sum_mean"],
+                "lo_degraded_exec_time_ratio_mean": dqn_row["lo_degraded_exec_time_ratio_mean"],
+                "lo_zero_service_jobs_mean": dqn_row["lo_zero_service_jobs_mean"],
+                "lo_zero_service_ratio_mean": dqn_row["lo_zero_service_ratio_mean"],
+                "lo_full_quality_service_sum_mean": dqn_row["lo_full_quality_service_sum_mean"],
+                "lo_total_service_sum_mean": dqn_row["lo_total_service_sum_mean"],
                 "delta_lc_service_loss": float(dqn_row["lc_service_loss_mean"]) - float(reference_row["lc_service_loss_mean"]),
                 "relative_lc_loss_reduction": safe_relative_reduction(
                     float(reference_row["lc_service_loss_mean"]),
@@ -1097,6 +1279,22 @@ def _build_dqn_reference_comparison_rows(
                 "delta_jne_residual_not_in_cancellations": float(
                     dqn_row["jne_residual_not_in_cancellations_mean"]
                 ) - float(reference_row["jne_residual_not_in_cancellations_mean"]),
+                "delta_lo_equiv_jne_rate": float(dqn_row["lo_equiv_jne_rate_mean"]) - float(reference_row["lo_equiv_jne_rate_mean"]),
+                "relative_lo_equiv_jne_rate_reduction": safe_relative_reduction(
+                    float(reference_row["lo_equiv_jne_rate_mean"]),
+                    float(dqn_row["lo_equiv_jne_rate_mean"]),
+                ),
+                "delta_lo_quality_qos": float(dqn_row["lo_quality_qos_mean"]) - float(reference_row["lo_quality_qos_mean"]),
+                "delta_lo_quality_loss": float(dqn_row["lo_quality_loss_mean"]) - float(reference_row["lo_quality_loss_mean"]),
+                "relative_lo_quality_loss_reduction": safe_relative_reduction(
+                    float(reference_row["lo_quality_loss_mean"]),
+                    float(dqn_row["lo_quality_loss_mean"]),
+                ),
+                "delta_lo_full_quality_ratio": float(dqn_row["lo_full_quality_ratio_mean"]) - float(reference_row["lo_full_quality_ratio_mean"]),
+                "delta_lo_degraded_release_ratio": float(dqn_row["lo_degraded_release_ratio_mean"]) - float(reference_row["lo_degraded_release_ratio_mean"]),
+                "delta_lo_degraded_completion_ratio": float(dqn_row["lo_degraded_completion_ratio_mean"]) - float(reference_row["lo_degraded_completion_ratio_mean"]),
+                "delta_lo_zero_service_ratio": float(dqn_row["lo_zero_service_ratio_mean"]) - float(reference_row["lo_zero_service_ratio_mean"]),
+                "delta_tid_ratio": float(dqn_row["tid_ratio_mean"]) - float(reference_row["tid_ratio_mean"]),
                 "accepted_action_count_mean": dqn_row["accepted_action_count_mean"],
                 "rejected_action_count_mean": dqn_row["rejected_action_count_mean"],
                 "noop_action_count_mean": dqn_row["noop_action_count_mean"],
@@ -1178,6 +1376,10 @@ def _trace_rows_from_runtime(result: SimulationResult) -> list[dict]:
     """
 
     rows: list[dict] = []
+    # 这里提前建 job 索引，是为了在 deadline_miss 行中把“该 miss 对应的 job
+    # 到底是不是 degraded、释放时处于什么 mode、原始预算是多少”一起补齐。
+    # 这样 trace/debug JSONL 可以直接支撑计划文档要求的后处理，不需要再二次 join。
+    job_by_key = {(job.task.name, job.release_index): job for job in result.jobs}
     for tick in result.trace:
         rows.append(
             {
@@ -1190,6 +1392,7 @@ def _trace_rows_from_runtime(result: SimulationResult) -> list[dict]:
         )
     rows.extend(result.debug_events)
     for miss in result.deadline_misses:
+        job = job_by_key.get((miss.task, miss.release_index))
         rows.append(
             {
                 "event": "deadline_miss",
@@ -1199,6 +1402,13 @@ def _trace_rows_from_runtime(result: SimulationResult) -> list[dict]:
                 "absolute_deadline": miss.absolute_deadline,
                 "mode_at_miss": miss.mode_at_miss.name,
                 "executed_at_miss": miss.executed_at_miss,
+                "released_in_mode": None if job is None else job.released_in_mode.name,
+                "is_degraded": None if job is None else job.is_degraded,
+                "service_quality_if_completed": None if job is None else job.service_quality_if_completed,
+                "original_actual_cost": None if job is None else job.original_actual_cost,
+                "original_runtime_budget_at_release": (
+                    None if job is None else job.original_runtime_budget_at_release
+                ),
             }
         )
     return rows
@@ -1607,6 +1817,7 @@ def _evaluate_enabled_methods_for_seed(
                 "masked_deploy_cap_increase_rate": 0.0,
                 **_degradation_metrics_to_row(noop_result.runtime_result),
                 **service_metrics_to_row(noop_service_metrics),
+                **_lo_quality_weighted_metrics_to_row_from_result(noop_result.runtime_result),
             }
         )
         deadline_miss_details.extend(
@@ -1699,6 +1910,7 @@ def _evaluate_enabled_methods_for_seed(
                 "masked_deploy_cap_increase_rate": 0.0,
                 **_degradation_metrics_to_row(random_result.runtime_result),
                 **service_metrics_to_row(random_service_metrics),
+                **_lo_quality_weighted_metrics_to_row_from_result(random_result.runtime_result),
             }
         )
         deadline_miss_details.extend(
@@ -1805,6 +2017,7 @@ def _evaluate_enabled_methods_for_seed(
                 "masked_deploy_cap_increase_rate": 0.0,
                 **_degradation_metrics_to_row(heuristic_result.runtime_result),
                 **service_metrics_to_row(heuristic_service_metrics),
+                **_lo_quality_weighted_metrics_to_row_from_result(heuristic_result.runtime_result),
             }
         )
         deadline_miss_details.extend(

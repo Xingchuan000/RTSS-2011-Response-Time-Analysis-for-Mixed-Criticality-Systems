@@ -164,6 +164,13 @@ def _build_job(
     release_index: int,
     scenario: ExecutionScenario,
     actual_cost_override: int | None = None,
+    *,
+    runtime_budget_at_release: int | None = None,
+    released_in_mode: SystemMode = SystemMode.LO,
+    is_degraded: bool = False,
+    service_quality_if_completed: float = 1.0,
+    original_actual_cost: int | None = None,
+    original_runtime_budget_at_release: int | None = None,
 ) -> Job:
     """根据任务定义 + release_index + 场景构造出一个 Job 实例。
 
@@ -174,17 +181,24 @@ def _build_job(
 
     release_time = release_index * task.period
     absolute_deadline = release_time + task.deadline
-    actual_cost = (
-        actual_cost_override
-        if actual_cost_override is not None
-        else scenario.actual_cost_for(task, release_index)
-    )
+    raw_actual_cost = scenario.actual_cost_for(task, release_index)
+    actual_cost = actual_cost_override if actual_cost_override is not None else raw_actual_cost
     return Job(
         task=task,
         release_index=release_index,
         release_time=release_time,
         absolute_deadline=absolute_deadline,
         actual_cost=actual_cost,
+        runtime_budget_at_release=runtime_budget_at_release,
+        released_in_mode=released_in_mode,
+        is_degraded=is_degraded,
+        service_quality_if_completed=float(service_quality_if_completed),
+        original_actual_cost=raw_actual_cost if original_actual_cost is None else original_actual_cost,
+        original_runtime_budget_at_release=(
+            runtime_budget_at_release
+            if original_runtime_budget_at_release is None
+            else original_runtime_budget_at_release
+        ),
     )
 
 
@@ -232,6 +246,8 @@ def _release_jobs_at_time_with_busy_periods(
     suppress_lo_releases: bool = False,
     mode: SystemMode = SystemMode.LO,
     c_amc_sem_lo_degradation_ratio: float = 0.5,
+    release_mode: SystemMode | None = None,
+    runtime_budgets: BudgetState | None = None,
 ) -> tuple[list[Job], list[JobCancellationEvent]]:
     """在 `current_time` 释放所有应当释放的 job，并按优先级填充 busy period 信息。
 
@@ -250,6 +266,9 @@ def _release_jobs_at_time_with_busy_periods(
     3. 让单元测试可以直接验证 suppress 语义。
     """
 
+    if release_mode is None:
+        release_mode = mode
+
     released: list[Job] = []
     dropped_release_cancellations: list[JobCancellationEvent] = []
     due_tasks: list[tuple[int, Task]] = []
@@ -262,7 +281,10 @@ def _release_jobs_at_time_with_busy_periods(
 
     due_tasks.sort(key=lambda item: priority_map[item[1].name])
     for release_index, task in due_tasks:
-        if mode is SystemMode.HI and _is_c_amc_semantics(semantics) and task.criticality is Criticality.LO:
+        current_runtime_budget = (
+            runtime_budgets.budget_of(task) if runtime_budgets is not None else task.c_lo
+        )
+        if release_mode is SystemMode.HI and _is_c_amc_semantics(semantics) and task.criticality is Criticality.LO:
             # 只有 C-AMC-sem 会在 HI mode 中继续释放 LO job。该分支用
             # XF 计算 imprecise/degraded budget，并把本次实际执行需求截断到
             # degraded budget，避免把旧 runtime 改成计划外的“原始成本继续执行”。
@@ -271,20 +293,32 @@ def _release_jobs_at_time_with_busy_periods(
                 min(task.c_lo, int(round(task.c_lo * c_amc_sem_lo_degradation_ratio))),
             )
             original_actual_cost = scenario.actual_cost_for(task, release_index)
+            original_budget = current_runtime_budget
             job = _build_job(
                 task,
                 release_index,
                 scenario,
                 actual_cost_override=min(original_actual_cost, degraded_budget),
+                runtime_budget_at_release=degraded_budget,
+                released_in_mode=release_mode,
+                is_degraded=True,
+                service_quality_if_completed=float(c_amc_sem_lo_degradation_ratio),
+                original_actual_cost=original_actual_cost,
+                original_runtime_budget_at_release=original_budget,
             )
-            job.runtime_budget_at_release = degraded_budget
             released.append(job)
             continue
 
         if suppress_lo_releases and task.criticality is Criticality.LO:
             if not record_dropped_lo_releases:
                 continue
-            job = _build_job(task, release_index, scenario)
+            job = _build_job(
+                task,
+                release_index,
+                scenario,
+                runtime_budget_at_release=current_runtime_budget,
+                released_in_mode=release_mode,
+            )
             job.dropped = True
             job.drop_time = current_time
             released.append(job)
@@ -297,13 +331,19 @@ def _release_jobs_at_time_with_busy_periods(
                     task=job.task.name,
                     release_index=job.release_index,
                     executed_at_cancel=0,
-                    budget_at_cancel=job.task.c_lo,
-                    reason="lo_release_dropped_in_degraded_mode",
-                )
+                budget_at_cancel=job.runtime_budget_at_release or current_runtime_budget,
+                reason="lo_release_dropped_in_degraded_mode",
+            )
             )
             continue
 
-        job = _build_job(task, release_index, scenario)
+        job = _build_job(
+            task,
+            release_index,
+            scenario,
+            runtime_budget_at_release=current_runtime_budget,
+            released_in_mode=release_mode,
+        )
         job.busy_period_start = _compute_busy_period_start_for_new_job(
             active_jobs=[*active_jobs, *released],
             new_task=task,
@@ -337,6 +377,7 @@ def _release_jobs_at_time(
         design_r_lo={},
         record_dropped_lo_releases=False,
         suppress_lo_releases=suppress_lo_releases,
+        runtime_budgets=None,
     )
     return released
 
@@ -668,6 +709,9 @@ def simulate_ordered_taskset(
                     _drop_active_lo_jobs(active_jobs, current_time=t)
 
         # ---- 2. C-AMC-sem 在 release time 先做 semi-clairvoyant 模式切换 ----
+        mode_before_release_batch = mode
+        switched_by_c_amc_sem_batch = False
+
         if _is_c_amc_semantics(cfg.semantics) and mode is SystemMode.LO:
             abnormal_arrival = _find_c_amc_sem_hi_abnormal_arrival(
                 current_time=t,
@@ -679,6 +723,7 @@ def simulate_ordered_taskset(
             if abnormal_arrival is not None:
                 trigger_release_index, trigger_task = abnormal_arrival
                 mode = SystemMode.HI
+                switched_by_c_amc_sem_batch = True
                 mode_switches.append(
                     ModeSwitchEvent(
                         switch_time=t,
@@ -691,6 +736,14 @@ def simulate_ordered_taskset(
                 )
 
         # ---- 3. 在 tick 起点释放到期的 job ----
+        release_mode = mode
+        if (
+            switched_by_c_amc_sem_batch
+            and cfg.c_amc_sem_primary_on_switch_time
+            and mode_before_release_batch is SystemMode.LO
+        ):
+            release_mode = SystemMode.LO
+
         newly_released, dropped_release_cancellations = _release_jobs_at_time_with_busy_periods(
             current_time=t,
             ordered_tasks=ordered_tasks,
@@ -706,6 +759,8 @@ def simulate_ordered_taskset(
             suppress_lo_releases=(mode is SystemMode.HI and not _is_c_amc_semantics(cfg.semantics)),
             mode=mode,
             c_amc_sem_lo_degradation_ratio=cfg.c_amc_sem_lo_degradation_ratio,
+            release_mode=release_mode,
+            runtime_budgets=runtime_budgets,
         )
         job_cancellations.extend(dropped_release_cancellations)
         # 新释放的 normal jobs 进入活动队列；若是 degraded mode 中被直接 dropped 的

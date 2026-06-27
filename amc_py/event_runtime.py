@@ -80,16 +80,19 @@ def _build_job(
     scenario: ExecutionScenario,
     runtime_budget_at_release: int,
     actual_cost_override: int | None = None,
+    *,
+    released_in_mode: SystemMode = SystemMode.LO,
+    is_degraded: bool = False,
+    service_quality_if_completed: float = 1.0,
+    original_actual_cost: int | None = None,
+    original_runtime_budget_at_release: int | None = None,
 ) -> Job:
     """按现有 tick runtime 的同等逻辑构建 job。"""
 
     release_time = release_index * task.period
     absolute_deadline = release_time + task.deadline
-    actual_cost = (
-        actual_cost_override
-        if actual_cost_override is not None
-        else scenario.actual_cost_for(task, release_index)
-    )
+    raw_actual_cost = scenario.actual_cost_for(task, release_index)
+    actual_cost = actual_cost_override if actual_cost_override is not None else raw_actual_cost
     return Job(
         task=task,
         release_index=release_index,
@@ -97,6 +100,15 @@ def _build_job(
         absolute_deadline=absolute_deadline,
         actual_cost=actual_cost,
         runtime_budget_at_release=runtime_budget_at_release,
+        released_in_mode=released_in_mode,
+        is_degraded=is_degraded,
+        service_quality_if_completed=float(service_quality_if_completed),
+        original_actual_cost=raw_actual_cost if original_actual_cost is None else original_actual_cost,
+        original_runtime_budget_at_release=(
+            runtime_budget_at_release
+            if original_runtime_budget_at_release is None
+            else original_runtime_budget_at_release
+        ),
     )
 
 
@@ -607,6 +619,11 @@ class EventRuntimeEngine:
                 "running_executed_time": None if running_job is None else running_job.executed_time,
                 "running_actual_cost": None if running_job is None else running_job.actual_cost,
                 "running_budget_at_release": None if running_job is None else running_job.runtime_budget_at_release,
+                "running_released_in_mode": None if running_job is None else running_job.released_in_mode.name,
+                "running_is_degraded": None if running_job is None else running_job.is_degraded,
+                "running_service_quality_if_completed": (
+                    None if running_job is None else running_job.service_quality_if_completed
+                ),
                 "current_global_budget": current_budget,
                 "active_jobs_count": len(self.state.active_jobs),
                 **payload,
@@ -727,6 +744,10 @@ class EventRuntimeEngine:
             release_index,
             self.scenario,
             runtime_budget_at_release=self.budget_state.budget_of(task),
+            released_in_mode=self.state.mode,
+            is_degraded=False,
+            service_quality_if_completed=1.0,
+            original_runtime_budget_at_release=self.budget_state.budget_of(task),
         )
         job.dropped = True
         job.drop_time = now
@@ -759,13 +780,13 @@ class EventRuntimeEngine:
         self,
         events: Sequence[Event],
         now: int,
-    ) -> None:
+    ) -> bool:
         """C-AMC-sem：HI abnormal job 在 release 时刻触发 LO->HI。"""
 
         if not _is_c_amc_semantics(self.config.semantics):
-            return
+            return False
         if self.state.mode is not SystemMode.LO:
-            return
+            return False
 
         abnormal_arrivals: list[tuple[Event, Task, int]] = []
         for event in events:
@@ -779,7 +800,7 @@ class EventRuntimeEngine:
                 abnormal_arrivals.append((event, task, actual_cost))
 
         if not abnormal_arrivals:
-            return
+            return False
 
         # 同一时刻如果有多个 HI abnormal arrival，严格沿用当前固定优先级
         # 顺序，选出优先级最高的触发者写入唯一一次 mode switch 记录。
@@ -807,6 +828,7 @@ class EventRuntimeEngine:
             trigger_actual_cost=trigger_actual_cost,
             trigger_c_lo=trigger_task.c_lo,
         )
+        return True
 
     def _schedule_next_release(self, task: Task, release_index: int) -> None:
         """安排某个任务的下一次周期释放。"""
@@ -823,13 +845,20 @@ class EventRuntimeEngine:
                 )
             )
 
-    def _process_single_arrival_in_priority_order(self, event: Event) -> None:
+    def _process_single_arrival_in_priority_order(
+        self,
+        event: Event,
+        *,
+        release_mode: SystemMode | None = None,
+    ) -> None:
         """按优先级顺序处理同一时刻的单个 arrival。"""
 
         assert event.task_name is not None
         assert event.release_index is not None
         task = self.task_map[event.task_name]
         now = event.time
+        if release_mode is None:
+            release_mode = self.state.mode
 
         # 先安排下一次 release，确保 degraded mode 中被 dropped 的 release
         # 也会继续推进 release_index，不会阻断未来周期行为。
@@ -837,17 +866,29 @@ class EventRuntimeEngine:
 
         runtime_budget_at_release = self.budget_state.budget_of(task)
         actual_cost_override: int | None = None
+        # 下面这组元数据会直接写入 Job，供后处理严格区分：
+        # - 这个 job 是按 LO 还是 HI 语义释放的；
+        # - 是否属于计划定义下的 degraded LO release；
+        # - 若完成时应计入多少服务质量；
+        # - 降级前的原始 cost / budget 分别是多少。
+        is_degraded = False
+        service_quality_if_completed = 1.0
+        original_actual_cost = None
+        original_runtime_budget_at_release = runtime_budget_at_release
 
-        if self.state.mode is SystemMode.HI and task.criticality is Criticality.LO:
+        if release_mode is SystemMode.HI and task.criticality is Criticality.LO:
             if _is_c_amc_semantics(self.config.semantics):
                 # C-AMC-sem 下 HI mode 中的 LO release 不能被 suppress，而是要
                 # 用 XF 缩放后的 degraded budget 重新构造 job，并把实际执行需求
                 # 截断到该 budget，避免引入计划外的额外运行量。
+                is_degraded = True
+                service_quality_if_completed = float(self.config.c_amc_sem_lo_degradation_ratio)
+                original_actual_cost = self.scenario.actual_cost_for(task, event.release_index)
+                original_runtime_budget_at_release = self.budget_state.budget_of(task)
                 runtime_budget_at_release = _c_amc_sem_degraded_lo_budget(
                     task,
                     self.config,
                 )
-                original_actual_cost = self.scenario.actual_cost_for(task, event.release_index)
                 actual_cost_override = min(original_actual_cost, runtime_budget_at_release)
                 self._append_debug_event(
                     "c_amc_sem_degraded_lo_release",
@@ -868,6 +909,11 @@ class EventRuntimeEngine:
             self.scenario,
             runtime_budget_at_release=runtime_budget_at_release,
             actual_cost_override=actual_cost_override,
+            released_in_mode=release_mode,
+            is_degraded=is_degraded,
+            service_quality_if_completed=service_quality_if_completed,
+            original_actual_cost=original_actual_cost,
+            original_runtime_budget_at_release=original_runtime_budget_at_release,
         )
         job.busy_period_start = _compute_busy_period_start_for_new_job(
             active_jobs=self.state.active_jobs,
@@ -890,6 +936,11 @@ class EventRuntimeEngine:
             absolute_deadline=job.absolute_deadline,
             actual_cost=job.actual_cost,
             runtime_budget_at_release=job.runtime_budget_at_release,
+            released_in_mode=job.released_in_mode.name,
+            is_degraded=job.is_degraded,
+            service_quality_if_completed=job.service_quality_if_completed,
+            original_actual_cost=job.original_actual_cost,
+            original_runtime_budget_at_release=job.original_runtime_budget_at_release,
             busy_period_start=job.busy_period_start,
             response_time_expiry=job.response_time_expiry,
         )
@@ -915,9 +966,22 @@ class EventRuntimeEngine:
         events.sort(
             key=lambda event: self.priority_map[event.task_name]  # type: ignore[index]
         )
-        self._maybe_enter_c_amc_sem_hi_mode_at_arrival(events, now)
+        mode_before_batch = self.state.mode
+        switched_by_c_amc_sem_batch = self._maybe_enter_c_amc_sem_hi_mode_at_arrival(events, now)
         for arrival in events:
-            self._process_single_arrival_in_priority_order(arrival)
+            release_mode = self.state.mode
+            # 计划要求的严格边界：如果同一 arrival batch 内是由 HI abnormal arrival
+            # 触发的 C-AMC-sem 切换，并且显式打开了 primary_on_switch_time，
+            # 那么这个 batch 里同一时刻的 LO release 仍按切换前 LO mode primary
+            # 语义创建；只有严格晚于 switch_time 的 LO release 才 degraded。
+            if (
+                switched_by_c_amc_sem_batch
+                and self.config.c_amc_sem_primary_on_switch_time
+                and mode_before_batch is SystemMode.LO
+                and arrival.time == now
+            ):
+                release_mode = SystemMode.LO
+            self._process_single_arrival_in_priority_order(arrival, release_mode=release_mode)
         self._reschedule(now)
         return True
 
@@ -957,6 +1021,11 @@ class EventRuntimeEngine:
                     actual_cost=job.actual_cost,
                     executed_at_miss=job.executed_time,
                     runtime_budget_at_release=job.runtime_budget_at_release,
+                    released_in_mode=job.released_in_mode.name,
+                    is_degraded=job.is_degraded,
+                    service_quality_if_completed=job.service_quality_if_completed,
+                    original_actual_cost=job.original_actual_cost,
+                    original_runtime_budget_at_release=job.original_runtime_budget_at_release,
                     completion_time=job.completion_time,
                     dropped=job.dropped,
                     drop_time=job.drop_time,
@@ -995,6 +1064,11 @@ class EventRuntimeEngine:
                 release_index=job.release_index,
                 completion_time=job.completion_time,
                 actual_cost=job.actual_cost,
+                released_in_mode=job.released_in_mode.name,
+                is_degraded=job.is_degraded,
+                service_quality_if_completed=job.service_quality_if_completed,
+                original_actual_cost=job.original_actual_cost,
+                original_runtime_budget_at_release=job.original_runtime_budget_at_release,
             )
             if self.monitor is not None:
                 self.monitor.record_job_completion(job.task.name, job.executed_time)

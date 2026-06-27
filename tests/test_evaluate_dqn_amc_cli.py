@@ -42,6 +42,11 @@ def test_evaluate_fieldnames_include_degradation_metrics() -> None:
         "active_drop_share_of_jne",
     }
     assert required.issubset(fields)
+    assert "lo_equiv_jne_rate" in fields
+    assert "lo_quality_qos" in fields
+    assert "lo_degraded_released" in fields
+    assert "lo_full_quality_ratio" in fields
+    assert "tid_ratio" in fields
 
 
 def test_formal_evaluate_runtime_configs_disable_trace_and_record_dropped_lo_releases() -> None:
@@ -159,6 +164,11 @@ def test_evaluate_dqn_amc_cli_runs_after_training(tmp_path: Path) -> None:
         "valid_action_count_mean",
     }
     assert expected_summary_fields.issubset(set(unified_rows[0].keys()))
+    assert "lo_equiv_jne_rate_mean" in unified_rows[0]
+    assert "lo_quality_qos_mean" in unified_rows[0]
+    assert "lo_degraded_released_mean" in unified_rows[0]
+    assert "tid_ratio_mean" in unified_rows[0]
+    assert "delta_lo_equiv_jne_rate" in unified_rows[0]
     row_types = {row["row_type"] for row in unified_rows}
     assert row_types >= {"method_summary", "dqn_vs_reference"}
     unified_methods = {row["method"] for row in unified_rows}

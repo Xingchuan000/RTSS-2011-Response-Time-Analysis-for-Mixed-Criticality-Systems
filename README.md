@@ -121,6 +121,62 @@ conda run -n amc-repro python scripts/run_amc_ra_rh_runtime_example.py
 - `mode_changes / recoveries / dropped_lo_jobs / jne / tid / final_mode`
 - `mode_switch_times / mode_recovery_times`，用于直接观察 RA 与 RH 的恢复差异
 
+## 4.4 C-AMC-sem degraded LO 指标与使用说明
+
+本次修改严格按照计划文档，仅在 C-AMC-sem baseline 严谨化和 degraded LO 指标统计范围内扩展：
+
+- `RuntimeConfig.c_amc_sem_primary_on_switch_time`
+  - 默认值为 `False`，保持旧 C-AMC-sem 在“同一时刻先切 HI，再处理同批 LO release”时的旧行为不变。
+  - `scripts/evaluate_dqn_amc.py` 中仅 `c_amc_sem_baseline` 会显式设为 `True`，用于启用计划文档要求的更严谨边界：
+    同一 arrival batch 内若 HI abnormal arrival 触发切换，则同一时刻 LO release 仍按 LO mode primary 语义创建；只有严格晚于 switch time 的 LO release 才 degraded。
+
+- `Job` 新增 metadata
+  - `released_in_mode`：job 释放时采用的模式语义。
+  - `is_degraded`：是否为计划定义下的 C-AMC-sem degraded LO release。
+  - `service_quality_if_completed`：若该 job 按时完成，可贡献的服务质量。
+  - `original_actual_cost`：降级截断前的原始执行需求。
+  - `original_runtime_budget_at_release`：降级前的 full-quality budget。
+
+- `scripts/evaluate_dqn_amc.py` 明细 CSV 新增两类字段
+  - degraded mode 扩展字段：`tid_ratio / nid_per_1e6_time / mean_degraded_interval / safety_feasible`
+  - LO quality-weighted 字段：`lo_equiv_jne* / lo_quality_* / lo_degraded_* / lo_zero_service_* / lo_total_service_sum` 等
+
+- `hout_unified_summary.csv` 新增两类汇总字段
+  - method summary：上述 degraded/quality 指标的 `*_mean`、`safety_feasible_sum`、`safety_feasible_rate`
+  - `dqn_vs_reference`：新增 `delta_lo_equiv_jne_rate / delta_lo_quality_qos / delta_lo_quality_loss / delta_tid_ratio` 等差值字段
+
+- trace / debug JSONL
+  - `deadline_miss` 相关行会额外输出 `released_in_mode / is_degraded / service_quality_if_completed / original_actual_cost / original_runtime_budget_at_release`
+  - 用于直接排查 degraded LO job 是否按计划口径进入质量统计
+
+运行评估示例：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/evaluate_dqn_amc.py \
+  --model /path/to/model_final.pt \
+  --seeds 0,1 \
+  --end-time 50 \
+  --baselines amc_plus_baseline,amc_ra_baseline,amc_rh_baseline,c_amc_sem_baseline,dqn_agent \
+  --c-amc-sem-xf 0.5 \
+  --output /path/to/hout.csv
+```
+
+输出使用要点：
+
+- `hout.csv`
+  - 保留旧字段：`lc_service_loss / lc_qos / jne / ldm / jne_plus_ldm / lo_job_losses_*`
+  - 新增字段只追加，不替换旧口径
+
+- `hout_unified_summary.csv`
+  - `row_type=method_summary`：看单方法均值
+  - `row_type=dqn_vs_reference`：看 `DQN - reference` 的 delta 与 relative reduction
+
+- 指标解释
+  - 非 C-AMC-sem 方法中，`lo_degraded_released == 0`
+  - 非 C-AMC-sem 方法中，`lo_quality_qos == 1 - lo_equiv_jne_rate`
+  - C-AMC-sem 中 degraded completed LO job 对 `lo_quality_qos` 的贡献等于 `--c-amc-sem-xf`
+
 ## 5. 如何运行小规模实验
 
 ```bash
