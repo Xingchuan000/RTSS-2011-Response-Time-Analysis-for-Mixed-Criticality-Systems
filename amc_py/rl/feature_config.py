@@ -28,6 +28,9 @@ OBSERVATION_MODE_V11_NO_RISK_NO_UTIL_8D = "v11_no_risk_no_util_8d"
 OBSERVATION_MODE_V11_LITE_6D = "v11_lite_6d"
 OBSERVATION_MODE_V12_FULL_14D = "v12_full_14d"
 
+# v13 RH-specific observation mode：每任务 17 维 + 全局 16 维
+OBSERVATION_MODE_V13_RH_17D = "v13_rh_17d"
+
 # v10 基础模式下，每个任务固定 2 个输入维度。
 V10_PER_TASK_FEATURE_DIM = 2
 
@@ -50,6 +53,10 @@ V11_NO_RISK_NO_UTIL_GLOBAL_FEATURE_DIM = V11_GLOBAL_FEATURE_DIM
 V11_LITE_GLOBAL_FEATURE_DIM = V11_GLOBAL_FEATURE_DIM
 V12_PER_TASK_FEATURE_DIM = 14
 V12_GLOBAL_FEATURE_DIM = 8
+
+# v13_rh_17d：每任务 17 维（v12 的 14 维 + 3 维 RH-risk per-task hint）+ 全局 16 维（v12 的 8 维 + 8 维 RH-risk global）
+V13_RH_17D_PER_TASK_FEATURE_DIM = 17
+V13_RH_17D_GLOBAL_FEATURE_DIM = 16
 
 # v11 每任务 10 维的特征名称，顺序必须与设计文档一致。
 # 后续真正拼接 state_vector 时必须严格按该顺序输出，避免训练输入语义漂移。
@@ -179,6 +186,47 @@ V12_PER_TASK_FEATURE_NAMES: tuple[str, ...] = (
 # v12 全局维度定义沿用 v11 的 8 维。
 V12_GLOBAL_FEATURE_NAMES: tuple[str, ...] = V11_GLOBAL_FEATURE_NAMES
 
+# v13 每任务 17 维特征名称（前 14 维复用 v12，后 3 维为 RH-risk per-task hint）。
+V13_RH_17D_PER_TASK_FEATURE_NAMES: tuple[str, ...] = (
+    "budget_norm",
+    "recent_cost_norm",
+    "ema_cost_norm",
+    "max_cost_k_norm",
+    "overrun_ema",
+    "risk",
+    "surplus",
+    "criticality",
+    "priority_norm",
+    "util_budget",
+    "positive_budget_drift",
+    "negative_budget_drift",
+    "task_cancel_ema",
+    "safe_inc_possible",
+    "active_lo_task_hint",
+    "active_lo_remaining_ratio_hint",
+    "task_under_hi_pressure_hint",
+)
+
+# v13 全局 16 维特征名称（前 8 维复用 v12，后 8 维为 RH-risk global 特征）。
+V13_RH_17D_GLOBAL_FEATURE_NAMES: tuple[str, ...] = (
+    "total_budget_util",
+    "hi_budget_util",
+    "lo_budget_util",
+    "recent_mode_change_rate",
+    "recent_lo_cancel_rate",
+    "recent_hi_overrun_rate",
+    "recent_lo_overrun_rate",
+    "safety_margin_min",
+    "hi_mode_pressure_mean",
+    "hi_mode_pressure_max",
+    "active_lo_job_rate",
+    "active_lo_work_ratio",
+    "active_lo_under_hi_pressure",
+    "recent_active_drop_rate",
+    "recent_budget_cancellation_rate",
+    "recent_release_drop_rate",
+)
+
 
 def supports_task_structured_features(mode: str) -> bool:
     """判断某 observation mode 是否支持 v11-family 的结构化任务特征。
@@ -196,6 +244,7 @@ def supports_task_structured_features(mode: str) -> bool:
         OBSERVATION_MODE_V11_NO_RISK_NO_UTIL_8D,
         OBSERVATION_MODE_V11_LITE_6D,
         OBSERVATION_MODE_V12_FULL_14D,
+        OBSERVATION_MODE_V13_RH_17D,
     }
 
 
@@ -275,4 +324,6 @@ class FeatureConfig:
             return V11_LITE_PER_TASK_FEATURE_DIM * task_count + V11_LITE_GLOBAL_FEATURE_DIM
         if self.observation_mode == OBSERVATION_MODE_V12_FULL_14D:
             return V12_PER_TASK_FEATURE_DIM * task_count + V12_GLOBAL_FEATURE_DIM
+        if self.observation_mode == OBSERVATION_MODE_V13_RH_17D:
+            return V13_RH_17D_PER_TASK_FEATURE_DIM * task_count + V13_RH_17D_GLOBAL_FEATURE_DIM
         raise ValueError(f"不支持的 observation_mode: {self.observation_mode}")

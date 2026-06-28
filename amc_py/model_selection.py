@@ -43,6 +43,20 @@ def is_qos_best_valid(row: Mapping[str, object]) -> bool:
     return is_hi_safe(row)
 
 
+def is_zero_service_qos_valid(
+    row: Mapping[str, object],
+    *,
+    mode_delta: float = 0.05,
+) -> bool:
+    """Zero-Service-QoS：HI safe 且 mode_changes 不超过 baseline 允许范围。"""
+
+    if not is_hi_safe(row):
+        return False
+    baseline_mode = _float_or_default(row.get("baseline_mode_changes_mean"), float("inf"))
+    dqn_mode = _float_or_default(row.get("mode_changes_mean"), float("inf"))
+    return dqn_mode <= baseline_mode * (1.0 + mode_delta)
+
+
 def _sum_json_counter(value: object) -> float:
     """把 JSON 计数字段安全聚合成总和。
 
@@ -173,6 +187,28 @@ def qos_sort_key(row: Mapping[str, object]) -> tuple[float, float, float, float,
     )
 
 
+def zero_service_qos_sort_key(row: Mapping[str, object]) -> tuple[float, float, float, float, float, int]:
+    """Zero-service 选模排序。
+
+    排序优先级严格按计划文档：
+    1. `lo_zero_service_ratio_mean` 越低越好；
+    2. `lo_active_drop_rate_mean` 越低越好；
+    3. `lo_budget_cancellation_rate_mean` 越低越好；
+    4. `mode_changes_mean` 越低越好；
+    5. `mean_abs_budget_change_mean` 越低越好；
+    6. `episode` 越早越好。
+    """
+
+    return (
+        _float_or_default(row.get("lo_zero_service_ratio_mean"), float("inf")),
+        _float_or_default(row.get("lo_active_drop_rate_mean"), float("inf")),
+        _float_or_default(row.get("lo_budget_cancellation_rate_mean"), float("inf")),
+        _float_or_default(row.get("mode_changes_mean"), float("inf")),
+        _float_or_default(row.get("mean_abs_budget_change_mean"), float("inf")),
+        int(float(row.get("episode", 10**12))),
+    )
+
+
 def filter_by_best_type(
     rows: list[Mapping[str, object]],
     *,
@@ -191,6 +227,8 @@ def filter_by_best_type(
         return [row for row in rows if is_qos_best_valid(row)]
     if best_type == "qos_recovery_stable":
         return [row for row in rows if is_qos_recovery_stable_valid(row, mode_delta=delta)]
+    if best_type == "zero_service_qos":
+        return [row for row in rows if is_zero_service_qos_valid(row, mode_delta=delta)]
     raise ValueError(f"Unsupported best_type: {best_type}")
 
 
@@ -209,4 +247,6 @@ def best_row_for_type(
         return min(candidates, key=lambda row: float(row["lo_cancellations_mean"]))
     if best_type == "qos_recovery_stable":
         return min(candidates, key=qos_recovery_stable_sort_key)
+    if best_type == "zero_service_qos":
+        return min(candidates, key=zero_service_qos_sort_key)
     return min(candidates, key=qos_sort_key)

@@ -377,6 +377,48 @@ def test_train_cli_supports_qos_recovery_stable_selection(tmp_path: Path) -> Non
     assert (output_dir / "best_model_metadata_qos_recovery_stable.json").exists()
 
 
+def test_train_cli_supports_zero_service_qos_selection(tmp_path: Path) -> None:
+    """训练 CLI 应接受 zero_service_qos，并把新 validation 指标写入输出。"""
+
+    output_dir = tmp_path / "zero_service_qos"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--workload",
+            "small",
+            "--episodes",
+            "2",
+            "--end-time",
+            "80",
+            "--validate-every",
+            "1",
+            "--validation-seeds",
+            "100:100",
+            "--save-best-by",
+            "zero_service_qos",
+            "--save-all-best-types",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+
+    assert (output_dir / "model_best_zero_service_qos.pt").exists()
+    assert (output_dir / "best_model_metadata_zero_service_qos.json").exists()
+
+    with (output_dir / "validation_metrics.csv").open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    assert rows
+    assert reader.fieldnames is not None
+    assert "lo_zero_service_ratio_mean" in reader.fieldnames
+    assert "lo_active_drop_rate_mean" in reader.fieldnames
+
+
 def test_train_cli_rejects_invalid_validation_workers(tmp_path: Path) -> None:
     """validation worker 数小于 1 时，训练 CLI 应显式报错。"""
 

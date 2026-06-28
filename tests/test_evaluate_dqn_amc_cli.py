@@ -169,6 +169,10 @@ def test_evaluate_dqn_amc_cli_runs_after_training(tmp_path: Path) -> None:
     assert "lo_degraded_released_mean" in unified_rows[0]
     assert "tid_ratio_mean" in unified_rows[0]
     assert "delta_lo_equiv_jne_rate" in unified_rows[0]
+    assert "lo_zero_service_ratio" in rows[0]
+    assert "lo_budget_cancellations" in rows[0]
+    assert "lo_active_dropped_on_mode_switch" in rows[0]
+    assert "lo_release_dropped_in_degraded_mode" in rows[0]
     row_types = {row["row_type"] for row in unified_rows}
     assert row_types >= {"method_summary", "dqn_vs_reference"}
     unified_methods = {row["method"] for row in unified_rows}

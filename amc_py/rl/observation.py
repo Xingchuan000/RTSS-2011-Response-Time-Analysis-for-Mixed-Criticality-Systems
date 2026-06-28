@@ -17,6 +17,7 @@ from amc_py.rl.feature_config import (
     OBSERVATION_MODE_V11_NO_RISK_NO_UTIL_8D,
     OBSERVATION_MODE_V11_NO_UTIL_9D,
     OBSERVATION_MODE_V12_FULL_14D,
+    OBSERVATION_MODE_V13_RH_17D,
     FeatureConfig,
     V11_LITE_PER_TASK_FEATURE_NAMES,
     V11_NO_MAX_PER_TASK_FEATURE_NAMES,
@@ -588,6 +589,177 @@ def build_v12_full_14d_observation(
     )
 
 
+def _build_v13_rh_17d_observation(
+    *,
+    time: int,
+    ordered_tasks: Sequence[Task],
+    budget_state: BudgetState,
+    monitor: RuntimeMonitor,
+    bounds: NormalizationBounds | None = None,
+    feature_state: RuntimeFeatureState,
+    feature_config: FeatureConfig,
+    safety_margin_min: float = 1.0,
+    initial_budgets: dict[str, int] | None = None,
+    safe_inc_possible_by_task: dict[str, bool] | None = None,
+    rh_risk_context: dict[str, float] | None = None,
+) -> AgentObservation:
+    """按 v13_rh_17d 语义构建观测（每任务 17 维 + 全局 16 维）。
+
+    该模式复用 v12_full_14d 的全部 14 维 per-task 特征，并追加 3 维 RH-risk per-task hint，
+    同时将全局特征从 8 维扩展为 16 维（新增 8 维 RH-risk 全局特征）。
+
+    per-task RH-risk hint 将全局 RH-risk 上下文广播到每个 LO 任务级别：
+    - active_lo_task_hint：该 LO 任务的活跃 job 率乘数；
+    - active_lo_remaining_ratio_hint：该 LO 任务的工作堆积比率乘数；
+    - task_under_hi_pressure_hint：该 LO 任务受 HI 模式压力影响的乘数。
+    所有新增特征裁剪到 [0.0, 1.0]。
+    """
+
+    active_bounds = bounds or build_default_normalization_bounds(ordered_tasks)
+    state_values: list[float] = []
+    raw_budgets: dict[str, int] = {}
+    raw_recent_costs: dict[str, int] = {}
+
+    n_tasks = len(ordered_tasks)
+    total_budget_util = 0.0
+    hi_budget_util = 0.0
+    lo_budget_util = 0.0
+
+    # 读取 RH-risk 全局上下文（可选，默认全 0 保证向后兼容）
+    rh_context = rh_risk_context or {}
+    global_hi_mode_pressure_mean = float(rh_context.get("hi_mode_pressure_mean", 0.0))
+    global_active_lo_job_rate = float(rh_context.get("active_lo_job_rate", 0.0))
+    global_active_lo_work_ratio = float(rh_context.get("active_lo_work_ratio", 0.0))
+    global_active_lo_under_hi_pressure = float(rh_context.get("active_lo_under_hi_pressure", 0.0))
+
+    for rank, task in enumerate(ordered_tasks):
+        task_name = task.name
+        budget = float(budget_state.budgets[task_name])
+        recent_cost = float(monitor.recent_execution.get(task_name, 0))
+
+        if task_name not in active_bounds:
+            raise ValueError(f"normalization bounds 缺少任务 {task_name}")
+        task_bound = active_bounds[task_name]
+        lo = float(task_bound.min_cost)
+        hi = float(task_bound.max_cost)
+
+        feature_state.init_task(task_name, init_cost=float(task.c_lo))
+
+        ema_cost = float(feature_state.ema_cost.get(task_name, float(task.c_lo)))
+        history = feature_state.cost_history.get(task_name)
+        max_cost_k = float(max(history)) if history and len(history) > 0 else recent_cost
+        overrun_ema = float(feature_state.overrun_ema.get(task_name, 0.0))
+
+        is_hi = 1.0 if task.criticality is Criticality.HI else 0.0
+        is_lo = 1.0 - is_hi
+        priority_norm = 1.0 - float(rank) / float(max(1, n_tasks - 1))
+        util_budget = budget / max(1.0, float(task.period))
+
+        total_budget_util += util_budget
+        if is_hi > 0.5:
+            hi_budget_util += util_budget
+        else:
+            lo_budget_util += util_budget
+
+        # pred_cost 是 risk/surplus 的共同核心输入
+        pred_cost = max(
+            recent_cost,
+            ema_cost,
+            float(feature_config.max_cost_weight) * max_cost_k,
+        )
+        raw_risk = (
+            pred_cost / max(1.0, budget)
+            + 0.5 * overrun_ema
+            + 0.2 * is_hi
+            + 0.1 * priority_norm
+        )
+        risk = _clip01(raw_risk / float(feature_config.risk_max_scale))
+
+        raw_surplus = (budget - pred_cost) / max(1.0, budget)
+        surplus = _clip01((raw_surplus + 1.0) / 2.0)
+
+        budget_norm = _normalize(budget, lo, hi)
+        recent_cost_norm = _normalize(recent_cost, lo, hi)
+        ema_cost_norm = _normalize(ema_cost, lo, hi)
+        max_cost_k_norm = _normalize(max_cost_k, lo, hi)
+
+        # 使用 episode 初始预算计算预算漂移
+        initial_budget = float((initial_budgets or {}).get(task_name, task.c_lo))
+        budget_ratio = budget / max(1.0, initial_budget)
+        positive_budget_drift = _clip01(max(0.0, budget_ratio - 1.0))
+        negative_budget_drift = _clip01(max(0.0, 1.0 - budget_ratio))
+        task_cancel_ema = _clip01(feature_state.task_cancel_ema.get(task_name, 0.0))
+        safe_inc_possible = 1.0 if (safe_inc_possible_by_task or {}).get(task_name, False) else 0.0
+
+        # RH-risk per-task hint：将全局 RH-risk 上下文广播到每个 LO 任务级别
+        # 仅对 LO 任务有意义；HI 任务的这三个 hint 固定为 0.0
+        active_lo_task_hint = _clip01(is_lo * global_active_lo_job_rate)
+        active_lo_remaining_ratio_hint = _clip01(is_lo * global_active_lo_work_ratio)
+        task_under_hi_pressure_hint = _clip01(is_lo * global_hi_mode_pressure_mean)
+
+        # 前 14 维严格复用 v12 的特征顺序
+        state_values.extend(
+            [
+                budget_norm,
+                recent_cost_norm,
+                ema_cost_norm,
+                max_cost_k_norm,
+                _clip01(overrun_ema),
+                risk,
+                surplus,
+                is_hi,
+                _clip01(priority_norm),
+                _clip01(util_budget),
+                positive_budget_drift,
+                negative_budget_drift,
+                task_cancel_ema,
+                safe_inc_possible,
+                # 追加 3 维 RH-risk per-task hint
+                active_lo_task_hint,
+                active_lo_remaining_ratio_hint,
+                task_under_hi_pressure_hint,
+            ]
+        )
+
+        raw_budgets[task_name] = int(budget)
+        raw_recent_costs[task_name] = int(recent_cost)
+
+    recent_mode_change_rate = feature_state.rate(feature_state.window_mode_changes)
+    recent_lo_cancel_rate = feature_state.rate(feature_state.window_lo_cancellations)
+    recent_hi_overrun_rate = feature_state.rate(feature_state.window_hi_overruns)
+    recent_lo_overrun_rate = feature_state.rate(feature_state.window_lo_overruns)
+
+    # 前 8 维严格复用 v12 的全局特征顺序
+    state_values.extend(
+        [
+            _clip01(total_budget_util),
+            _clip01(hi_budget_util),
+            _clip01(lo_budget_util),
+            _clip01(recent_mode_change_rate),
+            _clip01(recent_lo_cancel_rate),
+            _clip01(recent_hi_overrun_rate),
+            _clip01(recent_lo_overrun_rate),
+            _clip01(safety_margin_min),
+            # 追加 8 维 RH-risk 全局特征
+            _clip01(global_hi_mode_pressure_mean),
+            _clip01(float(rh_context.get("hi_mode_pressure_max", 0.0))),
+            _clip01(global_active_lo_job_rate),
+            _clip01(global_active_lo_work_ratio),
+            _clip01(global_active_lo_under_hi_pressure),
+            _clip01(float(rh_context.get("recent_active_drop_rate", 0.0))),
+            _clip01(float(rh_context.get("recent_budget_cancellation_rate", 0.0))),
+            _clip01(float(rh_context.get("recent_release_drop_rate", 0.0))),
+        ]
+    )
+
+    return AgentObservation(
+        time=time,
+        state_vector=tuple(float(v) for v in state_values),
+        raw_budgets=raw_budgets,
+        raw_recent_costs=raw_recent_costs,
+    )
+
+
 def build_observation(
     *,
     time: int,
@@ -600,6 +772,7 @@ def build_observation(
     safety_margin_min: float = 1.0,
     initial_budgets: dict[str, int] | None = None,
     safe_inc_possible_by_task: dict[str, bool] | None = None,
+    rh_risk_context: dict[str, float] | None = None,
 ) -> AgentObservation:
     """统一观测构造入口：按 observation_mode 分发到 v10 或 v11 实现。
 
@@ -721,5 +894,21 @@ def build_observation(
             safety_margin_min=safety_margin_min,
             initial_budgets=initial_budgets,
             safe_inc_possible_by_task=safe_inc_possible_by_task,
+        )
+    if feature_config.observation_mode == OBSERVATION_MODE_V13_RH_17D:
+        if feature_state is None:
+            raise ValueError("v13_rh_17d 模式要求传入 feature_state")
+        return _build_v13_rh_17d_observation(
+            time=time,
+            ordered_tasks=ordered_tasks,
+            budget_state=budget_state,
+            monitor=monitor,
+            bounds=bounds,
+            feature_state=feature_state,
+            feature_config=feature_config,
+            safety_margin_min=safety_margin_min,
+            initial_budgets=initial_budgets,
+            safe_inc_possible_by_task=safe_inc_possible_by_task,
+            rh_risk_context=rh_risk_context,
         )
     raise ValueError(f"不支持的 observation_mode: {feature_config.observation_mode}")

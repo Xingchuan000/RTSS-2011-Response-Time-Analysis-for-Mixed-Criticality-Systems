@@ -1430,6 +1430,7 @@ conda run -n amc-repro env PYTHONPATH=. python scripts/generate_learnable_taskse
 - `--observation-mode v11_no_risk_no_util_8d`（v11 消融模式，`state_dim = 8 * n_tasks + 8`）
 - `--observation-mode v11_lite_6d`（v11 紧凑模式，`state_dim = 6 * n_tasks + 8`）
 - `--observation-mode v12_full_14d`（新模式，`state_dim = 14 * n_tasks + 8`）
+- `--observation-mode v13_rh_17d`（RH-specific 模式，`state_dim = 17 * n_tasks + 16`）
 
 所有新增 v11 消融模式都复用了 `v11_full_10d` 的同一套底层特征计算逻辑，
 区别只在于“保留哪些 per-task 特征，以及按什么固定顺序拼接”，因此可直接做同口径对比。
@@ -1530,6 +1531,28 @@ conda run -n amc-repro env PYTHONPATH=. python scripts/generate_learnable_taskse
 - 该值不是严格的 per-task LO cancellation 计数；
 - `safe_inc_possible` 仅作为 observation hint，不会改变 action mask 与动作执行语义。
 
+`v13_rh_17d` 在 `v12_full_14d` 的基础上，做以下扩展：
+
+**每任务特征**（17 维，前 14 维复用 v12，后 3 维为 RH-risk per-task hint）：
+
+- 15. `active_lo_task_hint` — LO 任务的活跃 job 率广播（仅对 LO 任务有意义，HI 任务恒为 0）
+- 16. `active_lo_remaining_ratio_hint` — LO 任务的工作堆积比率广播
+- 17. `task_under_hi_pressure_hint` — LO 任务受 HI 模式压力影响的乘数
+
+**全局特征**（16 维，前 8 维复用 v12，后 8 维为 RH-risk global）：
+
+- 9.  `hi_mode_pressure_mean` — HI 任务 mode-change pressure 均值
+- 10. `hi_mode_pressure_max` — HI 任务 mode-change pressure 最大值
+- 11. `active_lo_job_rate` — 按 LO 任务数归一化的活跃 job 比率
+- 12. `active_lo_work_ratio` — 活跃 job 比率乘以剩余预算占比后的堆积强度
+- 13. `active_lo_under_hi_pressure` — active_lo_work_ratio * hi_mode_pressure_mean
+- 14. `recent_active_drop_rate` — 最近 interval 内因 mode switch 被丢弃的 active LO job 比率
+- 15. `recent_budget_cancellation_rate` — 最近 interval 内因预算不足被取消的 LO job 比率
+- 16. `recent_release_drop_rate` — 最近 interval 内在 degraded mode 下被丢弃的 LO release 比率
+
+所有新增特征裁剪到 `[0.0, 1.0]`。`rh_risk_context` 由 `AmcBudgetEnv.step()` 在每个 step 结束时自动更新，
+其他 observation mode 不受影响。
+
 对应 v11 特征参数：
 
 - `--ema-alpha`
@@ -1621,6 +1644,25 @@ conda run -n amc-repro python scripts/train_dqn_amc.py \
   --event-window 10 \
   --max-cost-weight 0.7 \
   --risk-max-scale 3.0 \
+   --include-safety-margin
+```
+
+v13 训练示例（仅展示 observation 相关参数）：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/train_dqn_amc.py \
+  --episodes 2 \
+  --workload small \
+  --scenario stress \
+  --action-space single \
+  --observation-mode v13_rh_17d \
+  --ema-alpha 0.2 \
+  --overrun-ema-alpha 0.1 \
+  --history-k 8 \
+  --event-window 10 \
+  --max-cost-weight 0.7 \
+  --risk-max-scale 3.0 \
   --include-safety-margin
 ```
 
@@ -1636,8 +1678,9 @@ conda run -n amc-repro python scripts/train_dqn_amc.py \
 新增测试文件：
 
 - `tests/test_v11_observation.py`
+- `tests/test_rh_observation.py`
 
-覆盖项：
+覆盖项（v11/v12）：
 
 1. `v10_basic` 长度保持 `2 * n_tasks`
 2. `v11_full_10d` 长度为 `10 * n_tasks + 8`
@@ -1648,11 +1691,21 @@ conda run -n amc-repro python scripts/train_dqn_amc.py \
 7. `feature_state` 在 step 后存在且任务键集合保持一致
 8. event window 长度不超过 `event_window`
 
+覆盖项（v13_rh_17d）：
+
+1. 维度与 `FeatureConfig.expected_state_dim()` 一致（`17 * n_tasks + 16`）
+2. step 后维度保持正确
+3. 所有特征值在 `[0, 1]` 范围内
+4. 新增的 RH-risk per-task hint（每个任务最后 3 维）和 global 特征（最后 8 维）均在 `[0, 1]`
+5. 旧 observation mode（v10/v11/v12）维度保持不变
+6. reset 后 `feature_state` 和 `_last_rh_risk_context` 正确初始化
+7. step 后 `_last_rh_risk_context` 被正确更新
+
 运行命令：
 
 ```bash
 cd /Users/x1ngchuan/Documents/AMC
-conda run -n amc-repro python -m pytest -q tests/test_v11_observation.py
+conda run -n amc-repro python -m pytest -q tests/test_v11_observation.py tests/test_rh_observation.py
 ```
 
 新增 observation 全模式冒烟脚本：
@@ -1678,6 +1731,7 @@ v11_no_priority_9d: PASS
 v11_no_risk_no_util_8d: PASS
 v11_lite_6d: PASS
 v12_full_14d: PASS
+v13_rh_17d: PASS
 ```
 
 新增 v11 消融顺序校验脚本：
@@ -1922,6 +1976,19 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py
 - 其中 `increase_rate / decrease_rate / recovery_decrease_rate / over_increase_rate` 都从 validation 里的 `policy_action_*_json` 计数字段汇总得到。
 - 如果加上 `--qos-recovery-allow-nonpositive-qos`，则不再强制 `relative_lc_loss_reduction > 0`。
 
+10. `--save-best-by zero_service_qos`
+- 目标：优先选择 `LO` 零服务比例更低的 checkpoint。
+- 约束：`hi_deadline_misses_sum == 0` 且
+  `mode_changes_mean <= baseline_mode_changes_mean * (1 + --qos-stable-mode-delta)`。
+- 排序顺序：
+  `lo_zero_service_ratio_mean`
+  -> `lo_active_drop_rate_mean`
+  -> `lo_budget_cancellation_rate_mean`
+  -> `mode_changes_mean`
+  -> `mean_abs_budget_change_mean`
+  -> `episode`。
+- 适用场景：当实验目标已经从“减少总 cancellation”切换为“尽量避免 LO 完全得不到服务”时，建议使用该策略。
+
 新增参数：
 
 - `--qos-stable-mode-delta`：控制 `qos_stable` 的 mode-change 放宽比例，默认 `0.05`。
@@ -1930,8 +1997,90 @@ KMP_DUPLICATE_LIB_OK=TRUE conda run -n amc-repro python scripts/train_dqn_amc.py
 - `--qos-recovery-max-over-increase-rate`：控制 `qos_recovery_stable` 的 over increase 比例上限，默认 `0.90`。
 - `--qos-recovery-allow-nonpositive-qos`：允许 `qos_recovery_stable` 选择 `relative_lc_loss_reduction <= 0` 的 checkpoint。
 - `--save-all-best-types`：除主 `model_best.pt` 外，额外输出
-  `model_best_conservative_qos.pt`、`model_best_qos_stable.pt`、`model_best_qos_best.pt`、`model_best_qos_recovery_stable.pt`
+  `model_best_conservative_qos.pt`、`model_best_qos_stable.pt`、`model_best_qos_best.pt`、`model_best_qos_recovery_stable.pt`、`model_best_zero_service_qos.pt`
   以及对应 metadata JSON。若某类型没有合格 checkpoint，只会写 `found_valid_checkpoint=false` 的 metadata，不会伪造 best 模型。
+
+### 12.4.3 Level 4 / Level 5 奖励变量使用说明
+
+训练环境 `amc_py/rl/env.py` 现在额外暴露了 Level 4/5 所需的 step-level reward 变量，供
+`configs/reward_modes/*.json` 直接引用。
+
+Level 4 reason-level LO loss 变量：
+
+- 计数字段：
+  `lo_budget_cancellations`、
+  `lo_active_dropped_on_mode_switch`、
+  `lo_release_dropped_in_degraded_mode`
+- 差分字段：
+  `delta_lo_budget_cancellations`、
+  `delta_lo_active_dropped_on_mode_switch`、
+  `delta_lo_release_dropped_in_degraded_mode`
+- rate 字段：
+  `lo_budget_cancellation_rate`、
+  `lo_active_drop_rate`、
+  `lo_release_drop_rate`
+- penalty 参数名：
+  `lo_budget_cancellation_penalty`、
+  `lo_active_drop_penalty`、
+  `lo_release_drop_penalty`
+- 已拆好的 reward 分量：
+  `step_reward_lo_budget_cancellation`、
+  `step_reward_lo_active_drop`、
+  `step_reward_lo_release_drop`、
+  `step_reward_lo_reason_split`
+
+Level 5 active-LO pressure shaping 变量：
+
+- `active_lo_job_count`
+- `active_lo_job_rate`
+- `active_lo_work_ratio`
+- `active_lo_under_hi_pressure`
+- `active_lo_under_hi_pressure_penalty`
+- `active_lo_under_hi_pressure_penalty_value`
+
+reward JSON 可直接写：
+
+```json
+{
+  "step_reward_formula": "paper_reward - lo_budget_cancellation_penalty * lo_budget_cancellation_rate - lo_active_drop_penalty * lo_active_drop_rate - lo_release_drop_penalty * lo_release_drop_rate - active_lo_under_hi_pressure_penalty * active_lo_under_hi_pressure",
+  "reward_parameters": {
+    "lo_budget_cancellation_penalty": 2.5,
+    "lo_active_drop_penalty": 5.0,
+    "lo_release_drop_penalty": 3.0,
+    "active_lo_under_hi_pressure_penalty": 1.0
+  }
+}
+```
+
+如果想直接复用 Python 侧已拆好的分量，也可以在公式里使用：
+
+```text
+step_reward_lo_reason_split - active_lo_under_hi_pressure_penalty_value
+```
+
+训练输出位置：
+
+- `train_log.csv`：新增了 reason-level LO loss、`active_lo_under_hi_pressure` 及对应 reward 分量列。
+- `train_metrics.csv`：新增了
+  `reward_lo_budget_cancellation_sum`、
+  `reward_lo_active_drop_sum`、
+  `reward_lo_release_drop_sum`、
+  `reward_lo_reason_split_sum`、
+  `active_lo_under_hi_pressure_mean`、
+  `active_lo_work_ratio_mean`、
+  `active_lo_job_rate_mean`、
+  `reward_active_lo_under_hi_pressure_penalty_sum`。
+- `validation_metrics.csv`：新增了
+  `lo_quality_qos_mean`、
+  `lo_zero_service_ratio_mean`、
+  `lo_zero_service_jobs_mean`、
+  `lo_budget_cancellations_mean`、
+  `lo_active_dropped_on_mode_switch_mean`、
+  `lo_release_dropped_in_degraded_mode_mean`、
+  `lo_budget_cancellation_rate_mean`、
+  `lo_active_drop_rate_mean`、
+  `lo_release_drop_rate_mean`
+  以及对应 baseline/delta 列。
 
 常用示例：
 

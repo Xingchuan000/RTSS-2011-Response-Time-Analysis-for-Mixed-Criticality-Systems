@@ -77,6 +77,18 @@ RECOVERY_REWARD_DEFAULT_VARIABLES: dict[str, float | bool] = {
     "lo_near_cancel_threshold": 0.9,
     "hi_mode_pressure_penalty": 0.0,
     "hi_mode_pressure_threshold": 0.8,
+    "lo_budget_cancellation_rate": 0.0,
+    "lo_active_drop_rate": 0.0,
+    "lo_release_drop_rate": 0.0,
+    "delta_lo_budget_cancellations": 0.0,
+    "delta_lo_active_dropped_on_mode_switch": 0.0,
+    "delta_lo_release_dropped_in_degraded_mode": 0.0,
+    "active_lo_job_count": 0.0,
+    "active_lo_job_rate": 0.0,
+    "active_lo_work_ratio": 0.0,
+    "active_lo_under_hi_pressure": 0.0,
+    "active_lo_under_hi_pressure_penalty": 0.0,
+    "active_lo_under_hi_pressure_penalty_value": 0.0,
     "is_explicit_noop_action": 0.0,
 }
 
@@ -309,6 +321,16 @@ def simulate_ordered_taskset_with_agent(
             budget_state=engine.runtime_budgets,
             monitor=monitor,
             bounds=bounds,
+            rh_risk_context={
+                "hi_mode_pressure_mean": 0.0,
+                "hi_mode_pressure_max": 0.0,
+                "active_lo_job_rate": 0.0,
+                "active_lo_work_ratio": 0.0,
+                "active_lo_under_hi_pressure": 0.0,
+                "recent_active_drop_rate": 0.0,
+                "recent_budget_cancellation_rate": 0.0,
+                "recent_release_drop_rate": 0.0,
+            },
         )
         action = agent.select_action(observation)
 
@@ -344,6 +366,17 @@ def simulate_ordered_taskset_with_agent(
                     "check_safety": agent_config.check_safety,
                     "safety_checked": False,
                     "reject_reason": None,
+                    "lo_budget_cancellation_rate": 0.0,
+                    "lo_active_drop_rate": 0.0,
+                    "lo_release_drop_rate": 0.0,
+                    "delta_lo_budget_cancellations": 0.0,
+                    "delta_lo_active_dropped_on_mode_switch": 0.0,
+                    "delta_lo_release_dropped_in_degraded_mode": 0.0,
+                    "active_lo_job_count": 0.0,
+                    "active_lo_job_rate": 0.0,
+                    "active_lo_work_ratio": 0.0,
+                    "active_lo_under_hi_pressure": 0.0,
+                    "active_lo_under_hi_pressure_penalty_value": 0.0,
                 }
             )
         else:
@@ -417,6 +450,17 @@ def simulate_ordered_taskset_with_agent(
                     "budget_after": budget_after,
                     "check_safety": agent_config.check_safety,
                     "safety_checked": safety_checked,
+                    "lo_budget_cancellation_rate": 0.0,
+                    "lo_active_drop_rate": 0.0,
+                    "lo_release_drop_rate": 0.0,
+                    "delta_lo_budget_cancellations": 0.0,
+                    "delta_lo_active_dropped_on_mode_switch": 0.0,
+                    "delta_lo_release_dropped_in_degraded_mode": 0.0,
+                    "active_lo_job_count": 0.0,
+                    "active_lo_job_rate": 0.0,
+                    "active_lo_work_ratio": 0.0,
+                    "active_lo_under_hi_pressure": 0.0,
+                    "active_lo_under_hi_pressure_penalty_value": 0.0,
                 }
             )
 

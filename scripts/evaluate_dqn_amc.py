@@ -417,6 +417,10 @@ def _eval_summary_fieldnames() -> list[str]:
             "mean_budget_over_drift_deadzone",
             "mean_increase_concentration_excess",
             "pingpong_action_count",
+            "mean_active_lo_under_hi_pressure",
+            "mean_active_lo_work_ratio",
+            "mean_active_lo_job_rate",
+            "mean_active_lo_under_hi_pressure_penalty_value",
         ]
     )
     fieldnames.extend(TASK_LEVEL_INFO_KEYS)
@@ -519,6 +523,10 @@ def _aggregate_action_log_metrics(action_log: list[dict[str, object]]) -> dict[s
             "mean_budget_over_drift_deadzone": 0.0,
             "mean_increase_concentration_excess": 0.0,
             "pingpong_action_count": 0,
+            "mean_active_lo_under_hi_pressure": 0.0,
+            "mean_active_lo_work_ratio": 0.0,
+            "mean_active_lo_job_rate": 0.0,
+            "mean_active_lo_under_hi_pressure_penalty_value": 0.0,
         }
 
     mean_over_increase_excess = mean(float(row.get("over_increase_excess", 0.0)) for row in action_log)
@@ -563,6 +571,14 @@ def _aggregate_action_log_metrics(action_log: list[dict[str, object]]) -> dict[s
         float(row.get("increase_concentration_excess", 0.0)) for row in action_log
     )
     pingpong_action_count = sum(int(float(row.get("pingpong_action", 0.0)) > 0.0) for row in action_log)
+    mean_active_lo_under_hi_pressure = mean(
+        float(row.get("active_lo_under_hi_pressure", 0.0)) for row in action_log
+    )
+    mean_active_lo_work_ratio = mean(float(row.get("active_lo_work_ratio", 0.0)) for row in action_log)
+    mean_active_lo_job_rate = mean(float(row.get("active_lo_job_rate", 0.0)) for row in action_log)
+    mean_active_lo_under_hi_pressure_penalty_value = mean(
+        float(row.get("active_lo_under_hi_pressure_penalty_value", 0.0)) for row in action_log
+    )
     return {
         "mean_over_increase_excess": mean_over_increase_excess,
         "over_increase_action_count": over_increase_action_count,
@@ -584,6 +600,12 @@ def _aggregate_action_log_metrics(action_log: list[dict[str, object]]) -> dict[s
         "mean_budget_over_drift_deadzone": mean_budget_over_drift_deadzone,
         "mean_increase_concentration_excess": mean_increase_concentration_excess,
         "pingpong_action_count": pingpong_action_count,
+        "mean_active_lo_under_hi_pressure": mean_active_lo_under_hi_pressure,
+        "mean_active_lo_work_ratio": mean_active_lo_work_ratio,
+        "mean_active_lo_job_rate": mean_active_lo_job_rate,
+        "mean_active_lo_under_hi_pressure_penalty_value": (
+            mean_active_lo_under_hi_pressure_penalty_value
+        ),
     }
 
 
@@ -830,6 +852,14 @@ def _evaluate_dqn_once(
                 action_log_metrics["mean_increase_concentration_excess"]
             ),
             "pingpong_action_count": int(action_log_metrics["pingpong_action_count"]),
+            "mean_active_lo_under_hi_pressure": float(
+                action_log_metrics["mean_active_lo_under_hi_pressure"]
+            ),
+            "mean_active_lo_work_ratio": float(action_log_metrics["mean_active_lo_work_ratio"]),
+            "mean_active_lo_job_rate": float(action_log_metrics["mean_active_lo_job_rate"]),
+            "mean_active_lo_under_hi_pressure_penalty_value": float(
+                action_log_metrics["mean_active_lo_under_hi_pressure_penalty_value"]
+            ),
             **_degradation_metrics_to_row(runtime_result),
             **service_metrics_to_row(dqn_service_metrics),
             **_lo_quality_weighted_metrics_to_row_from_result(runtime_result),
@@ -2379,6 +2409,7 @@ def build_parser() -> argparse.ArgumentParser:
             "v11_no_risk_no_util_8d",
             "v11_lite_6d",
             "v12_full_14d",
+            "v13_rh_17d",
         ],
         default="v10_basic",
     )

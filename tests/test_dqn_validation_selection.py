@@ -7,8 +7,10 @@ from amc_py.model_selection import (
     is_qos_best_valid,
     is_qos_recovery_stable_valid,
     is_qos_stable_valid,
+    is_zero_service_qos_valid,
     qos_recovery_stable_sort_key,
     recovery_action_stats,
+    zero_service_qos_sort_key,
 )
 from scripts.train_dqn_amc import (
     _is_better_validation_row,
@@ -327,3 +329,72 @@ def test_qos_recovery_stable_rules_and_sort_key_match_plan() -> None:
         save_best_by="qos_recovery_stable",
         qos_stable_mode_delta=0.05,
     ) is False
+
+
+def test_zero_service_qos_prefers_lower_zero_service_then_active_drop() -> None:
+    """zero_service_qos 应先看 zero-service，再看 active drop 与 budget cancellation。"""
+
+    hi_miss_row = {
+        "episode": 1,
+        "hi_deadline_misses_sum": 1,
+        "mode_changes_mean": 10.0,
+        "baseline_mode_changes_mean": 10.0,
+        "lo_zero_service_ratio_mean": 0.01,
+        "lo_active_drop_rate_mean": 0.01,
+        "lo_budget_cancellation_rate_mean": 0.01,
+        "mean_abs_budget_change_mean": 1.0,
+    }
+    assert is_zero_service_qos_valid(hi_miss_row, mode_delta=0.05) is False
+
+    mode_bad_row = {
+        "episode": 2,
+        "hi_deadline_misses_sum": 0,
+        "mode_changes_mean": 10.6,
+        "baseline_mode_changes_mean": 10.0,
+        "lo_zero_service_ratio_mean": 0.01,
+        "lo_active_drop_rate_mean": 0.01,
+        "lo_budget_cancellation_rate_mean": 0.01,
+        "mean_abs_budget_change_mean": 1.0,
+    }
+    assert is_zero_service_qos_valid(mode_bad_row, mode_delta=0.05) is False
+
+    best = {
+        "episode": 3,
+        "hi_deadline_misses_sum": 0,
+        "mode_changes_mean": 10.2,
+        "baseline_mode_changes_mean": 10.0,
+        "lo_zero_service_ratio_mean": 0.08,
+        "lo_active_drop_rate_mean": 0.04,
+        "lo_budget_cancellation_rate_mean": 0.03,
+        "mean_abs_budget_change_mean": 2.0,
+    }
+    better_zero_service = {
+        **best,
+        "episode": 4,
+        "lo_zero_service_ratio_mean": 0.05,
+    }
+    assert _is_better_validation_row(
+        candidate_row=better_zero_service,
+        best_row=best,
+        save_best_by="zero_service_qos",
+        qos_stable_mode_delta=0.05,
+    ) is True
+
+    better_active_drop = {
+        **best,
+        "episode": 5,
+        "lo_active_drop_rate_mean": 0.02,
+    }
+    assert zero_service_qos_sort_key(better_active_drop) < zero_service_qos_sort_key(best)
+
+    tie_before_budget = {
+        **best,
+        "episode": 6,
+        "lo_budget_cancellation_rate_mean": 0.02,
+    }
+    better_budget_cancel = {
+        **best,
+        "episode": 7,
+        "lo_budget_cancellation_rate_mean": 0.01,
+    }
+    assert zero_service_qos_sort_key(better_budget_cancel) < zero_service_qos_sort_key(tie_before_budget)

@@ -35,7 +35,12 @@ from amc_py.dqn import (
 )
 from amc_py.event_runtime import simulate_ordered_taskset_event_driven
 from amc_py.metrics import (
+    compute_lo_job_loss_breakdown_metrics,
+    compute_lo_quality_weighted_metrics,
+    compute_runtime_degradation_metrics,
     compute_service_quality_metrics,
+    lo_job_loss_breakdown_to_row,
+    lo_quality_weighted_metrics_to_row,
     mean_optional as mean_optional_service_metric,
     safe_relative_reduction,
     service_metrics_to_row,
@@ -45,9 +50,11 @@ from amc_py.model_selection import (
     is_qos_best_valid,
     is_qos_recovery_stable_valid,
     is_qos_stable_valid,
+    is_zero_service_qos_valid,
     recovery_action_stats,
     qos_sort_key,
     qos_recovery_stable_sort_key,
+    zero_service_qos_sort_key,
 )
 from amc_py.models import Task
 from amc_py.rl.actions import describe_budget_action
@@ -94,6 +101,9 @@ STEP_LOG_FIELDNAMES = [
     "unsafe_decrease",
     "mode_changes",
     "lo_cancellations",
+    "lo_budget_cancellations",
+    "lo_active_dropped_on_mode_switch",
+    "lo_release_dropped_in_degraded_mode",
     "deadline_misses",
     "step_reward_total",
     "step_reward_job_start",
@@ -102,6 +112,10 @@ STEP_LOG_FIELDNAMES = [
     "step_reward_mode_change",
     "mode_change_spike_penalty_value",
     "step_reward_lo_cancellation",
+    "step_reward_lo_budget_cancellation",
+    "step_reward_lo_active_drop",
+    "step_reward_lo_release_drop",
+    "step_reward_lo_reason_split",
     "step_reward_deadline_miss",
     "step_reward_invalid_action",
     "paper_reward",
@@ -110,6 +124,12 @@ STEP_LOG_FIELDNAMES = [
     "hi_overrun_rate",
     "mode_change_per_job",
     "lo_cancellation_rate",
+    "delta_lo_budget_cancellations",
+    "delta_lo_active_dropped_on_mode_switch",
+    "delta_lo_release_dropped_in_degraded_mode",
+    "lo_budget_cancellation_rate",
+    "lo_active_drop_rate",
+    "lo_release_drop_rate",
     "deadline_miss_rate",
     "invalid_action",
     "budget_change_norm",
@@ -125,6 +145,11 @@ STEP_LOG_FIELDNAMES = [
     "lo_pressure_max",
     "lo_near_cancel_rate",
     "hi_mode_pressure_mean",
+    "active_lo_job_count",
+    "active_lo_job_rate",
+    "active_lo_work_ratio",
+    "active_lo_under_hi_pressure",
+    "active_lo_under_hi_pressure_penalty_value",
     "lo_pressure_penalty_value",
     "lo_pressure_max_penalty_value",
     "lo_near_cancel_penalty_value",
@@ -204,14 +229,35 @@ QOS_VALIDATION_FIELDNAMES = [
     "min_lc_service_mean",
     "budget_adjust_count_mean",
     "mean_abs_budget_change_mean",
+    "lo_quality_qos_mean",
+    "lo_zero_service_ratio_mean",
+    "lo_zero_service_jobs_mean",
+    "lo_budget_cancellations_mean",
+    "lo_active_dropped_on_mode_switch_mean",
+    "lo_release_dropped_in_degraded_mode_mean",
+    "lo_budget_cancellation_rate_mean",
+    "lo_active_drop_rate_mean",
+    "lo_release_drop_rate_mean",
     "baseline_released_lo_jobs_mean",
     "baseline_lc_service_loss_mean",
     "baseline_lc_qos_mean",
     "baseline_min_lc_service_mean",
     "baseline_hi_deadline_misses_sum",
+    "baseline_lo_quality_qos_mean",
+    "baseline_lo_zero_service_ratio_mean",
+    "baseline_lo_zero_service_jobs_mean",
+    "baseline_lo_budget_cancellations_mean",
+    "baseline_lo_active_dropped_on_mode_switch_mean",
+    "baseline_lo_release_dropped_in_degraded_mode_mean",
+    "baseline_lo_budget_cancellation_rate_mean",
+    "baseline_lo_active_drop_rate_mean",
+    "baseline_lo_release_drop_rate_mean",
     "relative_lc_loss_reduction",
     "lc_service_loss_delta_mean",
     "lc_qos_delta_mean",
+    "lo_quality_qos_delta_mean",
+    "lo_zero_service_ratio_delta_mean",
+    "lo_active_drop_delta_mean",
     "mode_change_delta_ratio",
 ]
 
@@ -319,7 +365,15 @@ def _build_best_metadata(
         "best_validation_episode": int(best_row["episode"]),
         "best_relative_score": best_relative_score,
         "dqn_lo_cancellations_mean": float(best_row["lo_cancellations_mean"]),
+        "dqn_lo_quality_qos_mean": float(best_row.get("lo_quality_qos_mean", 0.0)),
+        "dqn_lo_zero_service_ratio_mean": float(best_row.get("lo_zero_service_ratio_mean", 0.0)),
+        "dqn_lo_active_drop_rate_mean": float(best_row.get("lo_active_drop_rate_mean", 0.0)),
+        "dqn_lo_budget_cancellation_rate_mean": float(
+            best_row.get("lo_budget_cancellation_rate_mean", 0.0)
+        ),
         "baseline_lo_cancellations_mean": float(best_row["baseline_lo_cancellations_mean"]),
+        "baseline_lo_quality_qos_mean": float(best_row.get("baseline_lo_quality_qos_mean", 0.0)),
+        "baseline_lo_zero_service_ratio_mean": float(best_row.get("baseline_lo_zero_service_ratio_mean", 0.0)),
         "dqn_mode_changes_mean": float(best_row["mode_changes_mean"]),
         "baseline_mode_changes_mean": float(best_row["baseline_mode_changes_mean"]),
         "normalized_delta_lo_cancellations": best_delta_lo,
@@ -846,12 +900,20 @@ def _run_baseline_validation_seed_worker(
         ),
     )
     baseline_service_metrics = compute_service_quality_metrics(baseline_result)
+    baseline_degradation = compute_runtime_degradation_metrics(baseline_result)
+    baseline_loss_breakdown = compute_lo_job_loss_breakdown_metrics(
+        baseline_result,
+        baseline_degradation,
+    )
+    baseline_lo_quality = compute_lo_quality_weighted_metrics(baseline_result)
     # worker 只返回单个 seed 的原始计数，主进程统一负责做均值聚合，
     # 这样可以保证串行路径和并行路径共用同一套聚合口径。
     return {
         "mode_changes": baseline_result.mode_change_count(),
         "lo_cancellations": baseline_result.lo_job_cancellation_count(),
         **service_metrics_to_row(baseline_service_metrics),
+        **lo_job_loss_breakdown_to_row(baseline_loss_breakdown),
+        **lo_quality_weighted_metrics_to_row(baseline_lo_quality),
     }
 
 
@@ -1085,6 +1147,9 @@ def _evaluate_agent_on_validation_seed(
 
     runtime_result = env._engine.finish() if env._engine is not None else SimulationResult()
     service_metrics = compute_service_quality_metrics(runtime_result)
+    degradation_metrics = compute_runtime_degradation_metrics(runtime_result)
+    loss_breakdown_metrics = compute_lo_job_loss_breakdown_metrics(runtime_result, degradation_metrics)
+    lo_quality_metrics = compute_lo_quality_weighted_metrics(runtime_result)
     debug_stats = env.debug_statistics()
     row = {
         "mode_changes": int(last_info.get("mode_changes", 0)),
@@ -1111,6 +1176,8 @@ def _evaluate_agent_on_validation_seed(
         "observation_mode": str(last_info.get("observation_mode", feature_config.observation_mode)),
         "state_dim": int(last_info.get("state_dim", len(obs.state_vector))),
         **service_metrics_to_row(service_metrics),
+        **lo_job_loss_breakdown_to_row(loss_breakdown_metrics),
+        **lo_quality_weighted_metrics_to_row(lo_quality_metrics),
     }
     row.update(_noop_q_diagnostics_to_row(agent, diagnostic_states, diagnostic_valid_masks))
     if log_validation_policy_actions:
@@ -1526,6 +1593,48 @@ def _run_validation(
                 baseline_rows,
                 "mean_abs_budget_change",
             ),
+            "baseline_lo_quality_qos_mean": (
+                sum(float(row["lo_quality_qos"]) for row in baseline_rows) / len(validation_seeds)
+            ),
+            "baseline_lo_zero_service_ratio_mean": (
+                sum(float(row["lo_zero_service_ratio"]) for row in baseline_rows) / len(validation_seeds)
+            ),
+            "baseline_lo_zero_service_jobs_mean": (
+                sum(float(row["lo_zero_service_jobs"]) for row in baseline_rows) / len(validation_seeds)
+            ),
+            "baseline_lo_budget_cancellations_mean": (
+                sum(float(row["lo_budget_cancellations"]) for row in baseline_rows) / len(validation_seeds)
+            ),
+            "baseline_lo_active_dropped_on_mode_switch_mean": (
+                sum(float(row["lo_active_dropped_on_mode_switch"]) for row in baseline_rows)
+                / len(validation_seeds)
+            ),
+            "baseline_lo_release_dropped_in_degraded_mode_mean": (
+                sum(float(row["lo_release_dropped_in_degraded_mode"]) for row in baseline_rows)
+                / len(validation_seeds)
+            ),
+            "baseline_lo_budget_cancellation_rate_mean": (
+                sum(
+                    float(row["lo_budget_cancellations"]) / max(1.0, float(row["released_lo_jobs"]))
+                    for row in baseline_rows
+                )
+                / len(validation_seeds)
+            ),
+            "baseline_lo_active_drop_rate_mean": (
+                sum(
+                    float(row["lo_active_dropped_on_mode_switch"]) / max(1.0, float(row["released_lo_jobs"]))
+                    for row in baseline_rows
+                )
+                / len(validation_seeds)
+            ),
+            "baseline_lo_release_drop_rate_mean": (
+                sum(
+                    float(row["lo_release_dropped_in_degraded_mode"])
+                    / max(1.0, float(row["released_lo_jobs"]))
+                    for row in baseline_rows
+                )
+                / len(validation_seeds)
+            ),
         }
 
     if validation_workers == 1:
@@ -1624,6 +1733,37 @@ def _run_validation(
     released_lo_jobs_mean = sum(float(row["released_lo_jobs"]) for row in dqn_rows) / seed_count
     lc_service_loss_mean = sum(float(row["lc_service_loss"]) for row in dqn_rows) / seed_count
     lc_qos_mean = sum(float(row["lc_qos"]) for row in dqn_rows) / seed_count
+    lo_quality_qos_mean = sum(float(row["lo_quality_qos"]) for row in dqn_rows) / seed_count
+    lo_zero_service_ratio_mean = sum(float(row["lo_zero_service_ratio"]) for row in dqn_rows) / seed_count
+    lo_zero_service_jobs_mean = sum(float(row["lo_zero_service_jobs"]) for row in dqn_rows) / seed_count
+    lo_budget_cancellations_mean = sum(float(row["lo_budget_cancellations"]) for row in dqn_rows) / seed_count
+    lo_active_dropped_on_mode_switch_mean = (
+        sum(float(row["lo_active_dropped_on_mode_switch"]) for row in dqn_rows) / seed_count
+    )
+    lo_release_dropped_in_degraded_mode_mean = (
+        sum(float(row["lo_release_dropped_in_degraded_mode"]) for row in dqn_rows) / seed_count
+    )
+    lo_budget_cancellation_rate_mean = (
+        sum(
+            float(row["lo_budget_cancellations"]) / max(1.0, float(row["released_lo_jobs"]))
+            for row in dqn_rows
+        )
+        / seed_count
+    )
+    lo_active_drop_rate_mean = (
+        sum(
+            float(row["lo_active_dropped_on_mode_switch"]) / max(1.0, float(row["released_lo_jobs"]))
+            for row in dqn_rows
+        )
+        / seed_count
+    )
+    lo_release_drop_rate_mean = (
+        sum(
+            float(row["lo_release_dropped_in_degraded_mode"]) / max(1.0, float(row["released_lo_jobs"]))
+            for row in dqn_rows
+        )
+        / seed_count
+    )
     validation_row = {
         "validation_seed_count": seed_count,
         "deadline_misses_sum": sum(int(row["deadline_misses"]) for row in dqn_rows),
@@ -1663,6 +1803,15 @@ def _run_validation(
         "lc_service_loss_mean": lc_service_loss_mean,
         "lc_qos_mean": lc_qos_mean,
         "min_lc_service_mean": mean_optional_service_metric(dqn_rows, "min_lc_service"),
+        "lo_quality_qos_mean": lo_quality_qos_mean,
+        "lo_zero_service_ratio_mean": lo_zero_service_ratio_mean,
+        "lo_zero_service_jobs_mean": lo_zero_service_jobs_mean,
+        "lo_budget_cancellations_mean": lo_budget_cancellations_mean,
+        "lo_active_dropped_on_mode_switch_mean": lo_active_dropped_on_mode_switch_mean,
+        "lo_release_dropped_in_degraded_mode_mean": lo_release_dropped_in_degraded_mode_mean,
+        "lo_budget_cancellation_rate_mean": lo_budget_cancellation_rate_mean,
+        "lo_active_drop_rate_mean": lo_active_drop_rate_mean,
+        "lo_release_drop_rate_mean": lo_release_drop_rate_mean,
         "budget_adjust_count_mean": sum(float(row["budget_adjust_count"]) for row in dqn_rows) / seed_count,
         "mean_abs_budget_change_mean": mean_optional_service_metric(dqn_rows, "mean_abs_budget_change"),
         "baseline_released_lo_jobs_mean": float(baseline_cache["baseline_released_lo_jobs_mean"]),
@@ -1670,9 +1819,37 @@ def _run_validation(
         "baseline_lc_qos_mean": baseline_lc_qos_mean,
         "baseline_min_lc_service_mean": baseline_cache["baseline_min_lc_service_mean"],
         "baseline_hi_deadline_misses_sum": int(float(baseline_cache["baseline_hi_deadline_misses_sum"])),
+        "baseline_lo_quality_qos_mean": float(baseline_cache["baseline_lo_quality_qos_mean"]),
+        "baseline_lo_zero_service_ratio_mean": float(baseline_cache["baseline_lo_zero_service_ratio_mean"]),
+        "baseline_lo_zero_service_jobs_mean": float(baseline_cache["baseline_lo_zero_service_jobs_mean"]),
+        "baseline_lo_budget_cancellations_mean": float(
+            baseline_cache["baseline_lo_budget_cancellations_mean"]
+        ),
+        "baseline_lo_active_dropped_on_mode_switch_mean": float(
+            baseline_cache["baseline_lo_active_dropped_on_mode_switch_mean"]
+        ),
+        "baseline_lo_release_dropped_in_degraded_mode_mean": float(
+            baseline_cache["baseline_lo_release_dropped_in_degraded_mode_mean"]
+        ),
+        "baseline_lo_budget_cancellation_rate_mean": float(
+            baseline_cache["baseline_lo_budget_cancellation_rate_mean"]
+        ),
+        "baseline_lo_active_drop_rate_mean": float(baseline_cache["baseline_lo_active_drop_rate_mean"]),
+        "baseline_lo_release_drop_rate_mean": float(
+            baseline_cache["baseline_lo_release_drop_rate_mean"]
+        ),
         "relative_lc_loss_reduction": safe_relative_reduction(baseline_lc_service_loss_mean, lc_service_loss_mean),
         "lc_service_loss_delta_mean": lc_service_loss_mean - baseline_lc_service_loss_mean,
         "lc_qos_delta_mean": lc_qos_mean - baseline_lc_qos_mean,
+        "lo_quality_qos_delta_mean": (
+            lo_quality_qos_mean - float(baseline_cache["baseline_lo_quality_qos_mean"])
+        ),
+        "lo_zero_service_ratio_delta_mean": (
+            lo_zero_service_ratio_mean - float(baseline_cache["baseline_lo_zero_service_ratio_mean"])
+        ),
+        "lo_active_drop_delta_mean": (
+            lo_active_drop_rate_mean - float(baseline_cache["baseline_lo_active_drop_rate_mean"])
+        ),
         "mode_change_delta_ratio": (
             (sum(row["mode_changes"] for row in dqn_rows) / seed_count) - baseline_mode_changes_mean
         ) / max(1.0, baseline_mode_changes_mean),
@@ -1897,6 +2074,16 @@ def _is_better_validation_row(
         if not best_valid:
             return True
         return qos_recovery_stable_sort_key(candidate_row) < qos_recovery_stable_sort_key(best_row)
+    if save_best_by == "zero_service_qos":
+        candidate_valid = is_zero_service_qos_valid(candidate_row, mode_delta=qos_stable_mode_delta)
+        if not candidate_valid:
+            return False
+        if best_row is None:
+            return True
+        best_valid = is_zero_service_qos_valid(best_row, mode_delta=qos_stable_mode_delta)
+        if not best_valid:
+            return True
+        return zero_service_qos_sort_key(candidate_row) < zero_service_qos_sort_key(best_row)
     if save_best_by == "relative_score":
         # relative_score 越小越好，<0 表示综合优于 baseline。
         # 本轮要求：即便 relative_score>=0，也要保留“验证集里最好的那个”checkpoint。
@@ -1989,10 +2176,22 @@ def _build_validation_unified_summary_rows(
                 "baseline_lo_cancellations_mean": baseline_lo_cancellations_mean,
                 "baseline_lc_service_loss_mean": baseline_lc_service_loss_mean,
                 "baseline_lc_qos_mean": baseline_lc_qos_mean,
+                "baseline_lo_quality_qos_mean": float(row["baseline_lo_quality_qos_mean"]),
+                "baseline_lo_zero_service_ratio_mean": float(row["baseline_lo_zero_service_ratio_mean"]),
+                "baseline_lo_active_drop_rate_mean": float(row["baseline_lo_active_drop_rate_mean"]),
                 "dqn_mode_changes_mean": dqn_mode_changes_mean,
                 "dqn_lo_cancellations_mean": dqn_lo_cancellations_mean,
                 "dqn_lc_service_loss_mean": dqn_lc_service_loss_mean,
                 "dqn_lc_qos_mean": dqn_lc_qos_mean,
+                "dqn_lo_quality_qos_mean": float(row["lo_quality_qos_mean"]),
+                "dqn_lo_zero_service_ratio_mean": float(row["lo_zero_service_ratio_mean"]),
+                "dqn_lo_budget_cancellations_mean": float(row["lo_budget_cancellations_mean"]),
+                "dqn_lo_active_dropped_on_mode_switch_mean": float(
+                    row["lo_active_dropped_on_mode_switch_mean"]
+                ),
+                "dqn_lo_release_dropped_in_degraded_mode_mean": float(
+                    row["lo_release_dropped_in_degraded_mode_mean"]
+                ),
                 # 这三列用于与文档要求一致地直观看到“相对 baseline 的差值与综合得分”。
                 "relative_score": float(row["relative_score"]),
                 "relative_score_alpha": float(row["relative_score_alpha"]),
@@ -2012,6 +2211,8 @@ def _build_validation_unified_summary_rows(
                 "relative_lc_loss_reduction": row.get("relative_lc_loss_reduction"),
                 "lc_service_loss_delta_mean": float(row["lc_service_loss_delta_mean"]),
                 "lc_qos_delta_mean": float(row["lc_qos_delta_mean"]),
+                "zero_service_ratio_delta_vs_baseline": float(row["lo_zero_service_ratio_delta_mean"]),
+                "active_drop_delta_vs_baseline": float(row["lo_active_drop_delta_mean"]),
                 "min_lc_service_mean": row.get("min_lc_service_mean"),
                 "mode_change_delta_ratio": float(row["mode_change_delta_ratio"]),
                 "hi_deadline_misses_sum": int(float(row["hi_deadline_misses_sum"])),
@@ -2367,6 +2568,7 @@ def build_parser() -> argparse.ArgumentParser:
             "conservative_qos",
             "qos_best",
             "qos_recovery_stable",
+            "zero_service_qos",
         ],
         default="mode_changes",
     )
@@ -2501,6 +2703,7 @@ def build_parser() -> argparse.ArgumentParser:
             "v11_no_risk_no_util_8d",
             "v11_lite_6d",
             "v12_full_14d",
+            "v13_rh_17d",
         ],
         default="v10_basic",
     )
@@ -2796,6 +2999,7 @@ def main() -> None:
         "qos_stable": None,
         "qos_best": None,
         "qos_recovery_stable": None,
+        "zero_service_qos": None,
     }
     baseline_validation_cache: dict[str, int | float | None] | None = None
     # `pareto_relative_score` 两阶段选模状态：
@@ -2903,6 +3107,10 @@ def main() -> None:
         reward_mode_change_sum = 0.0
         reward_mode_change_spike_penalty_value_sum = 0.0
         reward_lo_cancellation_sum = 0.0
+        reward_lo_budget_cancellation_sum = 0.0
+        reward_lo_active_drop_sum = 0.0
+        reward_lo_release_drop_sum = 0.0
+        reward_lo_reason_split_sum = 0.0
         reward_deadline_miss_sum = 0.0
         reward_paper_sum = 0.0
         reward_noop_bonus_sum = 0.0
@@ -2914,6 +3122,10 @@ def main() -> None:
         reward_budget_soft_cap_dwell_penalty_sum = 0.0
         reward_budget_soft_cap_dwell_max_penalty_sum = 0.0
         reward_budget_soft_cap_dwell_total_penalty_sum = 0.0
+        active_lo_under_hi_pressure_sum = 0.0
+        active_lo_work_ratio_sum = 0.0
+        active_lo_job_rate_sum = 0.0
+        reward_active_lo_under_hi_pressure_penalty_sum = 0.0
         budget_soft_cap_dwell_excess_mean_sum = 0.0
         budget_soft_cap_dwell_excess_max_sum = 0.0
         budget_soft_cap_dwell_state_count = 0
@@ -3056,6 +3268,12 @@ def main() -> None:
                 result.info.get("mode_change_spike_penalty_value", 0.0)
             )
             reward_lo_cancellation_sum += float(result.info.get("step_reward_lo_cancellation", 0.0))
+            reward_lo_budget_cancellation_sum += float(
+                result.info.get("step_reward_lo_budget_cancellation", 0.0)
+            )
+            reward_lo_active_drop_sum += float(result.info.get("step_reward_lo_active_drop", 0.0))
+            reward_lo_release_drop_sum += float(result.info.get("step_reward_lo_release_drop", 0.0))
+            reward_lo_reason_split_sum += float(result.info.get("step_reward_lo_reason_split", 0.0))
             reward_deadline_miss_sum += float(result.info.get("step_reward_deadline_miss", 0.0))
             reward_paper_sum += float(result.info.get("paper_reward", 0.0))
             reward_noop_bonus_sum += float(result.info.get("noop_reward_bonus", 0.0))
@@ -3071,6 +3289,14 @@ def main() -> None:
             )
             reward_budget_soft_cap_dwell_total_penalty_sum += float(
                 result.info.get("budget_soft_cap_dwell_total_penalty_value", 0.0)
+            )
+            active_lo_under_hi_pressure_sum += float(
+                result.info.get("active_lo_under_hi_pressure", 0.0)
+            )
+            active_lo_work_ratio_sum += float(result.info.get("active_lo_work_ratio", 0.0))
+            active_lo_job_rate_sum += float(result.info.get("active_lo_job_rate", 0.0))
+            reward_active_lo_under_hi_pressure_penalty_sum += float(
+                result.info.get("active_lo_under_hi_pressure_penalty_value", 0.0)
             )
             budget_soft_cap_dwell_excess_mean_sum += float(
                 result.info.get("budget_soft_cap_dwell_excess_mean", 0.0)
@@ -3135,6 +3361,13 @@ def main() -> None:
                         "unsafe_decrease": unsafe_decrease,
                         "mode_changes": int(result.info.get("mode_changes", 0)),
                         "lo_cancellations": int(result.info.get("lo_cancellations", 0)),
+                        "lo_budget_cancellations": int(result.info.get("lo_budget_cancellations", 0)),
+                        "lo_active_dropped_on_mode_switch": int(
+                            result.info.get("lo_active_dropped_on_mode_switch", 0)
+                        ),
+                        "lo_release_dropped_in_degraded_mode": int(
+                            result.info.get("lo_release_dropped_in_degraded_mode", 0)
+                        ),
                         "deadline_misses": int(result.info.get("deadline_misses", 0)),
                         "step_reward_total": float(result.info.get("step_reward_total", 0.0)),
                         "step_reward_job_start": float(result.info.get("step_reward_job_start", 0.0)),
@@ -3146,6 +3379,18 @@ def main() -> None:
                             result.info.get("mode_change_spike_penalty_value", 0.0)
                         ),
                         "step_reward_lo_cancellation": float(result.info.get("step_reward_lo_cancellation", 0.0)),
+                        "step_reward_lo_budget_cancellation": float(
+                            result.info.get("step_reward_lo_budget_cancellation", 0.0)
+                        ),
+                        "step_reward_lo_active_drop": float(
+                            result.info.get("step_reward_lo_active_drop", 0.0)
+                        ),
+                        "step_reward_lo_release_drop": float(
+                            result.info.get("step_reward_lo_release_drop", 0.0)
+                        ),
+                        "step_reward_lo_reason_split": float(
+                            result.info.get("step_reward_lo_reason_split", 0.0)
+                        ),
                         "step_reward_deadline_miss": float(result.info.get("step_reward_deadline_miss", 0.0)),
                         "step_reward_invalid_action": float(result.info.get("step_reward_invalid_action", 0.0)),
                         "paper_reward": float(result.info.get("paper_reward", 0.0)),
@@ -3155,6 +3400,20 @@ def main() -> None:
                         "hi_overrun_rate": float(result.info.get("hi_overrun_rate", 0.0)),
                         "mode_change_per_job": float(result.info.get("mode_change_per_job", 0.0)),
                         "lo_cancellation_rate": float(result.info.get("lo_cancellation_rate", 0.0)),
+                        "delta_lo_budget_cancellations": float(
+                            result.info.get("delta_lo_budget_cancellations", 0.0)
+                        ),
+                        "delta_lo_active_dropped_on_mode_switch": float(
+                            result.info.get("delta_lo_active_dropped_on_mode_switch", 0.0)
+                        ),
+                        "delta_lo_release_dropped_in_degraded_mode": float(
+                            result.info.get("delta_lo_release_dropped_in_degraded_mode", 0.0)
+                        ),
+                        "lo_budget_cancellation_rate": float(
+                            result.info.get("lo_budget_cancellation_rate", 0.0)
+                        ),
+                        "lo_active_drop_rate": float(result.info.get("lo_active_drop_rate", 0.0)),
+                        "lo_release_drop_rate": float(result.info.get("lo_release_drop_rate", 0.0)),
                         "deadline_miss_rate": float(result.info.get("deadline_miss_rate", 0.0)),
                         "invalid_action": float(result.info.get("invalid_action", 0.0)),
                         "budget_change_norm": float(result.info.get("budget_change_norm", 0.0)),
@@ -3174,6 +3433,15 @@ def main() -> None:
                         "lo_pressure_max": float(result.info.get("lo_pressure_max", 0.0)),
                         "lo_near_cancel_rate": float(result.info.get("lo_near_cancel_rate", 0.0)),
                         "hi_mode_pressure_mean": float(result.info.get("hi_mode_pressure_mean", 0.0)),
+                        "active_lo_job_count": float(result.info.get("active_lo_job_count", 0.0)),
+                        "active_lo_job_rate": float(result.info.get("active_lo_job_rate", 0.0)),
+                        "active_lo_work_ratio": float(result.info.get("active_lo_work_ratio", 0.0)),
+                        "active_lo_under_hi_pressure": float(
+                            result.info.get("active_lo_under_hi_pressure", 0.0)
+                        ),
+                        "active_lo_under_hi_pressure_penalty_value": float(
+                            result.info.get("active_lo_under_hi_pressure_penalty_value", 0.0)
+                        ),
                         "lo_pressure_penalty_value": float(result.info.get("lo_pressure_penalty_value", 0.0)),
                         "lo_pressure_max_penalty_value": float(
                             result.info.get("lo_pressure_max_penalty_value", 0.0)
@@ -3424,6 +3692,13 @@ def main() -> None:
                 "selected_explicit_noop_rate": float(debug_stats["selected_explicit_noop_rate"]),
                 "mode_changes": int(last_info.get("mode_changes", 0)),
                 "lo_cancellations": int(last_info.get("lo_cancellations", 0)),
+                "lo_budget_cancellations": int(last_info.get("lo_budget_cancellations", 0)),
+                "lo_active_dropped_on_mode_switch": int(
+                    last_info.get("lo_active_dropped_on_mode_switch", 0)
+                ),
+                "lo_release_dropped_in_degraded_mode": int(
+                    last_info.get("lo_release_dropped_in_degraded_mode", 0)
+                ),
                 "deadline_misses": int(last_info.get("deadline_misses", 0)),
                 "job_starts": int(env._monitor.job_start_count),
                 "lo_overruns": int(env._monitor.lo_overrun_count),
@@ -3434,6 +3709,10 @@ def main() -> None:
                 "reward_mode_change_sum": reward_mode_change_sum,
                 "reward_mode_change_spike_penalty_value_sum": reward_mode_change_spike_penalty_value_sum,
                 "reward_lo_cancellation_sum": reward_lo_cancellation_sum,
+                "reward_lo_budget_cancellation_sum": reward_lo_budget_cancellation_sum,
+                "reward_lo_active_drop_sum": reward_lo_active_drop_sum,
+                "reward_lo_release_drop_sum": reward_lo_release_drop_sum,
+                "reward_lo_reason_split_sum": reward_lo_reason_split_sum,
                 "reward_deadline_miss_sum": reward_deadline_miss_sum,
                 "reward_paper_sum": reward_paper_sum,
                 "reward_noop_bonus_sum": reward_noop_bonus_sum,
@@ -3445,6 +3724,14 @@ def main() -> None:
                 "reward_budget_soft_cap_dwell_max_penalty_sum": reward_budget_soft_cap_dwell_max_penalty_sum,
                 "reward_budget_soft_cap_dwell_total_penalty_sum": (
                     reward_budget_soft_cap_dwell_total_penalty_sum
+                ),
+                "active_lo_under_hi_pressure_mean": (
+                    active_lo_under_hi_pressure_sum / float(max(episode_step_count, 1))
+                ),
+                "active_lo_work_ratio_mean": active_lo_work_ratio_sum / float(max(episode_step_count, 1)),
+                "active_lo_job_rate_mean": active_lo_job_rate_sum / float(max(episode_step_count, 1)),
+                "reward_active_lo_under_hi_pressure_penalty_sum": (
+                    reward_active_lo_under_hi_pressure_penalty_sum
                 ),
                 "budget_soft_cap_dwell_excess_mean_sum": budget_soft_cap_dwell_excess_mean_sum,
                 "budget_soft_cap_dwell_excess_max_sum": budget_soft_cap_dwell_excess_max_sum,
@@ -3965,7 +4252,13 @@ def main() -> None:
                 agent.save(model_best_path)
                 best_model_saved = True
             if args.save_all_best_types:
-                for best_type in ("conservative_qos", "qos_stable", "qos_best", "qos_recovery_stable"):
+                for best_type in (
+                    "conservative_qos",
+                    "qos_stable",
+                    "qos_best",
+                    "qos_recovery_stable",
+                    "zero_service_qos",
+                ):
                     should_update_aux_best = _is_better_validation_row(
                         candidate_row=validation_row,
                         best_row=best_rows_by_type[best_type],
@@ -4067,6 +4360,9 @@ def main() -> None:
             "selected_explicit_noop_rate",
             "mode_changes",
             "lo_cancellations",
+            "lo_budget_cancellations",
+            "lo_active_dropped_on_mode_switch",
+            "lo_release_dropped_in_degraded_mode",
             "deadline_misses",
             "job_starts",
             "lo_overruns",
@@ -4077,6 +4373,10 @@ def main() -> None:
             "reward_mode_change_sum",
             "reward_mode_change_spike_penalty_value_sum",
             "reward_lo_cancellation_sum",
+            "reward_lo_budget_cancellation_sum",
+            "reward_lo_active_drop_sum",
+            "reward_lo_release_drop_sum",
+            "reward_lo_reason_split_sum",
             "reward_deadline_miss_sum",
             "reward_paper_sum",
             "reward_noop_bonus_sum",
@@ -4087,6 +4387,10 @@ def main() -> None:
             "reward_budget_soft_cap_dwell_penalty_sum",
             "reward_budget_soft_cap_dwell_max_penalty_sum",
             "reward_budget_soft_cap_dwell_total_penalty_sum",
+            "active_lo_under_hi_pressure_mean",
+            "active_lo_work_ratio_mean",
+            "active_lo_job_rate_mean",
+            "reward_active_lo_under_hi_pressure_penalty_sum",
             "budget_soft_cap_dwell_excess_mean_sum",
             "budget_soft_cap_dwell_excess_max_sum",
             "budget_soft_cap_dwell_state_count",
@@ -4478,10 +4782,18 @@ def main() -> None:
             "baseline_lo_cancellations_mean",
             "baseline_lc_service_loss_mean",
             "baseline_lc_qos_mean",
+            "baseline_lo_quality_qos_mean",
+            "baseline_lo_zero_service_ratio_mean",
+            "baseline_lo_active_drop_rate_mean",
             "dqn_mode_changes_mean",
             "dqn_lo_cancellations_mean",
             "dqn_lc_service_loss_mean",
             "dqn_lc_qos_mean",
+            "dqn_lo_quality_qos_mean",
+            "dqn_lo_zero_service_ratio_mean",
+            "dqn_lo_budget_cancellations_mean",
+            "dqn_lo_active_dropped_on_mode_switch_mean",
+            "dqn_lo_release_dropped_in_degraded_mode_mean",
             "relative_score",
             "relative_score_alpha",
             "relative_delta_mode_changes",
@@ -4496,6 +4808,8 @@ def main() -> None:
             "relative_lc_loss_reduction",
             "lc_service_loss_delta_mean",
             "lc_qos_delta_mean",
+            "zero_service_ratio_delta_vs_baseline",
+            "active_drop_delta_vs_baseline",
             "min_lc_service_mean",
             "mode_change_delta_ratio",
             "hi_deadline_misses_sum",
@@ -4584,7 +4898,13 @@ def main() -> None:
             print("WARNING: Best available checkpoint is still worse than baseline on validation.")
             print("Saved anyway for trend analysis: model_best.pt")
         if args.save_all_best_types:
-            for best_type in ("conservative_qos", "qos_stable", "qos_best", "qos_recovery_stable"):
+            for best_type in (
+                "conservative_qos",
+                "qos_stable",
+                "qos_best",
+                "qos_recovery_stable",
+                "zero_service_qos",
+            ):
                 metadata_path = output_dir / f"best_model_metadata_{best_type}.json"
                 metadata = _build_best_metadata(
                     save_best_by=args.save_best_by,

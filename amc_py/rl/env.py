@@ -27,6 +27,7 @@ from amc_py.rl.constraint_guided_pair import (
 )
 from amc_py.rl.feature_config import (
     OBSERVATION_MODE_V12_FULL_14D,
+    OBSERVATION_MODE_V13_RH_17D,
     FeatureConfig,
     supports_task_structured_features,
 )
@@ -39,7 +40,13 @@ from amc_py.rl.safety import (
     merge_budget_candidate,
 )
 from amc_py.rl.types import AgentObservation, AgentStepResult
-from amc_py.runtime_models import RuntimeConfig
+from amc_py.runtime_models import (
+    LO_LOSS_ACTIVE_DROPPED_ON_MODE_SWITCH,
+    LO_LOSS_BUDGET_CANCELLATION,
+    LO_LOSS_RELEASE_DROPPED_IN_DEGRADED_MODE,
+    RuntimeConfig,
+    SimulationResult,
+)
 from amc_py.runtime_scenarios import ExecutionScenario
 
 ACTION_FEATURE_PRESSURE_THRESHOLD = 0.85
@@ -206,6 +213,9 @@ class AmcBudgetEnv:
     _prev_hi_overrun_count: int = field(init=False, default=0, repr=False)
     _prev_mode_changes: int = field(init=False, default=0, repr=False)
     _prev_lo_cancellations: int = field(init=False, default=0, repr=False)
+    _prev_lo_budget_cancellations: int = field(init=False, default=0, repr=False)
+    _prev_lo_release_dropped_in_degraded_mode: int = field(init=False, default=0, repr=False)
+    _prev_lo_active_dropped_on_mode_switch: int = field(init=False, default=0, repr=False)
     _prev_deadline_misses: int = field(init=False, default=0, repr=False)
     _last_budget_action_direction: str | None = field(init=False, default=None, repr=False)
     _last_budget_action_task: str | None = field(init=False, default=None, repr=False)
@@ -236,6 +246,9 @@ class AmcBudgetEnv:
     _last_constraint_guided_transfer_candidates: tuple[ConstraintGuidedTransferCandidate, ...] = field(
         init=False, default=(), repr=False
     )
+    # RH-risk 上下文缓存：存储上一 step 计算出的 RH-risk 全局特征值。
+    # 在 reset 时初始化为全 0；在 step 奖励计算后更新；在 build_observation 时传入。
+    _last_rh_risk_context: dict[str, float] = field(init=False, default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         """初始化固定动作空间。"""
@@ -1212,6 +1225,73 @@ class AmcBudgetEnv:
 
         stats = self._compute_hi_mode_pressure_stats(budgets=budgets, threshold=threshold)
         return float(stats["hi_mode_pressure_mean"])
+
+    def _compute_lo_loss_reason_counts(self, result: SimulationResult) -> dict[str, int]:
+        """统计当前 runtime result 中 LO job loss 的 reason-level 计数。
+
+        这里严格以 `result.lo_job_losses` 为准，不做任何反推或补算。
+        原因是训练期 reward 需要与 event runtime 的真实落盘语义保持一致：
+        - budget cancellation 由 event runtime 显式写入；
+        - degraded mode 下 release drop 由 event runtime 显式写入；
+        - mode switch 时 active LO drop 也由 event runtime 显式写入。
+        """
+
+        counts = {
+            "lo_budget_cancellations": 0,
+            "lo_release_dropped_in_degraded_mode": 0,
+            "lo_active_dropped_on_mode_switch": 0,
+        }
+        for loss in result.lo_job_losses:
+            if loss.reason == LO_LOSS_BUDGET_CANCELLATION:
+                counts["lo_budget_cancellations"] += 1
+            elif loss.reason == LO_LOSS_RELEASE_DROPPED_IN_DEGRADED_MODE:
+                counts["lo_release_dropped_in_degraded_mode"] += 1
+            elif loss.reason == LO_LOSS_ACTIVE_DROPPED_ON_MODE_SWITCH:
+                counts["lo_active_dropped_on_mode_switch"] += 1
+        return counts
+
+    def _compute_active_lo_work_stats(self) -> dict[str, float]:
+        """统计当前 active LO work 堆积程度。
+
+        该 helper 只暴露计划文档要求的 3 个量：
+        - `active_lo_job_count`：当前仍活跃的 LO job 数；
+        - `active_lo_job_rate`：按 LO task 数归一化后的活跃 job 比率；
+        - `active_lo_work_ratio`：活跃 job 比率再乘以剩余预算占比后的堆积强度。
+        """
+
+        if self._engine is None:
+            return {
+                "active_lo_job_count": 0.0,
+                "active_lo_job_rate": 0.0,
+                "active_lo_work_ratio": 0.0,
+            }
+
+        active_lo_jobs = [
+            job
+            for job in self._engine.state.active_jobs
+            if job.task.criticality is Criticality.LO and not job.dropped and not job.finished()
+        ]
+        lo_task_count = sum(1 for task in self.ordered_tasks if task.criticality is Criticality.LO)
+        budget_sum = 0.0
+        remaining_sum = 0.0
+        for job in active_lo_jobs:
+            budget = job.runtime_budget_at_release
+            if budget is None:
+                budget = self._engine.runtime_budgets.budget_of(job.task)
+            budget = max(1.0, float(budget))
+            remaining = max(0.0, budget - float(job.executed_time))
+            budget_sum += budget
+            remaining_sum += remaining
+
+        active_lo_job_count = float(len(active_lo_jobs))
+        active_lo_job_rate = active_lo_job_count / float(max(1, lo_task_count))
+        active_lo_remaining_fraction = remaining_sum / max(1.0, budget_sum)
+        active_lo_work_ratio = active_lo_job_rate * active_lo_remaining_fraction
+        return {
+            "active_lo_job_count": active_lo_job_count,
+            "active_lo_job_rate": active_lo_job_rate,
+            "active_lo_work_ratio": active_lo_work_ratio,
+        }
 
     def _compute_task_pressure(
         self,
@@ -2566,6 +2646,9 @@ class AmcBudgetEnv:
         self._prev_hi_overrun_count = 0
         self._prev_mode_changes = 0
         self._prev_lo_cancellations = 0
+        self._prev_lo_budget_cancellations = 0
+        self._prev_lo_release_dropped_in_degraded_mode = 0
+        self._prev_lo_active_dropped_on_mode_switch = 0
         self._prev_deadline_misses = 0
         self._reset_episode_task_counters()
         # v11 特征缓存在每个 episode reset 后重置，避免跨 episode 污染。
@@ -2586,9 +2669,20 @@ class AmcBudgetEnv:
                 task.name,
                 0,
             )
+        # 初始化 RH-risk 上下文为全 0，确保新 observation mode 在 reset 时可用
+        self._last_rh_risk_context = {
+            "hi_mode_pressure_mean": 0.0,
+            "hi_mode_pressure_max": 0.0,
+            "active_lo_job_rate": 0.0,
+            "active_lo_work_ratio": 0.0,
+            "active_lo_under_hi_pressure": 0.0,
+            "recent_active_drop_rate": 0.0,
+            "recent_budget_cancellation_rate": 0.0,
+            "recent_release_drop_rate": 0.0,
+        }
         safe_inc_possible_by_task = (
             self._compute_safe_inc_possible_by_task()
-            if self.feature_config.observation_mode == OBSERVATION_MODE_V12_FULL_14D
+            if self.feature_config.observation_mode in {OBSERVATION_MODE_V12_FULL_14D, OBSERVATION_MODE_V13_RH_17D}
             else None
         )
         observation = build_observation(
@@ -2602,6 +2696,7 @@ class AmcBudgetEnv:
             safety_margin_min=self._compute_current_safety_margin_min(),
             initial_budgets=self._initial_budgets,
             safe_inc_possible_by_task=safe_inc_possible_by_task,
+            rh_risk_context=self._last_rh_risk_context,
         )
         self._last_observation = observation
         return observation
@@ -2902,12 +2997,29 @@ class AmcBudgetEnv:
         runtime_result = self._engine.finish()
         mode_changes = runtime_result.mode_change_count()
         lo_cancellations = runtime_result.lo_job_cancellation_count()
+        # reason-level LO loss 拆分必须在 step 内即时读取 runtime result，
+        # 这样 reward 和日志看到的是同一份累计统计，不会和 episode 结束后再二次推导的结果偏离。
+        lo_loss_reason_counts = self._compute_lo_loss_reason_counts(runtime_result)
+        lo_budget_cancellations = lo_loss_reason_counts["lo_budget_cancellations"]
+        lo_release_dropped_in_degraded_mode = lo_loss_reason_counts[
+            "lo_release_dropped_in_degraded_mode"
+        ]
+        lo_active_dropped_on_mode_switch = lo_loss_reason_counts[
+            "lo_active_dropped_on_mode_switch"
+        ]
         deadline_misses = len(runtime_result.deadline_misses)
         delta_job_start = self._monitor.job_start_count - self._prev_job_start_count
         delta_lo_overrun = self._monitor.lo_overrun_count - self._prev_lo_overrun_count
         delta_hi_overrun = self._monitor.hi_overrun_count - self._prev_hi_overrun_count
         delta_mode_changes = mode_changes - self._prev_mode_changes
         delta_lo_cancellations = lo_cancellations - self._prev_lo_cancellations
+        delta_lo_budget_cancellations = lo_budget_cancellations - self._prev_lo_budget_cancellations
+        delta_lo_release_dropped_in_degraded_mode = (
+            lo_release_dropped_in_degraded_mode - self._prev_lo_release_dropped_in_degraded_mode
+        )
+        delta_lo_active_dropped_on_mode_switch = (
+            lo_active_dropped_on_mode_switch - self._prev_lo_active_dropped_on_mode_switch
+        )
         delta_deadline_misses = deadline_misses - self._prev_deadline_misses
         # interval_time 表示“本次 step 覆盖了多长模拟时间”。
         # 这里严格按文档采用 max(1.0, current_time - action_time)：
@@ -2930,6 +3042,11 @@ class AmcBudgetEnv:
         mode_change_per_job = float(delta_mode_changes) / delta_total_jobs
         # LO cancellation rate：interval 内 LO 任务取消次数 / interval 内 job_start 次数。
         lo_cancellation_rate = float(delta_lo_cancellations) / delta_total_jobs
+        # 下面 3 个 rate 是 Level 4 所需的 reason-level LO loss 归一化指标。
+        # 它们与旧的 `lo_cancellation_rate` 并行存在，专门给新 reward JSON 使用。
+        lo_budget_cancellation_rate = float(delta_lo_budget_cancellations) / delta_total_jobs
+        lo_release_drop_rate = float(delta_lo_release_dropped_in_degraded_mode) / delta_total_jobs
+        lo_active_drop_rate = float(delta_lo_active_dropped_on_mode_switch) / delta_total_jobs
         # deadline miss rate：interval 内 deadline miss 次数 / interval 内 job_start 次数。
         deadline_miss_rate = float(delta_deadline_misses) / delta_total_jobs
         # invalid_action：动作经过安全检查且未被接受时记为 1.0，否则记为 0.0。
@@ -3025,6 +3142,9 @@ class AmcBudgetEnv:
         # 该项与线性 mode_change_penalty 叠加，形成“低频轻罚、高频重罚”的非线性约束。
         mode_change_spike_penalty = float(reward_parameters.get("mode_change_spike_penalty", 0.0))
         lo_cancellation_penalty = float(reward_parameters.get("lo_cancellation_penalty", 0.0))
+        lo_budget_cancellation_penalty = float(reward_parameters.get("lo_budget_cancellation_penalty", 0.0))
+        lo_active_drop_penalty = float(reward_parameters.get("lo_active_drop_penalty", 0.0))
+        lo_release_drop_penalty = float(reward_parameters.get("lo_release_drop_penalty", 0.0))
         deadline_miss_penalty = float(reward_parameters.get("deadline_miss_penalty", 0.0))
         invalid_action_penalty = float(reward_parameters.get("invalid_action_penalty", 0.0))
         noop_bonus = float(reward_parameters.get("noop_bonus", 0.0))
@@ -3084,10 +3204,38 @@ class AmcBudgetEnv:
         lo_pressure_mean = float(lo_pressure_stats["lo_pressure_mean"])
         lo_pressure_max = float(lo_pressure_stats["lo_pressure_max"])
         lo_near_cancel_rate = float(lo_pressure_stats["lo_near_cancel_rate"])
-        hi_mode_pressure_mean = self._compute_hi_mode_pressure_mean(
+        hi_mode_pressure_stats = self._compute_hi_mode_pressure_stats(
             budgets=budget_after,
             threshold=hi_mode_pressure_threshold,
         )
+        hi_mode_pressure_mean = float(hi_mode_pressure_stats["hi_mode_pressure_mean"])
+        hi_mode_pressure_max = float(hi_mode_pressure_stats["hi_mode_pressure_max"])
+        # active LO work 只作为观测 shaping 使用，不改变任何调度或 mask 语义。
+        # 这里把它放在 HI pressure 之后计算，直接复用同一时刻的 post-action 预算状态。
+        active_lo_work_stats = self._compute_active_lo_work_stats()
+        active_lo_job_count = float(active_lo_work_stats["active_lo_job_count"])
+        active_lo_job_rate = float(active_lo_work_stats["active_lo_job_rate"])
+        active_lo_work_ratio = float(active_lo_work_stats["active_lo_work_ratio"])
+        active_lo_under_hi_pressure = active_lo_work_ratio * hi_mode_pressure_mean
+        active_lo_under_hi_pressure_penalty = float(
+            reward_parameters.get("active_lo_under_hi_pressure_penalty", 0.0)
+        )
+        active_lo_under_hi_pressure_penalty_value = (
+            active_lo_under_hi_pressure_penalty * active_lo_under_hi_pressure
+        )
+
+        # 更新 RH-risk 上下文缓存：供 v13_rh_17d observation mode 使用
+        self._last_rh_risk_context = {
+            "hi_mode_pressure_mean": float(hi_mode_pressure_mean),
+            "hi_mode_pressure_max": float(hi_mode_pressure_max),
+            "active_lo_job_rate": float(active_lo_job_rate),
+            "active_lo_work_ratio": float(active_lo_work_ratio),
+            "active_lo_under_hi_pressure": float(active_lo_under_hi_pressure),
+            "recent_active_drop_rate": float(lo_active_drop_rate),
+            "recent_budget_cancellation_rate": float(lo_budget_cancellation_rate),
+            "recent_release_drop_rate": float(lo_release_drop_rate),
+        }
+
         lo_pressure_penalty_value = lo_pressure_penalty * lo_pressure_mean
         lo_pressure_max_penalty_value = lo_pressure_max_penalty * lo_pressure_max
         lo_near_cancel_penalty_value = lo_near_cancel_penalty * lo_near_cancel_rate
@@ -3274,6 +3422,16 @@ class AmcBudgetEnv:
             -mode_change_spike_penalty_value
         )
         step_reward_lo_cancellation = -lo_cancellation_penalty * lo_cancellation_rate
+        step_reward_lo_budget_cancellation = (
+            -lo_budget_cancellation_penalty * lo_budget_cancellation_rate
+        )
+        step_reward_lo_active_drop = -lo_active_drop_penalty * lo_active_drop_rate
+        step_reward_lo_release_drop = -lo_release_drop_penalty * lo_release_drop_rate
+        step_reward_lo_reason_split = (
+            step_reward_lo_budget_cancellation
+            + step_reward_lo_active_drop
+            + step_reward_lo_release_drop
+        )
         step_reward_deadline_miss = -deadline_miss_penalty * deadline_miss_rate
         step_reward_invalid_action = -invalid_action_penalty * invalid_action
         # reward_variables 是“奖励表达式可见变量表”：
@@ -3334,6 +3492,14 @@ class AmcBudgetEnv:
             "lo_pressure_max": float(lo_pressure_max),
             "lo_near_cancel_rate": float(lo_near_cancel_rate),
             "hi_mode_pressure_mean": float(hi_mode_pressure_mean),
+            "active_lo_job_count": float(active_lo_job_count),
+            "active_lo_job_rate": float(active_lo_job_rate),
+            "active_lo_work_ratio": float(active_lo_work_ratio),
+            "active_lo_under_hi_pressure": float(active_lo_under_hi_pressure),
+            "active_lo_under_hi_pressure_penalty": float(active_lo_under_hi_pressure_penalty),
+            "active_lo_under_hi_pressure_penalty_value": float(
+                active_lo_under_hi_pressure_penalty_value
+            ),
             "lo_pressure_penalty": float(lo_pressure_penalty),
             "lo_pressure_max_penalty": float(lo_pressure_max_penalty),
             "lo_near_cancel_penalty": float(lo_near_cancel_penalty),
@@ -3354,6 +3520,16 @@ class AmcBudgetEnv:
             "delta_hi_overrun": float(delta_hi_overrun),
             "delta_mode_changes": float(delta_mode_changes),
             "delta_lo_cancellations": float(delta_lo_cancellations),
+            "lo_budget_cancellations": float(lo_budget_cancellations),
+            "lo_release_dropped_in_degraded_mode": float(lo_release_dropped_in_degraded_mode),
+            "lo_active_dropped_on_mode_switch": float(lo_active_dropped_on_mode_switch),
+            "delta_lo_budget_cancellations": float(delta_lo_budget_cancellations),
+            "delta_lo_release_dropped_in_degraded_mode": float(
+                delta_lo_release_dropped_in_degraded_mode
+            ),
+            "delta_lo_active_dropped_on_mode_switch": float(
+                delta_lo_active_dropped_on_mode_switch
+            ),
             "delta_deadline_misses": float(delta_deadline_misses),
             "interval_time": float(interval_time),
             "delta_total_jobs": float(delta_total_jobs),
@@ -3362,7 +3538,13 @@ class AmcBudgetEnv:
             "mode_change_rate": float(mode_change_rate),
             "mode_change_per_job": float(mode_change_per_job),
             "lo_cancellation_rate": float(lo_cancellation_rate),
+            "lo_budget_cancellation_rate": float(lo_budget_cancellation_rate),
+            "lo_release_drop_rate": float(lo_release_drop_rate),
+            "lo_active_drop_rate": float(lo_active_drop_rate),
             "deadline_miss_rate": float(deadline_miss_rate),
+            "lo_budget_cancellation_penalty": float(lo_budget_cancellation_penalty),
+            "lo_active_drop_penalty": float(lo_active_drop_penalty),
+            "lo_release_drop_penalty": float(lo_release_drop_penalty),
             "invalid_action": float(invalid_action),
             "is_budget_action": float(is_budget_action),
             "is_increase_action": float(is_increase_action),
@@ -3372,6 +3554,10 @@ class AmcBudgetEnv:
             "decrease_hits_lo": float(decrease_hits_lo),
             "decrease_task_count": float(decrease_task_count),
             "unsafe_decrease": float(unsafe_decrease),
+            "step_reward_lo_budget_cancellation": float(step_reward_lo_budget_cancellation),
+            "step_reward_lo_active_drop": float(step_reward_lo_active_drop),
+            "step_reward_lo_release_drop": float(step_reward_lo_release_drop),
+            "step_reward_lo_reason_split": float(step_reward_lo_reason_split),
         }
         # 必须把 reward_parameters 合并进变量表：
         # 这样 step_reward_formula 可以直接写 `lo_overrun_penalty * lo_overrun_rate`，
@@ -3388,6 +3574,9 @@ class AmcBudgetEnv:
         self._prev_hi_overrun_count = self._monitor.hi_overrun_count
         self._prev_mode_changes = mode_changes
         self._prev_lo_cancellations = lo_cancellations
+        self._prev_lo_budget_cancellations = lo_budget_cancellations
+        self._prev_lo_release_dropped_in_degraded_mode = lo_release_dropped_in_degraded_mode
+        self._prev_lo_active_dropped_on_mode_switch = lo_active_dropped_on_mode_switch
         self._prev_deadline_misses = deadline_misses
         self._update_feature_state(
             delta_job_start=delta_job_start,
@@ -3399,7 +3588,7 @@ class AmcBudgetEnv:
         safety_margin_min = self._compute_current_safety_margin_min()
         safe_inc_possible_by_task = (
             self._compute_safe_inc_possible_by_task()
-            if self.feature_config.observation_mode == OBSERVATION_MODE_V12_FULL_14D
+            if self.feature_config.observation_mode in {OBSERVATION_MODE_V12_FULL_14D, OBSERVATION_MODE_V13_RH_17D}
             else None
         )
         final_budget_ratio_by_task = {
@@ -3452,6 +3641,7 @@ class AmcBudgetEnv:
             safety_margin_min=safety_margin_min,
             initial_budgets=self._initial_budgets,
             safe_inc_possible_by_task=safe_inc_possible_by_task,
+            rh_risk_context=self._last_rh_risk_context,
         )
         self._last_observation = observation
         info = {
@@ -3519,6 +3709,9 @@ class AmcBudgetEnv:
             "unsafe_decrease": bool(unsafe_decrease),
             "mode_changes": mode_changes,
             "lo_cancellations": lo_cancellations,
+            "lo_budget_cancellations": lo_budget_cancellations,
+            "lo_release_dropped_in_degraded_mode": lo_release_dropped_in_degraded_mode,
+            "lo_active_dropped_on_mode_switch": lo_active_dropped_on_mode_switch,
             "deadline_misses": deadline_misses,
             "interval_time": float(interval_time),
             "delta_total_jobs": float(delta_total_jobs),
@@ -3527,13 +3720,26 @@ class AmcBudgetEnv:
             "delta_hi_overrun": float(delta_hi_overrun),
             "delta_mode_changes": float(delta_mode_changes),
             "delta_lo_cancellations": float(delta_lo_cancellations),
+            "delta_lo_budget_cancellations": float(delta_lo_budget_cancellations),
+            "delta_lo_release_dropped_in_degraded_mode": float(
+                delta_lo_release_dropped_in_degraded_mode
+            ),
+            "delta_lo_active_dropped_on_mode_switch": float(
+                delta_lo_active_dropped_on_mode_switch
+            ),
             "delta_deadline_misses": float(delta_deadline_misses),
             "lo_overrun_rate": float(lo_overrun_rate),
             "hi_overrun_rate": float(hi_overrun_rate),
             "mode_change_rate": float(mode_change_rate),
             "mode_change_per_job": float(mode_change_per_job),
             "lo_cancellation_rate": float(lo_cancellation_rate),
+            "lo_budget_cancellation_rate": float(lo_budget_cancellation_rate),
+            "lo_release_drop_rate": float(lo_release_drop_rate),
+            "lo_active_drop_rate": float(lo_active_drop_rate),
             "deadline_miss_rate": float(deadline_miss_rate),
+            "lo_budget_cancellation_penalty": float(lo_budget_cancellation_penalty),
+            "lo_active_drop_penalty": float(lo_active_drop_penalty),
+            "lo_release_drop_penalty": float(lo_release_drop_penalty),
             "invalid_action": float(invalid_action),
             "reward": float(reward),
             "step_reward_total": reward,
@@ -3552,6 +3758,14 @@ class AmcBudgetEnv:
             "lo_pressure_max": lo_pressure_max,
             "lo_near_cancel_rate": lo_near_cancel_rate,
             "hi_mode_pressure_mean": hi_mode_pressure_mean,
+            "active_lo_job_count": float(active_lo_job_count),
+            "active_lo_job_rate": float(active_lo_job_rate),
+            "active_lo_work_ratio": float(active_lo_work_ratio),
+            "active_lo_under_hi_pressure": float(active_lo_under_hi_pressure),
+            "active_lo_under_hi_pressure_penalty": float(active_lo_under_hi_pressure_penalty),
+            "active_lo_under_hi_pressure_penalty_value": float(
+                active_lo_under_hi_pressure_penalty_value
+            ),
             "lo_pressure_penalty_value": lo_pressure_penalty_value,
             "lo_pressure_max_penalty_value": lo_pressure_max_penalty_value,
             "lo_near_cancel_penalty_value": lo_near_cancel_penalty_value,
@@ -3595,6 +3809,10 @@ class AmcBudgetEnv:
             "step_reward_hi_overrun": step_reward_hi_overrun,
             "step_reward_mode_change": step_reward_mode_change,
             "step_reward_lo_cancellation": step_reward_lo_cancellation,
+            "step_reward_lo_budget_cancellation": float(step_reward_lo_budget_cancellation),
+            "step_reward_lo_active_drop": float(step_reward_lo_active_drop),
+            "step_reward_lo_release_drop": float(step_reward_lo_release_drop),
+            "step_reward_lo_reason_split": float(step_reward_lo_reason_split),
             "step_reward_deadline_miss": step_reward_deadline_miss,
             # invalid_action 惩罚单独记录，便于分析“动作被拒绝”对 reward 的影响权重。
             "step_reward_invalid_action": step_reward_invalid_action,
