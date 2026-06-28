@@ -409,8 +409,9 @@ jne_plus_ldm = jne + ldm
 
 训练入口 `scripts/train_dqn_amc.py` 现在也支持：
 
-- `--dqn-runtime-semantics {AMC_PLUS,AMC_RA,AMC_RH}`：指定训练环境语义。
-- `--validation-baseline-semantics {AMC_PLUS,AMC_RA,AMC_RH}`：指定 validation baseline 语义；默认跟随 `--dqn-runtime-semantics`。
+- `--dqn-runtime-semantics {AMC_PLUS,AMC_RA,AMC_RH,C_AMC_SEM}`：指定训练环境语义。
+- `--validation-baseline-semantics {AMC_PLUS,AMC_RA,AMC_RH,C_AMC_SEM}`：指定 validation baseline 语义；默认跟随 `--dqn-runtime-semantics`。
+- `--c-amc-sem-xf`：当训练或 validation 语义为 `C_AMC_SEM` 时，指定 degraded LO budget 比例；默认 `0.5`。
 
 例如执行 DQN-on-RH 训练：
 
@@ -422,6 +423,19 @@ conda run -n amc-repro python scripts/train_dqn_amc.py \
   --dqn-runtime-semantics AMC_RH \
   --validation-baseline-semantics AMC_RH \
   --output-dir outputs/dqn_on_rh/example
+```
+
+例如执行 DQN-on-C-AMC-sem 训练：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/train_dqn_amc.py \
+  --episodes 100 \
+  --end-time 1000 \
+  --dqn-runtime-semantics C_AMC_SEM \
+  --validation-baseline-semantics C_AMC_SEM \
+  --c-amc-sem-xf 0.5 \
+  --output-dir outputs/dqn_on_c_amc_sem/example
 ```
 
 ## 12.1 Deploy Cap Increase Mask 使用说明

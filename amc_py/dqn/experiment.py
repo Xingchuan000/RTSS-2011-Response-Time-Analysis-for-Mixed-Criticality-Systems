@@ -271,6 +271,34 @@ def build_mc_fairgen_experiment_config(
     )
 
 
+def build_runtime_config_for_semantics(
+    *,
+    end_time: int,
+    semantics: RuntimeSemantics,
+    capture_trace: bool = True,
+    capture_debug_events: bool = False,
+    record_dropped_lo_releases: bool = False,
+    c_amc_sem_xf: float = 0.5,
+) -> RuntimeConfig:
+    """为训练、验证和 HOUT 统一构造 runtime 配置。
+
+    这个 helper 专门收敛 C-AMC-sem 相关字段，避免上层入口各自手写
+    `RuntimeConfig(...)` 时漏传 `drop_lo_jobs_on_hi_switch`、
+    `c_amc_sem_primary_on_switch_time` 或 degraded ratio。
+    """
+
+    return RuntimeConfig(
+        end_time=end_time,
+        semantics=semantics,
+        capture_trace=capture_trace,
+        capture_debug_events=capture_debug_events,
+        record_dropped_lo_releases=record_dropped_lo_releases,
+        drop_lo_jobs_on_hi_switch=(semantics is not RuntimeSemantics.C_AMC_SEM),
+        c_amc_sem_lo_degradation_ratio=c_amc_sem_xf,
+        c_amc_sem_primary_on_switch_time=(semantics is RuntimeSemantics.C_AMC_SEM),
+    )
+
+
 def build_experiment_config(name: str, **kwargs) -> ExperimentConfig:
     """按统一字符串名称选择 experiment builder。"""
 
@@ -373,6 +401,7 @@ def build_env_from_experiment_config(
     capture_trace: bool = True,
     capture_debug_events: bool = False,
     record_dropped_lo_releases: bool = False,
+    c_amc_sem_xf: float = 0.5,
     feature_config: FeatureConfig | None = None,
     constraint_guided_pair_top_k_risk: int = 3,
     constraint_guided_pair_top_k_decrease: int = 5,
@@ -391,12 +420,13 @@ def build_env_from_experiment_config(
     return AmcBudgetEnv(
         ordered_tasks=bundle.ordered_tasks,
         scenario=bundle.scenario,
-        runtime_config=RuntimeConfig(
+        runtime_config=build_runtime_config_for_semantics(
             end_time=end_time,
             semantics=semantics,
             capture_trace=capture_trace,
             capture_debug_events=capture_debug_events,
             record_dropped_lo_releases=record_dropped_lo_releases,
+            c_amc_sem_xf=c_amc_sem_xf,
         ),
         agent_period=agent_period,
         check_safety=config.check_safety,

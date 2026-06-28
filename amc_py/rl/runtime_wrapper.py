@@ -192,6 +192,7 @@ def simulate_ordered_taskset_with_agent(
         semantics=runtime_config.semantics,
         record_dropped_lo_releases=runtime_config.record_dropped_lo_releases,
         c_amc_sem_lo_degradation_ratio=runtime_config.c_amc_sem_lo_degradation_ratio,
+        c_amc_sem_primary_on_switch_time=runtime_config.c_amc_sem_primary_on_switch_time,
     )
     engine = EventRuntimeEngine.build(
         ordered_tasks=ordered_tasks,

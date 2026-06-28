@@ -75,11 +75,28 @@ def test_formal_evaluate_runtime_configs_disable_trace_and_record_dropped_lo_rel
     assert c_amc_sem_cfg.record_dropped_lo_releases is True
     assert c_amc_sem_cfg.drop_lo_jobs_on_hi_switch is False
     assert c_amc_sem_cfg.c_amc_sem_lo_degradation_ratio == 0.5
+    assert c_amc_sem_cfg.c_amc_sem_primary_on_switch_time is True
 
-    agent_cfg = _formal_agent_runtime_config(end_time=100, semantics=RuntimeSemantics.AMC_PLUS)
+    agent_cfg = _formal_agent_runtime_config(
+        end_time=100,
+        semantics=RuntimeSemantics.C_AMC_SEM,
+        c_amc_sem_xf=0.75,
+    )
     assert agent_cfg.capture_trace is False
     assert agent_cfg.capture_debug_events is False
     assert agent_cfg.record_dropped_lo_releases is True
+    assert agent_cfg.drop_lo_jobs_on_hi_switch is False
+    assert agent_cfg.c_amc_sem_lo_degradation_ratio == 0.75
+    assert agent_cfg.c_amc_sem_primary_on_switch_time is True
+
+    agent_rh_cfg = _formal_agent_runtime_config(
+        end_time=100,
+        semantics=RuntimeSemantics.AMC_RH,
+        c_amc_sem_xf=0.75,
+    )
+    assert agent_rh_cfg.drop_lo_jobs_on_hi_switch is True
+    assert agent_rh_cfg.c_amc_sem_primary_on_switch_time is False
+    assert agent_rh_cfg.c_amc_sem_lo_degradation_ratio == 0.75
 
 
 def test_evaluate_dqn_amc_cli_runs_after_training(tmp_path: Path) -> None:
@@ -369,6 +386,93 @@ def test_evaluate_cli_short_hout_smoke_outputs_ra_rh_and_dqn_methods(tmp_path: P
         assert "nid" in row
         assert "tid" in row
         assert "jne_plus_ldm" in row
+
+
+def test_evaluate_cli_supports_dqn_on_c_amc_sem_runtime_semantics(tmp_path: Path) -> None:
+    """HOUT CLI 应支持使用 C-AMC-sem runtime 评估 DQN agent。"""
+
+    output_dir = tmp_path / "dqn_on_c_amc_sem_eval"
+    model_path = output_dir / "model_final.pt"
+    eval_path = output_dir / "eval_dqn_on_c_amc_sem.csv"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE"}
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--episodes",
+            "1",
+            "--end-time",
+            "40",
+            "--agent-period",
+            "10",
+            "--seed",
+            "0",
+            "--dqn-runtime-semantics",
+            "C_AMC_SEM",
+            "--validation-baseline-semantics",
+            "C_AMC_SEM",
+            "--c-amc-sem-xf",
+            "0.5",
+            "--dqn-device",
+            "cpu",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate_dqn_amc.py",
+            "--model",
+            str(model_path),
+            "--seeds",
+            "0",
+            "--end-time",
+            "40",
+            "--agent-period",
+            "10",
+            "--dqn-runtime-semantics",
+            "C_AMC_SEM",
+            "--c-amc-sem-xf",
+            "0.5",
+            "--baselines",
+            "c_amc_sem_baseline,noop_agent,dqn_agent",
+            "--output",
+            str(eval_path),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+
+    rows = _read_csv_rows(eval_path)
+    by_method = {row["method"]: row for row in rows}
+
+    assert "c_amc_sem_baseline" in by_method
+    assert "noop_agent" in by_method
+    assert "dqn_agent" in by_method
+    assert by_method["dqn_agent"]["dqn_runtime_semantics"] == "C_AMC_SEM"
+    assert by_method["noop_agent"]["dqn_runtime_semantics"] == "C_AMC_SEM"
+    assert all(row["c_amc_sem_xf"] == "0.5" for row in rows)
+
+    for required_col in (
+        "hdm",
+        "jne",
+        "ldm",
+        "nid",
+        "tid",
+        "jne_plus_ldm",
+        "lo_degraded_released",
+        "lo_quality_qos",
+        "lo_equiv_jne_rate",
+        "lo_full_quality_ratio",
+    ):
+        assert required_col in rows[0]
 
 
 def test_evaluate_cli_rejects_legacy_reward_mode(tmp_path: Path) -> None:

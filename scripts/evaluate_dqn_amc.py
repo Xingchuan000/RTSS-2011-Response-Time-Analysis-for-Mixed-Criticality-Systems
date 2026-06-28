@@ -268,6 +268,7 @@ def _formal_agent_runtime_config(
     semantics: RuntimeSemantics,
     capture_trace: bool = False,
     capture_debug_events: bool = False,
+    c_amc_sem_xf: float = 0.5,
 ) -> RuntimeConfig:
     """构造正式评估下 agent/DQN 共用的 runtime 配置。"""
 
@@ -277,7 +278,9 @@ def _formal_agent_runtime_config(
         capture_trace=capture_trace,
         capture_debug_events=capture_debug_events,
         record_dropped_lo_releases=True,
-        c_amc_sem_lo_degradation_ratio=0.5,
+        drop_lo_jobs_on_hi_switch=(semantics is not RuntimeSemantics.C_AMC_SEM),
+        c_amc_sem_lo_degradation_ratio=c_amc_sem_xf,
+        c_amc_sem_primary_on_switch_time=(semantics is RuntimeSemantics.C_AMC_SEM),
     )
 
 
@@ -630,6 +633,7 @@ def _evaluate_dqn_once(
     deploy_cap_mask_ratio: float,
     deploy_cap_mask_criticality: str,
     feature_config: FeatureConfig,
+    c_amc_sem_xf: float = 0.5,
     trace_dir: Path | None = None,
     debug_log_dir: Path | None = None,
     trace_enabled: bool = False,
@@ -666,6 +670,7 @@ def _evaluate_dqn_once(
         capture_trace=capture_trace,
         capture_debug_events=capture_debug_events,
         record_dropped_lo_releases=True,
+        c_amc_sem_xf=c_amc_sem_xf,
         feature_config=feature_config,
         constraint_guided_pair_top_k_risk=constraint_guided_pair_top_k_risk,
         constraint_guided_pair_top_k_decrease=constraint_guided_pair_top_k_decrease,
@@ -1679,6 +1684,7 @@ def _evaluate_enabled_methods_for_seed(
         semantics=dqn_runtime_semantics,
         capture_trace=capture_runtime_trace_for_seed,
         capture_debug_events=capture_debug_events_for_seed,
+        c_amc_sem_xf=c_amc_sem_xf,
     )
 
     rows: list[dict[str, int | float | str | bool]] = []
@@ -2097,6 +2103,7 @@ def _evaluate_enabled_methods_for_seed(
             double_dqn=double_dqn,
             max_q_diagnostic_samples=max_q_diagnostic_samples,
             feature_config=feature_config,
+            c_amc_sem_xf=c_amc_sem_xf,
             constraint_guided_pair_top_k_risk=constraint_guided_pair_top_k_risk,
             constraint_guided_pair_top_k_decrease=constraint_guided_pair_top_k_decrease,
             constraint_guided_pair_prefer_lo=constraint_guided_pair_prefer_lo,
@@ -2277,7 +2284,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--agent-period", type=int, default=1000)
     parser.add_argument(
         "--dqn-runtime-semantics",
-        choices=["AMC_PLUS", "AMC_RA", "AMC_RH"],
+        choices=["AMC_PLUS", "AMC_RA", "AMC_RH", "C_AMC_SEM"],
         default="AMC_PLUS",
         help="Runtime semantics used by dqn_agent and wrapper-based agent baselines.",
     )

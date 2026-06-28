@@ -6,6 +6,7 @@ from amc_py.dqn import (
     ExperimentConfig,
     build_automotive_experiment_config,
     build_env_from_experiment_config,
+    build_runtime_config_for_semantics,
     build_small_stress_experiment_config,
     resolve_experiment_bundle,
 )
@@ -27,6 +28,41 @@ def test_default_small_stress_config_can_build_env() -> None:
     )
     obs = env.reset(seed=0)
     assert len(obs.state_vector) == 2 * len(env.ordered_tasks)
+
+
+def test_build_runtime_config_for_semantics_handles_c_amc_sem() -> None:
+    """统一 helper 应把 C-AMC-sem 专用字段一次性补齐。"""
+
+    cfg = build_runtime_config_for_semantics(
+        end_time=50,
+        semantics=RuntimeSemantics.C_AMC_SEM,
+        c_amc_sem_xf=0.75,
+    )
+
+    assert cfg.semantics is RuntimeSemantics.C_AMC_SEM
+    assert cfg.drop_lo_jobs_on_hi_switch is False
+    assert cfg.c_amc_sem_lo_degradation_ratio == 0.75
+    assert cfg.c_amc_sem_primary_on_switch_time is True
+
+
+def test_build_env_config_supports_c_amc_sem_runtime_fields() -> None:
+    """DQN env 工厂在 C-AMC-sem 下必须生成与 baseline 一致的 runtime config。"""
+
+    env = build_env_from_experiment_config(
+        build_small_stress_experiment_config(),
+        seed=0,
+        end_time=50,
+        agent_period=10,
+        semantics=RuntimeSemantics.C_AMC_SEM,
+        c_amc_sem_xf=0.75,
+        record_dropped_lo_releases=True,
+    )
+
+    assert env.runtime_config.semantics is RuntimeSemantics.C_AMC_SEM
+    assert env.runtime_config.drop_lo_jobs_on_hi_switch is False
+    assert env.runtime_config.c_amc_sem_lo_degradation_ratio == 0.75
+    assert env.runtime_config.c_amc_sem_primary_on_switch_time is True
+    assert env.runtime_config.record_dropped_lo_releases is True
 
 
 def test_custom_normalization_bounds_can_build_env() -> None:

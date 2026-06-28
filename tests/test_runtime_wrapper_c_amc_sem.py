@@ -26,7 +26,7 @@ def test_runtime_wrapper_propagates_c_amc_sem_degradation_ratio(
     monkeypatch: pytest.MonkeyPatch,
     xf: float,
 ) -> None:
-    """wrapper 重建 RuntimeConfig 时必须保留调用方传入的 XF。"""
+    """wrapper 重建 RuntimeConfig 时必须保留调用方传入的 XF 和 primary-on-switch 字段。"""
 
     captured_configs: list[RuntimeConfig] = []
     real_build = runtime_wrapper_module.EventRuntimeEngine.build
@@ -52,6 +52,7 @@ def test_runtime_wrapper_propagates_c_amc_sem_degradation_ratio(
             end_time=20,
             semantics=RuntimeSemantics.C_AMC_SEM,
             c_amc_sem_lo_degradation_ratio=xf,
+            c_amc_sem_primary_on_switch_time=True,
         ),
         agent_config=AgentRuntimeConfig(agent_period=10, end_time=20),
     )
@@ -59,3 +60,4 @@ def test_runtime_wrapper_propagates_c_amc_sem_degradation_ratio(
     assert captured_configs
     assert captured_configs[0].semantics is RuntimeSemantics.C_AMC_SEM
     assert captured_configs[0].c_amc_sem_lo_degradation_ratio == xf
+    assert captured_configs[0].c_amc_sem_primary_on_switch_time is True

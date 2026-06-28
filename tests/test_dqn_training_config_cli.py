@@ -70,6 +70,46 @@ def test_hidden_layers_and_replay_related_params_are_applied(tmp_path: Path) -> 
     assert payload["torch_cuda_device_name"] is None
     assert payload["runtime_config"]["semantics"] == "AMC_RH"
     assert payload["runtime_config"]["validation_baseline_semantics"] == "AMC_RH"
+    assert payload["runtime_config"]["c_amc_sem_xf"] == 0.5
+
+
+def test_train_dqn_amc_cli_supports_dqn_on_c_amc_sem(tmp_path: Path) -> None:
+    """训练 CLI 应支持直接启动 DQN on C-AMC-sem。"""
+
+    output_dir = tmp_path / "dqn_on_c_amc_sem"
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--episodes",
+            "1",
+            "--end-time",
+            "40",
+            "--seed",
+            "0",
+            "--dqn-runtime-semantics",
+            "C_AMC_SEM",
+            "--validation-baseline-semantics",
+            "C_AMC_SEM",
+            "--c-amc-sem-xf",
+            "0.5",
+            "--dqn-device",
+            "cpu",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=TEST_ENV,
+    )
+
+    config_path = output_dir / "config.json"
+    with config_path.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    assert payload["runtime_config"]["semantics"] == "C_AMC_SEM"
+    assert payload["runtime_config"]["validation_baseline_semantics"] == "C_AMC_SEM"
+    assert payload["runtime_config"]["c_amc_sem_xf"] == 0.5
 
 
 def test_train_dqn_amc_help_shows_dqn_device_option() -> None:
@@ -84,3 +124,4 @@ def test_train_dqn_amc_help_shows_dqn_device_option() -> None:
         text=True,
     )
     assert "--dqn-device" in result.stdout
+    assert "--c-amc-sem-xf" in result.stdout

@@ -28,6 +28,7 @@ from amc_py.dqn import (
     build_automotive_experiment_config,
     build_mc_fairgen_experiment_config,
     build_env_from_experiment_config,
+    build_runtime_config_for_semantics,
     build_rtss11_experiment_config,
     build_small_nominal_experiment_config,
     build_small_stress_experiment_config,
@@ -878,25 +879,28 @@ def _trace_rows_from_runtime(result: SimulationResult) -> list[dict]:
 
 
 def _run_baseline_validation_seed_worker(
-    args_tuple: tuple[ExperimentConfig, int, int, str]
+    args_tuple: tuple[ExperimentConfig, int, int, str, float]
 ) -> dict[str, int | float | None]:
-    """运行单个 validation seed 的 AMC+ baseline 仿真。
+    """运行单个 validation seed 的 baseline 仿真。
 
     这里必须使用模块顶层函数，而不能把逻辑写成 `_run_validation()` 的内部闭包。
     原因是 macOS 的 multiprocessing 默认采用 `spawn` 启动方式，
     子进程只能 pickle 并导入模块顶层对象；嵌套函数通常无法被子进程恢复。
     """
 
-    experiment_config, seed, validation_end_time, semantics_value = args_tuple
+    experiment_config, seed, validation_end_time, semantics_value, c_amc_sem_xf = args_tuple
     semantics = RuntimeSemantics(semantics_value)
     bundle = resolve_experiment_bundle(experiment_config, seed)
     baseline_result = simulate_ordered_taskset_event_driven(
         ordered_tasks=list(bundle.ordered_tasks),
         scenario=bundle.scenario,
-        config=RuntimeConfig(
+        config=build_runtime_config_for_semantics(
             end_time=validation_end_time,
             semantics=semantics,
+            capture_trace=False,
+            capture_debug_events=False,
             record_dropped_lo_releases=True,
+            c_amc_sem_xf=c_amc_sem_xf,
         ),
     )
     baseline_service_metrics = compute_service_quality_metrics(baseline_result)
@@ -925,6 +929,7 @@ def _evaluate_agent_on_validation_seed(
     validation_end_time: int,
     agent_period: int,
     runtime_semantics: RuntimeSemantics,
+    c_amc_sem_xf: float,
     reward_mode: str,
     action_space: str,
     budget_increase_ratio: float,
@@ -989,6 +994,7 @@ def _evaluate_agent_on_validation_seed(
         residual_guard_reject_decrease_pressure_threshold=residual_guard_reject_decrease_pressure_threshold,
         residual_guard_use_hi_pressure_max=residual_guard_use_hi_pressure_max,
         record_dropped_lo_releases=True,
+        c_amc_sem_xf=c_amc_sem_xf,
     )
     obs = env.reset(seed=seed)
     done = False
@@ -1337,7 +1343,7 @@ def _run_dqn_validation_seed_worker(
         int,
         int,
         RuntimeSemantics,
-        str,
+        float,
         str,
         float,
         float,
@@ -1377,6 +1383,7 @@ def _run_dqn_validation_seed_worker(
         validation_end_time,
         agent_period,
         runtime_semantics,
+        c_amc_sem_xf,
         reward_mode,
         action_space,
         budget_increase_ratio,
@@ -1410,6 +1417,7 @@ def _run_dqn_validation_seed_worker(
         validation_end_time=validation_end_time,
         agent_period=agent_period,
         runtime_semantics=runtime_semantics,
+        c_amc_sem_xf=c_amc_sem_xf,
         reward_mode=reward_mode,
         action_space=action_space,
         budget_increase_ratio=budget_increase_ratio,
@@ -1513,6 +1521,7 @@ def _run_validation(
     agent_period: int,
     dqn_runtime_semantics: RuntimeSemantics,
     validation_baseline_semantics: RuntimeSemantics,
+    c_amc_sem_xf: float,
     reward_mode: str,
     action_space: str,
     budget_increase_ratio: float,
@@ -1553,6 +1562,7 @@ def _run_validation(
                 seed,
                 validation_end_time,
                 validation_baseline_semantics.value,
+                c_amc_sem_xf,
             )
             for seed in validation_seeds
         ]
@@ -1647,6 +1657,7 @@ def _run_validation(
                 validation_end_time=validation_end_time,
                 agent_period=agent_period,
                 runtime_semantics=dqn_runtime_semantics,
+                c_amc_sem_xf=c_amc_sem_xf,
                 reward_mode=reward_mode,
                 action_space=action_space,
                 budget_increase_ratio=budget_increase_ratio,
@@ -1689,6 +1700,7 @@ def _run_validation(
                     validation_end_time,
                     agent_period,
                     dqn_runtime_semantics,
+                    c_amc_sem_xf,
                     reward_mode,
                     action_space,
                     budget_increase_ratio,
@@ -2293,15 +2305,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--agent-period", type=int, default=1000)
     parser.add_argument(
         "--dqn-runtime-semantics",
-        choices=["AMC_PLUS", "AMC_RA", "AMC_RH"],
+        choices=["AMC_PLUS", "AMC_RA", "AMC_RH", "C_AMC_SEM"],
         default="AMC_PLUS",
         help="Runtime semantics used by the DQN training environment.",
     )
     parser.add_argument(
         "--validation-baseline-semantics",
-        choices=["AMC_PLUS", "AMC_RA", "AMC_RH"],
+        choices=["AMC_PLUS", "AMC_RA", "AMC_RH", "C_AMC_SEM"],
         default=None,
         help="Runtime semantics used by validation baseline. Defaults to --dqn-runtime-semantics.",
+    )
+    parser.add_argument(
+        "--c-amc-sem-xf",
+        type=float,
+        default=0.5,
+        help=(
+            "LO-task degraded budget ratio used when the DQN runtime semantics is C_AMC_SEM. "
+            "Must be in (0, 1]."
+        ),
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--network-seed", type=int, default=None)
@@ -2739,6 +2760,8 @@ def main() -> None:
         raise ValueError("--validate-every 必须为非负整数")
     if args.validation_workers < 1:
         raise ValueError("--validation-workers 必须为正整数")
+    if not (0.0 < args.c_amc_sem_xf <= 1.0):
+        raise ValueError("--c-amc-sem-xf must be in (0, 1]")
     if args.log_step_every < 0:
         raise ValueError("--log-step-every 必须为非负整数")
     if args.max_q_diagnostic_samples < 0:
@@ -2931,6 +2954,7 @@ def main() -> None:
             args.residual_guard_reject_decrease_pressure_threshold
         ),
         residual_guard_use_hi_pressure_max=args.residual_guard_use_hi_pressure_max,
+        c_amc_sem_xf=args.c_amc_sem_xf,
     )
     initial_obs = initial_env.reset(seed=initial_seed)
     action_features = None
@@ -2977,6 +3001,7 @@ def main() -> None:
     print(f"[DQN] learning-rate schedule: {learning_rate_schedule}")
     print(f"[DQN] runtime semantics: {dqn_runtime_semantics.value}")
     print(f"[DQN] validation baseline semantics: {validation_baseline_semantics.value}")
+    print(f"[DQN] C-AMC-sem xf: {args.c_amc_sem_xf}")
     print(f"[DQN] requested device: {args.dqn_device}")
     print(f"[DQN] resolved device: {agent.device}")
     print(f"[DQN] torch version: {torch.__version__}")
@@ -3073,6 +3098,7 @@ def main() -> None:
                 args.residual_guard_reject_decrease_pressure_threshold
             ),
             residual_guard_use_hi_pressure_max=args.residual_guard_use_hi_pressure_max,
+            c_amc_sem_xf=args.c_amc_sem_xf,
         )
         bundle = resolve_experiment_bundle(experiment_config, episode_seed)
         obs = env.reset(seed=episode_seed)
@@ -3882,6 +3908,7 @@ def main() -> None:
                 agent_period=args.agent_period,
                 dqn_runtime_semantics=dqn_runtime_semantics,
                 validation_baseline_semantics=validation_baseline_semantics,
+                c_amc_sem_xf=args.c_amc_sem_xf,
                 reward_mode=args.reward_mode,
                 action_space=args.action_space,
                 budget_increase_ratio=args.budget_increase_ratio,
@@ -5116,6 +5143,7 @@ def main() -> None:
             "episode_train_end_time_schedule_enabled": mixed_horizon_enabled,
             "semantics": dqn_runtime_semantics.value,
             "validation_baseline_semantics": validation_baseline_semantics.value,
+            "c_amc_sem_xf": args.c_amc_sem_xf,
         },
         "effective_taskset_seed": (
             (initial_bundle.metadata or {}).get("workload_metadata", {}).get("effective_taskset_seed")
