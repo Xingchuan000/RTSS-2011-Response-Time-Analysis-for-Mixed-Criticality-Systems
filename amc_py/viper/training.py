@@ -349,6 +349,14 @@ def run_viper_iterations(
             aggregate_samples.extend(new_samples)
     if not candidates:
         raise RuntimeError("训练结束后没有产生任何候选树")
+    # 先把所有候选树指标落盘，再执行 selection。
+    # 这样即使 select_best_tree() 因 gate 失败而抛错，外部仍然可以直接查看
+    # candidates.csv，定位到底是 deadline miss / invalid rate / fallback rate / qos
+    # 中的哪一项导致选择失败。
+    with (output_dir / "candidates.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(candidates[0].keys()))
+        writer.writeheader()
+        writer.writerows(candidates)
     selection_config = SelectionConfig()
     best_candidate = select_best_tree(candidates, config=selection_config)
     best_qos = max(float(row["validation_lo_quality_qos_mean"]) for row in candidates)
@@ -357,10 +365,6 @@ def run_viper_iterations(
         if float(best_candidate["validation_lo_quality_qos_mean"]) >= best_qos * selection_config.complexity_qos_ratio
         else "best_validation_qos_after_gates"
     )
-    with (output_dir / "candidates.csv").open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(candidates[0].keys()))
-        writer.writeheader()
-        writer.writerows(candidates)
     best_dir = _copy_best_artifact({**best_candidate, "selection_reason": selection_reason}, output_dir)
     with (output_dir / "best_tree_registry.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
