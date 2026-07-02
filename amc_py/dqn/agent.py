@@ -585,6 +585,75 @@ class DqnBudgetAgent:
             self.current_epsilon = self._compute_epsilon()
         return action_id
 
+    def compute_q_diagnostics(
+        self,
+        state_vector: tuple[float, ...],
+        valid_action_mask: tuple[bool, ...] | None = None,
+    ) -> dict[str, object]:
+        """公开当前状态下的 Q 诊断结果，供 VIPER 采样与树评估复用。
+
+        设计原则：
+        - 复用现有 `_network_q_values(...)` 与 action-aware mask 逻辑，避免 teacher 语义漂移；
+        - 只做“读当前 Q 值”这件事，不改变 agent 内部训练/探索状态；
+        - 当所有动作都无效时，明确返回空摘要，而不是伪造一个动作编号。
+        """
+
+        if len(state_vector) != self.observation_dim:
+            raise ValueError("state_vector 维度与 observation_dim 不一致")
+        effective_mask = self._apply_action_aware_valid_mask(valid_action_mask)
+        if effective_mask is not None and len(effective_mask) != self.action_dim:
+            raise ValueError("valid_action_mask 长度必须与 action_dim 一致")
+
+        state_tensor = torch.tensor([state_vector], dtype=torch.float32, device=self.device)
+        with torch.no_grad():
+            q_tensor = self._network_q_values(self.policy_network, state_tensor)[0]
+        raw_q_values = tuple(float(value) for value in q_tensor.detach().cpu().tolist())
+
+        if effective_mask is None:
+            effective_mask = tuple(True for _ in range(self.action_dim))
+        valid_action_ids = tuple(
+            action_id for action_id, is_valid in enumerate(effective_mask) if bool(is_valid)
+        )
+        masked_q_values = tuple(
+            float(raw_q_values[action_id]) if bool(effective_mask[action_id]) else float("-inf")
+            for action_id in range(self.action_dim)
+        )
+        if not valid_action_ids:
+            return {
+                "raw_q_values": raw_q_values,
+                "effective_valid_action_mask": tuple(bool(v) for v in effective_mask),
+                "masked_q_values": masked_q_values,
+                "valid_action_ids": (),
+                "best_action_id": None,
+                "q_best": None,
+                "q_second_best": None,
+                "q_worst": None,
+                "q_margin_second": None,
+                "viper_weight": None,
+            }
+
+        ranked_valid_q_values = sorted(
+            (raw_q_values[action_id] for action_id in valid_action_ids),
+            reverse=True,
+        )
+        best_action_id = self.select_action_id(state_vector, valid_action_mask=valid_action_mask, training=False)
+        q_best = float(ranked_valid_q_values[0])
+        q_second_best = float(ranked_valid_q_values[1]) if len(ranked_valid_q_values) >= 2 else None
+        q_worst = float(ranked_valid_q_values[-1])
+        q_margin_second = (q_best - q_second_best) if q_second_best is not None else None
+        return {
+            "raw_q_values": raw_q_values,
+            "effective_valid_action_mask": tuple(bool(v) for v in effective_mask),
+            "masked_q_values": masked_q_values,
+            "valid_action_ids": valid_action_ids,
+            "best_action_id": best_action_id,
+            "q_best": q_best,
+            "q_second_best": q_second_best,
+            "q_worst": q_worst,
+            "q_margin_second": q_margin_second,
+            "viper_weight": q_best - q_worst,
+        }
+
     def _sample_default_exploration_action(self, valid_action_ids: list[int]) -> int:
         """执行旧版 epsilon 探索采样逻辑（含 noop 优先），供多种探索模式复用。"""
 

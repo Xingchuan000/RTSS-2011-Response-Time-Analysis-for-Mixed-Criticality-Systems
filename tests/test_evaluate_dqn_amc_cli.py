@@ -47,6 +47,10 @@ def test_evaluate_fieldnames_include_degradation_metrics() -> None:
     assert "lo_degraded_released" in fields
     assert "lo_full_quality_ratio" in fields
     assert "tid_ratio" in fields
+    assert "tree_selected_action_count" in fields
+    assert "tree_selected_action_match_teacher_count" in fields
+    assert "tree_selected_action_match_teacher_rate" in fields
+    assert "tree_raw_action_match_teacher_rate" in fields
 
 
 def test_formal_evaluate_runtime_configs_disable_trace_and_record_dropped_lo_releases() -> None:

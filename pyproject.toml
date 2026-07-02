@@ -13,6 +13,8 @@ dependencies = [
     "pandas",
     "matplotlib",
     "torch",
+    "scikit-learn",
+    "joblib",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +26,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["amc_py", "amc_py.rl", "amc_py.dqn"]
+packages = ["amc_py", "amc_py.rl", "amc_py.dqn", "amc_py.viper"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

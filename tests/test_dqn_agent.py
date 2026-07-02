@@ -101,6 +101,26 @@ def test_all_invalid_actions_return_none() -> None:
     assert agent.select_action_id(STATE, valid_action_mask=(False, False, False), training=False) is None
 
 
+def test_compute_q_diagnostics_respects_mask_and_matches_greedy_action() -> None:
+    agent = _agent(_config(epsilon_start=0.0, epsilon_end=0.0))
+    _set_q_bias(agent, (3.0, 2.0, 1.0))
+    diagnostics = agent.compute_q_diagnostics(STATE, valid_action_mask=(False, True, True))
+    assert diagnostics["best_action_id"] == 1
+    assert diagnostics["best_action_id"] == agent.select_action_id(
+        STATE,
+        valid_action_mask=(False, True, True),
+        training=False,
+    )
+    assert diagnostics["viper_weight"] == diagnostics["q_best"] - diagnostics["q_worst"]
+
+
+def test_compute_q_diagnostics_returns_empty_summary_for_all_invalid_actions() -> None:
+    agent = _agent(_config(epsilon_start=0.0, epsilon_end=0.0))
+    diagnostics = agent.compute_q_diagnostics(STATE, valid_action_mask=(False, False, False))
+    assert diagnostics["best_action_id"] is None
+    assert diagnostics["valid_action_ids"] == ()
+
+
 def test_optimize_returns_none_when_replay_is_insufficient() -> None:
     """样本不足时 optimize_one_step 应返回 None。"""
 

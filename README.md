@@ -253,6 +253,190 @@ conda run -n amc-repro python scripts/run_small_experiment.py
 3. 大规模实验尚未做并行化或性能优化。
 4. 当前图表样式偏基础，尚未做论文排版级统一主题。
 
+## 8.1 VIPER 策略提取使用说明
+
+本次修改严格限定在计划文档定义的 VIPER 代码边界内，只新增以下能力：
+
+- DQN teacher 的公开 Q 诊断接口：`amc_py.dqn.DqnBudgetAgent.compute_q_diagnostics(...)`
+- observation/action metadata 导出
+- VIPER dataset 采集、JSONL artifact、CART tree 训练、tree runtime 评估
+- `evaluate_dqn_amc.py` 接入 `bc_tree_agent / dagger_tree_agent / viper_tree_agent`
+- split 校验、teacher registry、retention 汇总脚本
+
+### 8.1.1 安装新增依赖
+
+若使用 conda：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda env update -f environment.yml
+conda activate amc-repro
+```
+
+若使用 pip：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+python -m pip install -r requirements.txt
+python -m pip install -e .
+```
+
+新增依赖只有：
+
+- `scikit-learn`
+- `joblib`
+
+### 8.1.2 采集 teacher dataset
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/collect_viper_teacher_data.py \
+  --model /path/to/model_final.pt \
+  --teacher-id smoke_teacher \
+  --workload small \
+  --seeds 0:1 \
+  --end-time 80 \
+  --agent-period 20 \
+  --observation-mode v11_full_10d \
+  --action-space single \
+  --output-dir /tmp/viper_dataset
+```
+
+输出目录包含：
+
+- `samples.jsonl`
+- `manifest.json`
+- `feature_names.json`
+- `action_definitions.json`
+
+如果使用 `--workload mc_fairgen`，`collect_viper_teacher_data.py` 现已完整公开并透传以下 workload 分布参数：
+
+- `--mc-fairgen-mode`
+- `--mc-fairgen-num-tasks`
+- `--mc-fairgen-hi-ratio`
+- `--mc-fairgen-period-source`
+- `--mc-fairgen-period-scale`
+- `--mc-fairgen-u-hi-lo-min/max`
+- `--mc-fairgen-u-hi-hi-min/max`
+- `--mc-fairgen-u-lo-lo-min/max`
+- `--mc-fairgen-hi-budget-rho-min/max`
+- `--mc-fairgen-lo-budget-rho-min/max`
+- `--mc-fairgen-hi-overrun-prob`
+- `--mc-fairgen-lo-overrun-prob`
+- `--mc-fairgen-hi-overrun-factor-min/max`
+- `--mc-fairgen-lo-overrun-factor-min/max`
+
+这些参数会被完整写入 dataset 的 `manifest.json -> workload_cli_config`，用于后续核对 VIPER dataset、tree 训练和 HOUT 评估是否使用同一 workload 口径。
+
+### 8.1.3 训练 BC / DAGGER / VIPER tree
+
+BC：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/train_viper_tree.py \
+  --method bc \
+  --teacher-model /path/to/model_final.pt \
+  --teacher-id smoke_teacher \
+  --initial-dataset /tmp/viper_dataset \
+  --workload small \
+  --train-seeds 0:1 \
+  --validation-seeds 2 \
+  --end-time 80 \
+  --agent-period 20 \
+  --observation-mode v11_full_10d \
+  --action-space single \
+  --max-depth-grid 2 \
+  --min-samples-leaf-grid 1 \
+  --output-dir /tmp/viper_trees
+```
+
+VIPER：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/train_viper_tree.py \
+  --method viper \
+  --teacher-model /path/to/model_final.pt \
+  --teacher-id smoke_teacher \
+  --initial-dataset /tmp/viper_dataset \
+  --workload small \
+  --train-seeds 0:1 \
+  --validation-seeds 2 \
+  --iterations 2 \
+  --end-time 80 \
+  --agent-period 20 \
+  --observation-mode v11_full_10d \
+  --action-space single \
+  --max-depth-grid 2 \
+  --min-samples-leaf-grid 1 \
+  --output-dir /tmp/viper_trees
+```
+
+每个 artifact 目录包含：
+
+- `model.joblib`
+- `metadata.json`
+- `feature_names.json`
+- `action_definitions.json`
+- `rules.txt`
+
+训练根目录下的 `run_config.json` 现在也会记录 `workload_cli_config`。如果训练命令使用了 `--initial-dataset` 且 workload 为 `mc_fairgen`，脚本会默认检查当前 CLI 参数与 dataset `manifest.json -> workload_cli_config` 是否一致；不一致时直接报错。只有显式传入 `--allow-workload-mismatch` 时才会继续训练，并把不一致原因写入 `run_config.json -> workload_mismatch_warning`。
+
+### 8.1.4 在正式评估入口中比较 DQN 与 tree
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/evaluate_dqn_amc.py \
+  --model /path/to/model_final.pt \
+  --bc-tree-model /tmp/viper_trees/depth_2/leaf_1/best \
+  --baselines dqn_agent,bc_tree_agent \
+  --workload small \
+  --seeds 0 \
+  --end-time 80 \
+  --agent-period 20 \
+  --observation-mode v11_full_10d \
+  --action-space single \
+  --output /tmp/viper_eval.csv
+```
+
+如果希望在 tree 评估时额外输出 teacher match 与 `q_regret` 诊断，可增加：
+
+```bash
+--tree-compare-teacher-model /path/to/model_final.pt
+```
+
+### 8.1.5 汇总与校验脚本
+
+split 校验：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/validate_viper_splits.py /path/to/splits.json
+```
+
+teacher registry：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/build_viper_teacher_registry.py \
+  --teacher-root /path/to/train_outputs \
+  --seeds 0,1,2 \
+  --output /tmp/teacher_registry.csv
+```
+
+retention 汇总：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+conda run -n amc-repro python scripts/summarize_viper_results.py \
+  --eval-csv /tmp/viper_eval.csv \
+  --parent-method c_amc_sem_baseline \
+  --teacher-method dqn_agent \
+  --tree-method viper_tree_agent \
+  --output-dir /tmp/viper_summary
+```
+
 ## 9. 与论文及 mceval 的差异说明
 
 ### 9.1 与论文设定的差异

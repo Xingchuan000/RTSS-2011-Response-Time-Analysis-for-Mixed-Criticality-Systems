@@ -7,4 +7,6 @@ dependencies:
   - pandas
   - matplotlib
   - pytest
+  - scikit-learn
+  - joblib
   - pip

@@ -25,6 +25,7 @@ from amc_py.rl.constraint_guided_pair import (
     ConstraintGuidedTransferCandidate,
     enumerate_constraint_guided_transfer_candidates,
 )
+from amc_py.rl.observation_metadata import build_action_definitions, build_observation_feature_names
 from amc_py.rl.feature_config import (
     OBSERVATION_MODE_V12_FULL_14D,
     OBSERVATION_MODE_V13_RH_17D,
@@ -1722,6 +1723,20 @@ class AmcBudgetEnv:
         if mode == "dynamic_v1":
             return DYNAMIC_V1_ACTION_FEATURE_NAMES
         raise ValueError(f"不支持的 action feature mode: {mode}")
+
+    def get_observation_feature_names(self) -> tuple[str, ...]:
+        """返回与当前 observation_mode 严格对齐的状态特征名称。
+
+        该方法只是一个薄封装，目的是让 VIPER collector/evaluator 通过 env 本身拿到
+        元数据，而不是在脚本层重新拼装任务顺序和模式配置。
+        """
+
+        return build_observation_feature_names(self.ordered_tasks, self.feature_config)
+
+    def get_action_definitions(self) -> list[dict[str, object]]:
+        """返回离散动作空间的稳定语义定义。"""
+
+        return build_action_definitions(self._actions)
 
     def _resolve_action_target_index(self, action: BudgetAction) -> int | None:
         """解析动作对应的目标任务索引。

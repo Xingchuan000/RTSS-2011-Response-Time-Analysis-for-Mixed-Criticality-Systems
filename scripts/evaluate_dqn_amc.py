@@ -430,7 +430,56 @@ def _eval_summary_fieldnames() -> list[str]:
     fieldnames.extend(QOS_FIELDNAMES)
     fieldnames.extend(LO_QUALITY_WEIGHTED_FIELDNAMES)
     fieldnames.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
+    fieldnames.extend(
+        [
+            "tree_id",
+            "tree_method",
+            "tree_depth",
+            "tree_node_count",
+            "tree_leaf_count",
+            "tree_max_depth_param",
+            "tree_min_samples_leaf",
+            "tree_raw_top1_invalid_count",
+            "tree_raw_top1_invalid_rate",
+            "tree_fallback_count",
+            "tree_fallback_rate",
+            "tree_no_valid_action_count",
+            "tree_no_valid_action_rate",
+            "tree_selected_action_count",
+            "tree_selected_action_match_teacher_count",
+            "tree_selected_action_match_teacher_rate",
+            "tree_raw_action_match_teacher_rate",
+            "tree_q_regret_mean",
+            "tree_q_regret_p95",
+        ]
+    )
     return fieldnames
+
+
+def _empty_tree_diagnostics_row() -> dict[str, float | int | str | None]:
+    """为非 tree 方法补齐空 tree 字段，避免 CSV 列口径漂移。"""
+
+    return {
+        "tree_id": None,
+        "tree_method": None,
+        "tree_depth": None,
+        "tree_node_count": None,
+        "tree_leaf_count": None,
+        "tree_max_depth_param": None,
+        "tree_min_samples_leaf": None,
+        "tree_raw_top1_invalid_count": None,
+        "tree_raw_top1_invalid_rate": None,
+        "tree_fallback_count": None,
+        "tree_fallback_rate": None,
+        "tree_no_valid_action_count": None,
+        "tree_no_valid_action_rate": None,
+        "tree_selected_action_count": None,
+        "tree_selected_action_match_teacher_count": None,
+        "tree_selected_action_match_teacher_rate": None,
+        "tree_raw_action_match_teacher_rate": None,
+        "tree_q_regret_mean": None,
+        "tree_q_regret_p95": None,
+    }
 
 
 def _build_pure_runtime_baseline_row(
@@ -454,6 +503,7 @@ def _build_pure_runtime_baseline_row(
     return {
         **row_base,
         **_empty_noop_q_diagnostics_row(),
+        **_empty_tree_diagnostics_row(),
         "method": method,
         "mode_changes": runtime_result.mode_change_count(),
         "lo_cancellations": runtime_result.lo_job_cancellation_count(),
@@ -779,6 +829,7 @@ def _evaluate_dqn_once(
     dqn_service_metrics = compute_service_quality_metrics(runtime_result)
     row = {
             **row_base,
+            **_empty_tree_diagnostics_row(),
             "method": "dqn_agent",
             "q_network_type": str(getattr(agent, "q_network_type", "mlp")),
             "mode_changes": int(last_info.get("mode_changes", 0)),
@@ -876,6 +927,89 @@ def _evaluate_dqn_once(
         runtime_result,
         env.action_log,
     )
+
+
+def _evaluate_tree_once(
+    *,
+    tree_artifact_dir: Path,
+    method_name: str,
+    experiment_config,
+    agent_period: int,
+    seed: int,
+    end_time: int,
+    row_base: dict[str, int | float | str | bool],
+    reward_mode: str,
+    dqn_runtime_semantics: RuntimeSemantics,
+    action_space: str,
+    budget_increase_ratio: float,
+    budget_decrease_ratio: float,
+    include_explicit_noop: bool,
+    budget_floor_ratio: float,
+    forbid_decreasing_hi_budgets: bool,
+    mask_detail_mode: str,
+    enable_deploy_cap_mask: bool,
+    deploy_cap_mask_ratio: float,
+    deploy_cap_mask_criticality: str,
+    feature_config: FeatureConfig,
+    c_amc_sem_xf: float = 0.5,
+    teacher_model_path: Path | None = None,
+) -> tuple[dict[str, int | float | str | bool | None], SimulationResult, list[dict[str, object]]]:
+    """在正式 HOUT 入口中执行 tree policy。"""
+
+    from amc_py.viper.artifacts import load_tree_policy_artifact
+    from amc_py.viper.metrics import evaluate_tree_policy_once
+
+    tree_policy = load_tree_policy_artifact(tree_artifact_dir)
+    teacher = DqnBudgetAgent.load(teacher_model_path) if teacher_model_path is not None else None
+    tree_metrics, runtime_result, action_log = evaluate_tree_policy_once(
+        tree_policy=tree_policy,
+        experiment_config=experiment_config,
+        seed=seed,
+        end_time=end_time,
+        agent_period=agent_period,
+        runtime_semantics=dqn_runtime_semantics,
+        reward_mode=reward_mode,
+        action_space=action_space,
+        budget_increase_ratio=budget_increase_ratio,
+        budget_decrease_ratio=budget_decrease_ratio,
+        include_explicit_noop=include_explicit_noop,
+        budget_floor_ratio=budget_floor_ratio,
+        forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+        mask_detail_mode=mask_detail_mode,
+        enable_deploy_cap_mask=enable_deploy_cap_mask,
+        deploy_cap_mask_ratio=deploy_cap_mask_ratio,
+        deploy_cap_mask_criticality=deploy_cap_mask_criticality,
+        feature_config=feature_config,
+        c_amc_sem_xf=c_amc_sem_xf,
+        teacher=teacher,
+    )
+    metadata = tree_policy.metadata
+    step_count = int(tree_metrics.get("step_count", 0))
+    accepted_actions = int(tree_metrics.get("accepted_actions", 0))
+    row = {
+        **row_base,
+        **_empty_noop_q_diagnostics_row(),
+        "method": method_name,
+        "q_network_type": "",
+        "budget_overruns": int(tree_metrics["mode_changes"]) + int(tree_metrics["lo_cancellations"]),
+        "noop_actions": 0,
+        "explicit_noop_actions": 0,
+        "noop_action_rate": 0.0,
+        "explicit_noop_action_rate": 0.0,
+        "accepted_action_rate": ((accepted_actions / step_count) if step_count > 0 else 0.0),
+        "rejection_rate": 0.0,
+        "observation_mode": feature_config.observation_mode,
+        "state_dim": int(metadata.get("state_dim", 0)),
+        **tree_metrics,
+        "tree_id": metadata.get("tree_id"),
+        "tree_method": metadata.get("method"),
+        "tree_depth": metadata.get("tree_depth"),
+        "tree_node_count": metadata.get("tree_node_count"),
+        "tree_leaf_count": metadata.get("tree_leaf_count"),
+        "tree_max_depth_param": metadata.get("max_depth"),
+        "tree_min_samples_leaf": metadata.get("min_samples_leaf"),
+    }
+    return row, runtime_result, action_log
 
 
 UNIFIED_SUMMARY_FIELDNAMES = [
@@ -1612,6 +1746,10 @@ def _evaluate_enabled_methods_for_seed(
     constraint_guided_pair_prefer_lo: bool = False,
     constraint_guided_pair_include_hi_risk_boost: bool = False,
     constraint_guided_pair_allow_increase_only_when_safe: bool = False,
+    bc_tree_model: Path | None = None,
+    dagger_tree_model: Path | None = None,
+    viper_tree_model: Path | None = None,
+    tree_compare_teacher_model: Path | None = None,
 ) -> tuple[list[dict[str, int | float | str | bool]], list[dict[str, object]]]:
     """评估单个 seed 下的所有启用方法。
 
@@ -2120,6 +2258,50 @@ def _evaluate_enabled_methods_for_seed(
             )
         )
 
+    tree_specs = [
+        ("bc_tree_agent", bc_tree_model),
+        ("dagger_tree_agent", dagger_tree_model),
+        ("viper_tree_agent", viper_tree_model),
+    ]
+    for method_name, artifact_dir in tree_specs:
+        if method_name not in enabled_methods:
+            continue
+        if artifact_dir is None:
+            raise ValueError(f"未提供 {method_name} 对应的 tree artifact 路径")
+        tree_row, tree_runtime_result, tree_action_log = _evaluate_tree_once(
+            tree_artifact_dir=artifact_dir,
+            method_name=method_name,
+            experiment_config=experiment_config,
+            agent_period=agent_period,
+            seed=seed,
+            end_time=end_time,
+            row_base=row_base,
+            reward_mode=reward_mode,
+            dqn_runtime_semantics=dqn_runtime_semantics,
+            action_space=action_space,
+            budget_increase_ratio=budget_increase_ratio,
+            budget_decrease_ratio=budget_decrease_ratio,
+            include_explicit_noop=include_explicit_noop,
+            budget_floor_ratio=budget_floor_ratio,
+            forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+            mask_detail_mode=mask_detail_mode,
+            enable_deploy_cap_mask=enable_deploy_cap_mask,
+            deploy_cap_mask_ratio=deploy_cap_mask_ratio,
+            deploy_cap_mask_criticality=deploy_cap_mask_criticality,
+            feature_config=feature_config,
+            c_amc_sem_xf=c_amc_sem_xf,
+            teacher_model_path=tree_compare_teacher_model,
+        )
+        rows.append(tree_row)
+        deadline_miss_details.extend(
+            _deadline_miss_detail_rows(
+                row_base=row_base,
+                method=method_name,
+                runtime_result=tree_runtime_result,
+                action_log=tree_action_log,
+            )
+        )
+
     return rows, deadline_miss_details
 
 
@@ -2162,6 +2344,10 @@ def _evaluate_seed_worker(
         bool,
         bool,
         bool,
+        Path | None,
+        Path | None,
+        Path | None,
+        Path | None,
     ],
 ) -> tuple[list[dict[str, int | float | str | bool]], list[dict[str, object]]]:
     """并行 worker：完成单个 seed 的全部评估方法。
@@ -2209,6 +2395,10 @@ def _evaluate_seed_worker(
         constraint_guided_pair_prefer_lo,
         constraint_guided_pair_include_hi_risk_boost,
         constraint_guided_pair_allow_increase_only_when_safe,
+        bc_tree_model,
+        dagger_tree_model,
+        viper_tree_model,
+        tree_compare_teacher_model,
     ) = args_tuple
     return _evaluate_enabled_methods_for_seed(
         seed=seed,
@@ -2249,6 +2439,10 @@ def _evaluate_seed_worker(
         constraint_guided_pair_prefer_lo=constraint_guided_pair_prefer_lo,
         constraint_guided_pair_include_hi_risk_boost=constraint_guided_pair_include_hi_risk_boost,
         constraint_guided_pair_allow_increase_only_when_safe=constraint_guided_pair_allow_increase_only_when_safe,
+        bc_tree_model=bc_tree_model,
+        dagger_tree_model=dagger_tree_model,
+        viper_tree_model=viper_tree_model,
+        tree_compare_teacher_model=tree_compare_teacher_model,
     )
 
 
@@ -2300,6 +2494,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="amc_plus_baseline,amc_ra_baseline,amc_rh_baseline,noop_agent,dqn_agent",
     )
+    parser.add_argument("--bc-tree-model", type=Path, default=None)
+    parser.add_argument("--dagger-tree-model", type=Path, default=None)
+    parser.add_argument("--viper-tree-model", type=Path, default=None)
+    parser.add_argument("--tree-compare-teacher-model", type=Path, default=None)
     parser.add_argument("--output", type=Path, default=Path("outputs/dqn_amc/eval_summary.csv"))
     parser.add_argument("--fail-on-deadline-miss", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--trace-dir", type=Path, default=None)
@@ -2534,6 +2732,9 @@ def main() -> None:
         "random_agent",
         "heuristic_agent",
         "dqn_agent",
+        "bc_tree_agent",
+        "dagger_tree_agent",
+        "viper_tree_agent",
     }
     unsupported_methods = sorted(enabled_methods - valid_methods)
     if unsupported_methods:
@@ -2584,6 +2785,10 @@ def main() -> None:
                 constraint_guided_pair_allow_increase_only_when_safe=(
                     args.constraint_guided_pair_allow_increase_only_when_safe
                 ),
+                bc_tree_model=args.bc_tree_model,
+                dagger_tree_model=args.dagger_tree_model,
+                viper_tree_model=args.viper_tree_model,
+                tree_compare_teacher_model=args.tree_compare_teacher_model,
             )
             for seed in seeds
         ]
@@ -2629,6 +2834,10 @@ def main() -> None:
                 args.constraint_guided_pair_prefer_lo,
                 args.constraint_guided_pair_include_hi_risk_boost,
                 args.constraint_guided_pair_allow_increase_only_when_safe,
+                args.bc_tree_model,
+                args.dagger_tree_model,
+                args.viper_tree_model,
+                args.tree_compare_teacher_model,
             )
             for seed in seeds
         ]
