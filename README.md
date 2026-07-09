@@ -253,6 +253,108 @@ conda run -n amc-repro python scripts/run_small_experiment.py
 3. 大规模实验尚未做并行化或性能优化。
 4. 当前图表样式偏基础，尚未做论文排版级统一主题。
 
+## 8.2 Leaf-Level Execution Audit 使用说明
+
+本次修改在现有 VIPER / BC / DAGGER tree HOUT 评估流程中增加了 **leaf-level execution audit** 能力。
+
+### 8.2.1 功能概述
+
+leaf-level execution audit 使每一次 tree policy 决策都能追溯到：
+
+1. 命中的 `leaf_id` 和从根到叶子的 `path`；
+2. 该叶子的规则条件、训练时支持度、叶子预测动作；
+3. tree 原始 top-1 动作、mask-aware selected 动作、teacher best 动作；
+4. raw action 是否被 runtime mask 拒绝、是否发生 fallback；
+5. teacher Q-regret / action match；
+6. 当前 step 后的 reward、accepted、mode change / cancellation / deadline delta 等运行结果；
+7. 可按 `leaf_id` 聚合得到 leaf hit count、fallback rate、teacher disagreement、Q-regret、reward/outcome 指标。
+
+### 8.2.2 使用方式
+
+在正常的 HOUT 评估命令中新增 `--tree-audit-dir` 参数：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+python scripts/evaluate_dqn_amc.py \
+  --model /path/to/model_final.pt \
+  --bc-tree-model /path/to/viper_trees/depth_2/leaf_1/best \
+  --baselines dqn_agent,bc_tree_agent \
+  --workload small \
+  --seeds 0:1 \
+  --end-time 80 \
+  --agent-period 20 \
+  --observation-mode v11_full_10d \
+  --action-space single \
+  --output /tmp/eval.csv \
+  --tree-audit-dir /tmp/tree_audit \
+  --tree-audit-seeds 0:1 \
+  --tree-audit-methods bc_tree_agent \
+  --tree-audit-state-mode split \
+  --tree-audit-top-k-actions 5
+```
+
+新增参数说明：
+
+| 参数 | 说明 |
+|------|------|
+| `--tree-audit-dir` | 单独输出 leaf audit 文件的目录，不开启 runtime tick trace |
+| `--tree-audit-seeds` | 只对指定 seed 写 audit；空字符串表示所有 seed |
+| `--tree-audit-methods` | 只对指定 tree method 写 audit；空字符串表示所有 tree methods |
+| `--tree-audit-state-mode` | 控制状态特征记录粒度：`none`（不记录）、`split`（只记录 path 上 split 特征值，默认）、`all`（记录完整 state vector，仅用于短 horizon 调试） |
+| `--tree-audit-top-k-actions` | 记录的 top-k 动作数量，默认 5 |
+
+不传 `--tree-audit-dir` 时，所有现有行为保持不变，不产生额外文件。
+
+### 8.2.3 输出文件
+
+每个 seed/method 会产生：
+
+```text
+{tree-audit-dir}/seed{seed}_{method}_leaf_audit.jsonl
+{tree-audit-dir}/seed{seed}_{method}_leaf_summary.csv
+```
+
+- `leaf_audit.jsonl`：每行对应一次 tree 决策，包含完整的 leaf/path/action/teacher/state 字段。
+- `leaf_summary.csv`：按 leaf_id 聚合的单个 seed/method leaf 统计。
+
+### 8.2.4 跨 seed 汇总
+
+使用独立汇总脚本把多个 seed/method 的 audit 文件合并：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+python scripts/summarize_tree_leaf_audit.py \
+  --audit-dir /tmp/tree_audit \
+  --output-dir /tmp/tree_audit_summary
+```
+
+汇总输出文件：
+
+| 文件 | 内容 |
+|------|------|
+| `leaf_summary_all.csv` | 按 (method, tree_id, leaf_id) 聚合的跨 seed 汇总 |
+| `leaf_action_summary.csv` | 按 leaf_id 聚合的动作分布 |
+| `leaf_teacher_disagreement.csv` | teacher disagreement 高的叶子排行，按 disagreement_rate 和 q_regret 降序 |
+| `leaf_fallback_summary.csv` | fallback 率高的叶子排行，按 fallback_rate 降序 |
+| `leaf_high_regret_cases.csv` | step-level 高 regret 明细（top 1000） |
+
+### 8.2.5 artifact 新增文件
+
+tree artifact 目录中新增以下文件，供离线分析使用：
+
+```text
+leaf_rules.json    # 每个叶子的完整规则路径（含 path_predicates、predicted_action_id 等）
+leaf_rules.csv     # 扁平化版本，便于人工浏览
+```
+
+### 8.2.6 注意事项
+
+- leaf audit 独立于 `--trace-dir`，不触发 runtime tick trace。
+- 默认 `--tree-audit-state-mode split` 只记录 path 上使用的特征值，避免长 HOUT 产生过大文件。
+- `all` 模式会记录完整 state vector，仅用于短 horizon 调试。
+- leaf audit 不改变训练、HOUT 汇总指标和现有 baseline 语义。
+- 所有新增字段均为 JSON 可序列化类型，可直接用于后处理。
+
 ## 8.1 VIPER 策略提取使用说明
 
 本次修改严格限定在计划文档定义的 VIPER 代码边界内，只新增以下能力：

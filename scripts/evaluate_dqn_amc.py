@@ -929,6 +929,181 @@ def _evaluate_dqn_once(
     )
 
 
+def _write_tree_audit_files(
+    *,
+    tree_audit_dir: Path,
+    seed: int,
+    method: str,
+    action_log: list[dict[str, object]],
+    row_base: dict[str, object],
+    tree_metadata: dict[str, object],
+) -> None:
+    """写出单个 seed/method 的 leaf audit JSONL 与 per-seed leaf summary CSV。
+
+    输出文件：
+    - {tree_audit_dir}/taskset{taskset_seed}_seed{seed}_{method}_leaf_audit.jsonl
+    - {tree_audit_dir}/taskset{taskset_seed}_seed{seed}_{method}_leaf_summary.csv
+
+    JSONL 只包含 action_log 中有 tree_leaf_id 的行（即 tree 决策行）。
+    写入 JSONL 前先补齐 seed / method / tree 元数据，避免后续跨 seed 汇总时 key 缺失。
+    """
+
+    import numpy as np
+    from collections import Counter
+
+    tree_audit_dir.mkdir(parents=True, exist_ok=True)
+
+    # 筛选出包含 leaf audit 信息的行
+    audit_rows = [row for row in action_log if "tree_leaf_id" in row]
+    if not audit_rows:
+        return
+
+    # 构造写入 JSONL 时每行统一补齐的元数据前缀
+    metadata_prefix = {
+        "seed": seed,
+        "taskset_seed": row_base.get("taskset_seed"),
+        "scenario_seed": row_base.get("scenario_seed"),
+        "method": method,
+        "tree_id": tree_metadata.get("tree_id"),
+        "tree_method": tree_metadata.get("method"),
+        "tree_depth": tree_metadata.get("tree_depth"),
+        "tree_node_count": tree_metadata.get("tree_node_count"),
+        "tree_leaf_count": tree_metadata.get("tree_leaf_count"),
+        "tree_max_depth_param": tree_metadata.get("max_depth"),
+        "tree_min_samples_leaf": tree_metadata.get("min_samples_leaf"),
+    }
+    # 过滤掉 None 值，避免 JSONL 中出现 null 字段导致后续解析歧义
+    metadata_prefix = {k: v for k, v in metadata_prefix.items() if v is not None}
+
+    # 补齐每行元数据后写入 JSONL（文件名包含 taskset seed，避免跨 taskset 覆盖）
+    taskset_seed = row_base.get("taskset_seed", "unknown")
+    stem = f"taskset{taskset_seed}_seed{seed}_{method}"
+    jsonl_path = tree_audit_dir / f"{stem}_leaf_audit.jsonl"
+    enriched_rows: list[dict[str, object]] = []
+    with jsonl_path.open("w", encoding="utf-8") as f:
+        for row in audit_rows:
+            enriched = {**metadata_prefix, **row}
+            enriched_rows.append(enriched)
+            f.write(json.dumps(enriched, ensure_ascii=False) + "\n")
+
+    # 按 leaf_id 聚合，写出 per-seed leaf summary CSV（使用补齐后的行）
+    groups: dict[int, list[dict[str, object]]] = {}
+    for row in enriched_rows:
+        leaf_id = int(row.get("tree_leaf_id", -1))
+        groups.setdefault(leaf_id, []).append(row)
+
+    total_count = len(enriched_rows)
+    summary_rows: list[dict[str, object]] = []
+    for leaf_id, leaf_rows in sorted(groups.items()):
+        hit_count = len(leaf_rows)
+        hit_rate = hit_count / total_count if total_count > 0 else 0.0
+
+        # 取第一个 leaf row 中的静态信息
+        first = leaf_rows[0]
+        path_depth = first.get("tree_path_depth")
+        leaf_n_node_samples = first.get("tree_leaf_n_node_samples")
+        leaf_impurity = first.get("tree_leaf_impurity")
+        path_predicates_json = first.get("tree_path_predicates_json")
+
+        # raw_top1_action_id 的众数
+        raw_top1_ids = [row.get("tree_raw_top1_action_id") for row in leaf_rows]
+        raw_top1_counter = Counter(r for r in raw_top1_ids if r is not None)
+        raw_top1_mode = raw_top1_counter.most_common(1)[0][0] if raw_top1_counter else None
+
+        # selected_action_id 的众数
+        sel_ids = [row.get("tree_selected_action_id") for row in leaf_rows]
+        sel_counter = Counter(s for s in sel_ids if s is not None)
+        sel_mode = sel_counter.most_common(1)[0][0] if sel_counter else None
+
+        # 对应的动作语义描述（取该 action_id mode 对应行的第一条 action_def_json）
+        raw_top1_def_json = None
+        for row in leaf_rows:
+            if row.get("tree_raw_top1_action_id") == raw_top1_mode and raw_top1_mode is not None:
+                raw_top1_def_json = row.get("tree_raw_top1_action_def_json")
+                break
+        selected_def_json = None
+        for row in leaf_rows:
+            if row.get("tree_selected_action_id") == sel_mode and sel_mode is not None:
+                selected_def_json = row.get("tree_selected_action_def_json")
+                break
+
+        # fallback 统计
+        fallback_count = sum(int(bool(row.get("tree_fallback_used", False))) for row in leaf_rows)
+        fallback_rate = fallback_count / hit_count if hit_count > 0 else 0.0
+
+        # raw_invalid 统计
+        raw_invalid_count = sum(int(bool(row.get("tree_raw_top1_invalid", False))) for row in leaf_rows)
+        raw_invalid_rate = raw_invalid_count / hit_count if hit_count > 0 else 0.0
+
+        # teacher match 统计
+        teacher_match_vals = [row.get("teacher_selected_action_match") for row in leaf_rows]
+        match_count = sum(1 for v in teacher_match_vals if v is True)
+        match_rate = match_count / hit_count if hit_count > 0 else 0.0
+
+        # q_regret 统计
+        q_regrets = [
+            float(row["teacher_q_regret_selected"])
+            for row in leaf_rows
+            if row.get("teacher_q_regret_selected") is not None
+        ]
+        q_regret_mean = float(np.mean(q_regrets)) if q_regrets else None
+        q_regret_p95 = float(np.percentile(q_regrets, 95)) if q_regrets else None
+
+        # reward 统计
+        rewards = [float(row.get("reward", 0.0)) for row in leaf_rows]
+        reward_sum = float(np.sum(rewards))
+        reward_mean = float(np.mean(rewards)) if rewards else 0.0
+
+        # accepted 统计
+        accepted_count = sum(int(bool(row.get("accepted", False))) for row in leaf_rows)
+        accepted_rate = accepted_count / hit_count if hit_count > 0 else 0.0
+
+        # outcome delta 统计
+        delta_deadline_misses_sum = sum(int(row.get("delta_deadline_misses", 0) or 0) for row in leaf_rows)
+        delta_mode_changes_sum = sum(int(row.get("delta_mode_changes", 0) or 0) for row in leaf_rows)
+        delta_lo_cancellations_sum = sum(int(row.get("delta_lo_cancellations", 0) or 0) for row in leaf_rows)
+
+        summary_rows.append({
+            "seed": seed,
+            "method": method,
+            "tree_id": first.get("tree_id", ""),
+            "tree_leaf_id": leaf_id,
+            "hit_count": hit_count,
+            "hit_rate": hit_rate,
+            "path_depth": path_depth,
+            "leaf_n_node_samples": leaf_n_node_samples,
+            "leaf_impurity": leaf_impurity,
+            "raw_top1_action_id_mode": raw_top1_mode,
+            "raw_top1_action_def_json_mode": raw_top1_def_json if raw_top1_def_json is not None else "",
+            "selected_action_id_mode": sel_mode,
+            "selected_action_def_json_mode": selected_def_json if selected_def_json is not None else "",
+            "fallback_count": fallback_count,
+            "fallback_rate": fallback_rate,
+            "raw_invalid_count": raw_invalid_count,
+            "raw_invalid_rate": raw_invalid_rate,
+            "teacher_match_count": match_count,
+            "teacher_match_rate": match_rate,
+            "q_regret_selected_mean": q_regret_mean,
+            "q_regret_selected_p95": q_regret_p95,
+            "reward_sum": reward_sum,
+            "reward_mean": reward_mean,
+            "accepted_count": accepted_count,
+            "accepted_rate": accepted_rate,
+            "delta_deadline_misses_sum": delta_deadline_misses_sum,
+            "delta_mode_changes_sum": delta_mode_changes_sum,
+            "delta_lo_cancellations_sum": delta_lo_cancellations_sum,
+            "path_predicates_json": path_predicates_json if path_predicates_json is not None else "",
+        })
+
+    csv_path = tree_audit_dir / f"{stem}_leaf_summary.csv"
+    if summary_rows:
+        fieldnames = list(summary_rows[0].keys())
+        with csv_path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(summary_rows)
+
+
 def _evaluate_tree_once(
     *,
     tree_artifact_dir: Path,
@@ -953,6 +1128,9 @@ def _evaluate_tree_once(
     feature_config: FeatureConfig,
     c_amc_sem_xf: float = 0.5,
     teacher_model_path: Path | None = None,
+    leaf_audit_enabled: bool = False,
+    leaf_audit_state_mode: str = "split",
+    leaf_audit_top_k_actions: int = 5,
 ) -> tuple[dict[str, int | float | str | bool | None], SimulationResult, list[dict[str, object]]]:
     """在正式 HOUT 入口中执行 tree policy。"""
 
@@ -982,6 +1160,9 @@ def _evaluate_tree_once(
         feature_config=feature_config,
         c_amc_sem_xf=c_amc_sem_xf,
         teacher=teacher,
+        leaf_audit_enabled=leaf_audit_enabled,
+        leaf_audit_state_mode=leaf_audit_state_mode,
+        leaf_audit_top_k_actions=leaf_audit_top_k_actions,
     )
     metadata = tree_policy.metadata
     step_count = int(tree_metrics.get("step_count", 0))
@@ -1528,6 +1709,34 @@ def _parse_csv_set(raw_value: str) -> set[str]:
     return {part.strip() for part in raw_value.split(",") if part.strip()}
 
 
+def _parse_int_set_or_ranges(raw_value: str) -> set[int]:
+    """解析逗号分隔的整数或闭区间。
+
+    支持：
+    - "1550"
+    - "1550,1551,1552"
+    - "1550:1599"
+    - "1550:1555,1590,1595:1599"
+    区间为闭区间，包含 end。
+    """
+
+    result: set[int] = set()
+    for part in raw_value.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if ":" in token:
+            start_raw, end_raw = token.split(":", 1)
+            start = int(start_raw.strip())
+            end = int(end_raw.strip())
+            if end < start:
+                raise ValueError(f"invalid seed range (end < start): {token}")
+            result.update(range(start, end + 1))
+        else:
+            result.add(int(token))
+    return result
+
+
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     """写 jsonl 文件。"""
 
@@ -1750,10 +1959,15 @@ def _evaluate_enabled_methods_for_seed(
     dagger_tree_model: Path | None = None,
     viper_tree_model: Path | None = None,
     tree_compare_teacher_model: Path | None = None,
+    tree_audit_dir: Path | None = None,
+    tree_audit_seed_set: set[int] | None = None,
+    tree_audit_method_set: set[str] | None = None,
+    tree_audit_state_mode: str = "split",
+    tree_audit_top_k_actions: int = 5,
 ) -> tuple[list[dict[str, int | float | str | bool]], list[dict[str, object]]]:
     """评估单个 seed 下的所有启用方法。
 
-    这里把“一个 seed 对应的整组评估工作”封装成独立 helper，有两个目的：
+    这里把"一个 seed 对应的整组评估工作"封装成独立 helper，有两个目的：
     - 串行路径直接在主进程里调用，保持现有行为与口径；
     - 并行路径把 seed 分发给多个子进程时，也复用同一份实现，避免两套逻辑漂移。
 
@@ -1817,6 +2031,13 @@ def _evaluate_enabled_methods_for_seed(
     )
     capture_runtime_trace_for_seed = trace_dir is not None and trace_enabled_for_seed
     capture_debug_events_for_seed = (trace_dir is not None or debug_log_dir is not None) and trace_enabled_for_seed
+
+    # 计算当前 seed 是否应启用 leaf audit（独立于 --trace-dir）
+    tree_audit_enabled_for_seed = (
+        tree_audit_dir is not None
+        and (not tree_audit_seed_set or seed in tree_audit_seed_set)
+    )
+
     runtime_config = _formal_agent_runtime_config(
         end_time=end_time,
         semantics=dqn_runtime_semantics,
@@ -2268,6 +2489,11 @@ def _evaluate_enabled_methods_for_seed(
             continue
         if artifact_dir is None:
             raise ValueError(f"未提供 {method_name} 对应的 tree artifact 路径")
+        # 计算当前 seed/method 是否应启用 leaf audit
+        leaf_audit_enabled = (
+            tree_audit_enabled_for_seed
+            and (not tree_audit_method_set or method_name in tree_audit_method_set)
+        )
         tree_row, tree_runtime_result, tree_action_log = _evaluate_tree_once(
             tree_artifact_dir=artifact_dir,
             method_name=method_name,
@@ -2291,6 +2517,9 @@ def _evaluate_enabled_methods_for_seed(
             feature_config=feature_config,
             c_amc_sem_xf=c_amc_sem_xf,
             teacher_model_path=tree_compare_teacher_model,
+            leaf_audit_enabled=leaf_audit_enabled,
+            leaf_audit_state_mode=tree_audit_state_mode,
+            leaf_audit_top_k_actions=tree_audit_top_k_actions,
         )
         rows.append(tree_row)
         deadline_miss_details.extend(
@@ -2301,6 +2530,26 @@ def _evaluate_enabled_methods_for_seed(
                 action_log=tree_action_log,
             )
         )
+        # 写出 leaf audit 文件（独立于 trace）
+        if leaf_audit_enabled and tree_audit_dir is not None:
+            # 从 tree_row 中提取 tree metadata，不改变 _evaluate_tree_once 返回签名
+            tree_metadata = {
+                "tree_id": tree_row.get("tree_id"),
+                "method": tree_row.get("tree_method"),
+                "tree_depth": tree_row.get("tree_depth"),
+                "tree_node_count": tree_row.get("tree_node_count"),
+                "tree_leaf_count": tree_row.get("tree_leaf_count"),
+                "max_depth": tree_row.get("tree_max_depth_param"),
+                "min_samples_leaf": tree_row.get("tree_min_samples_leaf"),
+            }
+            _write_tree_audit_files(
+                tree_audit_dir=tree_audit_dir,
+                seed=seed,
+                method=method_name,
+                action_log=tree_action_log,
+                row_base=row_base,
+                tree_metadata=tree_metadata,
+            )
 
     return rows, deadline_miss_details
 
@@ -2348,11 +2597,16 @@ def _evaluate_seed_worker(
         Path | None,
         Path | None,
         Path | None,
+        Path | None,
+        set[int] | None,
+        set[str] | None,
+        str,
+        int,
     ],
 ) -> tuple[list[dict[str, int | float | str | bool]], list[dict[str, object]]]:
     """并行 worker：完成单个 seed 的全部评估方法。
 
-    这里仍然按“一个 seed 内部顺序执行多个方法”的粒度并行，而不是把每个方法单独拆开。
+    这里仍然按"一个 seed 内部顺序执行多个方法"的粒度并行，而不是把每个方法单独拆开。
     这样可以保持当前输出结构、trace 文件命名以及每个 seed 的局部执行顺序都不变，
     同时也避免把同一个任务集/场景在多个子进程里重复构造多次。
     """
@@ -2399,6 +2653,11 @@ def _evaluate_seed_worker(
         dagger_tree_model,
         viper_tree_model,
         tree_compare_teacher_model,
+        tree_audit_dir,
+        tree_audit_seed_set,
+        tree_audit_method_set,
+        tree_audit_state_mode,
+        tree_audit_top_k_actions,
     ) = args_tuple
     return _evaluate_enabled_methods_for_seed(
         seed=seed,
@@ -2443,6 +2702,11 @@ def _evaluate_seed_worker(
         dagger_tree_model=dagger_tree_model,
         viper_tree_model=viper_tree_model,
         tree_compare_teacher_model=tree_compare_teacher_model,
+        tree_audit_dir=tree_audit_dir,
+        tree_audit_seed_set=tree_audit_seed_set,
+        tree_audit_method_set=tree_audit_method_set,
+        tree_audit_state_mode=tree_audit_state_mode,
+        tree_audit_top_k_actions=tree_audit_top_k_actions,
     )
 
 
@@ -2498,6 +2762,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dagger-tree-model", type=Path, default=None)
     parser.add_argument("--viper-tree-model", type=Path, default=None)
     parser.add_argument("--tree-compare-teacher-model", type=Path, default=None)
+    parser.add_argument(
+        "--tree-audit-dir",
+        type=Path,
+        default=None,
+        help="单独输出 leaf audit 文件，不开启 runtime tick trace。",
+    )
+    parser.add_argument(
+        "--tree-audit-seeds",
+        type=str,
+        default="",
+        help="只对指定 HOUT scenario seed 写 audit；空字符串表示所有 seed。",
+    )
+    parser.add_argument(
+        "--tree-audit-methods",
+        type=str,
+        default="",
+        help="只对指定 tree method 写 audit；空字符串表示所有 tree methods。",
+    )
+    parser.add_argument(
+        "--tree-audit-state-mode",
+        choices=["none", "split", "all"],
+        default="split",
+        help="控制 leaf audit 中状态特征的记录粒度。",
+    )
+    parser.add_argument(
+        "--tree-audit-top-k-actions",
+        type=int,
+        default=5,
+        help="leaf audit 中记录 top-k 个动作信息。",
+    )
     parser.add_argument("--output", type=Path, default=Path("outputs/dqn_amc/eval_summary.csv"))
     parser.add_argument("--fail-on-deadline-miss", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--trace-dir", type=Path, default=None)
@@ -2645,6 +2939,10 @@ def main() -> None:
         raise ValueError("--c-amc-sem-xf must be in (0, 1]")
     if args.deploy_cap_mask_ratio <= 1.0:
         raise ValueError("--deploy-cap-mask-ratio must be > 1.0")
+    if args.tree_audit_top_k_actions < 1:
+        raise ValueError("--tree-audit-top-k-actions must be >= 1")
+    tree_audit_seed_set = _parse_int_set_or_ranges(args.tree_audit_seeds)
+    tree_audit_method_set = _parse_csv_set(args.tree_audit_methods)
     feature_config = FeatureConfig(
         observation_mode=args.observation_mode,
         ema_alpha=args.ema_alpha,
@@ -2789,6 +3087,11 @@ def main() -> None:
                 dagger_tree_model=args.dagger_tree_model,
                 viper_tree_model=args.viper_tree_model,
                 tree_compare_teacher_model=args.tree_compare_teacher_model,
+                tree_audit_dir=args.tree_audit_dir,
+                tree_audit_seed_set=tree_audit_seed_set,
+                tree_audit_method_set=tree_audit_method_set,
+                tree_audit_state_mode=args.tree_audit_state_mode,
+                tree_audit_top_k_actions=args.tree_audit_top_k_actions,
             )
             for seed in seeds
         ]
@@ -2838,6 +3141,11 @@ def main() -> None:
                 args.dagger_tree_model,
                 args.viper_tree_model,
                 args.tree_compare_teacher_model,
+                args.tree_audit_dir,
+                tree_audit_seed_set,
+                tree_audit_method_set,
+                args.tree_audit_state_mode,
+                args.tree_audit_top_k_actions,
             )
             for seed in seeds
         ]

@@ -1,8 +1,14 @@
-"""VIPER 训练与评估指标。"""
+"""VIPER 训练与评估指标。
+
+新增 leaf-level execution audit 能力：
+- _build_leaf_audit_fields(): 构造单步 leaf audit 诊断字段，合并到 env.action_log 中。
+- evaluate_tree_policy_once(): 新增 leaf_audit_enabled / leaf_audit_state_mode / leaf_audit_top_k_actions 参数。
+"""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+import json
 from statistics import mean
 import math
 
@@ -68,6 +74,155 @@ def compute_offline_tree_metrics(tree_policy: TreeBudgetPolicy, samples: Sequenc
     }
 
 
+def _build_leaf_audit_fields(
+    *,
+    step_index: int,
+    state_vector: tuple[float, ...],
+    feature_names: tuple[str, ...],
+    tree_policy: TreeBudgetPolicy,
+    tree_info: dict[str, object],
+    selected_action_id: int | None,
+    valid_action_mask: tuple[bool, ...],
+    teacher_diag: dict[str, object] | None,
+    leaf_audit_state_mode: str,
+    leaf_audit_top_k_actions: int,
+) -> dict[str, object]:
+    """构造单步 leaf audit 诊断字段，写入 env.action_log 中。
+
+    参数：
+    - step_index: 当前步序号（从 0 开始）。
+    - state_vector: 当前状态向量。
+    - feature_names: 特征名元组。
+    - tree_policy: TreeBudgetPolicy 实例。
+    - tree_info: select_action_id 返回的 info 字典（已包含 trace 信息）。
+    - selected_action_id: 实际选中的动作编号。
+    - valid_action_mask: 合法动作 mask 元组。
+    - teacher_diag: teacher 的 Q 诊断信息（可为 None）。
+    - leaf_audit_state_mode: "none" / "split" / "all"。
+    - leaf_audit_top_k_actions: 记录 top-k 个动作。
+
+    返回：
+    - 可直接 update 到 action_log 条目的 dict，所有值均为 JSON 可序列化类型。
+    """
+
+    fields: dict[str, object] = {}
+
+    # 基础 step 字段
+    fields["tree_audit_step_index"] = step_index
+
+    # 叶子 / 路径基本信息（直接从 tree_info 中提取）
+    fields["tree_leaf_id"] = tree_info.get("tree_leaf_id")
+    fields["tree_path_depth"] = tree_info.get("tree_path_depth")
+    fields["tree_path_node_ids_json"] = json.dumps(
+        list(tree_info.get("tree_path_node_ids", ())), ensure_ascii=False
+    )
+    path_predicates = tree_info.get("tree_path_predicates")
+    if isinstance(path_predicates, list):
+        fields["tree_path_predicates_json"] = json.dumps(path_predicates, ensure_ascii=False)
+
+    # 叶子训练统计字段
+    fields["tree_leaf_n_node_samples"] = tree_info.get("tree_leaf_n_node_samples")
+    fields["tree_leaf_weighted_n_node_samples"] = tree_info.get("tree_leaf_weighted_n_node_samples")
+    fields["tree_leaf_impurity"] = tree_info.get("tree_leaf_impurity")
+    leaf_value = tree_info.get("tree_leaf_value")
+    if leaf_value is not None:
+        fields["tree_leaf_value_json"] = json.dumps(leaf_value, ensure_ascii=False)
+    fields["tree_leaf_predicted_class_id"] = tree_info.get("tree_leaf_predicted_class_id")
+
+    # 动作字段
+    raw_top1_action_id = tree_info.get("tree_raw_top1_action_id")
+    fields["tree_raw_top1_action_id"] = raw_top1_action_id
+    fields["tree_selected_action_id"] = selected_action_id
+    fields["tree_leaf_predicted_action_id"] = tree_info.get("tree_leaf_predicted_class_id")
+    fields["tree_raw_top1_invalid"] = tree_info.get("tree_raw_top1_invalid")
+    fields["tree_fallback_used"] = tree_info.get("tree_fallback_used")
+    fields["tree_no_valid_action"] = tree_info.get("tree_no_valid_action")
+
+    # 动作语义描述
+    raw_top1_def = tree_policy.action_definition(raw_top1_action_id)
+    if raw_top1_def is not None:
+        fields["tree_raw_top1_action_def_json"] = json.dumps(raw_top1_def, ensure_ascii=False)
+    selected_def = tree_policy.action_definition(selected_action_id)
+    if selected_def is not None:
+        fields["tree_selected_action_def_json"] = json.dumps(selected_def, ensure_ascii=False)
+
+    # action ranking / probability 字段
+    ranking = tree_info.get("tree_action_ranking")
+    proba = tree_info.get("tree_action_proba")
+    top_k = int(leaf_audit_top_k_actions)
+    if ranking is not None and proba is not None:
+        ranking_tuple = tuple(ranking) if isinstance(ranking, list) else ranking
+        top_k_ids = ranking_tuple[:top_k]
+        fields["tree_topk_action_ids_json"] = json.dumps(list(top_k_ids), ensure_ascii=False)
+        top_k_probs = [proba[aid] if aid < len(proba) else 0.0 for aid in top_k_ids]
+        fields["tree_topk_action_probs_json"] = json.dumps(top_k_probs, ensure_ascii=False)
+
+    valid_count = sum(1 for v in valid_action_mask if v)
+    masked_count = len(valid_action_mask) - valid_count
+    fields["tree_valid_action_count"] = valid_count
+    fields["tree_masked_action_count"] = masked_count
+
+    # teacher 对比字段
+    if teacher_diag is not None:
+        teacher_best = teacher_diag.get("best_action_id")
+        fields["teacher_best_action_id"] = teacher_best
+        teacher_best_def = tree_policy.action_definition(teacher_best)
+        if teacher_best_def is not None:
+            fields["teacher_best_action_def_json"] = json.dumps(teacher_best_def, ensure_ascii=False)
+        q_best = teacher_diag.get("q_best")
+        fields["teacher_q_best"] = float(q_best) if q_best is not None else None
+        raw_q_values = teacher_diag.get("raw_q_values")
+        if raw_q_values is not None and selected_action_id is not None and selected_action_id < len(raw_q_values):
+            q_selected = float(raw_q_values[selected_action_id])
+            fields["teacher_q_selected"] = q_selected
+            if q_best is not None:
+                fields["teacher_q_regret_selected"] = float(q_best) - q_selected
+        if raw_q_values is not None and raw_top1_action_id is not None and raw_top1_action_id < len(raw_q_values):
+            q_raw_top1 = float(raw_q_values[raw_top1_action_id])
+            fields["teacher_q_raw_top1"] = q_raw_top1
+            if q_best is not None:
+                fields["teacher_q_regret_raw_top1"] = float(q_best) - q_raw_top1
+        fields["teacher_selected_action_match"] = (
+            (selected_action_id is not None and selected_action_id == teacher_best) if teacher_best is not None else None
+        )
+        fields["teacher_raw_action_match"] = (
+            (raw_top1_action_id is not None and raw_top1_action_id == teacher_best) if teacher_best is not None else None
+        )
+        # teacher top-k：只在合法动作中排序
+        if raw_q_values is not None:
+            q_pairs = [
+                (aid, float(raw_q_values[aid]))
+                for aid in range(len(raw_q_values))
+                if aid < len(valid_action_mask) and valid_action_mask[aid]
+            ]
+            q_pairs.sort(key=lambda x: (-x[1], x[0]))
+            teacher_topk_ids = [aid for aid, _ in q_pairs[:top_k]]
+            teacher_topk_qs = [q for _, q in q_pairs[:top_k]]
+            fields["teacher_topk_action_ids_json"] = json.dumps(teacher_topk_ids, ensure_ascii=False)
+            fields["teacher_topk_q_values_json"] = json.dumps(teacher_topk_qs, ensure_ascii=False)
+
+    # 状态特征字段
+    if leaf_audit_state_mode == "split" and isinstance(path_predicates, list):
+        # 只写本次 path 上用到的 split feature 值
+        split_features: dict[str, float] = {}
+        for pred in path_predicates:
+            fname = str(pred["feature_name"])
+            fvalue = float(pred["value"])
+            split_features[fname] = fvalue
+        fields["tree_path_feature_values_json"] = json.dumps(split_features, ensure_ascii=False)
+    elif leaf_audit_state_mode == "all":
+        fields["state_vector_json"] = json.dumps(list(state_vector), ensure_ascii=False)
+        if isinstance(path_predicates, list):
+            split_features = {}
+            for pred in path_predicates:
+                fname = str(pred["feature_name"])
+                fvalue = float(pred["value"])
+                split_features[fname] = fvalue
+            fields["tree_path_feature_values_json"] = json.dumps(split_features, ensure_ascii=False)
+
+    return fields
+
+
 def evaluate_tree_policy_once(
     *,
     tree_policy: TreeBudgetPolicy,
@@ -90,8 +245,17 @@ def evaluate_tree_policy_once(
     feature_config: FeatureConfig,
     c_amc_sem_xf: float = 0.5,
     teacher: DqnBudgetAgent | None = None,
+    leaf_audit_enabled: bool = False,
+    leaf_audit_state_mode: str = "split",
+    leaf_audit_top_k_actions: int = 5,
 ) -> tuple[dict[str, object], SimulationResult, list[dict[str, object]]]:
-    """在真实 runtime 中评估一棵 tree policy。"""
+    """在真实 runtime 中评估一棵 tree policy。
+
+    新增参数：
+    - leaf_audit_enabled: 是否开启 leaf-level audit 日志。
+    - leaf_audit_state_mode: "none" / "split" / "all"，控制状态特征记录粒度。
+    - leaf_audit_top_k_actions: 记录 top-k 个动作信息。
+    """
 
     env = build_env_from_experiment_config(
         experiment_config,
@@ -129,7 +293,8 @@ def evaluate_tree_policy_once(
     q_regrets: list[float] = []
     while not done:
         step_count += 1
-        mask = env.valid_action_mask()
+        mask_raw = env.valid_action_mask()
+        mask = tuple(bool(v) for v in mask_raw)
         teacher_diag = None
         if teacher is not None:
             if getattr(teacher, "q_network_type", "mlp") == "action_aware":
@@ -137,7 +302,11 @@ def evaluate_tree_policy_once(
                 action_feature_names = env.get_action_feature_names(teacher.action_feature_mode)
                 teacher.set_action_features(action_features, action_feature_names)
             teacher_diag = teacher.compute_q_diagnostics(obs.state_vector, mask)
-        action_id, info = tree_policy.select_action_id(obs.state_vector, mask)
+        # 在 step 之前将 state_vector 转为 tuple，避免后续引用 obs 时 observation 已被更新
+        state_vector = tuple(float(value) for value in obs.state_vector)
+        action_id, info = tree_policy.select_action_id(
+            state_vector, mask, include_decision_trace=leaf_audit_enabled
+        )
         raw_invalid_count += int(bool(info["tree_raw_top1_invalid"]))
         fallback_count += int(bool(info["tree_fallback_used"]))
         no_valid_action_count += int(bool(info["tree_no_valid_action"]))
@@ -148,6 +317,21 @@ def evaluate_tree_policy_once(
             if action_id is not None and teacher_diag["q_best"] is not None:
                 q_regrets.append(float(teacher_diag["q_best"]) - float(teacher_diag["raw_q_values"][action_id]))
         result = env.step(action_id)
+        # 在 env.step() 之后将 leaf audit 字段合并到 action_log
+        if leaf_audit_enabled and env.action_log:
+            audit_fields = _build_leaf_audit_fields(
+                step_index=step_count - 1,
+                state_vector=state_vector,
+                feature_names=tree_policy.feature_names,
+                tree_policy=tree_policy,
+                tree_info=info,
+                selected_action_id=action_id,
+                valid_action_mask=mask,
+                teacher_diag=teacher_diag,
+                leaf_audit_state_mode=leaf_audit_state_mode,
+                leaf_audit_top_k_actions=leaf_audit_top_k_actions,
+            )
+            env.action_log[-1].update(audit_fields)
         total_reward += float(result.reward)
         obs = result.observation
         done = result.done

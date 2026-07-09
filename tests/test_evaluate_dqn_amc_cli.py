@@ -8,6 +8,8 @@ import sys
 import subprocess
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -933,3 +935,57 @@ def test_evaluate_cli_constraint_guided_pair_smoke_and_dim_mismatch(tmp_path: Pa
         env=env,
     )
     assert mismatch.returncode != 0
+
+
+def test_evaluate_parser_supports_tree_audit_args() -> None:
+    """评估 CLI 解析器应支持 --tree-audit-dir 等新参数。"""
+
+    from scripts.evaluate_dqn_amc import build_parser
+
+    args = build_parser().parse_args([
+        "--model", "dummy.pt",
+        "--tree-audit-dir", "audit",
+        "--tree-audit-seeds", "1550:1551",
+        "--tree-audit-methods", "viper_tree_agent",
+        "--tree-audit-state-mode", "split",
+        "--tree-audit-top-k-actions", "10",
+    ])
+    assert args.tree_audit_dir == Path("audit")
+    assert args.tree_audit_seeds == "1550:1551"
+    assert args.tree_audit_methods == "viper_tree_agent"
+    assert args.tree_audit_state_mode == "split"
+    assert args.tree_audit_top_k_actions == 10
+
+
+def test_evaluate_parser_rejects_invalid_tree_audit_state_mode() -> None:
+    """不支持的 --tree-audit-state-mode 应被 argparse 拒绝。"""
+
+    from scripts.evaluate_dqn_amc import build_parser
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([
+            "--model", "dummy.pt",
+            "--tree-audit-state-mode", "invalid",
+        ])
+
+
+def test_parse_tree_audit_seed_ranges() -> None:
+    """_parse_int_set_or_ranges 应正确解析整数、逗号列表和闭区间。"""
+
+    from scripts.evaluate_dqn_amc import _parse_int_set_or_ranges
+
+    assert _parse_int_set_or_ranges("") == set()
+    assert _parse_int_set_or_ranges("1550") == {1550}
+    assert _parse_int_set_or_ranges("1550,1551") == {1550, 1551}
+    assert _parse_int_set_or_ranges("1550:1552") == {1550, 1551, 1552}
+    assert _parse_int_set_or_ranges("1550:1551,1599") == {1550, 1551, 1599}
+    assert _parse_int_set_or_ranges(" 1550:1552 , 1599 ") == {1550, 1551, 1552, 1599}
+
+
+def test_parse_tree_audit_seed_ranges_rejects_invalid() -> None:
+    """end < start 的区间应抛出 ValueError。"""
+
+    from scripts.evaluate_dqn_amc import _parse_int_set_or_ranges
+
+    with pytest.raises(ValueError):
+        _parse_int_set_or_ranges("1552:1550")
