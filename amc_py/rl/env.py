@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 import math
+from fractions import Fraction
 import numpy as np
 
 from amc_py.amc import build_design_r_lo_map
@@ -15,6 +16,9 @@ from amc_py.budget_runtime import BudgetState
 from amc_py.event_runtime import EventRuntimeEngine
 from amc_py.models import Criticality, Task
 from amc_py.rl.actions import (
+    BudgetRatio,
+    compute_decrease_candidate,
+    compute_increase_candidate,
     BudgetAction,
     action_violates_hi_decrease_guard,
     apply_budget_action_candidate,
@@ -38,6 +42,7 @@ from amc_py.rl.observation import NormalizationBounds, build_observation
 from amc_py.rl.reward_config import RewardModeConfig, evaluate_reward_expression, load_reward_mode_config
 from amc_py.rl.safety import (
     RuntimeBudgetSafetyChecker,
+    build_effective_safety_budget_vector,
     merge_budget_candidate,
 )
 from amc_py.rl.types import AgentObservation, AgentStepResult
@@ -123,6 +128,23 @@ class CandidateBudgetUpdateDiagnosis:
     task_names: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ActionCandidateEvaluation:
+    """formal_v1 single action 的唯一、无副作用候选评估结果。"""
+    action_id: int
+    valid: bool
+    reject_reason: str | None
+    updates: dict[str, int]
+    budget_before: dict[str, int]
+    candidate_budgets: dict[str, int]
+    active_release_budget_max: dict[str, int]
+    effective_check_budgets: dict[str, int]
+    safety_report: object | None
+    increase_idx: int | None
+    decrease_indices: tuple[int, ...]
+    is_noop: bool
+
+
 def _normalize_candidate_reject_reason(reason: str) -> str:
     """把带前缀细节的 reject reason 归一化到稳定类别。"""
 
@@ -143,6 +165,8 @@ def _normalize_candidate_reject_reason(reason: str) -> str:
         return "decrease_hi_forbidden"
     if text.startswith("deploy_cap_increase_mask"):
         return "deploy_cap_increase_mask"
+    if text.startswith("deploy_cap_candidate_violation"):
+        return "deploy_cap_candidate_violation"
     if text.startswith("incremental_constraint_violation"):
         return "incremental_constraint_violation"
     if text.startswith("valid"):
@@ -187,6 +211,10 @@ class AmcBudgetEnv:
     enable_deploy_cap_mask: bool = False
     deploy_cap_mask_ratio: float = 4.0
     deploy_cap_mask_criticality: Literal["lo", "all"] = "lo"
+    strict_candidate_deploy_cap: bool = False
+    carry_over_aware_safety: bool = False
+    lo_budget_overrun_guard_units: int = 0
+    action_validation_mode: Literal["legacy", "formal_v1"] = "legacy"
     enable_residual_safety_fallback: bool = False
     residual_guard_hi_pressure_delta_limit: float = 0.03
     residual_guard_hi_pressure_abs_limit: float = 0.30
@@ -250,6 +278,21 @@ class AmcBudgetEnv:
     # RH-risk 上下文缓存：存储上一 step 计算出的 RH-risk 全局特征值。
     # 在 reset 时初始化为全 0；在 step 奖励计算后更新；在 build_observation 时传入。
     _last_rh_risk_context: dict[str, float] = field(init=False, default_factory=dict, repr=False)
+    _task_deploy_cap_upper_bounds: tuple[int | None, ...] = field(init=False, repr=False)
+    _last_action_evaluations: tuple[ActionCandidateEvaluation, ...] = field(init=False, default=(), repr=False)
+    _action_evaluation_cache_key: object = field(init=False, default=None, repr=False)
+    _formal_v1_evaluation_count: int = field(init=False, default=0, repr=False)
+    _formal_v1_cache_hit_count: int = field(init=False, default=0, repr=False)
+    _formal_v1_cache_miss_count: int = field(init=False, default=0, repr=False)
+    _formal_v1_mask_step_mismatch_count: int = field(init=False, default=0, repr=False)
+    _carry_over_envelope_applied_count: int = field(init=False, default=0, repr=False)
+    _carry_over_changed_candidate_count: int = field(init=False, default=0, repr=False)
+    _carry_over_selected_action_check_count: int = field(init=False, default=0, repr=False)
+    _carry_over_changed_selected_candidate_count: int = field(init=False, default=0, repr=False)
+    # 独立候选计数器：仅在 mask 新鲜评估（非 cache hit）时更新。
+    # 与 selected 系列严格区分，避免 candidate check == selected check。
+    _carry_over_candidate_check_count: int = field(init=False, default=0, repr=False)
+    _carry_over_candidate_changed_count: int = field(init=False, default=0, repr=False)
 
     def __post_init__(self) -> None:
         """初始化固定动作空间。"""
@@ -259,6 +302,10 @@ class AmcBudgetEnv:
             raise ValueError("deploy_cap_mask_ratio 必须大于 1.0")
         if self.deploy_cap_mask_criticality not in {"lo", "all"}:
             raise ValueError("deploy_cap_mask_criticality 必须是 'lo' 或 'all'")
+        if self.action_validation_mode == "formal_v1" and (self.action_space != "single" or self.action_space in {"residual_ranked", "residual_safe_ranked", "residual_anchor_mc_lo_2"}):
+            raise ValueError("formal_v1 只允许 single 非 residual 动作空间")
+        if self.lo_budget_overrun_guard_units < 0:
+            raise ValueError("lo_budget_overrun_guard_units 不能为负数")
         # 加载奖励模式配置（权重 + 公式）。
         # 这样 reward 计算方式可由配置文件驱动，而非写死在代码中。
         self._reward_mode_config = load_reward_mode_config(self.reward_mode)
@@ -293,6 +340,7 @@ class AmcBudgetEnv:
         )
         # 记录环境初始预算，用于阶段 2 的预算变化归一化惩罚。
         self._initial_budgets = {task.name: task.c_lo for task in self.ordered_tasks}
+        self._task_deploy_cap_upper_bounds = tuple(None for _ in self.ordered_tasks)
         self._last_observation = None
 
     def _reset_episode_task_counters(self) -> None:
@@ -663,7 +711,7 @@ class AmcBudgetEnv:
             return floor_reject_reason
 
         if self.check_safety:
-            report = self._ensure_checker().validate_candidate(candidate_budgets)
+            report = self._validate_candidate_safety(candidate_budgets)
             if not report.accepted:
                 return report.reason
         return None
@@ -1410,7 +1458,8 @@ class AmcBudgetEnv:
 
         for task_name, candidate_budget in updates.items():
             initial_budget = self._initial_budgets[task_name]
-            floor_value = max(1, math.ceil(initial_budget * self.budget_floor_ratio))
+            floor_ratio = BudgetRatio.from_decimal_string(str(self.budget_floor_ratio)) if self.budget_floor_ratio > 0 else None
+            floor_value = max(1, initial_budget if floor_ratio is None else (initial_budget * floor_ratio.numerator + floor_ratio.denominator - 1) // floor_ratio.denominator)
             if candidate_budget < floor_value:
                 return f"budget_floor_violation:{task_name}"
         return None
@@ -1420,6 +1469,7 @@ class AmcBudgetEnv:
         *,
         increase_idx: int | None,
         budget_before: dict[str, int],
+        candidate_budgets: dict[str, int] | None = None,
     ) -> str | None:
         """判断 increase 目标是否触发 deploy cap mask。
 
@@ -1429,24 +1479,83 @@ class AmcBudgetEnv:
         - 返回稳定前缀 `deploy_cap_increase_mask:*`，便于日志与统计统一归一化。
         """
 
-        if not self.enable_deploy_cap_mask:
+        if not (self.enable_deploy_cap_mask or self.strict_candidate_deploy_cap):
             return None
         if increase_idx is None:
             return None
         task = self.ordered_tasks[increase_idx]
         if self.deploy_cap_mask_criticality == "lo" and task.criticality is not Criticality.LO:
             return None
-        initial_budget = float(self._initial_budgets[task.name])
-        if initial_budget <= 0.0:
+        initial_budget = int(self._initial_budgets[task.name])
+        if initial_budget <= 0:
             return None
-        current_budget = float(budget_before[task.name])
-        ratio = current_budget / initial_budget
-        if ratio >= self.deploy_cap_mask_ratio:
-            return (
-                f"deploy_cap_increase_mask:{task.name}:"
-                f"ratio={ratio:.6g}:cap={self.deploy_cap_mask_ratio:.6g}"
-            )
+        cap_ratio = Fraction(str(self.deploy_cap_mask_ratio))
+        cap_abs = (initial_budget * cap_ratio.numerator) // cap_ratio.denominator
+        upper = min(int(self._task_upper_bounds[increase_idx]), cap_abs)
+        current_budget = int(budget_before[task.name])
+        check_budget = current_budget if candidate_budgets is None else int(candidate_budgets[task.name])
+        if self.strict_candidate_deploy_cap and check_budget > upper:
+            return f"deploy_cap_candidate_violation:{task.name}"
+        if not self.strict_candidate_deploy_cap and current_budget >= upper:
+            return f"deploy_cap_increase_mask:{task.name}:ratio={current_budget / initial_budget:.6g}:cap={self.deploy_cap_mask_ratio:.6g}"
         return None
+
+    def _compute_active_release_budget_max(self) -> dict[str, int]:
+        """按 active job 的 release-time frozen budget 聚合最大 carry-over。"""
+        result = {task.name: 0 for task in self.ordered_tasks}
+        if self._engine is None:
+            return result
+        for job in self._engine.state.active_jobs:
+            if job.dropped or job.finished():
+                continue
+            if job.runtime_budget_at_release is not None:
+                result[job.task.name] = max(result[job.task.name], int(job.runtime_budget_at_release))
+            else:
+                # 释放预算按模型应始终冻结；None 只允许作为明确的保守诊断 fallback，
+                # 不能静默按 0 放过 carry-over safety。
+                result[job.task.name] = max(result[job.task.name], int(self._engine.runtime_budgets.budget_of(job.task)))
+        return result
+
+    def _build_action_evaluation_cache_key(self) -> tuple[object, ...]:
+        if self._engine is None:
+            raise RuntimeError("环境尚未 reset")
+        active = self._compute_active_release_budget_max()
+        return (
+            self._engine.current_time,
+            self._engine.state.mode.value,
+            tuple(self._engine.runtime_budgets.budgets[name] for name in self._task_names),
+            tuple(active[name] for name in self._task_names),
+            self.action_space_name,
+            self.strict_candidate_deploy_cap,
+            self.carry_over_aware_safety,
+            self.lo_budget_overrun_guard_units,
+        )
+
+    def _get_or_evaluate_single_action(self, action_id: int) -> ActionCandidateEvaluation:
+        if action_id < 0 or action_id >= len(self._actions):
+            raise ValueError(f"非法 action_id={action_id}")
+        key = self._build_action_evaluation_cache_key()
+        if key != self._action_evaluation_cache_key:
+            self._last_action_evaluations = ()
+            self._action_evaluation_cache_key = key
+            self._formal_v1_cache_miss_count += 1
+        if not self._last_action_evaluations:
+            self._last_action_evaluations = tuple(self._evaluate_single_action(action) for action in self._actions)
+            self._formal_v1_evaluation_count += len(self._last_action_evaluations)
+            # 记录本轮 fresh evaluation 中的候选 carry-over 统计
+            # 只在 mask 新鲜评估（非 cache hit）时更新，
+            # 确保 candidate 计数与 selected 计数严格独立。
+            if self.carry_over_aware_safety:
+                for ev in self._last_action_evaluations:
+                    if ev.safety_report is not None:
+                        self._carry_over_candidate_check_count += 1
+                        active = ev.active_release_budget_max
+                        candidate = ev.candidate_budgets
+                        if any(active.get(name, 0) > candidate.get(name, 0) for name in self._task_names):
+                            self._carry_over_candidate_changed_count += 1
+        else:
+            self._formal_v1_cache_hit_count += 1
+        return self._last_action_evaluations[action_id]
 
     def check_candidate_budget_update(
         self,
@@ -1504,11 +1613,22 @@ class AmcBudgetEnv:
         if floor_reject is not None:
             return False, "budget_floor_violation"
 
+        if self.strict_candidate_deploy_cap:
+            for idx, task in enumerate(self.ordered_tasks):
+                if int(new_budgets[task.name]) > int(budget_before[task.name]):
+                    cap_reason = self._deploy_cap_increase_reject_reason(
+                        increase_idx=idx,
+                        budget_before=budget_before,
+                        candidate_budgets=dict(new_budgets),
+                    )
+                    if cap_reason is not None:
+                        return False, cap_reason
+
         if not self.check_safety:
             return True, "valid"
 
         checker = self._ensure_checker()
-        report = checker.validate_candidate(dict(new_budgets))
+        report = self._validate_candidate_safety(dict(new_budgets))
         if report.accepted:
             return True, "valid"
         # 这里严格按 safety checker 的 `report.reason` 前缀做映射，不再从 diagnostics 猜测。
@@ -1614,6 +1734,19 @@ class AmcBudgetEnv:
 
         return self._mask_log
 
+    def get_last_mask_detail(self, action_id: int) -> dict[str, object] | None:
+        """返回最近一次 mask 计算中指定 action 的详细诊断信息。
+
+        这是一个稳定的只读接口，供 leaf audit 等外部诊断模块使用，
+        避免直接访问私有字段 _last_mask_details。
+        """
+        if not self._last_mask_details:
+            return None
+        for detail in self._last_mask_details:
+            if detail.get("action_id") == action_id:
+                return dict(detail)
+        return None
+
     def debug_statistics(self) -> dict[str, int | float | bool]:
         """汇总评估脚本需要的 mask/safety 统计。
 
@@ -1644,6 +1777,24 @@ class AmcBudgetEnv:
             "enable_deploy_cap_mask": bool(self.enable_deploy_cap_mask),
             "deploy_cap_mask_ratio": float(self.deploy_cap_mask_ratio),
             "deploy_cap_mask_criticality": self.deploy_cap_mask_criticality,
+            "strict_candidate_deploy_cap": bool(self.strict_candidate_deploy_cap),
+            "deploy_cap_absolute_bounds_json": json.dumps(self._task_deploy_cap_upper_bounds, ensure_ascii=False),
+            "deploy_cap_candidate_violation_count": int(self._mask_reject_reasons.get("deploy_cap_candidate_violation", 0)),
+            "carry_over_aware_safety": bool(self.carry_over_aware_safety),
+            "lo_budget_overrun_guard_units": int(self.lo_budget_overrun_guard_units),
+            "formal_v1_evaluation_count": int(self._formal_v1_evaluation_count),
+            "formal_v1_cache_hit_count": int(self._formal_v1_cache_hit_count),
+            "formal_v1_cache_miss_count": int(self._formal_v1_cache_miss_count),
+            "formal_v1_mask_step_mismatch_count": int(self._formal_v1_mask_step_mismatch_count),
+            "carry_over_envelope_applied_count": int(self._carry_over_envelope_applied_count),
+            "carry_over_changed_candidate_count": int(self._carry_over_changed_candidate_count),
+            # carry_over_envelope_applied_count / carry_over_changed_candidate_count 是旧别名，
+            # 它们只在 step() 消费 selected action 时递增。
+            # 以下新字段严格区分候选检查与选中动作统计：
+            "carry_over_candidate_check_count": int(self._carry_over_candidate_check_count),
+            "carry_over_candidate_changed_count": int(self._carry_over_candidate_changed_count),
+            "carry_over_selected_action_check_count": int(self._carry_over_selected_action_check_count),
+            "carry_over_changed_selected_candidate_count": int(self._carry_over_changed_selected_candidate_count),
             "valid_action_count_mean": (sum(valid_counts) / mask_checks) if mask_checks > 0 else 0.0,
             "masked_action_count_mean": (sum(invalid_counts) / mask_checks) if mask_checks > 0 else 0.0,
             "masked_action_count_max": max(invalid_counts) if invalid_counts else 0,
@@ -1785,12 +1936,12 @@ class AmcBudgetEnv:
         if action.is_noop or target_idx is None:
             return float(current_budget)
         if action.increase_idx is not None:
-            increased = math.ceil(float(current_budget) * (1.0 + float(action.increase_ratio)))
+            increased = compute_increase_candidate(int(current_budget), BudgetRatio(int(action.increase_ratio_num), int(action.increase_ratio_den)))
             increased = min(int(upper_budget), max(1, int(increased)))
             return float(increased)
         if action.decrease_indices:
             floor_budget = max(1, math.ceil(float(self.budget_floor_ratio) * float(initial_budget)))
-            decreased = math.floor(float(current_budget) * (1.0 - float(action.decrease_ratio)))
+            decreased = compute_decrease_candidate(int(current_budget), BudgetRatio(int(action.decrease_ratio_num), int(action.decrease_ratio_den)))
             decreased = max(floor_budget, max(1, int(decreased)))
             return float(decreased)
         return float(current_budget)
@@ -2042,6 +2193,21 @@ class AmcBudgetEnv:
 
         if self._engine is None:
             raise RuntimeError("环境尚未 reset")
+        if self.action_validation_mode == "formal_v1":
+            self._get_or_evaluate_single_action(0) if self._actions else None
+            evaluations = self._last_action_evaluations
+            mask = tuple(item.valid for item in evaluations)
+            reject_reason_counts: Counter[str] = Counter()
+            for item in evaluations:
+                if not item.valid:
+                    reject_reason_counts[_normalize_candidate_reject_reason(str(item.reject_reason or "unknown"))] += 1
+            self._mask_reject_reasons.update(reject_reason_counts)
+            self._last_mask_details = [
+                {"action_id": item.action_id, "valid": item.valid, "reject_reason": _normalize_candidate_reject_reason(str(item.reject_reason or "valid")), "reject_reason_detail": item.reject_reason, "updates": dict(item.updates), "budget_before": dict(item.budget_before), "candidate_budgets": dict(item.candidate_budgets), "active_release_budget_max": dict(item.active_release_budget_max), "effective_check_budgets": dict(item.effective_check_budgets), "is_noop": item.is_noop}
+                for item in evaluations
+            ]
+            self._mask_log.append({"time": self._engine.current_time, "total_actions": len(mask), "valid_action_count": sum(mask), "masked_action_count": len(mask) - sum(mask), "reject_reason_counts": dict(reject_reason_counts)})
+            return mask
         checker = self._ensure_checker() if self.check_safety else None
         mask: list[bool] = []
         mask_details: list[dict[str, object]] = []
@@ -2339,7 +2505,7 @@ class AmcBudgetEnv:
                 inc_idx = action.increase_idx
                 inc_name = self._task_names[inc_idx]
                 old_inc = int(budget_before[inc_name])
-                inc_value = math.ceil(old_inc * (1.0 + action.increase_ratio))
+                inc_value = compute_increase_candidate(old_inc, BudgetRatio(int(action.increase_ratio_num), int(action.increase_ratio_den)))
                 inc_value = min(inc_value, self._task_upper_bounds[inc_idx])
                 inc_value = max(1, inc_value)
                 updates[inc_name] = inc_value
@@ -2349,7 +2515,7 @@ class AmcBudgetEnv:
             for dec_idx in action.decrease_indices:
                 dec_name = self._task_names[dec_idx]
                 old_dec = int(budget_before[dec_name])
-                dec_value = math.floor(old_dec * (1.0 - action.decrease_ratio))
+                dec_value = compute_decrease_candidate(old_dec, BudgetRatio(int(action.decrease_ratio_num), int(action.decrease_ratio_den)))
                 dec_value = max(1, dec_value)
                 updates[dec_name] = dec_value
                 if dec_value == old_dec:
@@ -2380,6 +2546,17 @@ class AmcBudgetEnv:
                             "is_noop": False,
                         }
                     )
+                continue
+            candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
+            cap_reject_reason = self._deploy_cap_increase_reject_reason(
+                increase_idx=action.increase_idx,
+                budget_before=budget_before,
+                candidate_budgets=candidate_budgets,
+            )
+            if cap_reject_reason is not None:
+                mask.append(False)
+                reject_reason_counts["deploy_cap_candidate_violation"] += 1
+                mask_details.append({"action_id": action.action_id, "valid": False, "reject_reason": cap_reject_reason, "updates": dict(updates), "budget_before": budget_before, "candidate_budgets": candidate_budgets, "is_noop": False})
                 continue
             # budget floor 必须在 safety check 之前执行。
             # 原因是它属于“动作可行性硬约束”，不是 reward 正则，也不是 safety checker 的线性约束。
@@ -2456,7 +2633,7 @@ class AmcBudgetEnv:
                 )
             else:
                 candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
-                report = checker.validate_candidate(candidate_budgets)
+                report = self._validate_candidate_safety(candidate_budgets)
                 mask_details.append(
                     {
                         "action_id": action.action_id,
@@ -2500,12 +2677,84 @@ class AmcBudgetEnv:
         )
         return self.safety_checker
 
+    def _validate_candidate_safety_pure(self, candidate_budgets: dict[str, int]):
+        """纯函数安全检查：只计算安全报告，不修改任何计数器或引擎状态。
+
+        本方法由 _evaluate_single_action 在 formal_v1 模式中调用，
+        确保反复枚举候选动作（mask）不会隐式累加执行统计。
+        """
+        if self.carry_over_aware_safety:
+            active = self._compute_active_release_budget_max()
+        else:
+            active = None
+        return self._ensure_checker().validate_candidate(
+            candidate_budgets,
+            active_release_budget_max=(self._compute_active_release_budget_max() if self.carry_over_aware_safety else None),
+            lo_overrun_guard_units=(self.lo_budget_overrun_guard_units if self.carry_over_aware_safety else 0),
+        )
+
+    def _record_carry_over_evaluation_stats(self, candidate_budgets: dict[str, int]) -> None:
+        """记录一次选中动作的 carry-over 安全检查统计。
+
+        仅在 step() 消费 formal_v1 evaluation 时调用一次，
+        确保 carry_over 计数器反映的是实际执行决策数，而不是候选检查数。
+        """
+        if self.carry_over_aware_safety:
+            self._carry_over_envelope_applied_count += 1
+            self._carry_over_selected_action_check_count += 1
+            active = self._compute_active_release_budget_max()
+            if any(active[name] > candidate_budgets[name] for name in self._task_names):
+                self._carry_over_changed_candidate_count += 1
+                self._carry_over_changed_selected_candidate_count += 1
+
+    def _validate_candidate_safety(self, candidate_budgets: dict[str, int]):
+        """legacy 安全检查：调用纯函数版本并同时更新计数器。
+
+        本方法保持与原有 legacy 路径的兼容，行为不变。
+        formal_v1 模式应在 evaluator 中使用 _validate_candidate_safety_pure，
+        并在 step 消费 evaluation 时单独调用 _record_carry_over_evaluation_stats。
+        """
+        self._record_carry_over_evaluation_stats(candidate_budgets)
+        return self._validate_candidate_safety_pure(candidate_budgets)
+
+    def _evaluate_single_action(self, action: int | BudgetAction) -> ActionCandidateEvaluation:
+        """formal_v1 唯一候选评估器；只读环境状态，不写日志、计数器或 engine。"""
+        if self._engine is None:
+            raise RuntimeError("环境尚未 reset")
+        if isinstance(action, int):
+            if action < 0 or action >= len(self._actions):
+                raise ValueError(f"非法 action_id={action}")
+            action = self._actions[action]
+        before = dict(self._engine.runtime_budgets.budgets)
+        active = self._compute_active_release_budget_max() if self.carry_over_aware_safety else {}
+        if action.is_noop:
+            return ActionCandidateEvaluation(action.action_id, True, None, {}, before, before.copy(), active, before.copy(), None, action.increase_idx, action.decrease_indices, True)
+        if action_violates_hi_decrease_guard(action, self.ordered_tasks, self.forbid_decreasing_hi_budgets):
+            return ActionCandidateEvaluation(action.action_id, False, "decrease_hi_forbidden", {}, before, before.copy(), active, before.copy(), None, action.increase_idx, action.decrease_indices, False)
+        updates = apply_budget_action_candidate(action=action, budget_state=self._engine.runtime_budgets, ordered_tasks=self.ordered_tasks)
+        candidate = merge_budget_candidate(self._engine.runtime_budgets, updates)
+        if not updates or any(candidate[name] == before[name] for name in updates):
+            return ActionCandidateEvaluation(action.action_id, False, "no_effective_budget_change", updates, before, candidate, active, candidate.copy(), None, action.increase_idx, action.decrease_indices, False)
+        for idx, task in enumerate(self.ordered_tasks):
+            if candidate[task.name] < 1 or candidate[task.name] > self._task_upper_bounds[idx]:
+                return ActionCandidateEvaluation(action.action_id, False, "budget_upper_bound_violation", updates, before, candidate, active, candidate.copy(), None, action.increase_idx, action.decrease_indices, False)
+        reason = self._budget_floor_violation(updates=updates)
+        if reason is None:
+            reason = self._deploy_cap_increase_reject_reason(increase_idx=action.increase_idx, budget_before=before, candidate_budgets=candidate)
+        report = self._validate_candidate_safety_pure(candidate) if self.check_safety and reason is None else None
+        if reason is None and report is not None and not report.accepted:
+            reason = report.reason
+        effective = {name: max(candidate[name], active.get(name, 0)) + (self.lo_budget_overrun_guard_units if self.carry_over_aware_safety and self.ordered_tasks[self._task_index[name]].criticality is Criticality.LO else 0) for name in self._task_names}
+        return ActionCandidateEvaluation(action.action_id, reason is None, reason, updates if reason is None else {}, before, candidate, active, effective, report, action.increase_idx, action.decrease_indices, False)
+
     def _compute_current_safety_margin_min(self) -> float:
         """计算当前预算向量在线性安全约束下的最小归一化裕量。
 
         语义与实现计划保持一致：
         - check_safety=False 时直接返回 1.0；
         - 复用 valid_action_mask 中已缓存的 A/b，避免重复构建约束；
+        - lhs 和 slack 全程使用 Python int 逐行累加，避免 int64 溢出；
+        - 仅在最终归一化时转为 float，保持与整数模型同一语义；
         - 不吞异常，若 checker 构建失败应直接暴露问题。
         """
 
@@ -2518,15 +2767,30 @@ class AmcBudgetEnv:
         if self._safety_matrix_a is None or self._safety_bounds is None:
             self._safety_matrix_a, self._safety_bounds = checker.build_linear_constraints()
 
-        budget_array = np.array(
-            [float(self._engine.runtime_budgets.budgets[name]) for name in self._task_names],
-            dtype=np.float64,
+        effective = build_effective_safety_budget_vector(
+            self.ordered_tasks,
+            dict(self._engine.runtime_budgets.budgets),
+            self._compute_active_release_budget_max() if self.carry_over_aware_safety else None,
+            self.lo_budget_overrun_guard_units if self.carry_over_aware_safety else 0,
         )
-        lhs = self._safety_matrix_a @ budget_array
-        slack = self._safety_bounds - lhs
-        denom = np.maximum(1.0, np.abs(self._safety_bounds))
-        margin = float(np.min(slack / denom))
-        return float(np.clip(margin, 0.0, 1.0))
+        n_constraints = self._safety_matrix_a.shape[0]
+        n_tasks = len(self._task_names)
+        # 先收集整数预算，不转 float
+        budget_ints = [int(effective[name]) for name in self._task_names]
+        min_normalized = 1.0
+        for row_idx in range(n_constraints):
+            # lhs_int = 逐行使用 Python int 累加，防止 int64 溢出
+            lhs_int = 0
+            for col_idx in range(n_tasks):
+                lhs_int += int(self._safety_matrix_a[row_idx, col_idx]) * budget_ints[col_idx]
+            rhs_int = int(self._safety_bounds[row_idx])
+            slack_int = rhs_int - lhs_int
+            # 仅在归一化时转 float
+            denom = max(1, abs(rhs_int))
+            normalized = float(slack_int) / float(denom)
+            if normalized < min_normalized:
+                min_normalized = normalized
+        return float(max(0.0, min(1.0, min_normalized)))
 
     def _update_feature_state(
         self,
@@ -2614,7 +2878,8 @@ class AmcBudgetEnv:
         for task in self.ordered_tasks:
             task_name = task.name
             current = int(before[task_name])
-            candidate = int(math.ceil(current * (1.0 + self.budget_increase_ratio)))
+            increase_ratio = BudgetRatio.from_float_via_string(self.budget_increase_ratio)
+            candidate = int(compute_increase_candidate(current, increase_ratio))
             upper = int(self._task_upper_bounds[self._task_index[task_name]])
             candidate = min(candidate, upper)
             if candidate <= current:
@@ -2644,6 +2909,14 @@ class AmcBudgetEnv:
         # reset 后把“本轮 episode 的初始预算快照”固定下来。
         # 后续每一步 budget_change_norm 都以该快照作归一化分母来源。
         self._initial_budgets = dict(self._engine.runtime_budgets.budgets)
+        cap_ratio = Fraction(str(self.deploy_cap_mask_ratio))
+        self._task_deploy_cap_upper_bounds = tuple(
+            None
+            if not (self.enable_deploy_cap_mask or self.strict_candidate_deploy_cap)
+            or (self.deploy_cap_mask_criticality == "lo" and task.criticality is not Criticality.LO)
+            else min(self._task_upper_bounds[idx], (int(self._initial_budgets[task.name]) * cap_ratio.numerator) // cap_ratio.denominator)
+            for idx, task in enumerate(self.ordered_tasks)
+        )
         self._done = False
         self._action_log = []
         self._mask_log = []
@@ -2740,8 +3013,54 @@ class AmcBudgetEnv:
         resolved_decrease_tasks: tuple[str, ...] = ()
         resolved_increase_idx: int | None = None
         resolved_decrease_indices: tuple[int, ...] = ()
+        active_release_budget_max: dict[str, int] = {}
+        effective_check_budgets: dict[str, int] = {}
+        safety_reject_reason: str | None = None
+        safety_diagnostics: tuple[dict[str, str | int | float], ...] = ()
+        original_action_id = action_id
+        formal_action_handled = False
 
-        if action_id is not None:
+        # formal_v1 在这里消费 mask 阶段缓存的唯一评估结果；保留原 action_id
+        # 用于日志和 reward 语义，只通过 formal_action_handled 跳过 legacy 校验。
+        if self.action_validation_mode == "formal_v1" and action_id is not None:
+            evaluation = self._get_or_evaluate_single_action(action_id)
+            valid_action_count = sum(item.valid for item in self._last_action_evaluations)
+            masked_action_count = len(self._last_action_evaluations) - valid_action_count
+            selected_action_was_mask_valid = evaluation.valid
+            action = self._actions[action_id]
+            resolved_increase_task = action.increase_task
+            resolved_decrease_tasks = tuple(action.decrease_tasks)
+            resolved_increase_idx = evaluation.increase_idx
+            resolved_decrease_indices = evaluation.decrease_indices
+            active_release_budget_max = dict(evaluation.active_release_budget_max)
+            effective_check_budgets = dict(evaluation.effective_check_budgets)
+            safety_reject_reason = evaluation.reject_reason if not evaluation.valid else None
+            if evaluation.safety_report is not None:
+                safety_diagnostics = tuple(evaluation.safety_report.diagnostics)
+            formal_action_handled = True
+            action_was_checked = evaluation.safety_report is not None
+            # 记录一次选中动作的 carry-over 安全检查统计
+            # 确保计数器反映的是实际执行决策数，而非 mask 枚举时的候选检查数
+            self._record_carry_over_evaluation_stats(dict(evaluation.candidate_budgets))
+            if action_was_checked:
+                self._safety_checked_actions += 1
+            if evaluation.valid:
+                accepted = True
+                updates = dict(evaluation.updates)
+                candidate_budgets = dict(evaluation.candidate_budgets)
+                if updates:
+                    self._engine.apply_budget_updates(updates)
+                if action_was_checked:
+                    self._safety_accepted_actions += 1
+            else:
+                accepted = False
+                reject_reason = evaluation.reject_reason
+                updates = {}
+                candidate_budgets = dict(budget_before)
+                if action_was_checked:
+                    self._safety_rejected_actions += 1
+
+        if action_id is not None and not formal_action_handled:
             if action_id < 0 or action_id >= len(self._actions):
                 raise ValueError(f"非法 action_id={action_id}")
             if self._last_mask_details:
@@ -2908,7 +3227,7 @@ class AmcBudgetEnv:
                                 elif self.check_safety:
                                     action_was_checked = True
                                     self._safety_checked_actions += 1
-                                    report = self._ensure_checker().validate_candidate(candidate_budgets)
+                                    report = self._validate_candidate_safety(candidate_budgets)
                                     accepted = report.accepted
                                     if not accepted:
                                         reject_reason = report.reason
@@ -2982,7 +3301,7 @@ class AmcBudgetEnv:
                             elif self.check_safety:
                                 action_was_checked = True
                                 self._safety_checked_actions += 1
-                                report = self._ensure_checker().validate_candidate(candidate_budgets)
+                                report = self._validate_candidate_safety(candidate_budgets)
                                 accepted = report.accepted
                                 if not accepted:
                                     reject_reason = report.reason
@@ -3678,6 +3997,10 @@ class AmcBudgetEnv:
             "updates": dict(updates),
             "budget_before": budget_before,
             "candidate_budgets": candidate_budgets,
+            "active_release_budget_max": active_release_budget_max,
+            "effective_check_budgets": effective_check_budgets,
+            "safety_reject_reason": safety_reject_reason,
+            "safety_diagnostics": list(safety_diagnostics),
             "budget_after": budget_after,
             "check_safety": self.check_safety,
             "safety_checked": action_was_checked,

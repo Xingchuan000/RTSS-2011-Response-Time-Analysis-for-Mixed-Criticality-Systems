@@ -4,11 +4,57 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from decimal import Decimal
+from fractions import Fraction
 from itertools import combinations, permutations
 from collections.abc import Sequence
 
 from amc_py.budget_runtime import BudgetState
 from amc_py.models import Criticality, Task
+
+
+@dataclass(frozen=True, slots=True)
+class BudgetRatio:
+    """预算比例的规范有理数表示，避免正式路径依赖二进制浮点边界。"""
+
+    numerator: int
+    denominator: int
+
+    def __post_init__(self) -> None:
+        if self.denominator <= 0 or self.numerator < 0 or self.numerator >= self.denominator:
+            raise ValueError("BudgetRatio 必须位于 [0, 1)")
+
+    @classmethod
+    def from_decimal_string(cls, value: str) -> "BudgetRatio":
+        fraction = Fraction(Decimal(value))
+        return cls(fraction.numerator, fraction.denominator)
+
+    @classmethod
+    def from_float_via_string(cls, value: float) -> "BudgetRatio":
+        return cls.from_decimal_string(str(value))
+
+
+def ceil_multiply_ratio(base: int, numerator: int, denominator: int) -> int:
+    if base < 0 or numerator < 0 or denominator <= 0:
+        raise ValueError("整数比例参数非法")
+    return (base * numerator + denominator - 1) // denominator
+
+
+def floor_multiply_ratio(base: int, numerator: int, denominator: int) -> int:
+    if base < 0 or numerator < 0 or denominator <= 0:
+        raise ValueError("整数比例参数非法")
+    return (base * numerator) // denominator
+
+
+def compute_increase_candidate(base: int, increase_ratio: BudgetRatio) -> int:
+    return base + ceil_multiply_ratio(base, increase_ratio.numerator, increase_ratio.denominator)
+
+
+def compute_decrease_candidate(base: int, decrease_ratio: BudgetRatio) -> int:
+    # Dec(B)=floor(B*(1-r))。减少量必须使用 ceil(B*r)，否则 8*5% 会被
+    # 舍成 0 而错误地变成 no-op。
+    decrease_amount = ceil_multiply_ratio(base, decrease_ratio.numerator, decrease_ratio.denominator)
+    return base - decrease_amount
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +68,10 @@ class BudgetAction:
     decrease_indices: tuple[int, ...] = ()
     increase_ratio: float = 0.10
     decrease_ratio: float = 0.05
+    increase_ratio_num: int | None = None
+    increase_ratio_den: int | None = None
+    decrease_ratio_num: int | None = None
+    decrease_ratio_den: int | None = None
     action_space_type: str = "triple"
     is_noop: bool = False
     # constraint-guided transfer 固定槽位标记：
@@ -41,6 +91,17 @@ class BudgetAction:
     residual_decrease_rank: int | None = None
     residual_decrease_count: int = 1
     residual_decrease_pool: str | None = None
+
+    def __post_init__(self) -> None:
+        """把历史 float ratio 规范化为 action 自带的整数有理数元数据。"""
+        if self.increase_ratio_num is None or self.increase_ratio_den is None:
+            ratio = BudgetRatio.from_float_via_string(self.increase_ratio)
+            object.__setattr__(self, "increase_ratio_num", ratio.numerator)
+            object.__setattr__(self, "increase_ratio_den", ratio.denominator)
+        if self.decrease_ratio_num is None or self.decrease_ratio_den is None:
+            ratio = BudgetRatio.from_float_via_string(self.decrease_ratio)
+            object.__setattr__(self, "decrease_ratio_num", ratio.numerator)
+            object.__setattr__(self, "decrease_ratio_den", ratio.denominator)
 
 
 def action_violates_hi_decrease_guard(
@@ -478,7 +539,7 @@ def apply_budget_action_candidate(
         inc_name = task_names[action.increase_idx]
         old_inc = budget_state.budgets[inc_name]
         inc_task = ordered_tasks[action.increase_idx]
-        inc_value = math.ceil(old_inc * (1.0 + action.increase_ratio))
+        inc_value = compute_increase_candidate(old_inc, BudgetRatio(action.increase_ratio_num, action.increase_ratio_den))
 
         if inc_task.criticality is Criticality.HI:
             upper_bound = inc_task.c_hi if inc_task.c_hi > 0 else inc_task.deadline
@@ -491,7 +552,7 @@ def apply_budget_action_candidate(
     for dec_idx in action.decrease_indices:
         dec_name = task_names[dec_idx]
         old_dec = budget_state.budgets[dec_name]
-        dec_value = math.floor(old_dec * (1.0 - action.decrease_ratio))
+        dec_value = compute_decrease_candidate(old_dec, BudgetRatio(action.decrease_ratio_num, action.decrease_ratio_den))
         candidate[dec_name] = max(1, dec_value)
 
     return candidate

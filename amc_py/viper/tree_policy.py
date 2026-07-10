@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+from amc_py.viper.fixed_point import FixedPointConfig, quantize_state_vector
+from amc_py.viper.integer_tree import IntegerTreeModel, evaluate_integer_tree
 
 
 @dataclass(slots=True)
@@ -202,5 +204,69 @@ class TreeBudgetPolicy:
         if action_id is None:
             return None
         if action_id < 0 or action_id >= len(self.action_definitions):
+            return None
+        return dict(self.action_definitions[action_id])
+
+
+@dataclass(slots=True)
+class IntegerTreeBudgetPolicy:
+    """新 artifact 的部署策略：唯一 raw top-1，非法时固定 noop。"""
+
+    model: IntegerTreeModel
+    metadata: dict[str, object]
+    feature_names: tuple[str, ...]
+    action_definitions: list[dict[str, object]]
+    fixed_point_config: FixedPointConfig
+
+    def predict_action_ranking(self, state_vector: tuple[float, ...]) -> tuple[int, ...]:
+        """兼容旧离线调用；部署决策本身只使用第一个 raw top-1。"""
+        state_int = quantize_state_vector(state_vector, self.fixed_point_config)
+        _, raw_action, _ = evaluate_integer_tree(self.model, state_int)
+        return tuple([raw_action] + [aid for aid in range(len(self.action_definitions)) if aid != raw_action])
+
+    def trace_decision_path(self, state_vector: tuple[float, ...]) -> dict[str, object]:
+        state_int = quantize_state_vector(state_vector, self.fixed_point_config)
+        leaf_id, raw_action_id, path = evaluate_integer_tree(self.model, state_int)
+        leaf = next(item for item in self.model.leaves if item.node_id == leaf_id)
+        return {
+            "tree_leaf_id": leaf_id,
+            "tree_path_node_ids": tuple([int(item["node_id"]) for item in path] + [leaf_id]),
+            "tree_path_depth": len(path),
+            "tree_path_predicates": path,
+            "tree_leaf_impurity": leaf.impurity,
+            "tree_leaf_n_node_samples": leaf.sample_count,
+            "tree_leaf_weighted_n_node_samples": sum(leaf.weighted_class_counts),
+            "tree_leaf_value": list(leaf.weighted_class_counts),
+            "tree_leaf_predicted_class_id": raw_action_id,
+            "student_state_vector_int": state_int,
+        }
+
+    def select_action_id(self, state_vector: tuple[float, ...], valid_action_mask: tuple[bool, ...] | None, *, include_decision_trace: bool = False) -> tuple[int | None, dict[str, object]]:
+        state_int = quantize_state_vector(state_vector, self.fixed_point_config)
+        leaf_id, raw_top1, path = evaluate_integer_tree(self.model, state_int)
+        if raw_top1 < 0 or raw_top1 >= len(self.action_definitions):
+            raise ValueError("integer tree raw action id 超出 action_dim")
+        raw_invalid = valid_action_mask is not None and not bool(valid_action_mask[raw_top1])
+        selected = None if raw_invalid else raw_top1
+        all_invalid = valid_action_mask is not None and not any(valid_action_mask)
+        info: dict[str, object] = {
+            "tree_raw_top1_action_id": raw_top1,
+            "tree_raw_top1_invalid": bool(raw_invalid),
+            "tree_fallback_used": bool(raw_invalid),
+            "tree_fallback_mode": "top1_or_noop",
+            "tree_fallback_reason": "raw_top1_invalid" if raw_invalid else None,
+            "tree_selected_action_id": selected,
+            "tree_selected_action_kind": "noop_fallback" if raw_invalid else "budget_action",
+            "tree_no_valid_action": bool(all_invalid),
+            "student_state_vector_int": state_int,
+            "tree_leaf_id": leaf_id,
+            "tree_path_predicates": path,
+        }
+        if include_decision_trace:
+            info.update(self.trace_decision_path(state_vector))
+        return selected, info
+
+    def action_definition(self, action_id: int | None) -> dict[str, object] | None:
+        if action_id is None or not 0 <= action_id < len(self.action_definitions):
             return None
         return dict(self.action_definitions[action_id])

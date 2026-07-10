@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import sys
 from pathlib import Path
@@ -22,6 +23,7 @@ from amc_py.rl.feature_config import FeatureConfig
 from amc_py.runtime_models import RuntimeSemantics
 from amc_py.viper.dataset import write_viper_dataset
 from amc_py.viper.teacher import collect_teacher_labeled_rollouts
+from amc_py.viper.fixed_point import FixedPointConfig
 from scripts.common_mc_fairgen_cli import (
     add_mc_fairgen_args,
     build_mc_fairgen_config_from_args,
@@ -112,12 +114,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fixed-taskset-seed", type=int, default=None)
     parser.add_argument("--automotive-num-runnables", type=int, default=150)
     parser.add_argument("--automotive-mode", type=str, default="paper_like")
+    parser.add_argument("--tree-state-encoding", choices=["legacy_float32", "fixed_point_int"], default="fixed_point_int")
+    parser.add_argument("--tree-fixed-point-scale", type=int, default=1_000_000)
+    parser.add_argument("--tree-fixed-point-rounding", choices=["half_up_nonnegative"], default="half_up_nonnegative")
+    parser.add_argument("--tree-fallback-mode", choices=["ranked_valid_or_none", "top1_or_noop"], default="top1_or_noop")
+    parser.add_argument("--action-validation-mode", choices=["legacy", "formal_v1"], default="legacy")
+    parser.add_argument("--strict-candidate-deploy-cap", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--carry-over-aware-safety", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--lo-budget-overrun-guard-units", type=int, default=1)
+    parser.add_argument("--allow-legacy-dataset-quantization", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--require-integer-tree-artifact", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--formal-deployment-v1", action="store_true")
     add_mc_fairgen_args(parser)
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    if args.formal_deployment_v1:
+        args.tree_state_encoding = "fixed_point_int"
+        args.tree_fallback_mode = "top1_or_noop"
+        args.action_validation_mode = "formal_v1"
+        args.strict_candidate_deploy_cap = True
+        args.carry_over_aware_safety = True
+        args.lo_budget_overrun_guard_units = 1
+        args.require_integer_tree_artifact = True
     teacher = DqnBudgetAgent.load(args.model)
     feature_config = FeatureConfig(
         observation_mode=args.observation_mode,
@@ -129,7 +150,11 @@ def main() -> None:
         risk_max_scale=args.risk_max_scale,
         include_safety_margin=args.include_safety_margin,
     )
-    experiment_config = _build_experiment_config(args)
+    experiment_config = replace(_build_experiment_config(args), action_validation_mode=args.action_validation_mode, strict_candidate_deploy_cap=args.strict_candidate_deploy_cap, carry_over_aware_safety=args.carry_over_aware_safety, lo_budget_overrun_guard_units=args.lo_budget_overrun_guard_units)
+    if args.tree_state_encoding == "fixed_point_int" and args.tree_fallback_mode != "top1_or_noop":
+        raise ValueError("fixed_point_int 必须使用 top1_or_noop")
+    if args.action_validation_mode == "formal_v1" and args.action_space != "single":
+        raise ValueError("formal_v1 只允许 single action space")
     samples, manifest = collect_teacher_labeled_rollouts(
         teacher=teacher,
         experiment_config=experiment_config,
@@ -153,6 +178,7 @@ def main() -> None:
         teacher_id=args.teacher_id,
         taskset_seed=args.fixed_taskset_seed,
         scenario_split=args.scenario_split,
+        fixed_point_config=FixedPointConfig(scale=args.tree_fixed_point_scale, max_int=args.tree_fixed_point_scale, rounding_mode=args.tree_fixed_point_rounding),
     )
     manifest["teacher_model_path"] = str(args.model)
     # 无论后续数据集被谁消费，都把 workload CLI 口径完整落盘，便于检查

@@ -16,12 +16,16 @@ from sklearn.tree import DecisionTreeClassifier
 from amc_py.dqn import DqnBudgetAgent, ExperimentConfig
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.runtime_models import RuntimeSemantics
-from amc_py.viper.artifacts import save_tree_policy_artifact
+from amc_py.viper.artifacts import save_tree_policy_artifact, required_artifact_files, validate_artifact_directory, load_tree_policy_artifact
 from amc_py.viper.dataset import ViperSample, read_viper_dataset, samples_to_xyw, write_viper_dataset
 from amc_py.viper.metrics import compute_offline_tree_metrics, evaluate_tree_policy_once
 from amc_py.viper.selection import SelectionConfig, select_best_tree
 from amc_py.viper.teacher import collect_teacher_labeled_rollouts
 from amc_py.viper.tree_policy import TreeBudgetPolicy
+from amc_py.viper.fixed_point import FixedPointConfig, fixed_point_config_hash, fixed_point_config_to_dict
+from amc_py.viper.schema import resolve_deployment_semantics_version
+from amc_py.viper.dataset import upgrade_samples_to_fixed_point
+from amc_py.viper.tree_policy import IntegerTreeBudgetPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,13 +52,19 @@ def train_cart_tree(
     random_seed: int,
     state_dim: int | None = None,
     action_dim: int | None = None,
+    fixed_point_config: FixedPointConfig | None = None,
+    allow_legacy_quantization: bool = False,
 ) -> tuple[DecisionTreeClassifier, dict[str, object]]:
     """训练一棵 CART 决策树。
 
     默认实现严格遵守计划：VIPER 主路径使用 weighted resampling，而不是直接依赖 sample_weight。
     """
 
-    x, y, w = samples_to_xyw(samples, weight_mode=weight_mode)
+    legacy_training = fixed_point_config is None
+    fixed_point_config = fixed_point_config or FixedPointConfig()
+    x, y, w = samples_to_xyw(samples, weight_mode=weight_mode, fixed_point_config=fixed_point_config, allow_legacy_quantization=(allow_legacy_quantization or legacy_training))
+    if x.dtype != np.int32 or np.any(x > 2**24) or np.any(x < -(2**24)):
+        raise ValueError("训练特征必须是 int32 且位于精确整数范围")
     if resample_size is None:
         resample_size = int(len(y))
     rng = np.random.default_rng(random_seed)
@@ -91,7 +101,10 @@ def train_cart_tree(
         "valid_labeled_sample_count": int(len(y)),
         "sklearn_version": sklearn_version,
         "mask_aware_inference": True,
-        "fallback_mode": "ranked_valid_or_none",
+        "fallback_mode": "top1_or_noop",
+        "training_feature_dtype": "int32",
+        "fixed_point_config_hash": fixed_point_config_hash(fixed_point_config),
+        "deployment_uses_sklearn": False,
         "tree_node_count": int(classifier.tree_.node_count),
         "tree_leaf_count": int(classifier.get_n_leaves()),
         "tree_depth": int(classifier.get_depth()),
@@ -114,16 +127,19 @@ def _copy_best_artifact(best_candidate: dict[str, object], output_dir: Path) -> 
     source_dir = Path(str(best_candidate["artifact_dir"]))
     best_dir = output_dir / "best"
     best_dir.mkdir(parents=True, exist_ok=True)
-    for filename in (
-        "model.joblib",
-        "metadata.json",
-        "feature_names.json",
-        "action_definitions.json",
-        "rules.txt",
-    ):
+    for stale in ("model.joblib", "metadata.json", "fixed_point_config.json", "integer_tree.json", "feature_names.json", "action_definitions.json", "rules.txt", "leaf_rules_int.json", "leaf_rules_int.csv", "artifact_manifest.json", "leaf_rules.json", "leaf_rules.csv", "selection_metrics.json"):
+        stale_path = best_dir / stale
+        if stale_path.exists():
+            stale_path.unlink()
+    metadata = json.loads((source_dir / "metadata.json").read_text(encoding="utf-8"))
+    require_integer = metadata.get("artifact_schema_version") == "viper_integer_artifact_v1"
+    validate_artifact_directory(source_dir, require_integer_tree=require_integer)
+    for filename in required_artifact_files(metadata, require_integer_tree=require_integer):
         shutil.copy2(source_dir / filename, best_dir / filename)
     with (best_dir / "selection_metrics.json").open("w", encoding="utf-8") as handle:
         json.dump(best_candidate, handle, ensure_ascii=False, indent=2)
+    validate_artifact_directory(best_dir, require_integer_tree=require_integer)
+    load_tree_policy_artifact(best_dir, require_integer_tree=require_integer, allow_legacy_fallback=not require_integer)
     return best_dir
 
 
@@ -159,6 +175,8 @@ def run_viper_iterations(
     method: str,
     workload_cli_config: dict[str, object] | None = None,
     workload_mismatch_warning: str | None = None,
+    fixed_point_config: FixedPointConfig = FixedPointConfig(),
+    allow_legacy_dataset_quantization: bool = False,
 ) -> dict[str, object]:
     """运行一条固定超参数的 BC/DAGGER/VIPER 训练链。"""
 
@@ -187,9 +205,20 @@ def run_viper_iterations(
             teacher_id=teacher_id,
             taskset_seed=None,
             scenario_split="train",
+            fixed_point_config=fixed_point_config,
         )
     else:
         aggregate_samples, aggregate_manifest = read_viper_dataset(initial_dataset)
+        aggregate_samples = upgrade_samples_to_fixed_point(aggregate_samples, fixed_point_config)
+        aggregate_manifest = {
+            **aggregate_manifest,
+            "dataset_schema_version": "viper_fixed_v1",
+            "student_observation_encoding": "fixed_point_int",
+            "fixed_point_config": fixed_point_config_to_dict(fixed_point_config),
+            "fixed_point_config_hash": fixed_point_config_hash(fixed_point_config),
+            "teacher_observation_encoding": "float32",
+            "tree_fallback_mode": "top1_or_noop",
+        }
     candidates: list[dict[str, object]] = []
     best_candidate: dict[str, object] | None = None
     current_policy: TreeBudgetPolicy | None = None
@@ -208,6 +237,8 @@ def run_viper_iterations(
             random_seed=tree_hyperparams.random_seed,
             state_dim=len(feature_names),
             action_dim=len(action_definitions),
+            fixed_point_config=fixed_point_config,
+            allow_legacy_quantization=allow_legacy_dataset_quantization,
         )
         metadata = {
             **metadata,
@@ -217,6 +248,20 @@ def run_viper_iterations(
             "taskset_seed": aggregate_manifest.get("taskset_seed"),
             "observation_mode": feature_config.observation_mode,
             "iteration": iteration,
+            "action_validation_mode": aggregate_manifest.get("action_validation_mode", experiment_config.action_validation_mode),
+            "strict_candidate_deploy_cap": aggregate_manifest.get("strict_candidate_deploy_cap", experiment_config.strict_candidate_deploy_cap),
+            "carry_over_aware_safety": aggregate_manifest.get("carry_over_aware_safety", experiment_config.carry_over_aware_safety),
+            "lo_budget_overrun_guard_units": aggregate_manifest.get("lo_budget_overrun_guard_units", aggregate_manifest.get("budget_overrun_guard_units", experiment_config.lo_budget_overrun_guard_units)),
+            "budget_overrun_semantics": aggregate_manifest.get("budget_overrun_semantics", experiment_config.budget_overrun_semantics),
+            "tree_state_encoding": aggregate_manifest.get("student_observation_encoding", "fixed_point_int"),
+            "deployment_semantics_version": aggregate_manifest.get("deployment_semantics_version", resolve_deployment_semantics_version(
+                tree_state_encoding=aggregate_manifest.get("student_observation_encoding", "fixed_point_int"),
+                tree_fallback_mode=aggregate_manifest.get("tree_fallback_mode", "top1_or_noop"),
+                action_validation_mode=aggregate_manifest.get("action_validation_mode", experiment_config.action_validation_mode),
+                strict_candidate_deploy_cap=aggregate_manifest.get("strict_candidate_deploy_cap", experiment_config.strict_candidate_deploy_cap),
+                carry_over_aware_safety=aggregate_manifest.get("carry_over_aware_safety", experiment_config.carry_over_aware_safety),
+                lo_budget_overrun_guard_units=aggregate_manifest.get("lo_budget_overrun_guard_units", aggregate_manifest.get("budget_overrun_guard_units", experiment_config.lo_budget_overrun_guard_units)),
+            )),
         }
         if int(metadata["state_dim"]) != len(feature_names):
             raise ValueError("tree metadata.state_dim 与 feature_names 长度不一致")
@@ -229,13 +274,10 @@ def run_viper_iterations(
             metadata=metadata,
             feature_names=feature_names,
             action_definitions=action_definitions,
+            fixed_point_config=fixed_point_config,
         )
-        current_policy = TreeBudgetPolicy(
-            classifier=classifier,
-            metadata=metadata,
-            feature_names=feature_names,
-            action_definitions=action_definitions,
-        )
+        from amc_py.viper.artifacts import load_tree_policy_artifact
+        current_policy = load_tree_policy_artifact(artifact_dir, require_integer_tree=True, fixed_point_config=fixed_point_config)
         offline_metrics = compute_offline_tree_metrics(current_policy, aggregate_samples)
         validation_rows = [
             evaluate_tree_policy_once(
@@ -345,6 +387,7 @@ def run_viper_iterations(
                 scenario_split="train",
                 behavior_policy=current_policy,
                 tree_iteration=iteration,
+                fixed_point_config=fixed_point_config,
             )
             aggregate_samples.extend(new_samples)
     if not candidates:

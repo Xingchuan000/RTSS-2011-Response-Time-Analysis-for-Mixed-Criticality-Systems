@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import sys
+from dataclasses import replace
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from statistics import mean
@@ -451,6 +452,29 @@ def _eval_summary_fieldnames() -> list[str]:
             "tree_raw_action_match_teacher_rate",
             "tree_q_regret_mean",
             "tree_q_regret_p95",
+            "tree_noop_fallback_count",
+            "tree_noop_fallback_rate",
+            "tree_runtime_policy_type",
+            "tree_state_encoding",
+            "tree_fixed_point_scale",
+            "tree_fixed_point_rounding",
+            "tree_fixed_point_config_hash",
+            "tree_fallback_mode",
+            "action_validation_mode",
+            "strict_candidate_deploy_cap",
+            "carry_over_aware_safety",
+            "lo_budget_overrun_guard_units",
+            "budget_overrun_semantics",
+            "deployment_semantics_version",
+            "integer_tree_hash",
+            "artifact_schema_version",
+            "deploy_cap_candidate_violation_count",
+            "carry_over_envelope_applied_count",
+            "carry_over_changed_candidate_count",
+            "formal_v1_evaluation_count",
+            "formal_v1_cache_hit_count",
+            "formal_v1_cache_miss_count",
+            "formal_v1_mask_step_mismatch_count",
         ]
     )
     return fieldnames
@@ -1131,13 +1155,40 @@ def _evaluate_tree_once(
     leaf_audit_enabled: bool = False,
     leaf_audit_state_mode: str = "split",
     leaf_audit_top_k_actions: int = 5,
+    require_integer_tree_artifact: bool = False,
 ) -> tuple[dict[str, int | float | str | bool | None], SimulationResult, list[dict[str, object]]]:
     """在正式 HOUT 入口中执行 tree policy。"""
 
     from amc_py.viper.artifacts import load_tree_policy_artifact
     from amc_py.viper.metrics import evaluate_tree_policy_once
 
-    tree_policy = load_tree_policy_artifact(tree_artifact_dir)
+    tree_policy = load_tree_policy_artifact(tree_artifact_dir, require_integer_tree=require_integer_tree_artifact, allow_legacy_fallback=not require_integer_tree_artifact)
+    if require_integer_tree_artifact:
+        policy_metadata = tree_policy.metadata
+        # 新 integer artifact 的 HOUT: 字段缺失必须报错，值不一致必须报错。
+        required_semantic_keys = (
+            "action_validation_mode",
+            "strict_candidate_deploy_cap",
+            "carry_over_aware_safety",
+            "lo_budget_overrun_guard_units",
+            "budget_overrun_semantics",
+            "tree_state_encoding",
+            "tree_fallback_mode",
+            "deployment_semantics_version",
+        )
+        for key in required_semantic_keys:
+            if key not in policy_metadata:
+                raise ValueError(f"integer artifact 缺少关键部署语义字段: {key}")
+        semantic_pairs = {
+            "action_validation_mode": getattr(experiment_config, "action_validation_mode", "legacy"),
+            "strict_candidate_deploy_cap": getattr(experiment_config, "strict_candidate_deploy_cap", False),
+            "carry_over_aware_safety": getattr(experiment_config, "carry_over_aware_safety", False),
+            "lo_budget_overrun_guard_units": getattr(experiment_config, "lo_budget_overrun_guard_units", 0),
+            "budget_overrun_semantics": getattr(experiment_config, "budget_overrun_semantics", "strictly_greater_than_release_budget"),
+        }
+        for key, expected in semantic_pairs.items():
+            if policy_metadata[key] != expected:
+                raise ValueError(f"integer artifact 与当前 HOUT 部署语义不一致: {key} (artifact={policy_metadata[key]}, expected={expected})")
     teacher = DqnBudgetAgent.load(teacher_model_path) if teacher_model_path is not None else None
     tree_metrics, runtime_result, action_log = evaluate_tree_policy_once(
         tree_policy=tree_policy,
@@ -1173,9 +1224,9 @@ def _evaluate_tree_once(
         "method": method_name,
         "q_network_type": "",
         "budget_overruns": int(tree_metrics["mode_changes"]) + int(tree_metrics["lo_cancellations"]),
-        "noop_actions": 0,
+        "noop_actions": int(tree_metrics.get("tree_noop_fallback_count", 0)),
         "explicit_noop_actions": 0,
-        "noop_action_rate": 0.0,
+        "noop_action_rate": float(tree_metrics.get("tree_noop_fallback_rate", 0.0)),
         "explicit_noop_action_rate": 0.0,
         "accepted_action_rate": ((accepted_actions / step_count) if step_count > 0 else 0.0),
         "rejection_rate": 0.0,
@@ -1189,6 +1240,20 @@ def _evaluate_tree_once(
         "tree_leaf_count": metadata.get("tree_leaf_count"),
         "tree_max_depth_param": metadata.get("max_depth"),
         "tree_min_samples_leaf": metadata.get("min_samples_leaf"),
+        "tree_runtime_policy_type": type(tree_policy).__name__,
+        "tree_state_encoding": "fixed_point_int" if type(tree_policy).__name__ == "IntegerTreeBudgetPolicy" else "legacy_float32",
+        "tree_fixed_point_scale": getattr(getattr(tree_policy, "fixed_point_config", None), "scale", None),
+        "tree_fixed_point_rounding": getattr(getattr(tree_policy, "fixed_point_config", None), "rounding_mode", None),
+        "tree_fixed_point_config_hash": metadata.get("fixed_point_config_hash"),
+        "tree_fallback_mode": metadata.get("fallback_mode", "ranked_valid_or_none"),
+        "action_validation_mode": getattr(experiment_config, "action_validation_mode", "legacy"),
+        "strict_candidate_deploy_cap": getattr(experiment_config, "strict_candidate_deploy_cap", False),
+        "carry_over_aware_safety": getattr(experiment_config, "carry_over_aware_safety", False),
+        "lo_budget_overrun_guard_units": getattr(experiment_config, "lo_budget_overrun_guard_units", 0),
+        "budget_overrun_semantics": getattr(experiment_config, "budget_overrun_semantics", "strictly_greater_than_release_budget"),
+        "deployment_semantics_version": metadata.get("deployment_semantics_version"),
+        "integer_tree_hash": metadata.get("integer_tree_hash"),
+        "artifact_schema_version": metadata.get("artifact_schema_version"),
     }
     return row, runtime_result, action_log
 
@@ -2520,6 +2585,7 @@ def _evaluate_enabled_methods_for_seed(
             leaf_audit_enabled=leaf_audit_enabled,
             leaf_audit_state_mode=tree_audit_state_mode,
             leaf_audit_top_k_actions=tree_audit_top_k_actions,
+            require_integer_tree_artifact=bool(getattr(experiment_config, "require_integer_tree_artifact", False)),
         )
         rows.append(tree_row)
         deadline_miss_details.extend(
@@ -2860,6 +2926,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--enable-deploy-cap-mask", action="store_true")
     parser.add_argument("--deploy-cap-mask-ratio", type=float, default=4.0)
     parser.add_argument("--deploy-cap-mask-criticality", choices=["lo", "all"], default="lo")
+    parser.add_argument("--tree-state-encoding", choices=["legacy_float32", "fixed_point_int"], default="fixed_point_int")
+    parser.add_argument("--tree-fixed-point-scale", type=int, default=1_000_000)
+    parser.add_argument("--tree-fixed-point-rounding", choices=["half_up_nonnegative"], default="half_up_nonnegative")
+    parser.add_argument("--tree-fallback-mode", choices=["ranked_valid_or_none", "top1_or_noop"], default="top1_or_noop")
+    parser.add_argument("--action-validation-mode", choices=["legacy", "formal_v1"], default="legacy")
+    parser.add_argument("--strict-candidate-deploy-cap", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--carry-over-aware-safety", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--lo-budget-overrun-guard-units", type=int, default=1)
+    parser.add_argument("--allow-legacy-dataset-quantization", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--require-integer-tree-artifact", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--formal-deployment-v1", action="store_true")
     # automotive workload 允许从 CLI 显式切换 runnable 数量与 workload 语义模式，
     # 保证评估入口与训练入口能使用相同的 automotive 配置。
     parser.add_argument("--automotive-num-runnables", type=int, choices=[150, 250], default=150)
@@ -2926,6 +3003,14 @@ def main() -> None:
     """运行正式 DQN 评估，并输出统一 CSV。"""
 
     args = build_parser().parse_args()
+    if args.formal_deployment_v1:
+        args.tree_state_encoding = "fixed_point_int"
+        args.tree_fallback_mode = "top1_or_noop"
+        args.action_validation_mode = "formal_v1"
+        args.strict_candidate_deploy_cap = True
+        args.carry_over_aware_safety = True
+        args.lo_budget_overrun_guard_units = 1
+        args.require_integer_tree_artifact = True
     if args.action_space == "constraint_guided_pair":
         # 兼容旧参数名：内部统一走 constraint_guided_transfer。
         args.action_space = "constraint_guided_transfer"
@@ -3014,6 +3099,18 @@ def main() -> None:
         )
     else:
         raise ValueError(f"unsupported workload: {args.workload}")
+    experiment_config = replace(
+        experiment_config,
+        action_validation_mode=args.action_validation_mode,
+        strict_candidate_deploy_cap=args.strict_candidate_deploy_cap,
+        carry_over_aware_safety=args.carry_over_aware_safety,
+        lo_budget_overrun_guard_units=args.lo_budget_overrun_guard_units,
+        require_integer_tree_artifact=args.require_integer_tree_artifact,
+    )
+    if args.tree_state_encoding == "fixed_point_int" and args.tree_fallback_mode != "top1_or_noop":
+        raise ValueError("fixed_point_int 必须使用 top1_or_noop")
+    if args.action_validation_mode == "formal_v1" and args.action_space != "single":
+        raise ValueError("formal_v1 只允许 single action space")
     effective_num_tasks = (
         args.mc_fairgen_num_tasks if args.workload == "mc_fairgen" else args.num_tasks
     )

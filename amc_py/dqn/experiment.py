@@ -13,7 +13,7 @@ from amc_py.models import Criticality, SchedulabilityResult, Task
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.rl.env import AmcBudgetEnv
 from amc_py.rl.observation import NormalizationBounds, build_default_normalization_bounds
-from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics
+from amc_py.runtime_models import BudgetOverrunSemantics, RuntimeConfig, RuntimeSemantics
 from amc_py.runtime_scenarios import (
     ExecutionScenario,
     make_nominal_scenario,
@@ -37,6 +37,12 @@ class ExperimentConfig:
     normalization_bounds_factory: NormalizationBoundsFactory | None = None
     workload_provider: WorkloadProvider | None = None
     check_safety: bool = True
+    action_validation_mode: str = "legacy"
+    strict_candidate_deploy_cap: bool = False
+    carry_over_aware_safety: bool = False
+    lo_budget_overrun_guard_units: int = 0
+    budget_overrun_semantics: str = BudgetOverrunSemantics.STRICTLY_GREATER_THAN_RELEASE_BUDGET.value
+    require_integer_tree_artifact: bool = False
 
     def __post_init__(self) -> None:
         """校验 experiment 配置只使用一种数据来源。"""
@@ -279,6 +285,7 @@ def build_runtime_config_for_semantics(
     capture_debug_events: bool = False,
     record_dropped_lo_releases: bool = False,
     c_amc_sem_xf: float = 0.5,
+    budget_overrun_semantics: BudgetOverrunSemantics = BudgetOverrunSemantics.STRICTLY_GREATER_THAN_RELEASE_BUDGET,
 ) -> RuntimeConfig:
     """为训练、验证和 HOUT 统一构造 runtime 配置。
 
@@ -296,6 +303,7 @@ def build_runtime_config_for_semantics(
         drop_lo_jobs_on_hi_switch=(semantics is not RuntimeSemantics.C_AMC_SEM),
         c_amc_sem_lo_degradation_ratio=c_amc_sem_xf,
         c_amc_sem_primary_on_switch_time=(semantics is RuntimeSemantics.C_AMC_SEM),
+        budget_overrun_semantics=budget_overrun_semantics,
     )
 
 
@@ -413,6 +421,11 @@ def build_env_from_experiment_config(
     residual_guard_hi_pressure_abs_limit: float = 0.30,
     residual_guard_reject_decrease_pressure_threshold: float = 0.05,
     residual_guard_use_hi_pressure_max: bool = False,
+    action_validation_mode: str | None = None,
+    strict_candidate_deploy_cap: bool | None = None,
+    carry_over_aware_safety: bool | None = None,
+    lo_budget_overrun_guard_units: int | None = None,
+    budget_overrun_semantics: str | None = None,
 ) -> AmcBudgetEnv:
     """根据实验配置构造 `AmcBudgetEnv`，供训练与评估入口复用。"""
 
@@ -427,6 +440,7 @@ def build_env_from_experiment_config(
             capture_debug_events=capture_debug_events,
             record_dropped_lo_releases=record_dropped_lo_releases,
             c_amc_sem_xf=c_amc_sem_xf,
+            budget_overrun_semantics=BudgetOverrunSemantics(budget_overrun_semantics or config.budget_overrun_semantics),
         ),
         agent_period=agent_period,
         check_safety=config.check_safety,
@@ -453,6 +467,10 @@ def build_env_from_experiment_config(
         residual_guard_hi_pressure_abs_limit=residual_guard_hi_pressure_abs_limit,
         residual_guard_reject_decrease_pressure_threshold=residual_guard_reject_decrease_pressure_threshold,
         residual_guard_use_hi_pressure_max=residual_guard_use_hi_pressure_max,
+        action_validation_mode=config.action_validation_mode if action_validation_mode is None else action_validation_mode,
+        strict_candidate_deploy_cap=config.strict_candidate_deploy_cap if strict_candidate_deploy_cap is None else strict_candidate_deploy_cap,
+        carry_over_aware_safety=config.carry_over_aware_safety if carry_over_aware_safety is None else carry_over_aware_safety,
+        lo_budget_overrun_guard_units=config.lo_budget_overrun_guard_units if lo_budget_overrun_guard_units is None else lo_budget_overrun_guard_units,
     )
 
 

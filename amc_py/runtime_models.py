@@ -47,6 +47,17 @@ class RuntimeSemantics(str, Enum):
     C_AMC_SEM = "C_AMC_SEM"
 
 
+class BudgetOverrunSemantics(str, Enum):
+    """当前唯一支持的预算超限定义：严格大于 release budget。"""
+    STRICTLY_GREATER_THAN_RELEASE_BUDGET = "strictly_greater_than_release_budget"
+
+
+def budget_overrun_guard_units(config: "RuntimeConfig") -> int:
+    if config.budget_overrun_semantics is not BudgetOverrunSemantics.STRICTLY_GREATER_THAN_RELEASE_BUDGET:
+        raise ValueError("不支持的 budget overrun semantics")
+    return 1
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     """运行时仿真器的配置参数集合。
@@ -86,6 +97,7 @@ class RuntimeConfig:
     record_dropped_lo_releases: bool = False
     c_amc_sem_lo_degradation_ratio: float = 0.5
     c_amc_sem_primary_on_switch_time: bool = False
+    budget_overrun_semantics: BudgetOverrunSemantics = BudgetOverrunSemantics.STRICTLY_GREATER_THAN_RELEASE_BUDGET
 
     def __post_init__(self) -> None:
         # 基本的范围校验：避免在仿真过程中才报错，尽量把问题前置。

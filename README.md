@@ -3899,3 +3899,94 @@ best elite 判定 reason（`validation_metrics.csv` / `elite_replay_log.csv`）�
 - `validation_metrics.csv`：`safe_global_best_reduction_before`、`safe_global_best_reduction_after`、`safe_global_new_best`、`safe_global_best_reason`、`best_elite_replay_candidate`、`best_elite_replay_reason`、`best_elite_replay_current_reduction`、`best_elite_replay_best_reduction`、`best_elite_replay_added_count`、`best_elite_replay_buffer_size`、`best_elite_replay_recent_episode_start`、`best_elite_replay_recent_episode_end`
 - `elite_replay_log.csv`：`safe_global_best_reduction_before`、`safe_global_best_reduction_after`、`safe_global_new_best`、`safe_global_best_reason`、`best_enabled`、`best_active`、`best_candidate`、`best_reason`、`best_current_reduction`、`best_best_reduction`、`best_added_count`、`best_buffer_size`
 - `config.json`：完整记录 best elite 全部配置与统计字段，便于复现实验。
+# 定点 VIPER 与形式化友好部署语义
+
+本仓库的 VIPER 新路径使用确定性定点 student state：默认配置为 `scale=1000000`，
+输入先裁剪到 `[0, 1]`，再采用 Decimal half-up 量化。teacher 仍接收原始 float
+observation；CART 训练输入和独立部署 artifact 使用 `int32`。
+
+## 使用说明
+
+基础接口位于 `amc_py/viper/fixed_point.py`、`amc_py/viper/integer_tree.py`。
+新训练/保存 artifact 时显式传入 `FixedPointConfig()`；生成目录包括
+`integer_tree.json`、`fixed_point_config.json`、`leaf_rules_int.json/csv` 和
+`artifact_manifest.json`。通过 `load_tree_policy_artifact(..., require_integer_tree=True)`
+加载时返回不依赖 sklearn 推理的 `IntegerTreeBudgetPolicy`。
+
+整数 tree 只产生唯一 raw top-1；当该动作被 runtime mask 判为非法时，部署结果固定为
+`None`（noop），不会继续尝试次优动作。旧 artifact 仍可由 legacy loader 加载。
+
+dataset 新样本同时保存 `state_vector`（float teacher state）和
+`student_state_vector_int`（定点 tree state）。读取旧 JSONL 时，只有显式传入
+`allow_legacy_quantization=True` 才会从 float state 量化训练特征。
+
+运行时新语义由环境配置显式打开：`strict_candidate_deploy_cap=True`、
+`carry_over_aware_safety=True`、`lo_budget_overrun_guard_units=1` 和
+`action_validation_mode="formal_v1"`。其中 `formal_v1` 仅允许 `single`、非 residual
+动作空间；默认配置仍保留 legacy 行为。
+
+三个 VIPER/HOUT CLI 均支持 `--tree-state-encoding`、`--tree-fixed-point-scale`、
+`--tree-fallback-mode`、`--action-validation-mode`、`--strict-candidate-deploy-cap`、
+`--carry-over-aware-safety`、`--lo-budget-overrun-guard-units` 和
+`--require-integer-tree-artifact`。整数 artifact loader 会校验 manifest 文件 hash、
+整数树 hash、fixed-point hash、action definitions hash 和维度；要求整数 artifact
+时缺文件或配置不一致会直接失败。
+
+事件 runtime 的 overrun 语义固定为严格大于 release budget，即 budget=5 时在
+执行量 6 触发，且已释放 job 继续使用 `runtime_budget_at_release`。
+
+## 第三轮复查收尾补丁（2026-07）
+
+### 1. formal_v1 evaluator 纯函数化
+
+`_evaluate_single_action()` 现使用 `_validate_candidate_safety_pure()`，不再修改
+carry-over 计数器或引擎状态。mask 枚举不会隐式累加执行统计。
+
+新增 debug_statistics 字段：
+
+- `carry_over_candidate_check_count`：每轮 mask/检查中 carry-over 调用的总次数（与旧
+  `carry_over_envelope_applied_count` 等价）
+- `carry_over_selected_action_check_count`：仅在 `step()` 消费 formal_v1 evaluation
+  时递增一次，反映实际执行决策数
+- `carry_over_changed_selected_candidate_count`：选中候选被 carry-over envelope
+  修改的次数
+
+使用方法：以上字段直接从 `env.debug_statistics()` 读取。
+
+### 2. noop fallback 的 leaf audit 诊断来源修正
+
+当 tree raw top-1 被 mask 拒绝且 selected action 为 `None` 时，leaf audit 现在从
+`env.get_last_mask_detail(raw_top1_action_id)` 获取被拒绝 raw action 的完整评估数据，
+包括 `candidate_budgets`、`effective_check_budgets` 和 `safety_reject_reason`，
+而不是记录 noop 本身的当前预算。
+
+新增只读接口 `AmcBudgetEnv.get_last_mask_detail(action_id: int) -> dict | None`。
+
+### 3. 统一部署语义 metadata 字段名
+
+- 数据集 manifest 和 artifact metadata 统一使用 `lo_budget_overrun_guard_units` 作为主字段名。
+- 旧字段 `budget_overrun_guard_units` 仅保留用于 legacy 读取兼容（`training.py` 中手动回退读取）。
+- 新 integer artifact 必须包含全部 8 个关键部署语义字段：
+  `action_validation_mode`、`strict_candidate_deploy_cap`、`carry_over_aware_safety`、
+  `lo_budget_overrun_guard_units`、`budget_overrun_semantics`、`tree_state_encoding`、
+  `tree_fallback_mode`、`deployment_semantics_version`。
+- HOUT 加载 integer artifact 时，任一字段缺失或不一致都会 `raise ValueError`。
+- `deployment_semantics_version=formal_deployment_v1` 仅在以下组合全部成立时写入：
+  `fixed_point_int + top1_or_noop + formal_v1 + strict_candidate_deploy_cap=true + carry_over_aware_safety=true + lo_budget_overrun_guard_units=1`；
+  其他组合写入 `legacy_baseline_v1` 或 `legacy_mixed_semantics_v1`。
+
+### 4. safety margin 整数计算
+
+`_compute_current_safety_margin_min()` 不再将 effective budget 显式转 `float64` 后再求约束
+lhs，而是使用 `int64` 预算数组与约束矩阵做内积，仅在归一化时转为 float。同时约束构建中的
+`math.ceil(a / b)` 已替换为整数 ceiling 除法 `(a + b - 1) // b`。
+
+### 5. 新增测试文件
+
+| 文件 | 内容 |
+|------|------|
+| `tests/test_formal_v1_action_evaluation.py` | evaluator 无副作用、cache hit、mask/step 一致性 |
+| `tests/test_carry_over_aware_safety.py` | carry-over envelope、LO guard、计数器分离 |
+| `tests/test_budget_ratio_arithmetic.py` | 整数比例 increase/decrease、边界值 |
+| `tests/test_viper_integer_tree.py` | integer artifact 加载、字段缺失 fail-closed |
+| `tests/test_viper_teacher_fixed_point.py` | metadata 统一字段、legacy 升级兼容 |

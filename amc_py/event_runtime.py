@@ -29,6 +29,7 @@ from .runtime_models import (
     ModeRecoveryEvent,
     ModeSwitchEvent,
     RuntimeConfig,
+    budget_overrun_guard_units,
     RuntimeSemantics,
     ScheduleTick,
     SimulationResult,
@@ -350,7 +351,7 @@ def _schedule_running_job_events(
     if budget is None:
         budget = runtime_budgets.budget_of(job.task)
     remaining_to_completion = job.actual_cost - job.executed_time
-    remaining_to_overrun = budget + 1 - job.executed_time
+    remaining_to_overrun = budget + budget_overrun_guard_units(cfg) - job.executed_time
     if remaining_to_overrun <= 0 and remaining_to_completion > 0:
         overrun_token = state.next_token()
         state.valid_overrun_tokens[key] = overrun_token

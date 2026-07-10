@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import numpy as np
 
 from amc_py.budget_runtime import BudgetState
 from amc_py.models import Criticality, Task
+
+
+def build_effective_safety_budget_vector(
+    ordered_tasks: Sequence[Task],
+    candidate_budgets: Mapping[str, int],
+    active_release_budget_max: Mapping[str, int] | None = None,
+    lo_overrun_guard_units: int = 0,
+) -> dict[str, int]:
+    """统一构造 carry-over envelope 与 LO guard 后的安全检查向量。"""
+    active_release_budget_max = active_release_budget_max or {}
+    return {
+        task.name: max(int(candidate_budgets[task.name]), int(active_release_budget_max.get(task.name, 0)))
+        + (lo_overrun_guard_units if task.criticality is Criticality.LO else 0)
+        for task in ordered_tasks
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +44,7 @@ class RuntimeBudgetSafetyChecker:
     check_lo_tasks: bool = True
     _task_names: tuple[str, ...] = field(init=False, repr=False)
     _task_index: dict[str, int] = field(init=False, repr=False)
-    _constraint_rows: list[tuple[str, str, float, np.ndarray]] = field(init=False, repr=False)
+    _constraint_rows: list[tuple[str, str, int, np.ndarray]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         """校验 `design_r_lo` 是否完整，禁止静默缺失。"""
@@ -46,51 +60,58 @@ class RuntimeBudgetSafetyChecker:
     def _build_constraint_rows(self) -> list[tuple[str, str, float, np.ndarray]]:
         """构建线性约束，统一成 `A @ B <= bound` 的形式。"""
 
-        rows: list[tuple[str, str, float, np.ndarray]] = []
+        rows: list[tuple[str, str, int, np.ndarray]] = []
         n_tasks = len(self.ordered_tasks)
         for idx, task_i in enumerate(self.ordered_tasks):
             hp = self.ordered_tasks[:idx]
             if task_i.criticality is Criticality.HI:
                 r_lo_i = self.design_r_lo[task_i.name]
-                coeff_lo = np.zeros(n_tasks, dtype=np.float64)
+                coeff_lo = np.zeros(n_tasks, dtype=np.int64)
                 coeff_lo[idx] = 1.0
                 for task_j in hp:
                     jdx = self._task_index[task_j.name]
-                    coeff_lo[jdx] += float(math.ceil(r_lo_i / task_j.period))
-                rows.append((task_i.name, "hi_lo_mode", float(r_lo_i), coeff_lo))
+                    coeff_lo[jdx] += (r_lo_i + task_j.period - 1) // task_j.period
+                rows.append((task_i.name, "hi_lo_mode", int(r_lo_i), coeff_lo))
 
-                coeff_switch = np.zeros(n_tasks, dtype=np.float64)
-                rhs_switch = float(task_i.deadline - task_i.c_hi)
+                coeff_switch = np.zeros(n_tasks, dtype=np.int64)
+                rhs_switch = int(task_i.deadline - task_i.c_hi)
                 for task_j in hp:
                     if task_j.criticality is Criticality.LO:
                         jdx = self._task_index[task_j.name]
-                        coeff_switch[jdx] += float(math.ceil(r_lo_i / task_j.period))
+                        coeff_switch[jdx] += (r_lo_i + task_j.period - 1) // task_j.period
                     else:
-                        rhs_switch -= float(math.ceil(task_i.deadline / task_j.period) * task_j.c_hi)
+                        rhs_switch -= ((task_i.deadline + task_j.period - 1) // task_j.period) * task_j.c_hi
                 rows.append((task_i.name, "hi_mode_switch", rhs_switch, coeff_switch))
 
             if self.check_lo_tasks and task_i.criticality is Criticality.LO:
-                coeff_lo_task = np.zeros(n_tasks, dtype=np.float64)
+                coeff_lo_task = np.zeros(n_tasks, dtype=np.int64)
                 coeff_lo_task[idx] = 1.0
                 for task_j in hp:
                     jdx = self._task_index[task_j.name]
-                    coeff_lo_task[jdx] += float(math.ceil(task_i.deadline / task_j.period))
-                rows.append((task_i.name, "lo_deadline_bound", float(task_i.deadline), coeff_lo_task))
+                    coeff_lo_task[jdx] += (task_i.deadline + task_j.period - 1) // task_j.period
+                rows.append((task_i.name, "lo_deadline_bound", int(task_i.deadline), coeff_lo_task))
         return rows
 
     def build_linear_constraints(self) -> tuple[np.ndarray, np.ndarray]:
         """返回 `A, bound`，满足 `A @ budgets <= bound`。"""
 
         if not self._constraint_rows:
-            return np.zeros((0, len(self.ordered_tasks)), dtype=np.float64), np.zeros((0,), dtype=np.float64)
+            return np.zeros((0, len(self.ordered_tasks)), dtype=np.int64), np.zeros((0,), dtype=np.int64)
         matrix_a = np.stack([row[3] for row in self._constraint_rows], axis=0)
-        bounds = np.array([row[2] for row in self._constraint_rows], dtype=np.float64)
+        bounds = np.array([row[2] for row in self._constraint_rows], dtype=np.int64)
         return matrix_a, bounds
 
-    def validate_candidate(self, candidate_budgets: Mapping[str, int]) -> RuntimeSafetyReport:
+    def validate_candidate(
+        self,
+        candidate_budgets: Mapping[str, int],
+        active_release_budget_max: Mapping[str, int] | None = None,
+        lo_overrun_guard_units: int = 0,
+    ) -> RuntimeSafetyReport:
         """校验完整 budget 向量是否满足保守约束。"""
 
         task_names = self._task_names
+        if lo_overrun_guard_units < 0:
+            raise ValueError("lo_overrun_guard_units 不能为负数")
         diagnostics: list[dict[str, str | int | float]] = []
         for name in task_names:
             if name not in candidate_budgets:
@@ -98,19 +119,27 @@ class RuntimeBudgetSafetyChecker:
             if candidate_budgets[name] <= 0:
                 return RuntimeSafetyReport(False, f"non_positive_budget:{name}", task_names, tuple(diagnostics))
 
-        budget_array = np.array([float(candidate_budgets[name]) for name in task_names], dtype=np.float64)
+        active_release_budget_max = active_release_budget_max or {}
+        checked = build_effective_safety_budget_vector(self.ordered_tasks, candidate_budgets, active_release_budget_max, lo_overrun_guard_units)
+        effective: dict[str, int] = {name: max(int(candidate_budgets[name]), int(active_release_budget_max.get(name, 0))) for name in task_names}
+        budget_array = np.array([int(checked[name]) for name in task_names], dtype=object)
         for task_name, constraint_name, rhs, coeff in self._constraint_rows:
-            lhs = float(np.dot(coeff, budget_array))
+            lhs = sum(int(coeff[index]) * int(budget_array[index]) for index in range(len(task_names)))
             diagnostics.append(
                 {
                     "task": task_name,
                     "constraint": constraint_name,
-                    "lhs": lhs,
+                    "lhs": int(lhs),
                     "rhs": rhs,
-                    "slack": rhs - lhs,
+                    "slack": int(rhs - lhs),
+                    "candidate_budget": int(candidate_budgets[task_name]),
+                    "active_release_budget_max": int(active_release_budget_max.get(task_name, 0)),
+                    "envelope_budget": int(effective[task_name]),
+                    "checked_effective_budget": int(checked[task_name]),
+                    "lo_overrun_guard_units": int(lo_overrun_guard_units),
                 }
             )
-            if lhs > rhs:
+            if lhs > int(rhs):
                 if constraint_name == "hi_lo_mode":
                     reason = f"hi_lo_mode_violation:{task_name}"
                 elif constraint_name == "hi_mode_switch":

@@ -10,7 +10,9 @@ from amc_py.dqn import DqnBudgetAgent, ExperimentConfig, build_env_from_experime
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.runtime_models import RuntimeSemantics
 from amc_py.viper.dataset import ViperSample
-from amc_py.viper.tree_policy import TreeBudgetPolicy
+from amc_py.viper.fixed_point import FixedPointConfig, fixed_point_config_hash, quantize_state_vector
+from amc_py.viper.schema import resolve_deployment_semantics_version
+from amc_py.viper.tree_policy import TreeBudgetPolicy, IntegerTreeBudgetPolicy
 
 
 def collect_teacher_labeled_rollouts(
@@ -39,6 +41,7 @@ def collect_teacher_labeled_rollouts(
     scenario_split: str,
     behavior_policy: TreeBudgetPolicy | None = None,
     tree_iteration: int | None = None,
+    fixed_point_config: FixedPointConfig = FixedPointConfig(),
 ) -> tuple[list[ViperSample], dict]:
     """采集 rollout 上的 teacher 标注样本。
 
@@ -47,6 +50,11 @@ def collect_teacher_labeled_rollouts(
     """
 
     samples: list[ViperSample] = []
+    if behavior_policy is not None and isinstance(behavior_policy, IntegerTreeBudgetPolicy):
+        if fixed_point_config_hash(behavior_policy.fixed_point_config) != fixed_point_config_hash(fixed_point_config):
+            raise ValueError("behavior policy fixed-point config hash 与采集配置不一致")
+        if behavior_policy.metadata.get("fallback_mode") != "top1_or_noop":
+            raise ValueError("behavior policy fallback_mode 与新部署语义不一致")
     manifest_mask_reasons: Counter[str] = Counter()
     scenario_seeds: list[int] = []
     feature_names: tuple[str, ...] | None = None
@@ -108,6 +116,7 @@ def collect_teacher_labeled_rollouts(
                     decision_index=decision_index,
                     time=int(obs.time),
                     state_vector=tuple(float(value) for value in obs.state_vector),
+                    student_state_vector_int=quantize_state_vector(obs.state_vector, fixed_point_config),
                     valid_action_mask=tuple(bool(value) for value in mask),
                     teacher_action_id=(None if teacher_action_id is None else int(teacher_action_id)),
                     teacher_action_valid=bool(teacher_action_valid),
@@ -177,5 +186,25 @@ def collect_teacher_labeled_rollouts(
         "feature_names": list(feature_names or ()),
         "action_definitions": action_definitions or [],
         "mask_reject_reasons": dict(manifest_mask_reasons),
+        "dataset_schema_version": "viper_fixed_v1",
+        "student_observation_encoding": "fixed_point_int",
+        "fixed_point_config": {"scale": fixed_point_config.scale, "min_int": fixed_point_config.min_int, "max_int": fixed_point_config.max_int, "rounding_mode": fixed_point_config.rounding_mode, "input_min": fixed_point_config.input_min, "input_max": fixed_point_config.input_max, "schema_version": fixed_point_config.schema_version},
+        "fixed_point_config_hash": fixed_point_config_hash(fixed_point_config),
+        "teacher_observation_encoding": "float32",
+        "tree_fallback_mode": "top1_or_noop",
+        "tree_state_encoding": "fixed_point_int",
+        "action_validation_mode": experiment_config.action_validation_mode,
+        "strict_candidate_deploy_cap": experiment_config.strict_candidate_deploy_cap,
+        "carry_over_aware_safety": experiment_config.carry_over_aware_safety,
+        "lo_budget_overrun_guard_units": experiment_config.lo_budget_overrun_guard_units,
+        "budget_overrun_semantics": experiment_config.budget_overrun_semantics,
+        "deployment_semantics_version": resolve_deployment_semantics_version(
+            tree_state_encoding="fixed_point_int",
+            tree_fallback_mode="top1_or_noop",
+            action_validation_mode=experiment_config.action_validation_mode,
+            strict_candidate_deploy_cap=experiment_config.strict_candidate_deploy_cap,
+            carry_over_aware_safety=experiment_config.carry_over_aware_safety,
+            lo_budget_overrun_guard_units=experiment_config.lo_budget_overrun_guard_units,
+        ),
     }
     return samples, manifest

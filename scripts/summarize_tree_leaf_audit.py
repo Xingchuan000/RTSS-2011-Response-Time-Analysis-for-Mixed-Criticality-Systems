@@ -158,6 +158,25 @@ def _build_leaf_summary_all(
         # raw_invalid 统计
         raw_invalid_count = sum(int(bool(r.get("tree_raw_top1_invalid", False))) for r in leaf_rows)
         raw_invalid_rate = raw_invalid_count / hit_count if hit_count > 0 else 0.0
+        noop_fallback_count = sum(int(bool(r.get("tree_fallback_used", False) and r.get("tree_selected_action_id") is None)) for r in leaf_rows)
+        no_valid_count = sum(int(bool(r.get("tree_no_valid_action", False))) for r in leaf_rows)
+        strict_cap_count = sum(int("deploy_cap" in str(r.get("safety_reject_reason", ""))) for r in leaf_rows)
+        carry_over_count = sum(int(str(r.get("safety_reject_reason", "")).startswith(("hi_lo_mode_violation", "hi_mode_switch_violation", "lo_mode_violation")) and r.get("active_release_budget_max_json") not in (None, "{}", "")) for r in leaf_rows)
+        envelope_difference_count = 0
+        for r in leaf_rows:
+            try:
+                candidate = json.loads(str(r.get("candidate_budget_json", "{}")))
+                effective_budget = json.loads(str(r.get("effective_check_budget_json", "{}")))
+                envelope_difference_count += int(any(int(candidate[name]) != int(effective_budget[name]) for name in candidate if name in effective_budget))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        margins: list[int] = []
+        for r in leaf_rows:
+            try:
+                predicates = json.loads(str(r.get("tree_path_predicates_json", "[]")))
+                margins.extend(abs(int(p["value_int"]) - int(p["threshold_int"])) for p in predicates if "value_int" in p and "threshold_int" in p)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
 
         # teacher match 统计
         match_vals = [r.get("teacher_selected_action_match") for r in leaf_rows]
@@ -170,9 +189,9 @@ def _build_leaf_summary_all(
 
         # q_regret 统计
         q_regrets = [
-            _safe_float(r.get("teacher_q_regret_selected"))
+            _safe_float(r.get("teacher_q_regret_raw_top1" if r.get("teacher_q_regret_raw_top1") is not None else "teacher_q_regret_selected"))
             for r in leaf_rows
-            if r.get("teacher_q_regret_selected") is not None
+            if r.get("teacher_q_regret_raw_top1") is not None or r.get("teacher_q_regret_selected") is not None
         ]
         q_regret_mean = float(np.mean(q_regrets)) if q_regrets else None
         q_regret_p95 = float(np.percentile(q_regrets, 95)) if q_regrets else None
@@ -212,6 +231,16 @@ def _build_leaf_summary_all(
             "raw_top1_action_id_mode": raw_top1_mode,
             "fallback_rate": fallback_rate,
             "raw_invalid_rate": raw_invalid_rate,
+            "noop_fallback_count": noop_fallback_count,
+            "noop_fallback_rate": noop_fallback_count / hit_count if hit_count else 0.0,
+            "raw_top1_invalid_count": raw_invalid_count,
+            "raw_top1_invalid_rate": raw_invalid_rate,
+            "no_valid_budget_action_count": no_valid_count,
+            "no_valid_budget_action_rate": no_valid_count / hit_count if hit_count else 0.0,
+            "integer_threshold_min_margin": min(margins) if margins else None,
+            "strict_cap_rejection_count": strict_cap_count,
+            "carry_over_safety_rejection_count": carry_over_count,
+            "candidate_envelope_difference_count": envelope_difference_count,
             "teacher_match_rate": match_rate,
             "raw_teacher_match_rate": raw_match_rate,
             "q_regret_selected_mean": q_regret_mean,
