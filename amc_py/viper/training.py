@@ -419,8 +419,21 @@ def run_viper_iterations(
                 tree_fallback_mode=tree_fallback_mode,
             )
             aggregate_samples.extend(new_samples)
-            aggregate_manifest.update(infer_behavior_provenance(aggregate_samples, {**aggregate_manifest, "dataset_contains_tree_behavior": True}))
+            # 初始 dataset 可能是 teacher-only。加入首批 tree behavior 样本后，
+            # 必须先把待校验 manifest 切换为当前真实 rollout mode；否则
+            # infer_behavior_provenance() 会把旧的 teacher_only 声明视为
+            # 与新样本冲突，并在 VIPER/DAgger 第 1 轮聚合后错误中止。
+            provenance_manifest = {
+                **aggregate_manifest,
+                "source_behavior_fallback_mode": tree_fallback_mode,
+                "tree_fallback_mode": tree_fallback_mode,
+                "dataset_contains_tree_behavior": True,
+            }
+            aggregate_manifest.update(
+                infer_behavior_provenance(aggregate_samples, provenance_manifest)
+            )
             aggregate_manifest["source_behavior_fallback_mode"] = tree_fallback_mode
+            aggregate_manifest["tree_fallback_mode"] = tree_fallback_mode
             aggregate_manifest["last_tree_iteration"] = iteration
     if not candidates:
         raise RuntimeError("训练结束后没有产生任何候选树")
