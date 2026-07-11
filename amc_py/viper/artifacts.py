@@ -19,13 +19,13 @@ from sklearn.tree import export_text
 from amc_py.viper.tree_policy import TreeBudgetPolicy
 from amc_py.viper.fixed_point import FixedPointConfig, fixed_point_config_hash, fixed_point_config_to_dict, fixed_point_config_from_dict
 from amc_py.viper.integer_tree import compile_sklearn_tree_to_integer, integer_tree_hash, load_integer_tree_json, save_integer_tree_json
-from amc_py.viper.schema import VIPER_ARTIFACT_SCHEMA_VERSION, resolve_deployment_semantics_version
+from amc_py.viper.schema import VIPER_ARTIFACT_SCHEMA_VERSION, VIPER_ARTIFACT_SCHEMA_VERSION_RANKED, INTEGER_TREE_SCHEMA_VERSION, INTEGER_TREE_SCHEMA_VERSION_RANKED, resolve_deployment_semantics_version
 from amc_py.viper.tree_policy import IntegerTreeBudgetPolicy
 
 
 def required_artifact_files(metadata: dict[str, object], *, require_integer_tree: bool = False) -> tuple[str, ...]:
     """返回由 schema 决定的 artifact 必需文件集合。"""
-    integer = require_integer_tree or metadata.get("artifact_schema_version") == VIPER_ARTIFACT_SCHEMA_VERSION
+    integer = require_integer_tree or metadata.get("artifact_schema_version") in {VIPER_ARTIFACT_SCHEMA_VERSION, VIPER_ARTIFACT_SCHEMA_VERSION_RANKED}
     common = ("model.joblib", "metadata.json", "feature_names.json", "action_definitions.json", "rules.txt")
     if integer:
         return common + ("fixed_point_config.json", "integer_tree.json", "leaf_rules_int.json", "leaf_rules_int.csv", "artifact_manifest.json")
@@ -34,6 +34,116 @@ def required_artifact_files(metadata: dict[str, object], *, require_integer_tree
 
 def _action_definitions_hash(action_definitions: list[dict[str, object]]) -> str:
     return hashlib.sha256(json.dumps(action_definitions, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def validate_integer_artifact_semantics(*, metadata: dict[str, object], manifest: dict[str, object], model, fixed_point_config: FixedPointConfig, feature_names: tuple[str, ...], action_definitions: list[dict[str, object]]) -> None:
+    """集中校验整数 artifact 的 metadata、manifest、tree 三方语义。
+
+    区分历史兼容与新 artifact 校验：
+    - 历史 v1 top1 artifact 允许缺失旧版本从未写出的 alias 字段；
+    - 其他新 artifact 必须要求关键字段全部显式存在。
+    """
+    artifact_schema = metadata.get("artifact_schema_version")
+    # 历史兼容判定：必须同时满足 v1 artifact + v1 tree + top1 fallback
+    legacy_v1_top1 = (
+        artifact_schema == VIPER_ARTIFACT_SCHEMA_VERSION
+        and model.schema_version == INTEGER_TREE_SCHEMA_VERSION
+        and metadata.get("fallback_mode") == "top1_or_noop"
+    )
+    fallback_mode = metadata.get("fallback_mode")
+    tree_fallback_mode = metadata.get("tree_fallback_mode")
+    if tree_fallback_mode is None and legacy_v1_top1:
+        tree_fallback_mode = fallback_mode
+
+    if fallback_mode not in {"top1_or_noop", "ranked_valid_or_none"}:
+        raise ValueError("integer artifact fallback_mode 非法")
+    if tree_fallback_mode != fallback_mode:
+        raise ValueError("metadata fallback_mode 与 tree_fallback_mode 不一致")
+
+    # 固定 schema 映射：ranked 只能使用 ranked artifact schema
+    if fallback_mode == "ranked_valid_or_none":
+        if artifact_schema != VIPER_ARTIFACT_SCHEMA_VERSION_RANKED:
+            raise ValueError("ranked_valid_or_none 必须使用 viper_integer_ranked_artifact_v2")
+        if model.schema_version != INTEGER_TREE_SCHEMA_VERSION_RANKED:
+            raise ValueError("ranked_valid_or_none 必须使用 integer_tree_ranked_v2")
+    else:
+        # top1_or_noop 只能使用 top1 artifact schema
+        if artifact_schema is not None and artifact_schema not in {VIPER_ARTIFACT_SCHEMA_VERSION}:
+            raise ValueError("top1_or_noop 不得使用 ranked artifact schema")
+        if model.schema_version != INTEGER_TREE_SCHEMA_VERSION:
+            raise ValueError("top1_or_noop 必须使用 integer_tree_v1")
+
+    # manifest 语义字段校验
+    if manifest.get("fallback_mode", fallback_mode) != fallback_mode:
+        raise ValueError("manifest fallback_mode 与 metadata 不一致")
+    if manifest.get("artifact_schema_version", artifact_schema) != artifact_schema:
+        raise ValueError("manifest artifact schema 与 metadata 不一致")
+    if manifest.get("integer_tree_schema_version", model.schema_version) != model.schema_version:
+        raise ValueError("manifest integer_tree_schema_version 不一致")
+
+    expected_policy_type = "integer_tree_ranked_valid_or_none" if fallback_mode == "ranked_valid_or_none" else "integer_tree_top1_or_noop"
+    runtime_policy_type = metadata.get("runtime_policy_type")
+    if runtime_policy_type is None:
+        if not legacy_v1_top1:
+            raise ValueError("integer artifact 缺少 runtime_policy_type")
+    elif runtime_policy_type != expected_policy_type:
+        raise ValueError("runtime_policy_type 与 fallback_mode 不一致")
+
+    # metadata 端 integer_tree_schema_version 校验
+    if metadata.get("integer_tree_schema_version", model.schema_version) != model.schema_version:
+        raise ValueError("metadata integer_tree_schema_version 不一致")
+
+    # deployment_semantics_version 校验
+    expected_version = resolve_deployment_semantics_version(
+        tree_state_encoding=str(metadata.get("tree_state_encoding", "legacy_float32")),
+        tree_fallback_mode=str(fallback_mode),
+        action_validation_mode=str(metadata.get("action_validation_mode", "legacy")),
+        strict_candidate_deploy_cap=bool(metadata.get("strict_candidate_deploy_cap", False)),
+        carry_over_aware_safety=bool(metadata.get("carry_over_aware_safety", False)),
+        lo_budget_overrun_guard_units=int(metadata.get("lo_budget_overrun_guard_units", 0)),
+    )
+    deployment_ver = metadata.get("deployment_semantics_version")
+    if deployment_ver is None:
+        if not legacy_v1_top1:
+            raise ValueError("integer artifact 缺少 deployment_semantics_version")
+    elif deployment_ver != expected_version:
+        raise ValueError("deployment_semantics_version 与部署字段不一致")
+
+    # 新 artifact 必须包含所有显式语义字段（legacy v1 提供宽松兼容）
+    required_semantic_keys = [
+        "action_validation_mode",
+        "strict_candidate_deploy_cap",
+        "carry_over_aware_safety",
+        "lo_budget_overrun_guard_units",
+        "budget_overrun_semantics",
+        "tree_state_encoding",
+        "tree_fallback_mode",
+        "deployment_semantics_version",
+    ]
+    for key in required_semantic_keys:
+        if key not in metadata:
+            raise ValueError(f"integer artifact 缺少关键部署语义字段: {key}")
+
+    # manifest 端额外语义字段校验（非 legacy 路径必须显式存在）
+    if not legacy_v1_top1:
+        manifest_required = [
+            "fallback_mode",
+            "tree_fallback_mode",
+            "runtime_policy_type",
+            "tree_state_encoding",
+            "deployment_semantics_version",
+            "artifact_schema_version",
+            "integer_tree_schema_version",
+            "integer_tree_hash",
+            "fixed_point_config_hash",
+            "action_definitions_hash",
+        ]
+        for key in manifest_required:
+            if key not in manifest:
+                raise ValueError(f"artifact manifest 缺少关键字段: {key}")
+
+    if int(model.state_dim) != len(feature_names) or int(model.action_dim) != len(action_definitions):
+        raise ValueError("integer tree feature/action dimension 不一致")
 
 
 def validate_artifact_directory(path: Path, *, require_integer_tree: bool = False) -> None:
@@ -178,12 +288,16 @@ def save_tree_policy_artifact(
     output_dir.mkdir(parents=True, exist_ok=True)
     use_integer_artifact = fixed_point_config is not None
     fixed_point_config = fixed_point_config or FixedPointConfig()
+    # 先确定 fallback_mode，再决定编译时是否生成 ranked 叶子
+    fallback_mode = metadata.get("fallback_mode", "ranked_valid_or_none") if use_integer_artifact else "top1_or_noop"
+    ranked = fallback_mode == "ranked_valid_or_none"
     integer_model = compile_sklearn_tree_to_integer(
         classifier,
         feature_names=feature_names,
         fixed_point_config_hash=fixed_point_config_hash(fixed_point_config),
         state_dim=len(feature_names),
         action_dim=len(action_definitions),
+        ranked=ranked,
     )
     save_integer_tree_json(integer_model, output_dir / "integer_tree.json")
     (output_dir / "fixed_point_config.json").write_text(json.dumps(fixed_point_config_to_dict(fixed_point_config), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -204,7 +318,7 @@ def save_tree_policy_artifact(
         )
         metadata = {
             **metadata,
-            "artifact_schema_version": VIPER_ARTIFACT_SCHEMA_VERSION,
+            "artifact_schema_version": VIPER_ARTIFACT_SCHEMA_VERSION_RANKED if fallback_mode == "ranked_valid_or_none" else VIPER_ARTIFACT_SCHEMA_VERSION,
             "fixed_point_config_hash": fixed_point_config_hash(fixed_point_config),
             "integer_tree_hash": integer_tree_hash(integer_model),
             "action_definitions_hash": _action_definitions_hash(action_definitions),
@@ -218,6 +332,8 @@ def save_tree_policy_artifact(
             "budget_overrun_semantics": metadata.get("budget_overrun_semantics", "strictly_greater_than_release_budget"),
             "tree_state_encoding": metadata.get("tree_state_encoding", "fixed_point_int"),
             "tree_fallback_mode": fallback_mode,
+            "runtime_policy_type": "integer_tree_ranked_valid_or_none" if fallback_mode == "ranked_valid_or_none" else "integer_tree_top1_or_noop",
+            "integer_tree_schema_version": integer_model.schema_version,
         }
     joblib.dump(classifier, output_dir / "model.joblib")
     with (output_dir / "metadata.json").open("w", encoding="utf-8") as handle:
@@ -264,7 +380,17 @@ def save_tree_policy_artifact(
         if node_id in int_leaves:
             leaf = int_leaves[node_id]
             path_text = " AND ".join(f"{item['feature_name']} {item['operator']} {item['threshold_int']}" for item in conditions) or "LEAF"
-            int_leaf_table.append({"leaf_id": leaf.node_id, "raw_action_id": leaf.raw_action_id, "path_conditions": conditions, "path_text": path_text, "depth": len(conditions), "sample_count": leaf.sample_count})
+            int_leaf_table.append({
+                "leaf_id": leaf.node_id,
+                "raw_action_id": leaf.raw_action_id,
+                "action_ranking_json": json.dumps(list(leaf.action_ranking), ensure_ascii=False),
+                "top_k_action_ids": list(leaf.action_ranking[:5]),
+                "full_action_counts_json": json.dumps(list(leaf.full_action_counts), ensure_ascii=False),
+                "path_conditions": conditions,
+                "path_text": path_text,
+                "depth": len(conditions),
+                "sample_count": leaf.sample_count,
+            })
             return
         node = int_nodes[node_id]
         for child, operator in ((node.left_child, "<="), (node.right_child, ">")):
@@ -272,13 +398,13 @@ def save_tree_policy_artifact(
     collect_int(integer_model.root_node_id, [])
     (output_dir / "leaf_rules_int.json").write_text(json.dumps(int_leaf_table, ensure_ascii=False, indent=2), encoding="utf-8")
     with (output_dir / "leaf_rules_int.csv").open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["leaf_id", "raw_action_id", "predicted_action_id", "leaf_n_node_samples", "sample_count", "depth", "leaf_impurity", "path_text"], extrasaction="ignore")
+        writer = csv.DictWriter(handle, fieldnames=["leaf_id", "raw_action_id", "action_ranking_json", "top_k_action_ids", "full_action_counts_json", "path_text", "depth", "sample_count"], extrasaction="ignore")
         writer.writeheader(); writer.writerows(int_leaf_table)
     manifest_files = []
-    for filename in ("metadata.json", "fixed_point_config.json", "integer_tree.json", "feature_names.json", "action_definitions.json", "leaf_rules_int.json", "leaf_rules_int.csv"):
+    for filename in ("model.joblib", "metadata.json", "fixed_point_config.json", "integer_tree.json", "feature_names.json", "action_definitions.json", "rules.txt", "leaf_rules_int.json", "leaf_rules_int.csv"):
         file_path = output_dir / filename
-        manifest_files.append({"relative_path": filename, "sha256": hashlib.sha256(file_path.read_bytes()).hexdigest(), "size_bytes": file_path.stat().st_size, "schema_version": VIPER_ARTIFACT_SCHEMA_VERSION})
-    manifest = {"artifact_manifest_schema_version": "artifact_manifest_v1", "artifact_schema_version": VIPER_ARTIFACT_SCHEMA_VERSION, "integer_tree_hash": integer_tree_hash(integer_model), "fixed_point_config_hash": fixed_point_config_hash(fixed_point_config), "files": manifest_files}
+        manifest_files.append({"relative_path": filename, "sha256": hashlib.sha256(file_path.read_bytes()).hexdigest(), "size_bytes": file_path.stat().st_size, "schema_version": metadata.get("artifact_schema_version", VIPER_ARTIFACT_SCHEMA_VERSION)})
+    manifest = {"artifact_manifest_schema_version": "artifact_manifest_v1", "artifact_schema_version": metadata.get("artifact_schema_version", VIPER_ARTIFACT_SCHEMA_VERSION), "fallback_mode": metadata.get("fallback_mode"), "tree_fallback_mode": metadata.get("tree_fallback_mode", metadata.get("fallback_mode")), "runtime_policy_type": metadata.get("runtime_policy_type"), "tree_state_encoding": metadata.get("tree_state_encoding"), "deployment_semantics_version": metadata.get("deployment_semantics_version"), "integer_tree_schema_version": integer_model.schema_version, "integer_tree_hash": integer_tree_hash(integer_model), "fixed_point_config_hash": fixed_point_config_hash(fixed_point_config), "action_definitions_hash": _action_definitions_hash(action_definitions), "files": manifest_files}
     (output_dir / "artifact_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
 
     return output_dir
@@ -294,7 +420,7 @@ def load_tree_policy_artifact(tree_artifact_dir: Path, *, require_integer_tree: 
         feature_names = tuple(json.load(handle))
     with (tree_artifact_dir / "action_definitions.json").open("r", encoding="utf-8") as handle:
         action_definitions = list(json.load(handle))
-    is_new_schema = metadata.get("artifact_schema_version") == VIPER_ARTIFACT_SCHEMA_VERSION
+    is_new_schema = metadata.get("artifact_schema_version") in {VIPER_ARTIFACT_SCHEMA_VERSION, VIPER_ARTIFACT_SCHEMA_VERSION_RANKED}
     if is_new_schema and not (tree_artifact_dir / "integer_tree.json").exists():
         raise ValueError("integer artifact metadata 与文件不一致")
     if is_new_schema and (tree_artifact_dir / "integer_tree.json").exists():
@@ -305,14 +431,31 @@ def load_tree_policy_artifact(tree_artifact_dir: Path, *, require_integer_tree: 
         if model.fixed_point_config_hash != fixed_point_config_hash(config):
             raise ValueError("integer tree fixed-point hash 不一致")
         manifest = json.loads((tree_artifact_dir / "artifact_manifest.json").read_text(encoding="utf-8"))
+        if manifest.get("fallback_mode", metadata.get("fallback_mode")) != metadata.get("fallback_mode"):
+            raise ValueError("artifact manifest 与 metadata fallback_mode 不一致")
+        if manifest.get("artifact_schema_version", metadata.get("artifact_schema_version")) != metadata.get("artifact_schema_version"):
+            raise ValueError("artifact manifest 与 metadata schema 不一致")
         if manifest.get("integer_tree_hash") != integer_tree_hash(model):
             raise ValueError("artifact integer tree hash 不一致")
+        if "fixed_point_config_hash" in manifest and manifest.get("fixed_point_config_hash") != fixed_point_config_hash(config):
+            raise ValueError("artifact manifest fixed-point hash 不一致")
         if int(model.state_dim) != len(feature_names) or int(model.action_dim) != len(action_definitions):
             raise ValueError("integer tree feature/action dimension 不一致")
-        if metadata.get("fallback_mode") != "top1_or_noop":
-            raise ValueError("integer artifact fallback_mode 必须是 top1_or_noop")
+        fallback_mode = metadata.get("fallback_mode")
+        if fallback_mode not in {"top1_or_noop", "ranked_valid_or_none"}:
+            raise ValueError("integer artifact fallback_mode 非法")
+        if fallback_mode == "ranked_valid_or_none" and model.schema_version != INTEGER_TREE_SCHEMA_VERSION_RANKED:
+            raise ValueError("ranked artifact 必须使用 integer_tree_ranked_v2")
+        if fallback_mode == "ranked_valid_or_none" and metadata.get("artifact_schema_version") != VIPER_ARTIFACT_SCHEMA_VERSION_RANKED:
+            raise ValueError("ranked artifact 必须使用 viper_integer_ranked_artifact_v2")
+        if fallback_mode == "ranked_valid_or_none" and any(len(leaf.action_ranking) != model.action_dim for leaf in model.leaves):
+            raise ValueError("ranked artifact leaf 缺少完整 action ranking")
         if metadata.get("action_definitions_hash") != _action_definitions_hash(action_definitions):
             raise ValueError("artifact action definitions hash 不一致")
+        if "action_definitions_hash" in manifest and manifest.get("action_definitions_hash") != _action_definitions_hash(action_definitions):
+            raise ValueError("artifact manifest action definitions hash 不一致")
+        if metadata.get("integer_tree_schema_version", model.schema_version) != model.schema_version:
+            raise ValueError("metadata 与 integer tree schema 不一致")
         # 新 integer artifact 必须包含所有关键部署语义字段，缺一不可。
         required_semantic_keys = (
             "action_validation_mode",
@@ -327,6 +470,14 @@ def load_tree_policy_artifact(tree_artifact_dir: Path, *, require_integer_tree: 
         for key in required_semantic_keys:
             if key not in metadata:
                 raise ValueError(f"integer artifact 缺少关键部署语义字段: {key}")
+        validate_integer_artifact_semantics(
+            metadata=metadata,
+            manifest=manifest,
+            model=model,
+            fixed_point_config=config,
+            feature_names=feature_names,
+            action_definitions=action_definitions,
+        )
         return IntegerTreeBudgetPolicy(model, metadata, feature_names, action_definitions, config)
     if require_integer_tree:
         raise ValueError("要求整数 tree artifact，但 artifact 缺少 integer_tree.json")

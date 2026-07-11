@@ -42,6 +42,7 @@ def collect_teacher_labeled_rollouts(
     behavior_policy: TreeBudgetPolicy | None = None,
     tree_iteration: int | None = None,
     fixed_point_config: FixedPointConfig = FixedPointConfig(),
+    tree_fallback_mode: str = "top1_or_noop",
 ) -> tuple[list[ViperSample], dict]:
     """采集 rollout 上的 teacher 标注样本。
 
@@ -50,10 +51,12 @@ def collect_teacher_labeled_rollouts(
     """
 
     samples: list[ViperSample] = []
+    if tree_fallback_mode not in {"top1_or_noop", "ranked_valid_or_none"}:
+        raise ValueError(f"不支持的 tree_fallback_mode: {tree_fallback_mode}")
     if behavior_policy is not None and isinstance(behavior_policy, IntegerTreeBudgetPolicy):
         if fixed_point_config_hash(behavior_policy.fixed_point_config) != fixed_point_config_hash(fixed_point_config):
             raise ValueError("behavior policy fixed-point config hash 与采集配置不一致")
-        if behavior_policy.metadata.get("fallback_mode") != "top1_or_noop":
+        if behavior_policy.metadata.get("fallback_mode") != tree_fallback_mode:
             raise ValueError("behavior policy fallback_mode 与新部署语义不一致")
     manifest_mask_reasons: Counter[str] = Counter()
     scenario_seeds: list[int] = []
@@ -130,7 +133,7 @@ def collect_teacher_labeled_rollouts(
                         None if q_diag["q_margin_second"] is None else float(q_diag["q_margin_second"])
                     ),
                     viper_weight=(None if q_diag["viper_weight"] is None else float(q_diag["viper_weight"])),
-                    behavior_policy=("oracle" if behavior_policy is None else str(behavior_policy.metadata.get("method"))),
+                    behavior_policy=("oracle" if behavior_policy is None else str(behavior_policy.metadata.get("fallback_mode", tree_fallback_mode))),
                     behavior_action_id=(None if behavior_action_id is None else int(behavior_action_id)),
                     tree_iteration=tree_iteration,
                     raw_budgets_json=json.dumps(dict(obs.raw_budgets), ensure_ascii=False, sort_keys=True),
@@ -186,12 +189,12 @@ def collect_teacher_labeled_rollouts(
         "feature_names": list(feature_names or ()),
         "action_definitions": action_definitions or [],
         "mask_reject_reasons": dict(manifest_mask_reasons),
-        "dataset_schema_version": "viper_fixed_v1",
+        "dataset_schema_version": "viper_fixed_ranked_v2" if tree_fallback_mode == "ranked_valid_or_none" else "viper_fixed_v1",
         "student_observation_encoding": "fixed_point_int",
         "fixed_point_config": {"scale": fixed_point_config.scale, "min_int": fixed_point_config.min_int, "max_int": fixed_point_config.max_int, "rounding_mode": fixed_point_config.rounding_mode, "input_min": fixed_point_config.input_min, "input_max": fixed_point_config.input_max, "schema_version": fixed_point_config.schema_version},
         "fixed_point_config_hash": fixed_point_config_hash(fixed_point_config),
         "teacher_observation_encoding": "float32",
-        "tree_fallback_mode": "top1_or_noop",
+        "tree_fallback_mode": tree_fallback_mode,
         "tree_state_encoding": "fixed_point_int",
         "action_validation_mode": experiment_config.action_validation_mode,
         "strict_candidate_deploy_cap": experiment_config.strict_candidate_deploy_cap,
@@ -200,11 +203,15 @@ def collect_teacher_labeled_rollouts(
         "budget_overrun_semantics": experiment_config.budget_overrun_semantics,
         "deployment_semantics_version": resolve_deployment_semantics_version(
             tree_state_encoding="fixed_point_int",
-            tree_fallback_mode="top1_or_noop",
+            tree_fallback_mode=tree_fallback_mode,
             action_validation_mode=experiment_config.action_validation_mode,
             strict_candidate_deploy_cap=experiment_config.strict_candidate_deploy_cap,
             carry_over_aware_safety=experiment_config.carry_over_aware_safety,
             lo_budget_overrun_guard_units=experiment_config.lo_budget_overrun_guard_units,
         ),
+        "source_behavior_fallback_mode": "teacher_only" if behavior_policy is None else tree_fallback_mode,
+        "behavior_rollout_modes": ["teacher_only" if behavior_policy is None else tree_fallback_mode],
+        "dataset_contains_tree_behavior": behavior_policy is not None,
+        "upgrade_history": [],
     }
     return samples, manifest

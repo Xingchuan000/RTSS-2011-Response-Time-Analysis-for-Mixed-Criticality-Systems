@@ -151,15 +151,24 @@ def _build_leaf_summary_all(
         sel_counter = Counter(s for s in sel_ids if s is not None)
         sel_mode = sel_counter.most_common(1)[0][0] if sel_counter else None
 
-        # fallback 统计
-        fallback_count = sum(int(bool(r.get("tree_fallback_used", False))) for r in leaf_rows)
+        # fallback 统计：统一以 selected_rank > 0 定义 ranked fallback
+        fallback_count = sum(int((r.get("tree_selected_rank") is not None) and int(r.get("tree_selected_rank", 0)) > 0) for r in leaf_rows)
         fallback_rate = fallback_count / hit_count if hit_count > 0 else 0.0
+        # fallback flag 不一致计数：tree_fallback_used 与 (selected_rank > 0) 理应完全一致
+        fallback_flag_inconsistency = sum(
+            int(bool(r.get("tree_fallback_used", False)) != bool((r.get("tree_selected_rank") is not None) and int(r.get("tree_selected_rank", 0)) > 0))
+            for r in leaf_rows
+        )
+        # selected rank 分布
+        rank_counter = Counter(str(r.get("tree_selected_rank")) for r in leaf_rows)
 
         # raw_invalid 统计
         raw_invalid_count = sum(int(bool(r.get("tree_raw_top1_invalid", False))) for r in leaf_rows)
         raw_invalid_rate = raw_invalid_count / hit_count if hit_count > 0 else 0.0
-        noop_fallback_count = sum(int(bool(r.get("tree_fallback_used", False) and r.get("tree_selected_action_id") is None)) for r in leaf_rows)
+        noop_fallback_count = sum(int(bool(r.get("tree_no_valid_action", False)) and r.get("tree_selected_action_id") is None) for r in leaf_rows)
         no_valid_count = sum(int(bool(r.get("tree_no_valid_action", False))) for r in leaf_rows)
+        selected_ranks = [int(r["tree_selected_rank"]) for r in leaf_rows if r.get("tree_selected_rank") is not None]
+        raw_reject_reasons = Counter(str(r.get("raw_action_reject_reason", r.get("raw_action_safety_reject_reason"))) for r in leaf_rows if r.get("tree_raw_top1_invalid") and (r.get("raw_action_reject_reason") or r.get("raw_action_safety_reject_reason")))
         strict_cap_count = sum(int("deploy_cap" in str(r.get("safety_reject_reason", ""))) for r in leaf_rows)
         carry_over_count = sum(int(str(r.get("safety_reject_reason", "")).startswith(("hi_lo_mode_violation", "hi_mode_switch_violation", "lo_mode_violation")) and r.get("active_release_budget_max_json") not in (None, "{}", "")) for r in leaf_rows)
         envelope_difference_count = 0
@@ -237,6 +246,15 @@ def _build_leaf_summary_all(
             "raw_top1_invalid_rate": raw_invalid_rate,
             "no_valid_budget_action_count": no_valid_count,
             "no_valid_budget_action_rate": no_valid_count / hit_count if hit_count else 0.0,
+            "ranked_fallback_count": fallback_count,
+            "ranked_fallback_rate": fallback_rate,
+            "selected_rank_mean": mean(selected_ranks) if selected_ranks else None,
+            "selected_rank_p95": float(np.percentile(selected_ranks, 95)) if selected_ranks else None,
+            "selected_rank_max": max(selected_ranks) if selected_ranks else None,
+            "selected_rank_distribution": json.dumps(dict(rank_counter), ensure_ascii=False, sort_keys=True),
+            "fallback_flag_inconsistency_count": fallback_flag_inconsistency,
+            "raw_reject_reason_counts": json.dumps(dict(raw_reject_reasons), ensure_ascii=False, sort_keys=True),
+            "selected_action_distribution": json.dumps(dict(sel_counter), ensure_ascii=False, sort_keys=True),
             "integer_threshold_min_margin": min(margins) if margins else None,
             "strict_cap_rejection_count": strict_cap_count,
             "carry_over_safety_rejection_count": carry_over_count,
@@ -505,6 +523,17 @@ def main() -> None:
     if not rows:
         print(f"未找到匹配模式的 JSONL 文件: {args.audit_dir}/{args.pattern}")
         return
+
+    modes = {str(row.get("tree_fallback_mode", "top1_or_noop")) for row in rows}
+    if len(modes) > 1:
+        raise ValueError(f"禁止混合汇总不同 fallback_mode: {sorted(modes)}")
+    fallback_mode = next(iter(modes), "top1_or_noop")
+    semantics = {str(row.get("deployment_semantics_version", "")) for row in rows}
+    if len(semantics) > 1:
+        raise ValueError(f"禁止混合汇总不同 deployment semantics: {sorted(semantics)}")
+    (args.output_dir / "summary_metadata.json").write_text(
+        json.dumps({"fallback_mode": fallback_mode, "deployment_semantics_version": next(iter(semantics), ""), "fallback_metric_semantics": "lower_rank_valid_selected" if fallback_mode == "ranked_valid_or_none" else "top1_or_noop"}, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     print(f"加载 {len(rows)} 条 audit 记录")
 

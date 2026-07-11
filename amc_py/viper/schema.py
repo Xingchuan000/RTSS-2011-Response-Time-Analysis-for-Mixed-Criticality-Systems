@@ -4,8 +4,12 @@
 """
 
 VIPER_DATASET_SCHEMA_VERSION = "viper_fixed_v1"
+VIPER_DATASET_SCHEMA_VERSION_RANKED = "viper_fixed_ranked_v2"
 VIPER_ARTIFACT_SCHEMA_VERSION = "viper_integer_artifact_v1"
 INTEGER_TREE_SCHEMA_VERSION = "integer_tree_v1"
+INTEGER_TREE_SCHEMA_VERSION_RANKED = "integer_tree_ranked_v2"
+VIPER_ARTIFACT_SCHEMA_VERSION_RANKED = "viper_integer_ranked_artifact_v2"
+DEPLOYMENT_SEMANTICS_VERSION_FIXED_RANKED = "fixed_ranked_deployment_v1"
 DEPLOYMENT_SEMANTICS_VERSION = "formal_deployment_v1"
 
 
@@ -20,9 +24,9 @@ def resolve_deployment_semantics_version(
 ) -> str:
     """统一判定部署语义版本字符串。
 
-    只有以下条件全部成立时才返回 "formal_deployment_v1"：
+    只有以下条件全部成立时才返回对应的正式部署语义版本：
     - tree_state_encoding == "fixed_point_int"
-    - tree_fallback_mode == "top1_or_noop"
+    - tree_fallback_mode 为 top1_or_noop 或 ranked_valid_or_none
     - action_validation_mode == "formal_v1"
     - strict_candidate_deploy_cap == True
     - carry_over_aware_safety == True
@@ -32,14 +36,17 @@ def resolve_deployment_semantics_version(
     """
     if (
         tree_state_encoding == "fixed_point_int"
-        and tree_fallback_mode == "top1_or_noop"
+        and tree_fallback_mode in {"top1_or_noop", "ranked_valid_or_none"}
         and action_validation_mode == "formal_v1"
         and strict_candidate_deploy_cap is True
         and carry_over_aware_safety is True
         and lo_budget_overrun_guard_units == 1
     ):
-        return "formal_deployment_v1"
+        return (
+            DEPLOYMENT_SEMANTICS_VERSION_FIXED_RANKED
+            if tree_fallback_mode == "ranked_valid_or_none"
+            else DEPLOYMENT_SEMANTICS_VERSION
+        )
     if action_validation_mode == "formal_v1" or strict_candidate_deploy_cap or carry_over_aware_safety:
         return "legacy_mixed_semantics_v1"
     return "legacy_baseline_v1"
-

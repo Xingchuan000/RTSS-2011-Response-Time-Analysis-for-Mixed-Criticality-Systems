@@ -49,6 +49,7 @@ from amc_py.rl.feature_config import FeatureConfig
 from amc_py.rl.reward_config import available_reward_modes
 from amc_py.rl.runtime_wrapper import AgentRuntimeConfig, simulate_ordered_taskset_with_agent
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationResult
+from amc_py.viper.schema import resolve_deployment_semantics_version
 
 
 NOOP_Q_DIAGNOSTIC_FIELDNAMES = [
@@ -444,6 +445,11 @@ def _eval_summary_fieldnames() -> list[str]:
             "tree_raw_top1_invalid_rate",
             "tree_fallback_count",
             "tree_fallback_rate",
+            "tree_ranked_fallback_count",
+            "tree_ranked_fallback_rate",
+            "tree_selected_rank_mean",
+            "tree_selected_rank_p95",
+            "tree_selected_rank_max",
             "tree_no_valid_action_count",
             "tree_no_valid_action_rate",
             "tree_selected_action_count",
@@ -452,20 +458,29 @@ def _eval_summary_fieldnames() -> list[str]:
             "tree_raw_action_match_teacher_rate",
             "tree_q_regret_mean",
             "tree_q_regret_p95",
+            "tree_selected_q_regret_mean",
+            "tree_selected_q_regret_p95",
             "tree_noop_fallback_count",
             "tree_noop_fallback_rate",
             "tree_runtime_policy_type",
             "tree_state_encoding",
+            "artifact_tree_state_encoding",
+            "runtime_expected_tree_state_encoding",
             "tree_fixed_point_scale",
             "tree_fixed_point_rounding",
             "tree_fixed_point_config_hash",
             "tree_fallback_mode",
+            "artifact_tree_fallback_mode",
+            "runtime_expected_tree_fallback_mode",
             "action_validation_mode",
             "strict_candidate_deploy_cap",
             "carry_over_aware_safety",
             "lo_budget_overrun_guard_units",
             "budget_overrun_semantics",
             "deployment_semantics_version",
+            "artifact_deployment_semantics_version",
+            "runtime_expected_deployment_semantics_version",
+            "semantic_validation_passed",
             "integer_tree_hash",
             "artifact_schema_version",
             "deploy_cap_candidate_violation_count",
@@ -478,6 +493,46 @@ def _eval_summary_fieldnames() -> list[str]:
         ]
     )
     return fieldnames
+
+
+def validate_hout_tree_semantics(
+    metadata: dict[str, object],
+    *,
+    expected_tree_state_encoding: str,
+    expected_tree_fallback_mode: str,
+    expected_deployment_semantics_version: str,
+    expected_action_validation_mode: str,
+    expected_strict_candidate_deploy_cap: bool,
+    expected_carry_over_aware_safety: bool,
+    expected_lo_budget_overrun_guard_units: int,
+) -> None:
+    """严格校验 integer artifact 与本次 HOUT 的全部部署语义。
+
+    此函数刻意只做数据比较，不加载文件也不执行 runtime，因而 CLI 主路径与
+    单元测试共享同一 fail-closed 规则。缺字段、类型不同或值不同都不能继续
+    HOUT，避免把不同部署语义的结果混入同一实验结论。
+    """
+    expected_values = {
+        "tree_state_encoding": expected_tree_state_encoding,
+        "tree_fallback_mode": expected_tree_fallback_mode,
+        "deployment_semantics_version": expected_deployment_semantics_version,
+        "action_validation_mode": expected_action_validation_mode,
+        "strict_candidate_deploy_cap": expected_strict_candidate_deploy_cap,
+        "carry_over_aware_safety": expected_carry_over_aware_safety,
+        "lo_budget_overrun_guard_units": expected_lo_budget_overrun_guard_units,
+    }
+    # 该字段是部署 safety 的组成部分，虽不由 CLI profile 单独覆盖，仍必须
+    # 在 artifact 中显式存在，防止旧/不完整 artifact 被误用于正式 HOUT。
+    required_keys = (*expected_values, "budget_overrun_semantics")
+    for key in required_keys:
+        if key not in metadata:
+            raise ValueError(f"integer artifact 缺少关键部署语义字段: {key}")
+    for key, expected in expected_values.items():
+        if metadata[key] != expected:
+            raise ValueError(
+                f"integer artifact 与当前 HOUT 部署语义不一致: "
+                f"{key} (artifact={metadata[key]}, expected={expected})"
+            )
 
 
 def _empty_tree_diagnostics_row() -> dict[str, float | int | str | None]:
@@ -495,6 +550,11 @@ def _empty_tree_diagnostics_row() -> dict[str, float | int | str | None]:
         "tree_raw_top1_invalid_rate": None,
         "tree_fallback_count": None,
         "tree_fallback_rate": None,
+        "tree_ranked_fallback_count": None,
+        "tree_ranked_fallback_rate": None,
+        "tree_selected_rank_mean": None,
+        "tree_selected_rank_p95": None,
+        "tree_selected_rank_max": None,
         "tree_no_valid_action_count": None,
         "tree_no_valid_action_rate": None,
         "tree_selected_action_count": None,
@@ -503,6 +563,10 @@ def _empty_tree_diagnostics_row() -> dict[str, float | int | str | None]:
         "tree_raw_action_match_teacher_rate": None,
         "tree_q_regret_mean": None,
         "tree_q_regret_p95": None,
+        "tree_selected_q_regret_mean": None,
+        "tree_selected_q_regret_p95": None,
+        "artifact_tree_state_encoding": None,
+        "runtime_expected_tree_state_encoding": None,
     }
 
 
@@ -1156,6 +1220,9 @@ def _evaluate_tree_once(
     leaf_audit_state_mode: str = "split",
     leaf_audit_top_k_actions: int = 5,
     require_integer_tree_artifact: bool = False,
+    expected_tree_state_encoding: str | None = None,
+    expected_tree_fallback_mode: str | None = None,
+    expected_deployment_semantics_version: str | None = None,
 ) -> tuple[dict[str, int | float | str | bool | None], SimulationResult, list[dict[str, object]]]:
     """在正式 HOUT 入口中执行 tree policy。"""
 
@@ -1165,30 +1232,42 @@ def _evaluate_tree_once(
     tree_policy = load_tree_policy_artifact(tree_artifact_dir, require_integer_tree=require_integer_tree_artifact, allow_legacy_fallback=not require_integer_tree_artifact)
     if require_integer_tree_artifact:
         policy_metadata = tree_policy.metadata
-        # 新 integer artifact 的 HOUT: 字段缺失必须报错，值不一致必须报错。
-        required_semantic_keys = (
-            "action_validation_mode",
-            "strict_candidate_deploy_cap",
-            "carry_over_aware_safety",
-            "lo_budget_overrun_guard_units",
-            "budget_overrun_semantics",
-            "tree_state_encoding",
-            "tree_fallback_mode",
-            "deployment_semantics_version",
+        validate_hout_tree_semantics(
+            policy_metadata,
+            expected_tree_state_encoding=(
+                expected_tree_state_encoding
+                if expected_tree_state_encoding is not None
+                else getattr(experiment_config, "tree_state_encoding", "fixed_point_int")
+            ),
+            expected_tree_fallback_mode=(
+                expected_tree_fallback_mode
+                if expected_tree_fallback_mode is not None
+                else getattr(experiment_config, "tree_fallback_mode", "top1_or_noop")
+            ),
+            expected_deployment_semantics_version=(
+                expected_deployment_semantics_version
+                if expected_deployment_semantics_version is not None
+                else getattr(experiment_config, "deployment_semantics_version", "")
+            ),
+            expected_action_validation_mode=getattr(experiment_config, "action_validation_mode", "legacy"),
+            expected_strict_candidate_deploy_cap=getattr(experiment_config, "strict_candidate_deploy_cap", False),
+            expected_carry_over_aware_safety=getattr(experiment_config, "carry_over_aware_safety", False),
+            expected_lo_budget_overrun_guard_units=getattr(experiment_config, "lo_budget_overrun_guard_units", 0),
         )
-        for key in required_semantic_keys:
-            if key not in policy_metadata:
-                raise ValueError(f"integer artifact 缺少关键部署语义字段: {key}")
-        semantic_pairs = {
-            "action_validation_mode": getattr(experiment_config, "action_validation_mode", "legacy"),
-            "strict_candidate_deploy_cap": getattr(experiment_config, "strict_candidate_deploy_cap", False),
-            "carry_over_aware_safety": getattr(experiment_config, "carry_over_aware_safety", False),
-            "lo_budget_overrun_guard_units": getattr(experiment_config, "lo_budget_overrun_guard_units", 0),
-            "budget_overrun_semantics": getattr(experiment_config, "budget_overrun_semantics", "strictly_greater_than_release_budget"),
-        }
-        for key, expected in semantic_pairs.items():
-            if policy_metadata[key] != expected:
-                raise ValueError(f"integer artifact 与当前 HOUT 部署语义不一致: {key} (artifact={policy_metadata[key]}, expected={expected})")
+        # budget overrun 语义由 runtime config 决定，不是 profile 独立参数；仍需
+        # 与 artifact 严格相等，避免在其他字段一致时混用不同 budget 判定口径。
+        expected_budget_overrun_semantics = getattr(
+            experiment_config,
+            "budget_overrun_semantics",
+            "strictly_greater_than_release_budget",
+        )
+        if policy_metadata["budget_overrun_semantics"] != expected_budget_overrun_semantics:
+            raise ValueError(
+                "integer artifact 与当前 HOUT 部署语义不一致: "
+                "budget_overrun_semantics "
+                f"(artifact={policy_metadata['budget_overrun_semantics']}, "
+                f"expected={expected_budget_overrun_semantics})"
+            )
     teacher = DqnBudgetAgent.load(teacher_model_path) if teacher_model_path is not None else None
     tree_metrics, runtime_result, action_log = evaluate_tree_policy_once(
         tree_policy=tree_policy,
@@ -1242,16 +1321,25 @@ def _evaluate_tree_once(
         "tree_min_samples_leaf": metadata.get("min_samples_leaf"),
         "tree_runtime_policy_type": type(tree_policy).__name__,
         "tree_state_encoding": "fixed_point_int" if type(tree_policy).__name__ == "IntegerTreeBudgetPolicy" else "legacy_float32",
+        # 分别记录 artifact 声明与本次 CLI/profile 展开的期望值，不能用 policy
+        # 类型诊断字段 tree_state_encoding 代替，否则无法复原 HOUT 语义来源。
+        "artifact_tree_state_encoding": metadata.get("tree_state_encoding"),
+        "runtime_expected_tree_state_encoding": expected_tree_state_encoding,
         "tree_fixed_point_scale": getattr(getattr(tree_policy, "fixed_point_config", None), "scale", None),
         "tree_fixed_point_rounding": getattr(getattr(tree_policy, "fixed_point_config", None), "rounding_mode", None),
         "tree_fixed_point_config_hash": metadata.get("fixed_point_config_hash"),
         "tree_fallback_mode": metadata.get("fallback_mode", "ranked_valid_or_none"),
+        "artifact_tree_fallback_mode": metadata.get("fallback_mode"),
+        "runtime_expected_tree_fallback_mode": expected_tree_fallback_mode,
         "action_validation_mode": getattr(experiment_config, "action_validation_mode", "legacy"),
         "strict_candidate_deploy_cap": getattr(experiment_config, "strict_candidate_deploy_cap", False),
         "carry_over_aware_safety": getattr(experiment_config, "carry_over_aware_safety", False),
         "lo_budget_overrun_guard_units": getattr(experiment_config, "lo_budget_overrun_guard_units", 0),
         "budget_overrun_semantics": getattr(experiment_config, "budget_overrun_semantics", "strictly_greater_than_release_budget"),
         "deployment_semantics_version": metadata.get("deployment_semantics_version"),
+        "artifact_deployment_semantics_version": metadata.get("deployment_semantics_version"),
+        "runtime_expected_deployment_semantics_version": expected_deployment_semantics_version,
+        "semantic_validation_passed": True,
         "integer_tree_hash": metadata.get("integer_tree_hash"),
         "artifact_schema_version": metadata.get("artifact_schema_version"),
     }
@@ -2029,6 +2117,9 @@ def _evaluate_enabled_methods_for_seed(
     tree_audit_method_set: set[str] | None = None,
     tree_audit_state_mode: str = "split",
     tree_audit_top_k_actions: int = 5,
+    expected_tree_state_encoding: str | None = None,
+    expected_tree_fallback_mode: str | None = None,
+    expected_deployment_semantics_version: str | None = None,
 ) -> tuple[list[dict[str, int | float | str | bool]], list[dict[str, object]]]:
     """评估单个 seed 下的所有启用方法。
 
@@ -2586,6 +2677,9 @@ def _evaluate_enabled_methods_for_seed(
             leaf_audit_state_mode=tree_audit_state_mode,
             leaf_audit_top_k_actions=tree_audit_top_k_actions,
             require_integer_tree_artifact=bool(getattr(experiment_config, "require_integer_tree_artifact", False)),
+            expected_tree_state_encoding=expected_tree_state_encoding,
+            expected_tree_fallback_mode=expected_tree_fallback_mode,
+            expected_deployment_semantics_version=expected_deployment_semantics_version,
         )
         rows.append(tree_row)
         deadline_miss_details.extend(
@@ -2724,6 +2818,9 @@ def _evaluate_seed_worker(
         tree_audit_method_set,
         tree_audit_state_mode,
         tree_audit_top_k_actions,
+        expected_tree_state_encoding,
+        expected_tree_fallback_mode,
+        expected_deployment_semantics_version,
     ) = args_tuple
     return _evaluate_enabled_methods_for_seed(
         seed=seed,
@@ -2773,6 +2870,9 @@ def _evaluate_seed_worker(
         tree_audit_method_set=tree_audit_method_set,
         tree_audit_state_mode=tree_audit_state_mode,
         tree_audit_top_k_actions=tree_audit_top_k_actions,
+        expected_tree_state_encoding=expected_tree_state_encoding,
+        expected_tree_fallback_mode=expected_tree_fallback_mode,
+        expected_deployment_semantics_version=expected_deployment_semantics_version,
     )
 
 
@@ -2937,6 +3037,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-legacy-dataset-quantization", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--require-integer-tree-artifact", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--formal-deployment-v1", action="store_true")
+    parser.add_argument("--fixed-ranked-deployment-v1", action="store_true")
     # automotive workload 允许从 CLI 显式切换 runnable 数量与 workload 语义模式，
     # 保证评估入口与训练入口能使用相同的 automotive 配置。
     parser.add_argument("--automotive-num-runnables", type=int, choices=[150, 250], default=150)
@@ -3003,6 +3104,16 @@ def main() -> None:
     """运行正式 DQN 评估，并输出统一 CSV。"""
 
     args = build_parser().parse_args()
+    if args.formal_deployment_v1 and args.fixed_ranked_deployment_v1:
+        raise ValueError("两个 deployment profile 不能同时使用")
+    if args.fixed_ranked_deployment_v1:
+        args.tree_state_encoding = "fixed_point_int"
+        args.tree_fallback_mode = "ranked_valid_or_none"
+        args.action_validation_mode = "formal_v1"
+        args.strict_candidate_deploy_cap = True
+        args.carry_over_aware_safety = True
+        args.lo_budget_overrun_guard_units = 1
+        args.require_integer_tree_artifact = True
     if args.formal_deployment_v1:
         args.tree_state_encoding = "fixed_point_int"
         args.tree_fallback_mode = "top1_or_noop"
@@ -3107,8 +3218,6 @@ def main() -> None:
         lo_budget_overrun_guard_units=args.lo_budget_overrun_guard_units,
         require_integer_tree_artifact=args.require_integer_tree_artifact,
     )
-    if args.tree_state_encoding == "fixed_point_int" and args.tree_fallback_mode != "top1_or_noop":
-        raise ValueError("fixed_point_int 必须使用 top1_or_noop")
     if args.action_validation_mode == "formal_v1" and args.action_space != "single":
         raise ValueError("formal_v1 只允许 single action space")
     effective_num_tasks = (
@@ -3189,6 +3298,16 @@ def main() -> None:
                 tree_audit_method_set=tree_audit_method_set,
                 tree_audit_state_mode=args.tree_audit_state_mode,
                 tree_audit_top_k_actions=args.tree_audit_top_k_actions,
+                expected_tree_state_encoding=args.tree_state_encoding,
+                expected_tree_fallback_mode=args.tree_fallback_mode,
+                expected_deployment_semantics_version=resolve_deployment_semantics_version(
+                    tree_state_encoding=args.tree_state_encoding,
+                    tree_fallback_mode=args.tree_fallback_mode,
+                    action_validation_mode=args.action_validation_mode,
+                    strict_candidate_deploy_cap=args.strict_candidate_deploy_cap,
+                    carry_over_aware_safety=args.carry_over_aware_safety,
+                    lo_budget_overrun_guard_units=args.lo_budget_overrun_guard_units,
+                ),
             )
             for seed in seeds
         ]
@@ -3243,6 +3362,16 @@ def main() -> None:
                 tree_audit_method_set,
                 args.tree_audit_state_mode,
                 args.tree_audit_top_k_actions,
+                args.tree_state_encoding,
+                args.tree_fallback_mode,
+                resolve_deployment_semantics_version(
+                    tree_state_encoding=args.tree_state_encoding,
+                    tree_fallback_mode=args.tree_fallback_mode,
+                    action_validation_mode=args.action_validation_mode,
+                    strict_candidate_deploy_cap=args.strict_candidate_deploy_cap,
+                    carry_over_aware_safety=args.carry_over_aware_safety,
+                    lo_budget_overrun_guard_units=args.lo_budget_overrun_guard_units,
+                ),
             )
             for seed in seeds
         ]

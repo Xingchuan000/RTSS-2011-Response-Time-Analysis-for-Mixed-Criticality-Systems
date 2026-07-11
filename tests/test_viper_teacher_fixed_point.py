@@ -91,8 +91,8 @@ def _regenerate_manifest(artifact_dir: Path) -> None:
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def test_formal_artifact_with_modified_guard_units_loads(tmp_path: Path):
-    """手动修改 guard_units 后 artifact 应能正常加载（字段存在即可通过校验）。"""
+def test_formal_artifact_with_modified_guard_units_is_rejected(tmp_path: Path):
+    """guard_units 改变后 deployment semantics version 不再匹配，必须 fail-closed。"""
     x = np.asarray([[0.0], [1.0], [2.0]], dtype=np.float32)
     y = np.asarray([0, 1, 2], dtype=np.int64)
     clf = DecisionTreeClassifier(max_depth=2, random_state=0)
@@ -133,8 +133,8 @@ def test_formal_artifact_with_modified_guard_units_loads(tmp_path: Path):
         json.dump(saved, f)
     _regenerate_manifest(tmp_path)
 
-    policy = load_tree_policy_artifact(tmp_path, require_integer_tree=True)
-    assert policy.metadata["lo_budget_overrun_guard_units"] == 99
+    with pytest.raises(ValueError, match="deployment_semantics_version"):
+        load_tree_policy_artifact(tmp_path, require_integer_tree=True)
 
 
 def test_legacy_config_resolves_to_legacy_not_formal():

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 from amc_py.viper.fixed_point import FixedPointConfig, fixed_point_config_from_dict, fixed_point_config_hash, quantize_state_vector
-from amc_py.viper.schema import VIPER_DATASET_SCHEMA_VERSION
+from amc_py.viper.schema import VIPER_DATASET_SCHEMA_VERSION, VIPER_DATASET_SCHEMA_VERSION_RANKED
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +112,7 @@ def write_viper_dataset(output_dir: Path, samples: Iterable[ViperSample], manife
 
     output_dir.mkdir(parents=True, exist_ok=True)
     sample_list = list(samples)
-    if manifest.get("dataset_schema_version") == VIPER_DATASET_SCHEMA_VERSION:
+    if manifest.get("dataset_schema_version") in {VIPER_DATASET_SCHEMA_VERSION, VIPER_DATASET_SCHEMA_VERSION_RANKED}:
         config = fixed_point_config_from_dict(manifest["fixed_point_config"])
         if any(sample.student_state_vector_int is None for sample in sample_list):
             raise ValueError("新 schema dataset 不允许缺少 student_state_vector_int")
@@ -123,6 +123,71 @@ def write_viper_dataset(output_dir: Path, samples: Iterable[ViperSample], manife
             handle.write(json.dumps(_sample_to_json_dict(sample), ensure_ascii=False) + "\n")
     with (output_dir / "manifest.json").open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, ensure_ascii=False, indent=2)
+
+
+def infer_behavior_provenance(samples: Sequence[ViperSample], manifest: dict) -> dict[str, object]:
+    """从样本实际字段推导 behavior 来源，防止 manifest 静默重标。
+
+    teacher/oracle 样本不得把一个单一 tree behavior dataset 推成 mixed。
+    top1 与 ranked 同时存在的 aggregate 直接失败，除非未来新增显式的迁移工具。
+    """
+    # 分别统计 teacher-only 样本和 tree behavior 模式，避免 teacher 样本污染 mode 集合
+    has_teacher_only_samples = False
+    tree_behavior_modes: set[str] = set()
+    for sample in samples:
+        if sample.tree_iteration is None and sample.behavior_policy == "oracle":
+            has_teacher_only_samples = True
+        elif sample.behavior_policy in {"top1_or_noop", "integer_tree_top1_or_noop"}:
+            tree_behavior_modes.add("top1_or_noop")
+        elif sample.behavior_policy in {"ranked_valid_or_none", "integer_tree_ranked_valid_or_none"}:
+            tree_behavior_modes.add("ranked_valid_or_none")
+        elif sample.tree_iteration is not None:
+            tree_behavior_modes.add(str(manifest.get("source_behavior_fallback_mode", "mixed")))
+        else:
+            tree_behavior_modes.add("mixed")
+
+    # 固定 provenance 推导规则：teacher 样本不参与 mode 集合合并
+    if not tree_behavior_modes:
+        # 无任何 tree behavior 样本，全部为 teacher-only
+        source = "teacher_only"
+    elif {"top1_or_noop", "ranked_valid_or_none"} <= tree_behavior_modes:
+        # top1 与 ranked 同时存在：直接失败，禁止训练
+        raise ValueError(
+            "top1 与 ranked tree behavior 同时存在于 aggregate 中，当前禁止训练。"
+            " 如需迁移请使用独立的重新采集流程，不得静默混合。"
+        )
+    elif "mixed" in tree_behavior_modes or len(tree_behavior_modes) > 1:
+        # 包含未知 behavior 或多种未知组合
+        source = "mixed"
+    else:
+        # 单一 tree behavior 模式：保持其实际模式，不因为存在 teacher 样本而改为 mixed
+        source = next(iter(tree_behavior_modes))
+
+    # manifest 与样本交叉校验：声称的 mode 必须与实际匹配
+    manifest_fallback = manifest.get("source_behavior_fallback_mode", manifest.get("tree_fallback_mode"))
+    if manifest_fallback is not None:
+        manifest_fallback = str(manifest_fallback)
+        if manifest_fallback == "teacher_only" and tree_behavior_modes:
+            raise ValueError("manifest 声明 teacher-only，但实际存在 tree behavior 样本")
+        if manifest_fallback == "top1_or_noop" and "ranked_valid_or_none" in tree_behavior_modes:
+            raise ValueError("manifest 声明 top1，但实际样本包含 ranked tree behavior")
+        if manifest_fallback == "ranked_valid_or_none" and "top1_or_noop" in tree_behavior_modes:
+            raise ValueError("manifest 声明 ranked，但实际样本包含 top1 tree behavior")
+
+    declared_tree = bool(manifest.get("dataset_contains_tree_behavior", False))
+    if declared_tree and source == "teacher_only":
+        raise ValueError("manifest 声明存在 tree behavior，但样本实际只能判定为 teacher_only")
+
+    return {
+        "source_behavior_fallback_mode": source,
+        "behavior_rollout_modes": (
+            sorted({"teacher_only"} if source == "teacher_only" and has_teacher_only_samples else (tree_behavior_modes | ({"teacher_only"} if has_teacher_only_samples else set())))
+        ),
+        "dataset_contains_tree_behavior": source not in {"teacher_only"},
+        "sample_count": len(samples),
+        "valid_labeled_sample_count": sum(int(s.teacher_action_id is not None) for s in samples),
+        "no_valid_action_count": sum(int(s.behavior_action_id is None and s.tree_iteration is not None) for s in samples),
+    }
 
 
 def read_viper_dataset(dataset_dir: Path) -> tuple[list[ViperSample], dict]:
@@ -137,7 +202,10 @@ def read_viper_dataset(dataset_dir: Path) -> tuple[list[ViperSample], dict]:
             samples.append(_sample_from_json_dict(json.loads(text)))
     with (dataset_dir / "manifest.json").open("r", encoding="utf-8") as handle:
         manifest = json.load(handle)
-    if manifest.get("dataset_schema_version") == VIPER_DATASET_SCHEMA_VERSION:
+    if manifest.get("dataset_schema_version") in {VIPER_DATASET_SCHEMA_VERSION, VIPER_DATASET_SCHEMA_VERSION_RANKED}:
+        # v1 和 ranked v2 共享同一套 fixed-point hash / 维度 / 整数范围校验
+        if "fixed_point_config" not in manifest:
+            raise ValueError("新 schema dataset manifest 缺少 fixed_point_config")
         config = fixed_point_config_from_dict(manifest["fixed_point_config"])
         if manifest.get("fixed_point_config_hash") != fixed_point_config_hash(config):
             raise ValueError("dataset manifest fixed-point config hash 不一致")
@@ -146,6 +214,12 @@ def read_viper_dataset(dataset_dir: Path) -> tuple[list[ViperSample], dict]:
                 raise ValueError("新 schema 样本不得缺少 student_state_vector_int")
             if any(value < config.min_int or value > config.max_int for value in sample.student_state_vector_int):
                 raise ValueError("dataset student_state_vector_int 超出 fixed-point 配置范围")
+        # ranked schema 额外要求 provenance 字段存在
+        if manifest.get("dataset_schema_version") == VIPER_DATASET_SCHEMA_VERSION_RANKED:
+            if "source_behavior_fallback_mode" not in manifest:
+                raise ValueError("viper_fixed_ranked_v2 dataset manifest 缺少 source_behavior_fallback_mode")
+            if "tree_fallback_mode" not in manifest:
+                raise ValueError("viper_fixed_ranked_v2 dataset manifest 缺少 tree_fallback_mode")
     return samples, manifest
 
 

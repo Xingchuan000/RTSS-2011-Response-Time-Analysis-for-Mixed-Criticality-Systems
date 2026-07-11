@@ -53,6 +53,92 @@ def test_evaluate_fieldnames_include_degradation_metrics() -> None:
     assert "tree_selected_action_match_teacher_count" in fields
     assert "tree_selected_action_match_teacher_rate" in fields
     assert "tree_raw_action_match_teacher_rate" in fields
+    assert "artifact_tree_state_encoding" in fields
+    assert "runtime_expected_tree_state_encoding" in fields
+
+
+def _fixed_ranked_semantics() -> dict[str, object]:
+    """返回正式 fixed-ranked HOUT 所需的完整 artifact 语义字段。"""
+    return {
+        "tree_state_encoding": "fixed_point_int",
+        "tree_fallback_mode": "ranked_valid_or_none",
+        "deployment_semantics_version": "fixed_ranked_deployment_v1",
+        "action_validation_mode": "formal_v1",
+        "strict_candidate_deploy_cap": True,
+        "carry_over_aware_safety": True,
+        "lo_budget_overrun_guard_units": 1,
+        "budget_overrun_semantics": "strictly_greater_than_release_budget",
+    }
+
+
+def _validate_fixed_ranked_semantics(metadata: dict[str, object]) -> None:
+    """测试必须调用生产校验函数，避免复制另一套判断逻辑。"""
+    from scripts.evaluate_dqn_amc import validate_hout_tree_semantics
+
+    validate_hout_tree_semantics(
+        metadata,
+        expected_tree_state_encoding="fixed_point_int",
+        expected_tree_fallback_mode="ranked_valid_or_none",
+        expected_deployment_semantics_version="fixed_ranked_deployment_v1",
+        expected_action_validation_mode="formal_v1",
+        expected_strict_candidate_deploy_cap=True,
+        expected_carry_over_aware_safety=True,
+        expected_lo_budget_overrun_guard_units=1,
+    )
+
+
+def test_hout_rejects_fallback_mode_mismatch() -> None:
+    metadata = _fixed_ranked_semantics()
+    metadata["tree_fallback_mode"] = "top1_or_noop"
+    with pytest.raises(ValueError, match="tree_fallback_mode"):
+        _validate_fixed_ranked_semantics(metadata)
+
+
+def test_hout_rejects_state_encoding_mismatch() -> None:
+    metadata = _fixed_ranked_semantics()
+    metadata["tree_state_encoding"] = "legacy_float32"
+    with pytest.raises(ValueError, match="tree_state_encoding"):
+        _validate_fixed_ranked_semantics(metadata)
+
+
+def test_hout_rejects_deployment_version_mismatch() -> None:
+    metadata = _fixed_ranked_semantics()
+    metadata["deployment_semantics_version"] = "formal_deployment_v1"
+    with pytest.raises(ValueError, match="deployment_semantics_version"):
+        _validate_fixed_ranked_semantics(metadata)
+
+
+def test_hout_rejects_missing_semantic_field() -> None:
+    metadata = _fixed_ranked_semantics()
+    del metadata["tree_state_encoding"]
+    with pytest.raises(ValueError, match="tree_state_encoding"):
+        _validate_fixed_ranked_semantics(metadata)
+
+
+def test_hout_writes_artifact_and_runtime_state_encoding() -> None:
+    """HOUT CSV header 必须保留 state encoding 的 artifact/runtime 双侧来源。"""
+    from scripts.evaluate_dqn_amc import _eval_summary_fieldnames
+
+    fields = _eval_summary_fieldnames()
+    assert "artifact_tree_state_encoding" in fields
+    assert "runtime_expected_tree_state_encoding" in fields
+
+
+def test_hout_writes_both_fallback_semantics() -> None:
+    from scripts.evaluate_dqn_amc import _eval_summary_fieldnames
+
+    fields = set(_eval_summary_fieldnames())
+    assert {"artifact_tree_fallback_mode", "runtime_expected_tree_fallback_mode"}.issubset(fields)
+
+
+def test_hout_writes_both_deployment_semantics() -> None:
+    from scripts.evaluate_dqn_amc import _eval_summary_fieldnames
+
+    fields = set(_eval_summary_fieldnames())
+    assert {
+        "artifact_deployment_semantics_version",
+        "runtime_expected_deployment_semantics_version",
+    }.issubset(fields)
 
 
 def test_formal_evaluate_runtime_configs_disable_trace_and_record_dropped_lo_releases() -> None:

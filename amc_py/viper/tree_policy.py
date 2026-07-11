@@ -210,7 +210,7 @@ class TreeBudgetPolicy:
 
 @dataclass(slots=True)
 class IntegerTreeBudgetPolicy:
-    """新 artifact 的部署策略：唯一 raw top-1，非法时固定 noop。"""
+    """纯整数部署策略，按 artifact 声明的 fallback 语义执行。"""
 
     model: IntegerTreeModel
     metadata: dict[str, object]
@@ -221,12 +221,16 @@ class IntegerTreeBudgetPolicy:
     def predict_action_ranking(self, state_vector: tuple[float, ...]) -> tuple[int, ...]:
         """兼容旧离线调用；部署决策本身只使用第一个 raw top-1。"""
         state_int = quantize_state_vector(state_vector, self.fixed_point_config)
-        _, raw_action, _ = evaluate_integer_tree(self.model, state_int)
-        return tuple([raw_action] + [aid for aid in range(len(self.action_definitions)) if aid != raw_action])
+        _, leaf, _ = evaluate_integer_tree(self.model, state_int)
+        if leaf.action_ranking:
+            return leaf.action_ranking
+        # v1 artifact 只有 raw top-1；保留历史离线接口的伪排名，但部署选择不会把它当作真实 ranked。
+        return tuple([leaf.raw_action_id] + [aid for aid in range(len(self.action_definitions)) if aid != leaf.raw_action_id])
 
     def trace_decision_path(self, state_vector: tuple[float, ...]) -> dict[str, object]:
         state_int = quantize_state_vector(state_vector, self.fixed_point_config)
-        leaf_id, raw_action_id, path = evaluate_integer_tree(self.model, state_int)
+        leaf_id, leaf, path = evaluate_integer_tree(self.model, state_int)
+        raw_action_id = leaf.raw_action_id
         leaf = next(item for item in self.model.leaves if item.node_id == leaf_id)
         return {
             "tree_leaf_id": leaf_id,
@@ -238,26 +242,68 @@ class IntegerTreeBudgetPolicy:
             "tree_leaf_weighted_n_node_samples": sum(leaf.weighted_class_counts),
             "tree_leaf_value": list(leaf.weighted_class_counts),
             "tree_leaf_predicted_class_id": raw_action_id,
+            "tree_action_ranking": leaf.action_ranking,
+            "tree_action_ranking_complete": bool(leaf.action_ranking),
+            "tree_action_ranking_source": "persisted_leaf_counts" if leaf.action_ranking else "legacy_top1_only",
+            "tree_leaf_full_action_counts": leaf.full_action_counts,
             "student_state_vector_int": state_int,
         }
 
     def select_action_id(self, state_vector: tuple[float, ...], valid_action_mask: tuple[bool, ...] | None, *, include_decision_trace: bool = False) -> tuple[int | None, dict[str, object]]:
         state_int = quantize_state_vector(state_vector, self.fixed_point_config)
-        leaf_id, raw_top1, path = evaluate_integer_tree(self.model, state_int)
+        leaf_id, leaf, path = evaluate_integer_tree(self.model, state_int)
+        raw_top1 = leaf.raw_action_id
         if raw_top1 < 0 or raw_top1 >= len(self.action_definitions):
             raise ValueError("integer tree raw action id 超出 action_dim")
+        ranking = leaf.action_ranking or (raw_top1,)
+        mode = str(self.metadata.get("fallback_mode", "top1_or_noop"))
+        if mode not in {"top1_or_noop", "ranked_valid_or_none"}:
+            raise ValueError(f"不支持的 tree fallback_mode: {mode}")
+        ranking_complete = bool(leaf.action_ranking)
+        if mode == "ranked_valid_or_none":
+            if len(ranking) != len(self.action_definitions) or sorted(ranking) != list(range(len(self.action_definitions))):
+                raise ValueError("ranked integer tree action ranking 必须是 action_dim 的完整排列")
+        if valid_action_mask is not None and len(valid_action_mask) != len(self.action_definitions):
+            raise ValueError("valid_action_mask 长度必须与 action_dim 一致")
         raw_invalid = valid_action_mask is not None and not bool(valid_action_mask[raw_top1])
-        selected = None if raw_invalid else raw_top1
-        all_invalid = valid_action_mask is not None and not any(valid_action_mask)
+        selected = None
+        selected_rank = None
+        if valid_action_mask is None:
+            selected = raw_top1
+            selected_rank = 0
+        elif mode == "top1_or_noop":
+            if not raw_invalid:
+                selected, selected_rank = raw_top1, 0
+        else:
+            for rank, candidate in enumerate(ranking):
+                if bool(valid_action_mask[candidate]):
+                    selected, selected_rank = candidate, rank
+                    break
+        no_valid = valid_action_mask is not None and selected is None and mode == "ranked_valid_or_none"
+        if mode == "top1_or_noop" and raw_invalid and selected is None:
+            action_kind = "noop_top1_invalid"
+        elif no_valid:
+            action_kind = "noop_no_valid_action"
+        elif selected_rank and selected_rank > 0:
+            action_kind = "ranked_fallback_action"
+        else:
+            action_kind = "budget_action"
         info: dict[str, object] = {
             "tree_raw_top1_action_id": raw_top1,
             "tree_raw_top1_invalid": bool(raw_invalid),
-            "tree_fallback_used": bool(raw_invalid),
-            "tree_fallback_mode": "top1_or_noop",
-            "tree_fallback_reason": "raw_top1_invalid" if raw_invalid else None,
+            "tree_fallback_used": bool(selected_rank is not None and selected_rank > 0),
+            "tree_fallback_mode": mode,
+            "tree_fallback_reason": "all_ranked_actions_invalid" if no_valid else ("raw_top1_invalid" if raw_invalid else None),
             "tree_selected_action_id": selected,
-            "tree_selected_action_kind": "noop_fallback" if raw_invalid else "budget_action",
-            "tree_no_valid_action": bool(all_invalid),
+            "tree_selected_action_kind": action_kind,
+            "tree_selected_rank": selected_rank,
+            "tree_fallback_depth": selected_rank,
+            "tree_no_valid_action": bool(no_valid),
+            "tree_top1_invalid_noop": bool(mode == "top1_or_noop" and raw_invalid and selected is None),
+            "tree_action_ranking_complete": ranking_complete,
+            "tree_action_ranking_source": "persisted_leaf_counts" if ranking_complete else "legacy_top1_only",
+            "tree_action_ranking": ranking,
+            "tree_leaf_full_action_counts": leaf.full_action_counts,
             "student_state_vector_int": state_int,
             "tree_leaf_id": leaf_id,
             "tree_path_predicates": path,

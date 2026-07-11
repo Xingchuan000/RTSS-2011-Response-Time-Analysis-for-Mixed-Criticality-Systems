@@ -87,6 +87,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-legacy-dataset-quantization", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--require-integer-tree-artifact", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--formal-deployment-v1", action="store_true")
+    parser.add_argument("--fixed-ranked-deployment-v1", action="store_true")
+    parser.add_argument("--tree-selection-mode", choices=["strict_top1_v1", "performance_compatible"], default="performance_compatible")
+    parser.add_argument("--selection-complexity-qos-ratio", type=float, default=0.98)
+    parser.add_argument("--selection-max-invalid-rate", type=float, default=None)
+    parser.add_argument("--selection-max-fallback-rate", type=float, default=None)
+    parser.add_argument("--selection-max-no-valid-rate", type=float, default=None)
     add_mc_fairgen_args(parser)
     parser.add_argument("--allow-workload-mismatch", action=argparse.BooleanOptionalAction, default=False)
     return parser
@@ -94,6 +100,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    if args.formal_deployment_v1 and args.fixed_ranked_deployment_v1:
+        raise ValueError("--formal-deployment-v1 与 --fixed-ranked-deployment-v1 不能同时使用")
+    if args.fixed_ranked_deployment_v1:
+        args.tree_state_encoding = "fixed_point_int"
+        args.tree_fallback_mode = "ranked_valid_or_none"
+        args.action_validation_mode = "formal_v1"
+        args.strict_candidate_deploy_cap = True
+        args.carry_over_aware_safety = True
+        args.lo_budget_overrun_guard_units = 1
+        args.require_integer_tree_artifact = True
+        args.tree_selection_mode = "performance_compatible"
     if args.formal_deployment_v1:
         args.tree_state_encoding = "fixed_point_int"
         args.tree_fallback_mode = "top1_or_noop"
@@ -102,6 +119,7 @@ def main() -> None:
         args.carry_over_aware_safety = True
         args.lo_budget_overrun_guard_units = 1
         args.require_integer_tree_artifact = True
+        args.tree_selection_mode = "strict_top1_v1"
     teacher = DqnBudgetAgent.load(args.teacher_model)
     feature_config = FeatureConfig(
         observation_mode=args.observation_mode,
@@ -114,8 +132,6 @@ def main() -> None:
         include_safety_margin=args.include_safety_margin,
     )
     experiment_config = replace(_build_experiment_config(args), action_validation_mode=args.action_validation_mode, strict_candidate_deploy_cap=args.strict_candidate_deploy_cap, carry_over_aware_safety=args.carry_over_aware_safety, lo_budget_overrun_guard_units=args.lo_budget_overrun_guard_units)
-    if args.tree_state_encoding == "fixed_point_int" and args.tree_fallback_mode != "top1_or_noop":
-        raise ValueError("fixed_point_int 必须使用 top1_or_noop")
     if args.action_validation_mode == "formal_v1" and args.action_space != "single":
         raise ValueError("formal_v1 只允许 single action space")
     workload_cli_config = build_workload_cli_config(args)
@@ -175,6 +191,12 @@ def main() -> None:
                 workload_mismatch_warning=workload_mismatch_warning,
                 fixed_point_config=FixedPointConfig(scale=args.tree_fixed_point_scale, max_int=args.tree_fixed_point_scale, rounding_mode=args.tree_fixed_point_rounding),
                 allow_legacy_dataset_quantization=args.allow_legacy_dataset_quantization,
+                tree_fallback_mode=args.tree_fallback_mode,
+                selection_mode=args.tree_selection_mode,
+                selection_complexity_qos_ratio=args.selection_complexity_qos_ratio,
+                selection_max_invalid_rate=args.selection_max_invalid_rate,
+                selection_max_fallback_rate=args.selection_max_fallback_rate,
+                selection_max_no_valid_rate=args.selection_max_no_valid_rate,
             )
 
 

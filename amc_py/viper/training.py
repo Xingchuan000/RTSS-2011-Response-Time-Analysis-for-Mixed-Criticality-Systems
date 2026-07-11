@@ -17,9 +17,9 @@ from amc_py.dqn import DqnBudgetAgent, ExperimentConfig
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.runtime_models import RuntimeSemantics
 from amc_py.viper.artifacts import save_tree_policy_artifact, required_artifact_files, validate_artifact_directory, load_tree_policy_artifact
-from amc_py.viper.dataset import ViperSample, read_viper_dataset, samples_to_xyw, write_viper_dataset
+from amc_py.viper.dataset import ViperSample, read_viper_dataset, samples_to_xyw, write_viper_dataset, infer_behavior_provenance
 from amc_py.viper.metrics import compute_offline_tree_metrics, evaluate_tree_policy_once
-from amc_py.viper.selection import SelectionConfig, select_best_tree
+from amc_py.viper.selection import SelectionConfig, select_best_tree, evaluate_candidate_gates
 from amc_py.viper.teacher import collect_teacher_labeled_rollouts
 from amc_py.viper.tree_policy import TreeBudgetPolicy
 from amc_py.viper.fixed_point import FixedPointConfig, fixed_point_config_hash, fixed_point_config_to_dict
@@ -54,6 +54,7 @@ def train_cart_tree(
     action_dim: int | None = None,
     fixed_point_config: FixedPointConfig | None = None,
     allow_legacy_quantization: bool = False,
+    tree_fallback_mode: str = "top1_or_noop",
 ) -> tuple[DecisionTreeClassifier, dict[str, object]]:
     """训练一棵 CART 决策树。
 
@@ -101,7 +102,7 @@ def train_cart_tree(
         "valid_labeled_sample_count": int(len(y)),
         "sklearn_version": sklearn_version,
         "mask_aware_inference": True,
-        "fallback_mode": "top1_or_noop",
+        "fallback_mode": tree_fallback_mode,
         "training_feature_dtype": "int32",
         "fixed_point_config_hash": fixed_point_config_hash(fixed_point_config),
         "deployment_uses_sklearn": False,
@@ -132,7 +133,7 @@ def _copy_best_artifact(best_candidate: dict[str, object], output_dir: Path) -> 
         if stale_path.exists():
             stale_path.unlink()
     metadata = json.loads((source_dir / "metadata.json").read_text(encoding="utf-8"))
-    require_integer = metadata.get("artifact_schema_version") == "viper_integer_artifact_v1"
+    require_integer = metadata.get("artifact_schema_version") in {"viper_integer_artifact_v1", "viper_integer_ranked_artifact_v2"}
     validate_artifact_directory(source_dir, require_integer_tree=require_integer)
     for filename in required_artifact_files(metadata, require_integer_tree=require_integer):
         shutil.copy2(source_dir / filename, best_dir / filename)
@@ -177,10 +178,18 @@ def run_viper_iterations(
     workload_mismatch_warning: str | None = None,
     fixed_point_config: FixedPointConfig = FixedPointConfig(),
     allow_legacy_dataset_quantization: bool = False,
+    tree_fallback_mode: str = "top1_or_noop",
+    selection_mode: str = "performance_compatible",
+    selection_complexity_qos_ratio: float = 0.98,
+    selection_max_invalid_rate: float | None = None,
+    selection_max_fallback_rate: float | None = None,
+    selection_max_no_valid_rate: float | None = None,
 ) -> dict[str, object]:
     """运行一条固定超参数的 BC/DAGGER/VIPER 训练链。"""
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    if tree_fallback_mode not in {"top1_or_noop", "ranked_valid_or_none"}:
+        raise ValueError(f"不支持的 tree_fallback_mode: {tree_fallback_mode}")
     if initial_dataset is None:
         aggregate_samples, aggregate_manifest = collect_teacher_labeled_rollouts(
             teacher=teacher,
@@ -206,18 +215,29 @@ def run_viper_iterations(
             taskset_seed=None,
             scenario_split="train",
             fixed_point_config=fixed_point_config,
+            tree_fallback_mode=tree_fallback_mode,
         )
     else:
         aggregate_samples, aggregate_manifest = read_viper_dataset(initial_dataset)
+        provenance = infer_behavior_provenance(aggregate_samples, aggregate_manifest)
+        source_mode = str(provenance["source_behavior_fallback_mode"])
+        if source_mode == "mixed":
+            raise ValueError("mixed behavior aggregate 禁止训练，请检查 dataset provenance 或使用独立重新采集流程")
+        if source_mode == "top1_or_noop" and tree_fallback_mode == "ranked_valid_or_none":
+            raise ValueError("top1_or_noop behavior aggregate 不能用于 ranked 训练，请从 teacher-only dataset 或重新采集 ranked rollout 开始")
+        if source_mode == "ranked_valid_or_none" and tree_fallback_mode != "ranked_valid_or_none":
+            raise ValueError("ranked behavior aggregate 不能回标为 top1_or_noop")
         aggregate_samples = upgrade_samples_to_fixed_point(aggregate_samples, fixed_point_config)
         aggregate_manifest = {
             **aggregate_manifest,
-            "dataset_schema_version": "viper_fixed_v1",
+            "dataset_schema_version": "viper_fixed_ranked_v2" if tree_fallback_mode == "ranked_valid_or_none" else "viper_fixed_v1",
             "student_observation_encoding": "fixed_point_int",
             "fixed_point_config": fixed_point_config_to_dict(fixed_point_config),
             "fixed_point_config_hash": fixed_point_config_hash(fixed_point_config),
             "teacher_observation_encoding": "float32",
-            "tree_fallback_mode": "top1_or_noop",
+            "tree_fallback_mode": tree_fallback_mode,
+            **provenance,
+            "upgrade_history": list(aggregate_manifest.get("upgrade_history", [])) + ([{"operation": "teacher_only_to_fixed_ranked_initial_dataset", "target_fallback_mode": tree_fallback_mode}] if source_mode == "teacher_only" and tree_fallback_mode == "ranked_valid_or_none" else []),
         }
     candidates: list[dict[str, object]] = []
     best_candidate: dict[str, object] | None = None
@@ -239,6 +259,7 @@ def run_viper_iterations(
             action_dim=len(action_definitions),
             fixed_point_config=fixed_point_config,
             allow_legacy_quantization=allow_legacy_dataset_quantization,
+            tree_fallback_mode=tree_fallback_mode,
         )
         metadata = {
             **metadata,
@@ -256,7 +277,7 @@ def run_viper_iterations(
             "tree_state_encoding": aggregate_manifest.get("student_observation_encoding", "fixed_point_int"),
             "deployment_semantics_version": aggregate_manifest.get("deployment_semantics_version", resolve_deployment_semantics_version(
                 tree_state_encoding=aggregate_manifest.get("student_observation_encoding", "fixed_point_int"),
-                tree_fallback_mode=aggregate_manifest.get("tree_fallback_mode", "top1_or_noop"),
+                tree_fallback_mode=tree_fallback_mode,
                 action_validation_mode=aggregate_manifest.get("action_validation_mode", experiment_config.action_validation_mode),
                 strict_candidate_deploy_cap=aggregate_manifest.get("strict_candidate_deploy_cap", experiment_config.strict_candidate_deploy_cap),
                 carry_over_aware_safety=aggregate_manifest.get("carry_over_aware_safety", experiment_config.carry_over_aware_safety),
@@ -306,6 +327,7 @@ def run_viper_iterations(
         ]
         validation_qos = _mean_metric(validation_rows, "lo_quality_qos")
         candidate_row = {
+            "tree_id": metadata.get("tree_id"),
             "method": method,
             "max_depth": tree_hyperparams.max_depth,
             "min_samples_leaf": tree_hyperparams.min_samples_leaf,
@@ -330,6 +352,12 @@ def run_viper_iterations(
                 validation_rows,
                 "tree_fallback_rate",
             ),
+            "validation_tree_ranked_fallback_rate_mean": _mean_metric(validation_rows, "tree_ranked_fallback_rate"),
+            "validation_tree_selected_rank_mean": _mean_metric(validation_rows, "tree_selected_rank_mean"),
+            "validation_tree_selected_rank_p95": _mean_metric(validation_rows, "tree_selected_rank_p95"),
+            "validation_tree_selected_rank_max": max((float(row.get("tree_selected_rank_max") or 0) for row in validation_rows), default=0.0),
+            "validation_selected_invalid_mask_actions_sum": _sum_metric(validation_rows, "selected_invalid_mask_actions"),
+            "validation_formal_v1_mask_step_mismatch_count_sum": _sum_metric(validation_rows, "formal_v1_mask_step_mismatch_count"),
             "validation_tree_no_valid_action_rate_mean": _mean_metric(
                 validation_rows,
                 "tree_no_valid_action_rate",
@@ -388,8 +416,12 @@ def run_viper_iterations(
                 behavior_policy=current_policy,
                 tree_iteration=iteration,
                 fixed_point_config=fixed_point_config,
+                tree_fallback_mode=tree_fallback_mode,
             )
             aggregate_samples.extend(new_samples)
+            aggregate_manifest.update(infer_behavior_provenance(aggregate_samples, {**aggregate_manifest, "dataset_contains_tree_behavior": True}))
+            aggregate_manifest["source_behavior_fallback_mode"] = tree_fallback_mode
+            aggregate_manifest["last_tree_iteration"] = iteration
     if not candidates:
         raise RuntimeError("训练结束后没有产生任何候选树")
     # 先把所有候选树指标落盘，再执行 selection。
@@ -400,9 +432,26 @@ def run_viper_iterations(
         writer = csv.DictWriter(handle, fieldnames=list(candidates[0].keys()))
         writer.writeheader()
         writer.writerows(candidates)
-    selection_config = SelectionConfig()
+    selection_config = (SelectionConfig.performance_compatible(complexity_qos_ratio=selection_complexity_qos_ratio)
+                        if selection_mode == "performance_compatible" else SelectionConfig.strict_top1_v1())
+    selection_config = SelectionConfig(
+        **{**asdict(selection_config), "max_invalid_rate": selection_max_invalid_rate if selection_mode == "performance_compatible" else selection_config.max_invalid_rate,
+           "max_fallback_rate": selection_max_fallback_rate if selection_mode == "performance_compatible" else selection_config.max_fallback_rate,
+           "max_no_valid_action_rate": selection_max_no_valid_rate if selection_mode == "performance_compatible" else selection_config.max_no_valid_action_rate})
+    gate_results = []
+    for row in candidates:
+        passed, reasons = evaluate_candidate_gates(row, selection_config)
+        gate_results.append((row, passed, reasons))
+    report_fields = ["tree_id", "artifact_dir", "selection_mode", "passed_hard_gate", "rejection_reasons", "validation_lo_quality_qos_mean", "validation_deadline_misses_sum", "validation_hi_deadline_misses_sum", "validation_lo_deadline_misses_sum", "validation_selected_invalid_mask_actions_sum", "validation_formal_v1_mask_step_mismatch_count_sum", "validation_tree_raw_top1_invalid_rate_mean", "validation_tree_ranked_fallback_rate_mean", "validation_tree_no_valid_action_rate_mean", "tree_depth", "tree_node_count", "tree_leaf_count"]
+    with (output_dir / "selection_gate_report.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=report_fields)
+        writer.writeheader()
+        for row, passed, reasons in gate_results:
+            writer.writerow({**{field: row.get(field) for field in report_fields}, "selection_mode": selection_config.selection_mode, "passed_hard_gate": passed, "rejection_reasons": json.dumps(reasons, ensure_ascii=False)})
+    # JSON report 与 CSV 使用同一字段集合，不限制为少数字段
+    (output_dir / "selection_gate_report.json").write_text(json.dumps([{**{field: row.get(field) for field in report_fields}, "selection_mode": selection_config.selection_mode, "passed_hard_gate": passed, "rejection_reasons": reasons} for row, passed, reasons in gate_results], ensure_ascii=False, indent=2), encoding="utf-8")
     best_candidate = select_best_tree(candidates, config=selection_config)
-    best_qos = max(float(row["validation_lo_quality_qos_mean"]) for row in candidates)
+    best_qos = max(float(row["validation_lo_quality_qos_mean"]) for row, passed, _ in gate_results if passed)
     selection_reason = (
         "safety_validity_gate_then_complexity_pareto_within_98pct_qos"
         if float(best_candidate["validation_lo_quality_qos_mean"]) >= best_qos * selection_config.complexity_qos_ratio
@@ -455,6 +504,8 @@ def run_viper_iterations(
                 "iterations": iterations,
                 "teacher_id": teacher_id,
                 "tree_hyperparams": asdict(tree_hyperparams),
+                "tree_fallback_mode": tree_fallback_mode,
+                "selection_mode": selection_mode,
                 # 训练产物必须显式记录本次 tree 训练所使用的 workload 参数，
                 # 这样后续检查时才能确认它与 teacher dataset / HOUT 评估完全同口径。
                 "workload_cli_config": workload_cli_config or {},

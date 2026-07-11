@@ -3913,8 +3913,30 @@ observation；CART 训练输入和独立部署 artifact 使用 `int32`。
 `artifact_manifest.json`。通过 `load_tree_policy_artifact(..., require_integer_tree=True)`
 加载时返回不依赖 sklearn 推理的 `IntegerTreeBudgetPolicy`。
 
-整数 tree 只产生唯一 raw top-1；当该动作被 runtime mask 判为非法时，部署结果固定为
-`None`（noop），不会继续尝试次优动作。旧 artifact 仍可由 legacy loader 加载。
+新 ranked 整数 tree 的每个叶子保存完整、确定性的 `action_ranking` 和
+`full_action_counts`。部署时按 ranking 逐项检查 runtime mask，选择第一个合法动作；
+只有全部预算动作非法时才返回 `None`。`tree_raw_top1_invalid`、
+`tree_ranked_fallback_rate` 和 `tree_no_valid_action_rate` 分开统计。旧
+`integer_tree_v1` artifact 仍只在 `top1_or_noop` 模式下加载，不能被伪装成 ranked artifact。
+
+推荐的新实验 profile：
+
+```bash
+python scripts/collect_viper_teacher_data.py ... \
+  --fixed-ranked-deployment-v1 --output-dir /tmp/viper_dataset_fixed_ranked_v1
+python scripts/train_viper_tree.py ... \
+  --fixed-ranked-deployment-v1 \
+  --tree-selection-mode performance_compatible \
+  --output-dir /tmp/viper_trees_fixed_ranked_v1
+```
+
+`--formal-deployment-v1` 仍用于复现历史 `top1_or_noop` 实验；两个 profile 不能同时使用。
+新 artifact 的 schema 为 `integer_tree_ranked_v2` / `viper_integer_ranked_artifact_v2`，
+加载时会校验 metadata、manifest、整数树、定点配置和动作定义的 hash/语义一致性。
+训练目录还会生成 `selection_gate_report.csv` 和 `selection_gate_report.json`，逐候选记录
+安全 gate 与拒绝原因。dataset manifest 会记录 `source_behavior_fallback_mode`、
+`behavior_rollout_modes`、`dataset_contains_tree_behavior` 和 `upgrade_history`；已有
+top1/noop behavior aggregate 不会被静默升级为 ranked。
 
 dataset 新样本同时保存 `state_vector`（float teacher state）和
 `student_state_vector_int`（定点 tree state）。读取旧 JSONL 时，只有显式传入
@@ -3990,3 +4012,102 @@ lhs，而是使用 `int64` 预算数组与约束矩阵做内积，仅在归一�
 | `tests/test_budget_ratio_arithmetic.py` | 整数比例 increase/decrease、边界值 |
 | `tests/test_viper_integer_tree.py` | integer artifact 加载、字段缺失 fail-closed |
 | `tests/test_viper_teacher_fixed_point.py` | metadata 统一字段、legacy 升级兼容 |
+
+## 第四轮收尾补丁（2026-07-11）
+
+### Patch 1：dataset provenance 与 ranked schema 读取校验
+
+**修改文件：** `amc_py/viper/dataset.py`、`amc_py/viper/training.py`
+
+- `infer_behavior_provenance()` 重写：teacher/oracle 样本不再将单一 tree behavior dataset 推成 `mixed`。
+  分别统计 `has_teacher_only_samples` 和 `tree_behavior_modes`，规则固定为：
+  - 无 tree behavior → `teacher_only`
+  - 仅有 top1 → `top1_or_noop`
+  - 仅有 ranked → `ranked_valid_or_none`
+  - 同时存在 top1 与 ranked → 直接 `raise ValueError`
+  - 未知 behavior → `mixed`
+- manifest 与样本交叉校验：manifest 声称 teacher-only 但存在 tree behavior 样本 → 失败；
+  manifest 声称 top1 但样本是 ranked → 失败；manifest 声称 ranked 但样本是 top1 → 失败。
+- `run_viper_iterations()` 新增 `mixed` 行为 fail-closed：`source_mode == "mixed"` 时直接 `raise ValueError`。
+- `read_viper_dataset()` 将 `viper_fixed_ranked_v2` schema 纳入与 `viper_fixed_v1` 相同的 fixed-point hash/维度/整数范围校验；
+  ranked schema 额外要求 `source_behavior_fallback_mode` 和 `tree_fallback_mode` 字段存在。
+
+### Patch 2：artifact 语义校验 fail-closed
+
+**修改文件：** `amc_py/viper/artifacts.py`、`amc_py/viper/integer_tree.py`、`amc_py/viper/training.py`
+
+- `validate_integer_artifact_semantics()` 区分历史兼容与新 artifact 校验：
+  - 历史 v1 top1 artifact（同时满足 `viper_integer_artifact_v1` + `integer_tree_v1` + `top1_or_noop`）允许缺失旧版本 alias 字段；
+  - 其余新 artifact 要求所有关键字段全部显式存在，缺失则 `raise ValueError`。
+- 固定 schema 映射：
+  - `ranked_valid_or_none` → 必须使用 `viper_integer_ranked_artifact_v2` + `integer_tree_ranked_v2`；
+  - `top1_or_noop` → 不得使用 ranked artifact schema，必须使用 `integer_tree_v1`。
+- `compile_sklearn_tree_to_integer()` 新增 `ranked` 参数：`ranked=True` 生成 v2 schema（含完整 action_ranking），`ranked=False` 生成 v1 schema（无 action_ranking）。
+- `save_tree_policy_artifact()` 根据 `fallback_mode` 自动选择正确的 integer tree schema 版本。
+- manifest 文件列表新增 `model.joblib` 和 `rules.txt`；manifest 新增 `fallback_mode`、`tree_fallback_mode`、`runtime_policy_type`、`tree_state_encoding`、`deployment_semantics_version` 字段。
+- `_copy_best_artifact()` 对 `viper_integer_artifact_v1` 和 `viper_integer_ranked_artifact_v2` 均设置 `require_integer=True`。
+
+### Patch 3：no-valid/noop 指标、legacy action kind、selected Q-regret 修正
+
+**修改文件：** `amc_py/viper/metrics.py`、`amc_py/viper/tree_policy.py`
+
+- 统一离线/运行时计数口径：
+  - `ranked_fallback_count` 由 `selected_rank > 0` 定义（不再依赖 `tree_fallback_used`）；
+  - `noop_fallback_count` 由 `selected_action_id is None and tree_no_valid_action is True` 定义；
+  - all-invalid 同时计入 no-valid 和 noop，不计入 ranked fallback。
+- `IntegerTreeBudgetPolicy.select_action_id()`：`top1_or_noop` 模式下 raw invalid 返回 None 时，`tree_selected_action_kind` 写为 `"noop_top1_invalid"`（不再误标为 `"budget_action"`），并保持 `tree_top1_invalid_noop = true`。
+- `evaluate_tree_policy_once()` 新增 `tree_selected_q_regret_mean` 和 `tree_selected_q_regret_p95` 输出字段；selected=None 时不加入 Q-regret 样本。
+
+### Patch 4：selection report 字段补齐与 gate 健壮性
+
+**修改文件：** `amc_py/viper/selection.py`、`amc_py/viper/training.py`
+
+- `candidate_row` 新增 `tree_id` 字段。
+- CSV 与 JSON gate report 使用同一字段集合，JSON 不再只写摘要字段。
+- 新增安全解析函数：`_parse_finite_float`、`_parse_int_zero`、`_parse_rate`；字段缺失、None、NaN、inf、非法字符串时不抛未处理异常，而是添加明确的 rejection reason。
+- `evaluate_candidate_gates()` 收集全部拒绝原因：QoS 检查不再阻止后续 deadline/selected-invalid/mismatch 检查。
+- optional rate 门限仅在 `performance_compatible` 模式下生效。
+
+### Patch 5：leaf summary 与 HOUT 审计字段
+
+**修改文件：** `scripts/summarize_tree_leaf_audit.py`
+
+- `ranked_fallback_count` 统一使用 `selected_rank > 0` 定义，与 `ranked_fallback_rate` 口径一致。
+- 新增输出字段：`selected_rank_distribution`（各 rank 命中分布）、`fallback_flag_inconsistency_count`（tree_fallback_used 与 selected_rank 不一致计数）。
+- `summary_metadata.json` 新增 `deployment_semantics_version` 字段。
+
+### Patch 6：PowerShell 脚本与 E2E
+
+**修改文件：** `scripts/run_viper_fixed_ranked_smoke.ps1`、`scripts/run_viper_fixed_ranked_h2_h5.ps1`、`tests/test_viper_e2e_smoke.py`
+
+- smoke 脚本新增步骤 3-6：定位 `best/` artifact、执行 `evaluate_dqn_amc.py`（带 `--fixed-ranked-deployment-v1` + `--require-integer-tree-artifact`）、验证 HOUT CSV 存在。
+- h2/h5 脚本新增实际评估调用：分别以 `end_time=20000000` 和 `end_time=50000000` 运行 `evaluate_dqn_amc.py`，输出到 `hout_h2/` 和 `hout_h5/` 独立目录。
+- 新增 `test_fixed_ranked_e2e_smoke`：完整 ranked v2 端到端流程（teacher-only dataset → fixed-point CART → ranked v2 artifact → ranked validation → performance-compatible gate → best/ → HOUT integer load），并断言 `best/` metadata 为 `viper_integer_ranked_artifact_v2`。
+
+## fixed-ranked HOUT 补丁使用说明
+
+本次补丁仅补齐 fixed-ranked HOUT 的语义可追溯、integer-only 部署证明和脚本验收。
+
+- `evaluate_dqn_amc.py` 的 tree CSV 行新增 `artifact_tree_state_encoding` 与
+  `runtime_expected_tree_state_encoding`。它们分别表示 artifact metadata 实际声明和
+  本次 CLI/profile 展开的期望值；`semantic_validation_passed=True` 仅表示所有部署
+  语义字段均已一致校验。
+- 使用 `--fixed-ranked-deployment-v1 --require-integer-tree-artifact` 时，缺少或不匹配
+  `tree_state_encoding`、`tree_fallback_mode`、`deployment_semantics_version` 等关键字段
+  会立即失败，不会退回 `model.joblib`/sklearn 推理。
+- 最小 smoke 可运行：
+
+```powershell
+pwsh scripts/run_viper_fixed_ranked_smoke.ps1 -TeacherModel /path/to/model_final.pt
+```
+
+- 正式 h2/h5 搜索模板支持单 seed、范围或列表，并对每个 HOUT CSV 检查
+  `bc_tree_agent` 行、`semantic_validation_passed=True`、ranked v2 schema、
+  `ranked_valid_or_none` 与零 formal_v1 mask-step mismatch：
+
+```powershell
+pwsh scripts/run_viper_fixed_ranked_h2_h5.ps1 `
+  -TeacherModel /path/to/model_final.pt `
+  -InitialDataset /path/to/dataset `
+  -Seeds "0:4"
+```

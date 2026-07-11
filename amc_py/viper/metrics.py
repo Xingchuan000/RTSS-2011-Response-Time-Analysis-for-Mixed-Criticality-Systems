@@ -54,11 +54,25 @@ def compute_offline_tree_metrics(tree_policy: TreeBudgetPolicy | IntegerTreeBudg
     raw_invalid_count = 0
     mask_aware_match_count = 0
     noop_fallback_count = 0
+    ranked_fallback_count = 0
+    no_valid_action_count = 0
+    selected_q_regrets: list[float] = []
+    selected_ranks: list[int] = []
     teacher_none_count = sum(int(sample.teacher_action_id is None) for sample in samples)
     for sample in labeled_samples:
         selected_action_id, info = tree_policy.select_action_id(sample.state_vector, sample.valid_action_mask)
         raw_invalid_count += int(bool(info["tree_raw_top1_invalid"]))
-        noop_fallback_count += int(bool(info.get("tree_fallback_used", False) and selected_action_id is None))
+        # 统一计数口径：ranked_fallback 由 selected_rank > 0 定义
+        # noop_no_valid 由 selected_action_id is None + tree_no_valid_action 定义
+        # 不得依赖 tree_fallback_used（其定义因 fallback 模式而异）
+        ranked_fallback_count += int(info.get("tree_selected_rank") is not None and int(info.get("tree_selected_rank", 0)) > 0)
+        no_valid_action_count += int(bool(info.get("tree_no_valid_action", False)))
+        noop_fallback_count += int(selected_action_id is None and bool(info.get("tree_no_valid_action", False)))
+        if selected_action_id is not None:
+            if not bool(sample.valid_action_mask[selected_action_id]):
+                raise RuntimeError("tree selected action 不满足 valid_action_mask")
+            if info.get("tree_selected_rank") is not None:
+                selected_ranks.append(int(info["tree_selected_rank"]))
         raw_top1 = info.get("tree_raw_top1_action_id")
         if raw_top1 == sample.teacher_action_id:
             raw_correct += 1
@@ -72,6 +86,8 @@ def compute_offline_tree_metrics(tree_policy: TreeBudgetPolicy | IntegerTreeBudg
         raw_top1 = info.get("tree_raw_top1_action_id")
         if isinstance(raw_top1, int) and sample.q_best is not None:
             q_regrets.append(float(sample.q_best) - float(sample.raw_q_values[raw_top1]))
+        if selected_action_id is not None and sample.q_best is not None:
+            selected_q_regrets.append(float(sample.q_best) - float(sample.raw_q_values[selected_action_id]))
     raw_accuracy = raw_correct / len(labeled_samples)
     deployed_match = mask_aware_match_count / len(labeled_samples)
     return {
@@ -84,6 +100,13 @@ def compute_offline_tree_metrics(tree_policy: TreeBudgetPolicy | IntegerTreeBudg
         "raw_top1_invalid_rate_on_dataset": raw_invalid_count / len(labeled_samples),
         "mask_aware_match_rate_on_dataset": mask_aware_match_count / len(labeled_samples),
         "noop_fallback_rate_on_dataset": noop_fallback_count / len(labeled_samples),
+        "ranked_fallback_rate_on_dataset": ranked_fallback_count / len(labeled_samples),
+        "no_valid_action_rate_on_dataset": no_valid_action_count / len(labeled_samples),
+        "selected_rank_mean_on_dataset": mean(selected_ranks) if selected_ranks else 0.0,
+        "selected_rank_p95_on_dataset": float(np.percentile(selected_ranks, 95)) if selected_ranks else 0.0,
+        "selected_action_match_rate": deployed_match,
+        "q_regret_selected_mean_on_dataset": mean(selected_q_regrets) if selected_q_regrets else None,
+        "q_regret_selected_p95_on_dataset": float(np.percentile(selected_q_regrets, 95)) if selected_q_regrets else None,
         "teacher_none_rate": teacher_none_count / len(samples) if samples else 0.0,
         "q_regret_raw_top1_mean": mean(q_regrets) if q_regrets else 0.0,
         "q_regret_raw_top1_p95": float(np.percentile(q_regrets, 95)) if q_regrets else 0.0,
@@ -163,6 +186,15 @@ def _build_leaf_audit_fields(
     fields["safety_reject_reason"] = tree_info.get("safety_reject_reason")
     fields["safety_diagnostics_json"] = json.dumps(tree_info.get("safety_diagnostics", []), ensure_ascii=False, sort_keys=True)
     fields["tree_no_valid_action"] = tree_info.get("tree_no_valid_action")
+    fields["tree_selected_rank"] = tree_info.get("tree_selected_rank")
+    fields["tree_fallback_depth"] = tree_info.get("tree_fallback_depth")
+    # raw top-1 与最终 selected action 必须分开保存，避免 ranked fallback 时用
+    # selected action 的安全信息覆盖 raw action 的拒绝原因。
+    for prefix in ("raw_action", "selected_action"):
+        for suffix, source_key in (("candidate_budgets", "candidate_budgets"), ("active_release_budget_max", "active_release_budget_max"), ("effective_check_budgets", "effective_check_budgets"), ("reject_reason", "safety_reject_reason"), ("safety_result", "safety_result")):
+            value = tree_info.get(f"{prefix}_{source_key}")
+            if value is not None:
+                fields[f"{prefix}_{suffix}_json" if isinstance(value, (dict, list, tuple)) else f"{prefix}_{suffix}"] = json.dumps(value, ensure_ascii=False, sort_keys=True) if isinstance(value, (dict, list, tuple)) else value
 
     # 动作语义描述
     raw_top1_def = tree_policy.action_definition(raw_top1_action_id)
@@ -176,12 +208,16 @@ def _build_leaf_audit_fields(
     ranking = tree_info.get("tree_action_ranking")
     proba = tree_info.get("tree_action_proba")
     top_k = int(leaf_audit_top_k_actions)
-    if ranking is not None and proba is not None:
+    if ranking is not None:
         ranking_tuple = tuple(ranking) if isinstance(ranking, list) else ranking
         top_k_ids = ranking_tuple[:top_k]
+        fields["tree_action_ranking_json"] = json.dumps(list(ranking_tuple), ensure_ascii=False)
         fields["tree_topk_action_ids_json"] = json.dumps(list(top_k_ids), ensure_ascii=False)
-        top_k_probs = [proba[aid] if aid < len(proba) else 0.0 for aid in top_k_ids]
-        fields["tree_topk_action_probs_json"] = json.dumps(top_k_probs, ensure_ascii=False)
+        if proba is not None:
+            top_k_probs = [proba[aid] if aid < len(proba) else 0.0 for aid in top_k_ids]
+            fields["tree_topk_action_probs_json"] = json.dumps(top_k_probs, ensure_ascii=False)
+    if tree_info.get("tree_leaf_full_action_counts") is not None:
+        fields["tree_leaf_full_action_counts_json"] = json.dumps(tree_info["tree_leaf_full_action_counts"], ensure_ascii=False)
 
     valid_count = sum(1 for v in valid_action_mask if v)
     masked_count = len(valid_action_mask) - valid_count
@@ -318,6 +354,8 @@ def evaluate_tree_policy_once(
     selected_action_match_teacher_count = 0
     raw_action_match_teacher_count = 0
     q_regrets: list[float] = []
+    selected_q_regrets: list[float] = []
+    selected_ranks: list[int] = []
     while not done:
         step_count += 1
         mask_raw = env.valid_action_mask()
@@ -335,9 +373,16 @@ def evaluate_tree_policy_once(
             state_vector, mask, include_decision_trace=leaf_audit_enabled
         )
         raw_invalid_count += int(bool(info["tree_raw_top1_invalid"]))
-        fallback_count += int(bool(info["tree_fallback_used"]))
-        noop_fallback_count += int(bool(info["tree_fallback_used"] and action_id is None))
+        # 统一计数口径：ranked fallback 由 selected_rank > 0 定义
+        # noop 由 selected_action_id is None + tree_no_valid_action 定义
+        fallback_count += int(info.get("tree_selected_rank") is not None and int(info.get("tree_selected_rank", 0)) > 0)
         no_valid_action_count += int(bool(info["tree_no_valid_action"]))
+        noop_fallback_count += int(action_id is None and bool(info["tree_no_valid_action"]))
+        if action_id is not None:
+            if not mask[action_id]:
+                raise RuntimeError("tree selected action 不满足当前 valid_action_mask")
+            if info.get("tree_selected_rank") is not None:
+                selected_ranks.append(int(info["tree_selected_rank"]))
         selected_action_count += int(action_id is not None)
         if teacher_diag is not None:
             raw_action_match_teacher_count += int(info["tree_raw_top1_action_id"] == teacher_diag["best_action_id"])
@@ -345,6 +390,9 @@ def evaluate_tree_policy_once(
             raw_action = info.get("tree_raw_top1_action_id")
             if isinstance(raw_action, int) and teacher_diag["q_best"] is not None:
                 q_regrets.append(float(teacher_diag["q_best"]) - float(teacher_diag["raw_q_values"][raw_action]))
+            # 收集 selected Q-regret：仅当 selected_action_id 非 None 时计入
+            if action_id is not None and teacher_diag["q_best"] is not None:
+                selected_q_regrets.append(float(teacher_diag["q_best"]) - float(teacher_diag["raw_q_values"][action_id]))
         result = env.step(action_id)
         # 在 env.step() 之后将 leaf audit 字段合并到 action_log
         if leaf_audit_enabled and env.action_log:
@@ -355,26 +403,32 @@ def evaluate_tree_policy_once(
             raw_top1_id = info.get("tree_raw_top1_action_id")
             raw_top1_invalid = bool(info.get("tree_raw_top1_invalid", False))
             mask_detail = None
-            if raw_top1_invalid and action_id is None and raw_top1_id is not None:
+            if raw_top1_invalid and raw_top1_id is not None:
                 mask_detail = env.get_last_mask_detail(int(raw_top1_id))
             # 优先使用 raw action 的 mask detail 中的候选/安全数据；缺失时回退到 action_log 末尾。
             evaluation_override: dict[str, object] = {}
             if mask_detail is not None:
                 evaluation_override = {
-                    "candidate_budgets": mask_detail.get("candidate_budgets", {}),
-                    "active_release_budget_max": mask_detail.get("active_release_budget_max", {}),
-                    "effective_check_budgets": mask_detail.get("effective_check_budgets", {}),
-                    "safety_reject_reason": mask_detail.get("reject_reason_detail") or mask_detail.get("reject_reason"),
-                    "safety_diagnostics": [],
-                    "fallback_reason": "raw_top1_invalid",
+                    "raw_action_candidate_budgets": mask_detail.get("candidate_budgets", {}),
+                    "raw_action_active_release_budget_max": mask_detail.get("active_release_budget_max", {}),
+                    "raw_action_effective_check_budgets": mask_detail.get("effective_check_budgets", {}),
+                    "raw_action_safety_reject_reason": mask_detail.get("reject_reason_detail") or mask_detail.get("reject_reason"),
+                    "raw_action_safety_result": "invalid",
                 }
             log_entry = {key: env.action_log[-1].get(key) for key in ("candidate_budgets", "active_release_budget_max", "effective_check_budgets", "safety_reject_reason", "safety_diagnostics")}
+            selected_override = {
+                "selected_action_candidate_budgets": log_entry.get("candidate_budgets"),
+                "selected_action_active_release_budget_max": log_entry.get("active_release_budget_max"),
+                "selected_action_effective_check_budgets": log_entry.get("effective_check_budgets"),
+                "selected_action_safety_reject_reason": log_entry.get("safety_reject_reason"),
+                "selected_action_safety_result": "valid" if action_id is not None else ("no_valid_action" if info.get("tree_no_valid_action") else None),
+            }
             audit_fields = _build_leaf_audit_fields(
                 step_index=step_count - 1,
                 state_vector=state_vector,
                 feature_names=tree_policy.feature_names,
                 tree_policy=tree_policy,
-                tree_info={**info, **{**log_entry, **evaluation_override}},
+                tree_info={**info, **{**log_entry, **selected_override, **evaluation_override}},
                 selected_action_id=action_id,
                 valid_action_mask=mask,
                 teacher_diag=teacher_diag,
@@ -419,6 +473,11 @@ def evaluate_tree_policy_once(
         "tree_noop_fallback_rate": (noop_fallback_count / step_count) if step_count > 0 else 0.0,
         "tree_no_valid_action_count": no_valid_action_count,
         "tree_no_valid_action_rate": (no_valid_action_count / step_count) if step_count > 0 else 0.0,
+        "tree_ranked_fallback_count": fallback_count,
+        "tree_ranked_fallback_rate": (fallback_count / step_count) if step_count > 0 else 0.0,
+        "tree_selected_rank_mean": mean(selected_ranks) if selected_ranks else 0.0,
+        "tree_selected_rank_p95": float(np.percentile(selected_ranks, 95)) if selected_ranks else 0.0,
+        "tree_selected_rank_max": max(selected_ranks) if selected_ranks else None,
         "tree_selected_action_count": selected_action_count,
         "tree_selected_action_match_teacher_count": selected_action_match_teacher_count if teacher is not None else None,
         "tree_selected_action_match_teacher_rate": (
@@ -429,6 +488,8 @@ def evaluate_tree_policy_once(
         ),
         "tree_q_regret_mean": (mean(q_regrets) if q_regrets else None),
         "tree_q_regret_p95": (float(np.percentile(q_regrets, 95)) if q_regrets else None),
+        "tree_selected_q_regret_mean": (mean(selected_q_regrets) if selected_q_regrets else None),
+        "tree_selected_q_regret_p95": (float(np.percentile(selected_q_regrets, 95)) if selected_q_regrets else None),
         "action_space_type": str(debug_stats["action_space_type"]),
         "action_count": int(debug_stats["action_count"]),
         "check_safety": bool(debug_stats["check_safety"]),
