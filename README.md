@@ -257,6 +257,59 @@ conda run -n amc-repro python scripts/run_small_experiment.py
 
 本次修改在现有 VIPER / BC / DAGGER tree HOUT 评估流程中增加了 **leaf-level execution audit** 能力。
 
+## 8.3 定点整数 VIPER 使用说明
+
+定点模式只改变 VIPER student 的训练与部署输入：DQN teacher 仍接收原始 `float32` observation，环境、mask、预算更新、事件运行时和 selection 语义保持不变。数据集会同时保存 `state_vector`（teacher 使用）与 `student_state_vector_int`（整数 tree 使用）。
+
+使用 fixed-point 训练时，建议按下面顺序操作：
+
+1. 先采集 teacher dataset。
+2. 再用同一套 workload / runtime 参数训练 tree。
+3. 如果你要复用旧的 teacher-only dataset，必须显式打开 `--allow-legacy-dataset-quantization`，否则训练会直接失败。
+4. 训练完成后，`best/` 目录会包含整数 artifact；评估时建议显式加 `--require-integer-tree-artifact`，避免误读 legacy sklearn artifact。
+
+采集整数 student state 的 teacher 数据：
+
+```bash
+PYTHONPATH=. python scripts/collect_viper_teacher_data.py \
+  --model /path/to/teacher.pt --teacher-id teacher_v1 \
+  --output-dir outputs/viper_dataset \
+  --tree-state-encoding fixed_point_int
+```
+
+使用整数特征训练 VIPER：
+
+```bash
+PYTHONPATH=. python scripts/train_viper_tree.py \
+  --method viper --teacher-model /path/to/teacher.pt --teacher-id teacher_v1 \
+  --initial-dataset outputs/viper_dataset \
+  --output-dir outputs/viper_tree \
+  --tree-state-encoding fixed_point_int
+```
+
+如果 `outputs/viper_dataset` 是旧的 legacy teacher-only 数据集，可以用下面的方式显式升级：
+
+```bash
+PYTHONPATH=. python scripts/train_viper_tree.py \
+  --method viper --teacher-model /path/to/teacher.pt --teacher-id teacher_v1 \
+  --initial-dataset outputs/legacy_viper_dataset \
+  --output-dir outputs/viper_tree \
+  --tree-state-encoding fixed_point_int \
+  --allow-legacy-dataset-quantization
+```
+
+定点 artifact 会生成 `integer_tree.json`、`fixed_point_config.json`、`artifact_manifest.json`、`leaf_rules_int.json`、`leaf_rules_int.csv`，并在 `metadata.json` 里记录：
+
+- `tree_runtime_policy_type=integer_tree_ranked_valid_or_none`
+- `tree_state_encoding=fixed_point_int`
+- `tree_fixed_point_scale`
+- `tree_fixed_point_config_hash`
+- `integer_equivalence_verified=true`
+
+运行时加载这些定点整数 artifact 时，程序只会强校验 `metadata.json`、`feature_names.json`、`action_definitions.json`、`integer_tree.json`、`fixed_point_config.json` 和 `artifact_manifest.json`；`model.joblib` 仅作为兼容归档文件保留，不是定点部署的必需文件。
+
+训练结束后，`aggregate_dataset/` 也会写出完整的新 schema 数据集，后续可以在 `--allow-legacy-dataset-quantization` 关闭的情况下再次读取。部署时整数 policy 仍按完整 action ranking 叠加原 valid-action mask，只有全部动作非法时才返回 `None`。评估时可用 `--require-integer-tree-artifact` 拒绝 legacy sklearn artifact。
+
 ### 8.2.1 功能概述
 
 leaf-level execution audit 使每一次 tree policy 决策都能追溯到：

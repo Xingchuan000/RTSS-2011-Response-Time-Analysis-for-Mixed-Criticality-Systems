@@ -21,6 +21,7 @@ from amc_py.dqn import (
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.runtime_models import RuntimeSemantics
 from amc_py.viper.dataset import write_viper_dataset
+from amc_py.viper.fixed_point import FixedPointConfig
 from amc_py.viper.teacher import collect_teacher_labeled_rollouts
 from scripts.common_mc_fairgen_cli import (
     add_mc_fairgen_args,
@@ -103,6 +104,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-cost-weight", type=float, default=0.7)
     parser.add_argument("--risk-max-scale", type=float, default=3.0)
     parser.add_argument("--include-safety-margin", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--tree-state-encoding", choices=["legacy_float32", "fixed_point_int"], default="legacy_float32")
+    parser.add_argument("--tree-fixed-point-scale", type=int, default=1_000_000)
+    parser.add_argument("--tree-fixed-point-rounding", choices=["half_up_nonnegative"], default="half_up_nonnegative")
     parser.add_argument("--total-util", type=float, default=0.65)
     parser.add_argument("--num-tasks", type=int, default=20)
     parser.add_argument("--cf", type=float, default=2.0)
@@ -130,6 +134,7 @@ def main() -> None:
         include_safety_margin=args.include_safety_margin,
     )
     experiment_config = _build_experiment_config(args)
+    fixed_point_config = FixedPointConfig(scale=args.tree_fixed_point_scale, output_max=args.tree_fixed_point_scale, rounding_mode=args.tree_fixed_point_rounding) if args.tree_state_encoding == "fixed_point_int" else None
     samples, manifest = collect_teacher_labeled_rollouts(
         teacher=teacher,
         experiment_config=experiment_config,
@@ -153,6 +158,8 @@ def main() -> None:
         teacher_id=args.teacher_id,
         taskset_seed=args.fixed_taskset_seed,
         scenario_split=args.scenario_split,
+        student_state_encoding=args.tree_state_encoding,
+        fixed_point_config=fixed_point_config,
     )
     manifest["teacher_model_path"] = str(args.model)
     # 无论后续数据集被谁消费，都把 workload CLI 口径完整落盘，便于检查

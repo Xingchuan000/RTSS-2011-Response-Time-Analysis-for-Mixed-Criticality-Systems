@@ -10,7 +10,13 @@ from amc_py.dqn import DqnBudgetAgent, ExperimentConfig, build_env_from_experime
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.runtime_models import RuntimeSemantics
 from amc_py.viper.dataset import ViperSample
-from amc_py.viper.tree_policy import TreeBudgetPolicy
+from amc_py.viper.fixed_point import (
+    FixedPointConfig,
+    fixed_point_config_hash,
+    fixed_point_config_to_dict,
+    quantize_state_vector,
+)
+from amc_py.viper.tree_policy import TreePolicyProtocol
 
 
 def collect_teacher_labeled_rollouts(
@@ -37,14 +43,21 @@ def collect_teacher_labeled_rollouts(
     teacher_id: str,
     taskset_seed: int | None,
     scenario_split: str,
-    behavior_policy: TreeBudgetPolicy | None = None,
+    behavior_policy: TreePolicyProtocol | None = None,
     tree_iteration: int | None = None,
+    student_state_encoding: str = "legacy_float32",
+    fixed_point_config: FixedPointConfig | None = None,
 ) -> tuple[list[ViperSample], dict]:
     """采集 rollout 上的 teacher 标注样本。
 
     这里严格遵守计划中的顺序：当前状态先查 mask，再查 teacher Q，再决定 behavior action，
     最后把该行为动作送入 `env.step(...)`。
     """
+
+    if student_state_encoding not in {"legacy_float32", "fixed_point_int"}:
+        raise ValueError(f"不支持的 student_state_encoding: {student_state_encoding}")
+    if student_state_encoding == "fixed_point_int" and fixed_point_config is None:
+        raise ValueError("fixed_point_int 模式必须提供 fixed_point_config")
 
     samples: list[ViperSample] = []
     manifest_mask_reasons: Counter[str] = Counter()
@@ -127,6 +140,11 @@ def collect_teacher_labeled_rollouts(
                     raw_budgets_json=json.dumps(dict(obs.raw_budgets), ensure_ascii=False, sort_keys=True),
                     raw_recent_costs_json=json.dumps(dict(obs.raw_recent_costs), ensure_ascii=False, sort_keys=True),
                     mask_reject_reasons_json=json.dumps(env.mask_log[-1].get("reject_reason_counts", {}), ensure_ascii=False, sort_keys=True),
+                    student_state_vector_int=(
+                        None
+                        if student_state_encoding == "legacy_float32"
+                        else quantize_state_vector(obs.state_vector, fixed_point_config)  # type: ignore[arg-type]
+                    ),
                 )
             )
             manifest_mask_reasons.update(env.mask_log[-1].get("reject_reason_counts", {}))
@@ -135,6 +153,17 @@ def collect_teacher_labeled_rollouts(
             done = result.done
             decision_index += 1
     manifest = {
+        "dataset_schema_version": "viper_dataset_fixed_int_v1",
+        "teacher_state_encoding": "float32",
+        "student_state_encoding": student_state_encoding,
+        "fixed_point_config": (
+            None if fixed_point_config is None else fixed_point_config_to_dict(fixed_point_config)
+        ),
+        "fixed_point_config_hash": (
+            None
+            if fixed_point_config is None
+            else fixed_point_config_hash(fixed_point_config)
+        ),
         "dataset_id": f"{teacher_id}_{scenario_split}_{len(samples)}",
         "teacher_id": teacher_id,
         "teacher_model_path": "",

@@ -25,7 +25,7 @@ from amc_py.metrics import (
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.runtime_models import RuntimeSemantics, SimulationResult
 from amc_py.viper.dataset import ViperSample
-from amc_py.viper.tree_policy import TreeBudgetPolicy
+from amc_py.viper.tree_policy import TreePolicyProtocol
 
 
 def retention_higher_is_better(parent: float, teacher: float, tree: float) -> float | None:
@@ -40,7 +40,7 @@ def retention_lower_is_better(parent: float, teacher: float, tree: float) -> flo
     return (parent - tree) / (parent - teacher)
 
 
-def compute_offline_tree_metrics(tree_policy: TreeBudgetPolicy, samples: Sequence[ViperSample]) -> dict[str, float]:
+def compute_offline_tree_metrics(tree_policy: TreePolicyProtocol, samples: Sequence[ViperSample]) -> dict[str, float]:
     """在离线 dataset 上统计 tree fidelity 与 q-regret。"""
 
     labeled_samples = [sample for sample in samples if sample.teacher_action_id is not None]
@@ -79,7 +79,7 @@ def _build_leaf_audit_fields(
     step_index: int,
     state_vector: tuple[float, ...],
     feature_names: tuple[str, ...],
-    tree_policy: TreeBudgetPolicy,
+    tree_policy: TreePolicyProtocol,
     tree_info: dict[str, object],
     selected_action_id: int | None,
     valid_action_mask: tuple[bool, ...],
@@ -137,6 +137,13 @@ def _build_leaf_audit_fields(
     fields["tree_raw_top1_invalid"] = tree_info.get("tree_raw_top1_invalid")
     fields["tree_fallback_used"] = tree_info.get("tree_fallback_used")
     fields["tree_no_valid_action"] = tree_info.get("tree_no_valid_action")
+    fields["tree_selected_rank"] = tree_info.get("tree_selected_rank")
+    fields["student_state_vector_int"] = tree_info.get("student_state_vector_int")
+    fields["tree_runtime_policy_type"] = tree_info.get("tree_runtime_policy_type")
+    if isinstance(path_predicates, list):
+        fields["tree_integer_predicates_json"] = json.dumps(
+            [p for p in path_predicates if "value_int" in p and "threshold_int" in p], ensure_ascii=False
+        )
 
     # 动作语义描述
     raw_top1_def = tree_policy.action_definition(raw_top1_action_id)
@@ -225,7 +232,7 @@ def _build_leaf_audit_fields(
 
 def evaluate_tree_policy_once(
     *,
-    tree_policy: TreeBudgetPolicy,
+    tree_policy: TreePolicyProtocol,
     experiment_config: ExperimentConfig,
     seed: int,
     end_time: int,
@@ -391,5 +398,11 @@ def evaluate_tree_policy_once(
         "selected_explicit_noop_actions": int(debug_stats["selected_explicit_noop_actions"]),
         "selected_explicit_noop_rate": float(debug_stats["selected_explicit_noop_rate"]),
         "no_safe_action_steps": int(debug_stats["no_safe_action_steps"]),
+        "tree_runtime_policy_type": str(tree_policy.metadata.get("tree_runtime_policy_type", tree_policy.metadata.get("runtime_policy_type", ""))),
+        "tree_state_encoding": str(tree_policy.metadata.get("tree_state_encoding", tree_policy.metadata.get("student_state_encoding", ""))),
+        "tree_fixed_point_scale": tree_policy.metadata.get("tree_fixed_point_scale"),
+        "tree_fixed_point_config_hash": tree_policy.metadata.get("tree_fixed_point_config_hash"),
+        "tree_artifact_schema_version": tree_policy.metadata.get("tree_artifact_schema_version"),
+        "integer_equivalence_verified": bool(tree_policy.metadata.get("integer_equivalence_verified", False)),
     }
     return row, runtime_result, env.action_log

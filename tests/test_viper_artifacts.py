@@ -34,18 +34,19 @@ def test_save_tree_policy_artifact_writes_leaf_rules(tmp_path: Path) -> None:
     """save_tree_policy_artifact 应输出 leaf_rules.json 和 leaf_rules.csv。"""
 
     clf, action_defs = _simple_classifier_and_defs()
+    artifact_dir = tmp_path / "artifact"
     save_tree_policy_artifact(
-        tmp_path,
+        artifact_dir,
         classifier=clf,
         metadata={"state_dim": 1, "action_dim": 3, "method": "bc", "tree_id": "t0"},
         feature_names=("f0",),
         action_definitions=action_defs,
     )
 
-    assert (tmp_path / "leaf_rules.json").exists()
-    assert (tmp_path / "leaf_rules.csv").exists()
+    assert (artifact_dir / "leaf_rules.json").exists()
+    assert (artifact_dir / "leaf_rules.csv").exists()
 
-    with (tmp_path / "leaf_rules.json").open("r", encoding="utf-8") as f:
+    with (artifact_dir / "leaf_rules.json").open("r", encoding="utf-8") as f:
         leaf_table = json.load(f)
 
     assert isinstance(leaf_table, list)

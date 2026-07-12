@@ -17,6 +17,7 @@ sklearn = pytest.importorskip("sklearn.tree")
 DecisionTreeClassifier = sklearn.DecisionTreeClassifier
 
 from amc_py.viper.artifacts import load_tree_policy_artifact, save_tree_policy_artifact
+from amc_py.viper.fixed_point import FixedPointConfig, fixed_point_config_hash, fixed_point_config_to_dict
 from amc_py.viper.tree_policy import TreeBudgetPolicy
 
 
@@ -49,15 +50,42 @@ def test_tree_policy_returns_none_when_no_valid_action() -> None:
 
 def test_tree_artifact_roundtrip(tmp_path: Path) -> None:
     policy = _policy()
+    artifact_dir = tmp_path / "artifact"
     save_tree_policy_artifact(
-        tmp_path,
+        artifact_dir,
         classifier=policy.classifier,
         metadata=policy.metadata,
         feature_names=policy.feature_names,
         action_definitions=policy.action_definitions,
     )
-    loaded = load_tree_policy_artifact(tmp_path)
+    loaded = load_tree_policy_artifact(artifact_dir)
     assert loaded.predict_action_ranking((1.0,)) == policy.predict_action_ranking((1.0,))
+
+
+def test_fixed_point_tree_artifact_loads_without_model_joblib(tmp_path: Path) -> None:
+    policy = _policy()
+    config = FixedPointConfig(scale=1, output_max=10)
+    artifact_dir = tmp_path / "artifact"
+    save_tree_policy_artifact(
+        artifact_dir,
+        classifier=policy.classifier,
+        metadata={
+            "state_dim": 1,
+            "action_dim": 3,
+            "method": "viper",
+            "tree_id": "t1",
+            "student_state_encoding": "fixed_point_int",
+            "fixed_point_config": fixed_point_config_to_dict(config),
+            "fixed_point_config_hash": fixed_point_config_hash(config),
+            "runtime_policy_type": "integer_tree_ranked_valid_or_none",
+        },
+        feature_names=policy.feature_names,
+        action_definitions=policy.action_definitions,
+        verification_states=((0,), (1,), (2,)),
+    )
+    (artifact_dir / "model.joblib").unlink()
+    loaded = load_tree_policy_artifact(artifact_dir)
+    assert loaded.predict_action_ranking((1.0,)) == (1, 0, 2)
 
 
 def test_tree_policy_traces_leaf_and_path() -> None:

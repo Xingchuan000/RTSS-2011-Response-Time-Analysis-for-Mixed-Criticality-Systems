@@ -9,8 +9,12 @@ from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
+
+from amc_py.viper.fixed_point import FixedPointConfig, fixed_point_config_hash, quantize_state_vector
+from amc_py.viper.schema import VIPER_DATASET_SCHEMA_VERSION
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,17 +44,31 @@ class ViperSample:
     raw_budgets_json: str
     raw_recent_costs_json: str
     mask_reject_reasons_json: str
+    # teacher 保留原始 float observation；student 使用该字段进行纯整数训练。
+    student_state_vector_int: tuple[int, ...] | None = None
 
 
 def _sample_to_json_dict(sample: ViperSample) -> dict[str, object]:
     row = asdict(sample)
     row["state_vector"] = list(sample.state_vector)
+    row["student_state_vector_int"] = (
+        None if sample.student_state_vector_int is None else list(sample.student_state_vector_int)
+    )
     row["valid_action_mask"] = list(sample.valid_action_mask)
     row["raw_q_values"] = list(sample.raw_q_values)
     return row
 
 
 def _sample_from_json_dict(row: dict[str, object]) -> ViperSample:
+    state_vector = tuple(float(v) for v in row["state_vector"])  # type: ignore[arg-type]
+    raw_int_vector = row.get("student_state_vector_int")
+    student_state_vector_int: tuple[int, ...] | None = None
+    if raw_int_vector is not None:
+        if not isinstance(raw_int_vector, list) or any(isinstance(v, bool) or not isinstance(v, int) for v in raw_int_vector):
+            raise ValueError("student_state_vector_int 必须是整数列表")
+        student_state_vector_int = tuple(int(v) for v in raw_int_vector)
+        if len(student_state_vector_int) != len(state_vector):
+            raise ValueError("student_state_vector_int 与 state_vector 维度不一致")
     return ViperSample(
         teacher_id=str(row["teacher_id"]),
         taskset_seed=row.get("taskset_seed"),  # type: ignore[arg-type]
@@ -59,7 +77,8 @@ def _sample_from_json_dict(row: dict[str, object]) -> ViperSample:
         horizon=int(row["horizon"]),
         decision_index=int(row["decision_index"]),
         time=int(row["time"]),
-        state_vector=tuple(float(v) for v in row["state_vector"]),  # type: ignore[arg-type]
+        state_vector=state_vector,
+        student_state_vector_int=student_state_vector_int,
         valid_action_mask=tuple(bool(v) for v in row["valid_action_mask"]),  # type: ignore[arg-type]
         teacher_action_id=(None if row["teacher_action_id"] is None else int(row["teacher_action_id"])),
         teacher_action_valid=bool(row["teacher_action_valid"]),
@@ -76,6 +95,17 @@ def _sample_from_json_dict(row: dict[str, object]) -> ViperSample:
         raw_recent_costs_json=str(row["raw_recent_costs_json"]),
         mask_reject_reasons_json=str(row["mask_reject_reasons_json"]),
     )
+
+
+def _validate_int_vector(values: Sequence[object], *, field_name: str) -> tuple[int, ...]:
+    """严格验证整数向量元素类型，禁止 bool/float 冒充 int。"""
+
+    validated: list[int] = []
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{field_name} 必须全部是 int")
+        validated.append(int(value))
+    return tuple(validated)
 
 
 def write_viper_dataset(output_dir: Path, samples: Iterable[ViperSample], manifest: dict) -> None:
@@ -110,6 +140,9 @@ def samples_to_xyw(
     *,
     weight_mode: str,
     weight_epsilon: float = 1e-6,
+    student_encoding: Literal["legacy_float32", "fixed_point_int"] = "legacy_float32",
+    fixed_point_config: FixedPointConfig | None = None,
+    allow_legacy_quantization: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """把样本投影成 sklearn 训练需要的 `X/y/w`。
 
@@ -119,7 +152,27 @@ def samples_to_xyw(
     labeled_samples = [sample for sample in samples if sample.teacher_action_id is not None]
     if not labeled_samples:
         raise ValueError("没有可用于训练的 teacher labeled samples")
-    x = np.asarray([sample.state_vector for sample in labeled_samples], dtype=np.float32)
+    if student_encoding == "legacy_float32":
+        x = np.asarray([sample.state_vector for sample in labeled_samples], dtype=np.float32)
+    elif student_encoding == "fixed_point_int":
+        if fixed_point_config is None:
+            raise ValueError("fixed_point_int 模式必须提供 fixed_point_config")
+        vectors: list[tuple[int, ...]] = []
+        for sample in labeled_samples:
+            if sample.student_state_vector_int is None:
+                if not allow_legacy_quantization:
+                    raise ValueError("样本缺少 student_state_vector_int，且未允许 legacy quantization")
+                vector = quantize_state_vector(sample.state_vector, fixed_point_config)
+            else:
+                vector = _validate_int_vector(sample.student_state_vector_int, field_name="student_state_vector_int")
+                if any(value < fixed_point_config.output_min or value > fixed_point_config.output_max for value in vector):
+                    raise ValueError("student_state_vector_int 超出 fixed-point 配置范围")
+            if len(vector) != len(sample.state_vector):
+                raise ValueError("student_state_vector_int 与 state_vector 维度不一致")
+            vectors.append(vector)
+        x = np.asarray(vectors, dtype=np.int32)
+    else:
+        raise ValueError(f"不支持的 student_encoding: {student_encoding}")
     y = np.asarray([int(sample.teacher_action_id) for sample in labeled_samples], dtype=np.int64)
     if weight_mode == "uniform":
         w = np.ones(len(labeled_samples), dtype=np.float64)

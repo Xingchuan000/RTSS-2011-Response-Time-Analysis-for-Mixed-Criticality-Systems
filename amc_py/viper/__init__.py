@@ -6,11 +6,13 @@
 """
 
 from .dataset import ViperSample, read_viper_dataset, samples_to_xyw, write_viper_dataset
+from .fixed_point import FixedPointConfig, quantize_state_vector
+from .integer_tree import IntegerTreeModel, compile_sklearn_tree_to_integer, load_integer_tree_json
 from .registry import build_teacher_registry_row
 from .selection import SelectionConfig, select_best_tree
 from .splits import assert_disjoint_splits, parse_seed_spec, validate_viper_split_config
 from .teacher import collect_teacher_labeled_rollouts
-from .tree_policy import TreeBudgetPolicy
+from .tree_policy import IntegerTreeBudgetPolicy, TreeBudgetPolicy, TreePolicyProtocol
 
 try:
     from .artifacts import export_tree_rules_text, load_tree_policy_artifact, save_tree_policy_artifact
@@ -36,6 +38,13 @@ except ModuleNotFoundError:
 __all__ = [
     "SelectionConfig",
     "TreeBudgetPolicy",
+    "IntegerTreeBudgetPolicy",
+    "TreePolicyProtocol",
+    "FixedPointConfig",
+    "IntegerTreeModel",
+    "compile_sklearn_tree_to_integer",
+    "load_integer_tree_json",
+    "quantize_state_vector",
     "TreeHyperParams",
     "ViperSample",
     "assert_disjoint_splits",

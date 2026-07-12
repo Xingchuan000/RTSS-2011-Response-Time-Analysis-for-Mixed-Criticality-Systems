@@ -10,9 +10,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
+
+from amc_py.viper.fixed_point import (
+    FixedPointConfig,
+    fixed_point_config_hash,
+    quantize_state_vector,
+)
+from amc_py.viper.integer_tree import IntegerTreeModel, _validate_integer_tree_model, evaluate_integer_tree
+
+
+class TreePolicyProtocol(Protocol):
+    """legacy sklearn policy 与整数部署 policy 的共同调用协议。"""
+
+    metadata: dict[str, object]
+    feature_names: tuple[str, ...]
+    action_definitions: list[dict[str, object]]
+
+    def select_action_id(self, state_vector: tuple[float, ...], valid_action_mask: tuple[bool, ...] | None, *, include_decision_trace: bool = False) -> tuple[int | None, dict[str, object]]: ...
+    def trace_decision_path(self, state_vector: tuple[float, ...]) -> dict[str, object]: ...
+    def action_definition(self, action_id: int | None) -> dict[str, object] | None: ...
 
 
 @dataclass(slots=True)
@@ -202,5 +221,129 @@ class TreeBudgetPolicy:
         if action_id is None:
             return None
         if action_id < 0 or action_id >= len(self.action_definitions):
+            return None
+        return dict(self.action_definitions[action_id])
+
+
+@dataclass(slots=True)
+class IntegerTreeBudgetPolicy:
+    """接收原始 float observation、内部量化并执行整数 tree 的策略。"""
+
+    model: IntegerTreeModel
+    metadata: dict[str, object]
+    feature_names: tuple[str, ...]
+    action_definitions: list[dict[str, object]]
+    fixed_point_config: FixedPointConfig
+
+    def __post_init__(self) -> None:
+        """对象构造时即做 fail-closed 校验，避免绕过 loader 直接注入非法配置。"""
+
+        if len(self.feature_names) != self.model.state_dim:
+            raise ValueError("feature_names 与 model.state_dim 不一致")
+        if len(self.action_definitions) != self.model.action_dim:
+            raise ValueError("action_definitions 与 model.action_dim 不一致")
+        _ = self.metadata.get("state_dim")
+        if int(self.metadata.get("state_dim", self.model.state_dim)) != self.model.state_dim:
+            raise ValueError("metadata.state_dim 与 model.state_dim 不一致")
+        if int(self.metadata.get("action_dim", self.model.action_dim)) != self.model.action_dim:
+            raise ValueError("metadata.action_dim 与 model.action_dim 不一致")
+        _validate_integer_tree_model(self.model)
+        config_hash = fixed_point_config_hash(self.fixed_point_config)
+        if self.model.fixed_point_config_hash != config_hash:
+            raise ValueError("model.fixed_point_config_hash 与 fixed_point_config 不一致")
+        metadata_config = self.metadata.get("fixed_point_config")
+        if metadata_config is not None and not isinstance(metadata_config, dict):
+            raise ValueError("metadata.fixed_point_config 必须是 dict 或 None")
+        if metadata_config is not None:
+            from amc_py.viper.fixed_point import fixed_point_config_to_dict
+
+            if metadata_config != fixed_point_config_to_dict(self.fixed_point_config):
+                raise ValueError("metadata.fixed_point_config 与 fixed_point_config 不一致")
+        metadata_hash = self.metadata.get("fixed_point_config_hash")
+        if metadata_hash is not None and str(metadata_hash) != config_hash:
+            raise ValueError("metadata.fixed_point_config_hash 与 fixed_point_config 不一致")
+        tree_metadata_hash = self.metadata.get("tree_fixed_point_config_hash")
+        if tree_metadata_hash is not None and str(tree_metadata_hash) != config_hash:
+            raise ValueError("metadata.tree_fixed_point_config_hash 与 fixed_point_config 不一致")
+
+    def _evaluate(self, state_vector: tuple[float, ...]):
+        if len(state_vector) != self.model.state_dim:
+            raise ValueError("state_vector 维度不匹配")
+        state_int = quantize_state_vector(state_vector, self.fixed_point_config)
+        return state_int, evaluate_integer_tree(self.model, state_int)
+
+    def predict_action_ranking(self, state_vector: tuple[float, ...]) -> tuple[int, ...]:
+        return self._evaluate(state_vector)[1].action_ranking
+
+    def trace_decision_path(self, state_vector: tuple[float, ...]) -> dict[str, object]:
+        state_int, evaluation = self._evaluate(state_vector)
+        leaf = next(leaf for leaf in self.model.leaves if leaf.node_id == evaluation.leaf_id)
+        total_count = float(sum(float(value) for value in leaf.full_action_counts))
+        if total_count > 0.0:
+            action_proba = [float(value) / total_count for value in leaf.full_action_counts]
+        else:
+            action_proba = [0.0 for _ in leaf.full_action_counts]
+        return {
+            "tree_leaf_id": evaluation.leaf_id,
+            "tree_path_node_ids": evaluation.path_node_ids,
+            "tree_path_depth": len(evaluation.path_node_ids) - 1,
+            "tree_path_predicates": list(evaluation.path_predicates),
+            "tree_leaf_impurity": leaf.impurity,
+            "tree_leaf_n_node_samples": leaf.n_node_samples,
+            "tree_leaf_weighted_n_node_samples": leaf.weighted_n_node_samples,
+            "tree_leaf_value": list(leaf.full_action_counts),
+            "tree_leaf_predicted_class_id": leaf.raw_action_id,
+            "tree_action_proba": action_proba,
+            "tree_action_ranking": evaluation.action_ranking,
+            "student_state_vector_int": state_int,
+            "tree_runtime_policy_type": "integer_tree_ranked_valid_or_none",
+        }
+
+    def select_action_id(
+        self,
+        state_vector: tuple[float, ...],
+        valid_action_mask: tuple[bool, ...] | None,
+        *,
+        include_decision_trace: bool = False,
+    ) -> tuple[int | None, dict[str, object]]:
+        state_int, evaluation = self._evaluate(state_vector)
+        ranking = evaluation.action_ranking
+        raw_top1 = ranking[0]
+        trace = self.trace_decision_path(state_vector) if include_decision_trace else None
+        base = {
+            "tree_raw_top1_action_id": raw_top1,
+            "tree_raw_top1_invalid": False,
+            "tree_fallback_used": False,
+            "tree_no_valid_action": False,
+            "tree_selected_action_id": raw_top1,
+            "tree_selected_rank": 0,
+            "student_state_vector_int": state_int,
+            "tree_runtime_policy_type": "integer_tree_ranked_valid_or_none",
+        }
+        if valid_action_mask is None:
+            if trace is not None:
+                base.update(trace)
+            return raw_top1, base
+        if len(valid_action_mask) != len(self.action_definitions):
+            raise ValueError("valid_action_mask 长度必须与 action_dim 一致")
+        raw_invalid = not bool(valid_action_mask[raw_top1])
+        base["tree_raw_top1_invalid"] = raw_invalid
+        for rank, candidate in enumerate(ranking):
+            if bool(valid_action_mask[candidate]):
+                base.update({
+                    "tree_fallback_used": bool(raw_invalid and rank > 0),
+                    "tree_selected_action_id": candidate,
+                    "tree_selected_rank": rank,
+                })
+                if trace is not None:
+                    base.update(trace)
+                return candidate, base
+        base.update({"tree_no_valid_action": True, "tree_selected_action_id": None, "tree_selected_rank": None})
+        if trace is not None:
+            base.update(trace)
+        return None, base
+
+    def action_definition(self, action_id: int | None) -> dict[str, object] | None:
+        if action_id is None or action_id < 0 or action_id >= len(self.action_definitions):
             return None
         return dict(self.action_definitions[action_id])

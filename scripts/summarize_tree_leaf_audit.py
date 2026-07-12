@@ -16,6 +16,14 @@
 - leaf_teacher_disagreement.csv：teacher disagreement 高的叶子排行。
 - leaf_fallback_summary.csv：fallback 率高的叶子排行。
 - leaf_high_regret_cases.csv：step-level 高 regret 明细（top 1000）。
+
+当 leaf audit 行里带有整数路径谓词时，会额外输出整数边界裕量字段：
+- integer_margin_min
+- integer_margin_mean
+- integer_boundary_hit_count
+- integer_boundary_hit_rate
+
+这里的 boundary hit 统一定义为 `abs(value_int - threshold_int) <= 1`。
 """
 
 from __future__ import annotations
@@ -56,6 +64,44 @@ def _safe_float(value: object, default: float = 0.0) -> float:
         return float(value)
     except (ValueError, TypeError):
         return default
+
+
+def _maybe_int(value: object) -> int | None:
+    """只接受非 bool 的整数，其他值一律视为缺失。"""
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return int(value)
+
+
+def _extract_integer_margin_stats(row: dict[str, object]) -> tuple[float | None, bool | None]:
+    """从单条 audit 行中提取整数边界裕量与 boundary hit 标记。"""
+
+    raw_text = row.get("tree_integer_predicates_json")
+    if raw_text is None:
+        raw_text = row.get("tree_path_predicates_json")
+    if raw_text in (None, ""):
+        return None, None
+    try:
+        predicates = json.loads(str(raw_text))
+    except json.JSONDecodeError:
+        return None, None
+    if not isinstance(predicates, list):
+        return None, None
+    margins: list[int] = []
+    for predicate in predicates:
+        if not isinstance(predicate, dict):
+            continue
+        value_int = _maybe_int(predicate.get("value_int"))
+        threshold_int = _maybe_int(predicate.get("threshold_int"))
+        if value_int is None or threshold_int is None:
+            continue
+        margins.append(abs(value_int - threshold_int))
+    if not margins:
+        return None, None
+    row_min = float(min(margins))
+    boundary_hit = any(margin <= 1 for margin in margins)
+    return row_min, boundary_hit
 
 
 def _taskset_seed_of(row: dict[str, object]) -> str:
@@ -177,6 +223,21 @@ def _build_leaf_summary_all(
         q_regret_mean = float(np.mean(q_regrets)) if q_regrets else None
         q_regret_p95 = float(np.percentile(q_regrets, 95)) if q_regrets else None
 
+        integer_row_margins: list[float] = []
+        integer_boundary_hit_count = 0
+        for row in leaf_rows:
+            margin, boundary_hit = _extract_integer_margin_stats(row)
+            if margin is None:
+                continue
+            integer_row_margins.append(margin)
+            integer_boundary_hit_count += int(bool(boundary_hit))
+        integer_margin_row_count = len(integer_row_margins)
+        integer_margin_min = float(np.min(integer_row_margins)) if integer_row_margins else None
+        integer_margin_mean = float(np.mean(integer_row_margins)) if integer_row_margins else None
+        integer_boundary_hit_rate = (
+            integer_boundary_hit_count / integer_margin_row_count if integer_margin_row_count > 0 else None
+        )
+
         # reward 统计
         rewards = [_safe_float(r.get("reward")) for r in leaf_rows]
         reward_sum = float(np.sum(rewards))
@@ -216,6 +277,10 @@ def _build_leaf_summary_all(
             "raw_teacher_match_rate": raw_match_rate,
             "q_regret_selected_mean": q_regret_mean,
             "q_regret_selected_p95": q_regret_p95,
+            "integer_margin_min": integer_margin_min,
+            "integer_margin_mean": integer_margin_mean,
+            "integer_boundary_hit_count": (integer_boundary_hit_count if integer_row_margins else None),
+            "integer_boundary_hit_rate": integer_boundary_hit_rate,
             "reward_mean": reward_mean,
             "reward_sum": reward_sum,
             "accepted_rate": accepted_rate,

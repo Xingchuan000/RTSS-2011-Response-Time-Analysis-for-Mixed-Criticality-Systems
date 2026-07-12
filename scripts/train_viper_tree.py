@@ -14,6 +14,7 @@ from amc_py.dqn import DqnBudgetAgent
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.runtime_models import RuntimeSemantics
 from amc_py.viper.training import TreeHyperParams, run_viper_iterations
+from amc_py.viper.fixed_point import FixedPointConfig
 
 from scripts.collect_viper_teacher_data import _build_experiment_config, _parse_seeds
 from scripts.common_mc_fairgen_cli import (
@@ -76,6 +77,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--automotive-mode", type=str, default="paper_like")
     add_mc_fairgen_args(parser)
     parser.add_argument("--allow-workload-mismatch", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--tree-state-encoding", choices=["legacy_float32", "fixed_point_int"], default="legacy_float32")
+    parser.add_argument("--tree-fixed-point-scale", type=int, default=1_000_000)
+    parser.add_argument("--tree-fixed-point-rounding", choices=["half_up_nonnegative"], default="half_up_nonnegative")
+    parser.add_argument("--allow-legacy-dataset-quantization", action=argparse.BooleanOptionalAction, default=False)
     return parser
 
 
@@ -94,6 +99,7 @@ def main() -> None:
     )
     experiment_config = _build_experiment_config(args)
     workload_cli_config = build_workload_cli_config(args)
+    fixed_point_config = FixedPointConfig(scale=args.tree_fixed_point_scale, output_max=args.tree_fixed_point_scale, rounding_mode=args.tree_fixed_point_rounding) if args.tree_state_encoding == "fixed_point_int" else None
     workload_mismatch_warning: str | None = None
     # 当 tree 训练复用已有 dataset 时，先做一次严格的参数一致性校验，
     # 防止 dataset 的 teacher 采样分布与当前训练/验证分布发生无声漂移。
@@ -148,6 +154,9 @@ def main() -> None:
                 method=args.method,
                 workload_cli_config=workload_cli_config,
                 workload_mismatch_warning=workload_mismatch_warning,
+                student_state_encoding=args.tree_state_encoding,
+                fixed_point_config=fixed_point_config,
+                allow_legacy_quantization=args.allow_legacy_dataset_quantization,
             )
 
 

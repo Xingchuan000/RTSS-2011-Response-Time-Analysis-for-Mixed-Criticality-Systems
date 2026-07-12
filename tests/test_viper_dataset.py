@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
+from amc_py.viper.fixed_point import FixedPointConfig
 from amc_py.viper.dataset import ViperSample, read_viper_dataset, samples_to_xyw, write_viper_dataset
 
 
@@ -44,3 +48,15 @@ def test_dataset_roundtrip_and_xyw(tmp_path: Path) -> None:
     assert x.shape == (1, 2)
     assert y.tolist() == [2]
     assert float(w[0]) == 1.0
+
+
+def test_fixed_point_dataset_rejects_non_int_student_state() -> None:
+    sample = _sample()
+    invalid = replace(sample, student_state_vector_int=(1, True))
+    with pytest.raises(ValueError, match="student_state_vector_int 必须全部是 int"):
+        samples_to_xyw(
+            [invalid],
+            weight_mode="uniform",
+            student_encoding="fixed_point_int",
+            fixed_point_config=FixedPointConfig(scale=1, output_max=10),
+        )

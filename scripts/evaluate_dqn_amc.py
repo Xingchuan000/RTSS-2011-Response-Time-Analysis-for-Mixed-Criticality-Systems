@@ -402,6 +402,12 @@ def _eval_summary_fieldnames() -> list[str]:
             "masked_deploy_cap_increase_rate",
             "observation_mode",
             "state_dim",
+            "tree_runtime_policy_type",
+            "tree_state_encoding",
+            "tree_fixed_point_scale",
+            "tree_fixed_point_config_hash",
+            "tree_artifact_schema_version",
+            "integer_equivalence_verified",
             "mean_over_increase_excess",
             "over_increase_action_count",
             "mean_budget_soft_cap_increase_excess",
@@ -467,6 +473,12 @@ def _empty_tree_diagnostics_row() -> dict[str, float | int | str | None]:
         "tree_leaf_count": None,
         "tree_max_depth_param": None,
         "tree_min_samples_leaf": None,
+        "tree_runtime_policy_type": None,
+        "tree_state_encoding": None,
+        "tree_fixed_point_scale": None,
+        "tree_fixed_point_config_hash": None,
+        "tree_artifact_schema_version": None,
+        "integer_equivalence_verified": None,
         "tree_raw_top1_invalid_count": None,
         "tree_raw_top1_invalid_rate": None,
         "tree_fallback_count": None,
@@ -1128,6 +1140,7 @@ def _evaluate_tree_once(
     feature_config: FeatureConfig,
     c_amc_sem_xf: float = 0.5,
     teacher_model_path: Path | None = None,
+    require_integer_tree: bool = False,
     leaf_audit_enabled: bool = False,
     leaf_audit_state_mode: str = "split",
     leaf_audit_top_k_actions: int = 5,
@@ -1137,7 +1150,7 @@ def _evaluate_tree_once(
     from amc_py.viper.artifacts import load_tree_policy_artifact
     from amc_py.viper.metrics import evaluate_tree_policy_once
 
-    tree_policy = load_tree_policy_artifact(tree_artifact_dir)
+    tree_policy = load_tree_policy_artifact(tree_artifact_dir, require_integer_tree=require_integer_tree)
     teacher = DqnBudgetAgent.load(teacher_model_path) if teacher_model_path is not None else None
     tree_metrics, runtime_result, action_log = evaluate_tree_policy_once(
         tree_policy=tree_policy,
@@ -1212,6 +1225,12 @@ UNIFIED_SUMMARY_FIELDNAMES = [
     "enable_deploy_cap_mask",
     "deploy_cap_mask_ratio",
     "deploy_cap_mask_criticality",
+    "tree_runtime_policy_type",
+    "tree_state_encoding",
+    "tree_fixed_point_scale",
+    "tree_fixed_point_config_hash",
+    "tree_artifact_schema_version",
+    "integer_equivalence_verified",
     "row_type",
     "method",
     "reference_method",
@@ -1335,6 +1354,21 @@ def _group_summary_context(
     }
 
 
+def _tree_summary_context(
+    sample_row: dict[str, int | float | str | bool],
+) -> dict[str, int | float | str | bool | None]:
+    """抽取 tree artifact 相关的统一摘要字段。"""
+
+    return {
+        "tree_runtime_policy_type": sample_row.get("tree_runtime_policy_type"),
+        "tree_state_encoding": sample_row.get("tree_state_encoding"),
+        "tree_fixed_point_scale": sample_row.get("tree_fixed_point_scale"),
+        "tree_fixed_point_config_hash": sample_row.get("tree_fixed_point_config_hash"),
+        "tree_artifact_schema_version": sample_row.get("tree_artifact_schema_version"),
+        "integer_equivalence_verified": sample_row.get("integer_equivalence_verified"),
+    }
+
+
 def _aggregate_method_summary_rows(
     group_rows: list[dict[str, int | float | str | bool]],
 ) -> list[dict[str, int | float | str | bool | None]]:
@@ -1349,6 +1383,7 @@ def _aggregate_method_summary_rows(
     for method, method_rows in sorted(rows_by_method.items()):
         summary_row: dict[str, int | float | str | bool | None] = {
             **context,
+            **_tree_summary_context(method_rows[0]),
             "row_type": "method_summary",
             "method": method,
             "reference_method": "",
@@ -1531,6 +1566,7 @@ def _build_dqn_reference_comparison_rows(
                         "deploy_cap_mask_criticality",
                     )
                 },
+                **_tree_summary_context(dqn_row),
                 "row_type": "dqn_vs_reference",
                 "method": "dqn_agent",
                 "reference_method": reference_method,
@@ -1964,6 +2000,7 @@ def _evaluate_enabled_methods_for_seed(
     tree_audit_method_set: set[str] | None = None,
     tree_audit_state_mode: str = "split",
     tree_audit_top_k_actions: int = 5,
+    require_integer_tree_artifact: bool = False,
 ) -> tuple[list[dict[str, int | float | str | bool]], list[dict[str, object]]]:
     """评估单个 seed 下的所有启用方法。
 
@@ -2517,6 +2554,7 @@ def _evaluate_enabled_methods_for_seed(
             feature_config=feature_config,
             c_amc_sem_xf=c_amc_sem_xf,
             teacher_model_path=tree_compare_teacher_model,
+            require_integer_tree=require_integer_tree_artifact,
             leaf_audit_enabled=leaf_audit_enabled,
             leaf_audit_state_mode=tree_audit_state_mode,
             leaf_audit_top_k_actions=tree_audit_top_k_actions,
@@ -2602,6 +2640,7 @@ def _evaluate_seed_worker(
         set[str] | None,
         str,
         int,
+        bool,
     ],
 ) -> tuple[list[dict[str, int | float | str | bool]], list[dict[str, object]]]:
     """并行 worker：完成单个 seed 的全部评估方法。
@@ -2658,6 +2697,7 @@ def _evaluate_seed_worker(
         tree_audit_method_set,
         tree_audit_state_mode,
         tree_audit_top_k_actions,
+        require_integer_tree_artifact,
     ) = args_tuple
     return _evaluate_enabled_methods_for_seed(
         seed=seed,
@@ -2707,6 +2747,7 @@ def _evaluate_seed_worker(
         tree_audit_method_set=tree_audit_method_set,
         tree_audit_state_mode=tree_audit_state_mode,
         tree_audit_top_k_actions=tree_audit_top_k_actions,
+        require_integer_tree_artifact=require_integer_tree_artifact,
     )
 
 
@@ -2762,6 +2803,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dagger-tree-model", type=Path, default=None)
     parser.add_argument("--viper-tree-model", type=Path, default=None)
     parser.add_argument("--tree-compare-teacher-model", type=Path, default=None)
+    parser.add_argument("--require-integer-tree-artifact", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
         "--tree-audit-dir",
         type=Path,
@@ -3092,6 +3134,7 @@ def main() -> None:
                 tree_audit_method_set=tree_audit_method_set,
                 tree_audit_state_mode=args.tree_audit_state_mode,
                 tree_audit_top_k_actions=args.tree_audit_top_k_actions,
+                require_integer_tree_artifact=args.require_integer_tree_artifact,
             )
             for seed in seeds
         ]
@@ -3146,6 +3189,7 @@ def main() -> None:
                 tree_audit_method_set,
                 args.tree_audit_state_mode,
                 args.tree_audit_top_k_actions,
+                args.require_integer_tree_artifact,
             )
             for seed in seeds
         ]
