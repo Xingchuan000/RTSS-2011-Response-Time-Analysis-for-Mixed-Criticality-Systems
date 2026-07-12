@@ -336,8 +336,11 @@ def save_integer_tree_json(model: IntegerTreeModel, path: Path) -> str:
 
     _validate_integer_tree_model(model)
     text = json.dumps(_model_to_dict(model), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    path.write_text(text + "\n", encoding="utf-8")
-    return hashlib.sha256((text + "\n").encode("utf-8")).hexdigest()
+    # Write the exact bytes that are hashed. Text-mode writes translate LF to
+    # CRLF on Windows, which made artifact_manifest.json contain a stale hash.
+    payload = (text + "\n").encode("utf-8")
+    path.write_bytes(payload)
+    return hashlib.sha256(payload).hexdigest()
 
 
 def load_integer_tree_json(path: Path) -> IntegerTreeModel:
