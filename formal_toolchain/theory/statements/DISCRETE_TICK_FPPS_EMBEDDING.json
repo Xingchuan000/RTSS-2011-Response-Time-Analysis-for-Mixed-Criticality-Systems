@@ -1,0 +1,17 @@
+{
+  "theorem_id": "DISCRETE_TICK_FPPS_EMBEDDING",
+  "exact_statement": "Every P0 reference schedule whose time points are integer ticks, whose processor overhead is zero, whose execution is fully preemptive, and whose dispatch rule is work-conserving strict fixed priority is an instance of the single-processor FPPS theorem model with the same task parameters and priority order. This theorem establishes only model embedding; it does not establish a concrete-prefix refinement.",
+  "assumptions": [
+    "integer_tick",
+    "zero_processor_overhead",
+    "fully_preemptive_reference_execution",
+    "work_conserving_strict_priority",
+    "same_task_parameters_and_priority"
+  ],
+  "conclusion": "the P0 reference integer-tick schedule is an admissible FPPS theorem-model schedule",
+  "source_reference": "This framework theorem interface, P0 discrete-tick embedding",
+  "assurance_level": "DECLARED_AXIOM_TCB",
+  "version": "p0-theory-r2",
+  "statement_hash": "c6bffb2db3fb7cb82f18a940ee98eef1dfe341f54b7f4f46f64f3a26d0abe2f2",
+  "assumption_hash": "0e85f62ecfd2cf1f852d0a80f510117901bc55652f5b661e13280b60eda3c541"
+}

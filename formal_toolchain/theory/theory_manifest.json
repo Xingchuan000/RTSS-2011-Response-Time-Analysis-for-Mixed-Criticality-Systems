@@ -1,0 +1,20 @@
+{
+  "schema_version": "theory_manifest_v2",
+  "library_version": "p0-theory-r2",
+  "proof_schema_version": "common_certificate_v1",
+  "registry_fingerprint": "1e849a756defe14f9f254614c2bdca5901a37e8e6440438b4c573c9a55cc9a72",
+  "proof_schema_compatible": ["proof_request_v1", "common_certificate_v1"],
+  "assurance_levels": ["DECLARED_AXIOM_TCB", "MACHINE_FORMALIZED_KERNEL"],
+  "required_theorems": [
+    "FPPS_LO_RTA_POSTFIXED_SUFFICIENCY",
+    "C_AMC_SEM_CASE1_CASE2_SUFFICIENCY",
+    "DISCRETE_TICK_FPPS_EMBEDDING",
+    "ZERO_RELATIVE_START_LEMMA",
+    "INHERITED_HI_VIRTUAL_SWITCH_DOMINATION",
+    "RECURRING_JOB_CRITICAL_INSTANT_DOMINATION",
+    "PER_HI_TASK_INDUCTIVE_WCRT",
+    "PROTECTED_HI_SAFETY_COROLLARY",
+    "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT",
+    "FINITE_HI_BAD_PREFIX_REFLECTION"
+  ]
+}

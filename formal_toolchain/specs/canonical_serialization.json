@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Canonical serialization policy",
+  "type": "object",
+  "required": ["encoding", "newline", "sort_keys", "separators", "float_policy", "path_policy"],
+  "properties": {
+    "encoding": {"const": "UTF-8"},
+    "newline": {"const": "LF"},
+    "sort_keys": {"const": "unicode_code_point_ascending"},
+    "separators": {"const": [",", ":"]},
+    "float_policy": {"const": "forbidden"},
+    "path_policy": {"const": "relative_posix"}
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "schema_version": "theory_hashes_v2",
+  "statements": {
+    "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT": {
+      "statement_hash": "e660e145e4c922a4ed03a90434ae032ccde308bb8c8dec0f29170c0f2de1521f",
+      "assumption_hash": "188a2035d31a9f92451781a23656ef15805dc2e30bbaa8aa2a96c14aa9b6d42a"
+    },
+    "C_AMC_SEM_CASE1_CASE2_SUFFICIENCY": {
+      "statement_hash": "90dd214d215d92676138b2ee4ef3a780e66bb0b2bf2fb35bf80b3acd056e947d",
+      "assumption_hash": "9c62ba9c1fb97935b13fc512a4f13c9d3181dc2871bdf9d442bdff9b9f859660"
+    },
+    "DISCRETE_TICK_FPPS_EMBEDDING": {
+      "statement_hash": "c6bffb2db3fb7cb82f18a940ee98eef1dfe341f54b7f4f46f64f3a26d0abe2f2",
+      "assumption_hash": "0e85f62ecfd2cf1f852d0a80f510117901bc55652f5b661e13280b60eda3c541"
+    },
+    "FINITE_HI_BAD_PREFIX_REFLECTION": {
+      "statement_hash": "2c00844cbaebe5df77392f4dc45c977ba6c116f0cbe5bb703fc8e502dffc7e93",
+      "assumption_hash": "7bba460aed255e0cc1850f0b1a1e71619c7ce7f07dc0ca935925b282cfb9d1b8"
+    },
+    "FPPS_LO_RTA_POSTFIXED_SUFFICIENCY": {
+      "statement_hash": "f4bd2253ddd7dd60e6273da85aa25b5ec82b84226d4439fbec4ba1cd0a40d5f9",
+      "assumption_hash": "dacffc443fe11f1439ed59a15ef1953d6bdeaba72e2f0b5b5bcf98c803960224"
+    },
+    "INHERITED_HI_VIRTUAL_SWITCH_DOMINATION": {
+      "statement_hash": "461436b2e35161cf9bf77745fd9e7db9018af51b59eb282954b6d21bab1789c3",
+      "assumption_hash": "8ef09ae25bb624c9f711d7aae716c0bda7c9e02c8257a25a114c692dd0ca25fe"
+    },
+    "PER_HI_TASK_INDUCTIVE_WCRT": {
+      "statement_hash": "1be7e63468d4637327dc2ef27228e77310ee57b87330e195b18b65f0a5c12ea5",
+      "assumption_hash": "0d157ac388f61bdfaf066d7924ad897f9e35f027126c20bc437407684e1337ea"
+    },
+    "PROTECTED_HI_SAFETY_COROLLARY": {
+      "statement_hash": "14bb5bcca74acf65d8a7ff7da1c9652264b9802978d807053160b3950d4669e3",
+      "assumption_hash": "0d0f1b15c483a4a08a4354d98f7878f9e929272613ac85569a6cf13d2d24d179"
+    },
+    "RECURRING_JOB_CRITICAL_INSTANT_DOMINATION": {
+      "statement_hash": "2212ebc70441a52f487b80045ab4b0aa884906a53b693c29ceb55bcc65ea2aa7",
+      "assumption_hash": "e12942a3f31c20113b3d66b434339e2906140d5ea8fe85edf3c245821f3a679d"
+    },
+    "ZERO_RELATIVE_START_LEMMA": {
+      "statement_hash": "dd9e3ae59422c43594bb9eedfd265c2436d3faee8202344caa852c6e839f0168",
+      "assumption_hash": "024e334a421d85d698fdf9c69db8185d14d62b409505e6ad0aabfb70a639cd4b"
+    }
+  }
+}

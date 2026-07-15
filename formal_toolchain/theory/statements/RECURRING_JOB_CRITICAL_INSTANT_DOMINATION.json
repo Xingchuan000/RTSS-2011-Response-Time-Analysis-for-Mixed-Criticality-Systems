@@ -1,0 +1,18 @@
+{
+  "theorem_id": "RECURRING_JOB_CRITICAL_INSTANT_DOMINATION",
+  "exact_statement": "For each fixed HI task i and each admissible recurring job index q in N, assume sporadic release separation, fixed-priority interference accounting, and a release-fixed mapping that preserves carry-in and earlier same-task demand. Then the canonical release-fixed critical-instant window for task i,q has workload no smaller than the corresponding admissible recurring-job window, so its response bound dominates that job.",
+  "assumptions": [
+    "fixed_hi_task_i",
+    "job_index_q_in_N",
+    "sporadic_recurrence",
+    "release_fixed_mapping",
+    "carry_in_accounted",
+    "fixed_priority_interference_accounted"
+  ],
+  "conclusion": "the canonical task-local critical-instant window dominates every admissible recurring job J_{i,q}",
+  "source_reference": "This framework theorem interface, recurring HI critical instant",
+  "assurance_level": "DECLARED_AXIOM_TCB",
+  "version": "p0-theory-r2",
+  "statement_hash": "2212ebc70441a52f487b80045ab4b0aa884906a53b693c29ceb55bcc65ea2aa7",
+  "assumption_hash": "e12942a3f31c20113b3d66b434339e2906140d5ea8fe85edf3c245821f3a679d"
+}

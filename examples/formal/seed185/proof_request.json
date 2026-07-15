@@ -1,0 +1,15 @@
+{
+  "schema_version": "proof_request_v1",
+  "profile": "P0",
+  "primary_claim": "DEPLOYED_HI_SAFETY",
+  "taskset_seed": 185,
+  "target_recipe": {
+    "factory": "examples.formal.seed185.target:build_target",
+    "kwargs": {}
+  },
+  "tree_artifact_dir": "best_overall",
+  "source_root": "source_root",
+  "optional_claims": [],
+  "status": "UNRESOLVED",
+  "failure_code": "AUTHORITATIVE_TARGET_MISSING"
+}

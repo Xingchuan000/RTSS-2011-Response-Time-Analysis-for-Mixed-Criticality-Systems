@@ -18,6 +18,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+formal = [
+    "jsonschema>=4.23,<5",
+    "z3-solver>=4.13,<5",
+]
 dev = [
     "pytest",
     "ruff",
@@ -25,8 +29,18 @@ dev = [
     "mypy",
 ]
 
-[tool.setuptools]
-packages = ["amc_py", "amc_py.rl", "amc_py.dqn", "amc_py.viper"]
+[project.scripts]
+amc-formal-prove-seed = "formal_toolchain.cli.prove_seed:main"
+amc-formal-inspect = "formal_toolchain.cli.inspect_target:main"
+amc-formal-compile = "formal_toolchain.cli.compile_seed:main"
+amc-formal-verify = "formal_toolchain.cli.verify_bundle:main"
+amc-formal-report = "formal_toolchain.cli.render_report:main"
+
+[tool.setuptools.packages.find]
+include = ["amc_py*", "formal_toolchain*"]
+
+[tool.setuptools.package-data]
+formal_toolchain = ["specs/**/*.json", "theory/**/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

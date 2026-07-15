@@ -1,0 +1,6 @@
+{
+  "schema_version": "claim_aggregation_v1",
+  "priority": ["PROOF_BUNDLE_INVALID", "MODEL_CONFORMANCE_FAILED", "CONCRETE_TIMING_COUNTEREXAMPLE", "POLICY_CONTRACT_VIOLATION", "REFERENCE_COUNTEREXAMPLE", "REFERENCE_CERTIFICATE_FAILED", "UNRESOLVED", "DEPLOYED_TREE_PROVED"],
+  "obligation_statuses": ["PASS", "FAIL", "UNRESOLVED", "NOT_APPLICABLE"],
+  "fail_status_uses_registry_failure_route": true
+}

@@ -1,0 +1,17 @@
+{
+  "theorem_id": "INHERITED_HI_VIRTUAL_SWITCH_DOMINATION",
+  "exact_statement": "Consider a HI job released at relative time r>=0 inside an already active HI-mode interval. If the protected HI demand order is monotone under carry-in translation and the inherited job has the same execution, deadline and higher-priority demand parameters as the corresponding virtual-switch job, then the response-demand window beginning at virtual switch time 0 dominates the inherited window and supplies an upper bound for the inherited job.",
+  "assumptions": [
+    "inherited_hi_job",
+    "already_active_hi_mode",
+    "protected_hi_demand_order",
+    "carry_in_translation_monotonicity",
+    "same_virtual_switch_parameters"
+  ],
+  "conclusion": "the zero-start virtual protected window upper-bounds every admissible inherited-HI response window",
+  "source_reference": "This framework theorem interface, inherited-HI domination",
+  "assurance_level": "DECLARED_AXIOM_TCB",
+  "version": "p0-theory-r2",
+  "statement_hash": "461436b2e35161cf9bf77745fd9e7db9018af51b59eb282954b6d21bab1789c3",
+  "assumption_hash": "8ef09ae25bb624c9f711d7aae716c0bda7c9e02c8257a25a114c692dd0ca25fe"
+}

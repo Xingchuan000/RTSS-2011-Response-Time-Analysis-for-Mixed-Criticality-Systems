@@ -1,0 +1,17 @@
+{
+  "theorem_id": "PROTECTED_HI_SAFETY_COROLLARY",
+  "exact_statement": "In the reference protected schedule, if every admissible HI task i and every task-local job index q in N has RT(J_{i,q}) <= D_{i,q}, then every reference HI job meets its deadline and the reference schedule contains no HI deadline miss. This corollary uses only the per-task WCRT result and reference schedule assumptions; it does not depend on concrete-prefix refinement or bad-prefix reflection.",
+  "assumptions": [
+    "reference_protected_schedule",
+    "all_hi_tasks",
+    "all_task_local_job_indices",
+    "per_hi_task_wcrt_le_deadline",
+    "reference_deadline_observation"
+  ],
+  "conclusion": "the reference protected schedule has no HI deadline miss",
+  "source_reference": "This framework theorem interface, protected HI safety corollary",
+  "assurance_level": "DECLARED_AXIOM_TCB",
+  "version": "p0-theory-r2",
+  "statement_hash": "14bb5bcca74acf65d8a7ff7da1c9652264b9802978d807053160b3950d4669e3",
+  "assumption_hash": "0d0f1b15c483a4a08a4354d98f7878f9e929272613ac85569a6cf13d2d24d179"
+}

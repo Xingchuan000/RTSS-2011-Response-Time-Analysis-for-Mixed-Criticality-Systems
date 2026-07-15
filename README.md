@@ -3952,3 +3952,88 @@ best elite 判定 reason（`validation_metrics.csv` / `elite_replay_log.csv`）�
 - `validation_metrics.csv`：`safe_global_best_reduction_before`、`safe_global_best_reduction_after`、`safe_global_new_best`、`safe_global_best_reason`、`best_elite_replay_candidate`、`best_elite_replay_reason`、`best_elite_replay_current_reduction`、`best_elite_replay_best_reduction`、`best_elite_replay_added_count`、`best_elite_replay_buffer_size`、`best_elite_replay_recent_episode_start`、`best_elite_replay_recent_episode_end`
 - `elite_replay_log.csv`：`safe_global_best_reduction_before`、`safe_global_best_reduction_after`、`safe_global_new_best`、`safe_global_best_reason`、`best_enabled`、`best_active`、`best_candidate`、`best_reason`、`best_current_reduction`、`best_best_reduction`、`best_added_count`、`best_buffer_size`
 - `config.json`：完整记录 best elite 全部配置与统计字段，便于复现实验。
+
+## Phase A/B 形式化工具链使用说明
+
+本轮新增 `formal_toolchain/`，严格保持 `formal_toolchain -> amc_py` 的单向依赖，
+不会修改 DQN、VIPER、runtime、mask 或 HOUT 语义。Phase A/B 当前提供工程基线、
+整数树 artifact inventory、seed 目录导入诊断，以及 Phase B 的 canonical JSON、
+schema、obligation registry、claim aggregation 和分层 context 基础设施。
+
+安装与检查：
+
+```bash
+python -m pip install -e '.[dev,formal]'
+python -c "import amc_py, formal_toolchain"
+python -m pytest -q tests/formal/unit/test_phase_ab.py
+```
+
+检查一个 artifact 目录（必须包含六个固定文件；是否绑定 seed 由调用方显式指定）：
+
+```bash
+amc-formal-inspect /path/to/seed185/best_overall
+```
+
+导入 seed 目录并生成 workspace：
+
+```python
+from pathlib import Path
+from formal_toolchain.adapters.seed_directory import resolve_seed_directory
+
+result = resolve_seed_directory(Path('/path/to/seed185'), 'best_overall')
+print(result)
+```
+
+本轮验收不使用真实 seed/s185 作为通过条件。缺少权威 target recipe、taskset 或 priority 时，导入结果会明确为
+`AUTHORITATIVE_TARGET_MISSING`/`MODEL_CONFORMANCE_FAILED`，不会按当前默认代码
+静默重建并冒充部署顺序。Phase A 的最终 s185 claim 因此仍保持 `UNRESOLVED`，
+直到计划要求的权威输入补齐。`amc-formal-prove-seed`、compile、verify、report
+入口在后续 Phase L 才串接完整证明链；当前故意以退出码 2 返回 `not implemented`。
+
+运行开发回归基线：
+
+```bash
+python scripts/run_formal_baseline.py --output baseline_result.json
+```
+
+该结果仅用于开发回归，不进入 proof bundle；不存在的测试路径会导致非零退出。
+
+### Phase C/D/E 状态
+
+Phase C 已加入 10 个通用 theorem interface、独立 theory verifier、statement/assumption
+双 hash 和 TCB instance-data 拒绝检查。Phase D 已加入固定目标源码 manifest、运行环境/依赖/
+checker manifest、effective config provenance、独立 immutable-input verifier 和 immutable input hash。
+Phase E 已加入拒绝优先的受支持 Python AST 子集、实际 event/action/removal/recovery 源码绑定、
+从 `amc_py/rl/feature_config.py` 独立导出 schema 的 observation 绑定，以及 fixed-point.py 的
+独立 Decimal/ROUND_HALF_UP 重放（当前验收包含 20 个以上向量）。
+
+目标代码遇到未列入 allow-list 的 helper、副作用调用、动态执行或无限循环时，绑定结果固定为
+`UNRESOLVED`，不会生成近似 PASS。当前 s185 仍缺少计划要求的 authoritative target，因此
+不能进入最终证明状态。
+
+在指定环境中运行本阶段测试：
+
+```bash
+conda run -n amc-repro python -m pytest -q tests/formal
+```
+
+合成 P0 夹具（不依赖真实 seed）验收：
+
+```bash
+conda run -n amc-repro python -c "from pathlib import Path; from formal_toolchain.adapters.target_factory import build_target; from formal_toolchain.conformance.preflight import preflight_formal_target; t=build_target('tests.formal.fixtures.synthetic_p0.target:build_target'); assert preflight_formal_target(t, Path('tests/formal/fixtures/synthetic_p0'))['obligation_status'] == 'PASS'"
+conda run -n amc-repro python scripts/run_formal_baseline.py --output baseline_result.json
+```
+
+基线脚本严格要求计划指定的 7 个测试文件合计恰好通过 38 项；计数不一致或任一测试失败都会返回非零退出码。
+
+Phase A-E 合成总验收：
+
+```bash
+conda run -n amc-repro python scripts/run_phase_ae_acceptance.py
+```
+
+总验收会实际解析 registry schema、验证 JSON 单一依赖 DAG、检查 synthetic preflight/config，
+运行六类真实源码 binder（含 quantization），并执行六个真实 event-runtime micro-scenario；不读取真实 seed。
+成功输出 `phase_result: PHASE_AE_ACCEPTED`、`workflow_status: VERIFIED` 和
+`final_safety_claim: NOT_EVALUATED`。该入口不会构造或输出 `DEPLOYED_TREE_PROVED`；真实 seed、
+candidate/certified envelope、C-AMC-sem RTA 及 Phase F-K 仍未评价。

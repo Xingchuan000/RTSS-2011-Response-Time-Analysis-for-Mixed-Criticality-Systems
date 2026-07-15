@@ -1,0 +1,20 @@
+{
+  "theorem_id": "PER_HI_TASK_INDUCTIVE_WCRT",
+  "exact_statement": "Fix a HI task i and define the induction over its task-local job index q in N. Base: the q=0 job satisfies the accepted protected WCRT bound under the protected HI RTA and zero-start/critical-instant assumptions. Step: for q in N, if every task-local job J_{i,k} with 0<=k<=q satisfies its bound and the release-count, interference, recurring-job domination and discrete-tick embedding assumptions hold, then J_{i,q+1} also satisfies the accepted bound. The induction is task-local and does not quantify over a global job index.",
+  "assumptions": [
+    "fixed_hi_task_i",
+    "task_local_job_index_q_in_N",
+    "base_job_bound",
+    "protected_hi_rta",
+    "release_count_bound",
+    "interference_bound",
+    "recurring_job_domination",
+    "discrete_tick_embedding"
+  ],
+  "conclusion": "forall q in N, RT(J_{i,q}) <= accepted_protected_WCRT_i for the fixed HI task i",
+  "source_reference": "This framework theorem interface, per-HI-task inductive WCRT",
+  "assurance_level": "DECLARED_AXIOM_TCB",
+  "version": "p0-theory-r2",
+  "statement_hash": "1be7e63468d4637327dc2ef27228e77310ee57b87330e195b18b65f0a5c12ea5",
+  "assumption_hash": "0d157ac388f61bdfaf066d7924ad897f9e35f027126c20bc437407684e1337ea"
+}

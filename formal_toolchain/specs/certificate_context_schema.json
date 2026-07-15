@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Layered certificate contexts",
+  "type": "object",
+  "required": ["bootstrap_context", "implementation_context", "semantic_context", "policy_context", "invariant_context", "reference_context", "bridge_context", "bundle_context"],
+  "additionalProperties": false,
+  "properties": {
+    "bootstrap_context": {"$ref": "#/$defs/context"},
+    "implementation_context": {"$ref": "#/$defs/context"},
+    "semantic_context": {"$ref": "#/$defs/context"},
+    "policy_context": {"$ref": "#/$defs/context"},
+    "invariant_context": {"$ref": "#/$defs/context"},
+    "reference_context": {"$ref": "#/$defs/context"},
+    "bridge_context": {"$ref": "#/$defs/context"},
+    "bundle_context": {"$ref": "#/$defs/context"}
+  },
+  "$defs": {"context": {"type": "object", "required": ["hash"],
+    "properties": {"hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "additionalProperties": true}}
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Certified Profile P0",
+  "type": "object",
+  "required": ["profile", "processor_count", "fully_preemptive", "work_conserving", "strict_priority", "integer_tick", "zero_overhead", "observe_only_deadline", "arrival_only_switch", "idle_recovery", "blocking", "self_suspension", "non_preemptive_sections", "controller_boundary", "closure_boundary"],
+  "properties": {
+    "profile": {"const": "P0"}, "processor_count": {"const": 1},
+    "fully_preemptive": {"const": true}, "work_conserving": {"const": true},
+    "strict_priority": {"const": true}, "integer_tick": {"const": true},
+    "zero_overhead": {"const": true}, "observe_only_deadline": {"const": true},
+    "arrival_only_switch": {"const": true}, "idle_recovery": {"const": true},
+    "blocking": {"const": false}, "self_suspension": {"const": false},
+    "non_preemptive_sections": {"const": false},
+    "controller_boundary": {"type": "string"}, "closure_boundary": {"type": "string"}
+  }, "additionalProperties": false
+}

@@ -1,0 +1,1 @@
+{"schema_version":"expected_effective_config_v1","required_fields":["semantics","action_space","observation_mode","capture_trace"],"fixture":"synthetic_p0_v1"}

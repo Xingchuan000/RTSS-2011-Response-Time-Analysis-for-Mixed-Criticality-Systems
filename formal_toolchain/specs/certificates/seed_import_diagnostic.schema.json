@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Seed import diagnostic",
+  "type": "object",
+  "required": ["status", "code"],
+  "properties": {
+    "status": {"enum": ["PASS", "FAIL", "UNRESOLVED"]},
+    "code": {"type": ["string", "null"]},
+    "route": {"type": "string"},
+    "message": {"type": "string"}
+  }, "additionalProperties": false
+}
