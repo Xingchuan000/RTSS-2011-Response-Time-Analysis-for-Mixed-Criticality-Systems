@@ -1,0 +1,31 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "HI_BAD_CLOSED_PREFIX_REFLECTION",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f",
+  "direct_predecessor_hashes": {
+    "CLOSED_PREFIX_REFINEMENT": "44b1d25ea5dae16a7458807749dc30cbceabd8c14defecf778d5e5ddf44430ec",
+    "REFERENCE_PREFIX_EXTENSION": "5951efb8149851b3137bdc6e8cb6415d40c23b329f308efe122980ca852dfcab",
+    "PROTECTED_HI_SAFETY_COROLLARY": "10c3ac235942e329088bc219cb588ffab335f7f9d3a553ae0fa8be6bad3a9ffd"
+  },
+  "checker_id": "formal_toolchain.verifier.recompute",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "raw_input_context": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f"
+  },
+  "witness": {
+    "evidence": {
+      "status": "PASS",
+      "hi_bad_prefix_reflected": true,
+      "corollary_hash": "7a5ad28516bcea33bb398e5ce92c56de0f416a2a458fd7d24a296254fa662608"
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "raw_recomputed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "13759c3dbb4993f9fdd63e1b7674ecba9b2d00cef849a6e98602754414acfcd2"
+}

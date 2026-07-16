@@ -1,0 +1,11 @@
+{
+  "schema_version": "seed_artifact_inventory_v1",
+  "tree_variant": "best_balanced",
+  "files": {
+    "integer_tree.json": "41fa692263467f8823ff58d12ef32a85b0e26219ad65006e4ce05e0ee15794d1",
+    "feature_names.json": "038ba2c0950e2a0dc23e9b818dcfc0cc4299206e6b00fd038f91593803183da5",
+    "action_definitions.json": "2f87a2176efab75a479b9fedb777892ed64ceca2b6b2d9f3c892e28f328de731",
+    "fixed_point_config.json": "d3b306c7c921d2028ec569eb9407a32ff375a348b7380afa5320db01e5e36393",
+    "metadata.json": "5637992da552b90c27bdd9b32308ce327239375d58b8953658ceade680305f52"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "CERTIFIED_ENVELOPE",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "44990a0a0599cb7ef5e712cc9a5de415e1fc1619e5988999adebbbd88aaf1e04",
+  "direct_predecessor_hashes": {
+    "DEPLOYED_POLICY_PRESERVATION": "c838689974486c6d2fb430f951f8ff450bd28404a1b3c21f361b4c331285a642",
+    "LO_BUDGET_UPPER_INVARIANT": "21ee1669867f62b87c2fe467bae393707367a78dae582d948085a86625e40c69",
+    "HI_BUDGET_LOWER_INVARIANT": "c0e2e75d8bd11e0c9b3cefef52eec2d6f30b4237bd2bb29452e7320418b4d616",
+    "ACTIVE_RELEASE_BUDGET_INVARIANT": "b99172403eccfea514a092434b33064813cca02a8528b61690e994f964c5532e"
+  },
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "not_run": "fresh verifier required"
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "FRESH_VERIFIER_REQUIRED"
+  },
+  "artifact_hash": "a3739f2e9b5f8cf53c6f37ffa63b4a4619b731ba5386499f11d4f7578ee8a023"
+}

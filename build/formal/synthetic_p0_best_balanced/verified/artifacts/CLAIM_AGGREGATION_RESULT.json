@@ -1,0 +1,27 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "CLAIM_AGGREGATION_RESULT",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f",
+  "direct_predecessor_hashes": {
+    "INDEPENDENT_BUNDLE_VERIFICATION": "2ecb3fadcb08949e2af50b705a38fab8bb949ee707b11aa436163fb624b30599",
+    "OUTER_BUNDLE_ROOT": "81111e49da8646db39b2d7b1cdb16487b80216b1d2e6959c2bb7bb4419737538"
+  },
+  "checker_id": "formal_toolchain.verifier.recompute",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "raw_input_context": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f"
+  },
+  "witness": {
+    "outer_bundle_root": "3c30024a1df75962be1f53ffb52048cc87df92865c98859326d1c3dc612fe256",
+    "result_status": "DEPLOYED_TREE_PROVED"
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "structural_recomputed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "e3b07e2aad8fc05f74be1433a57bff50d619e543a7dd6e263fc3973ca97423bd"
+}

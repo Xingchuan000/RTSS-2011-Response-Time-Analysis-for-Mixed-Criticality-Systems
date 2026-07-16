@@ -1,0 +1,22 @@
+{
+  "artifact_schema_version": "viper_integer_ranked_artifact_v1",
+  "file_hashes": {
+    "action_definitions.json": "e36cf9790ca0ecb701d44d9f33081017d8746684a01f6019ec83e2fa73419862",
+    "feature_names.json": "fdf3d829873b6991f3ac19878371eb5d5c0ae6f77314e87499d6f2e55c42835d",
+    "fixed_point_config.json": "bdec0a6ff5d29cb3676742f2261af7c2048aa83cd2d6ec6139907224160701be",
+    "integer_tree.json": "f34ff7cce78434bbc7d90fb92d80b8c6e55fb09298ebba5eec04463055f40acb",
+    "leaf_rules.csv": "d78a600b3afff59dfcc1c8003e49154f46ace5cd6f14fea10d7902abed0468d3",
+    "leaf_rules.json": "284269294849e7db7ddb8adb5213511ea9dee169ad9c4cca06e62e8dbdb427f4",
+    "leaf_rules_int.csv": "e5b2e4c304db709b7d407384d38024f2a7ec9bff4b8b0980cd80ccfd76064e39",
+    "leaf_rules_int.json": "ca4b0fa8f86bd62bba077db45303a79e2b62549d52c4d8e8c987ff9da3bfad6a",
+    "metadata.json": "cbdb2c9a09362965dfc93ffcf922db4c3159b75c4a5c10a61abe3ed81dddca26",
+    "model.joblib": "84a911691b344fae6edd52d2854e5a42740bc52fc0130161f6fa1f495b17c443"
+  },
+  "fixed_point_config_hash": "bb255908bec90f8d54945322db333c5c2d2df5af1c5e76fc9016dc8c975a381e",
+  "integer_equivalence_state_count": 48000,
+  "integer_equivalence_verification_state_hash": "32438c1940c1f3e1eab00bea93e6de22a9966841a484894419bfe5bbab134a54",
+  "integer_equivalence_verified": true,
+  "integer_tree_file_hash": "f34ff7cce78434bbc7d90fb92d80b8c6e55fb09298ebba5eec04463055f40acb",
+  "integer_tree_hash": "301387a5757b75722bd4e0d2ee4b391962e764ca8d041189b8f4e3f1bd15cebb",
+  "integer_tree_schema_version": "integer_tree_ranked_v1"
+}

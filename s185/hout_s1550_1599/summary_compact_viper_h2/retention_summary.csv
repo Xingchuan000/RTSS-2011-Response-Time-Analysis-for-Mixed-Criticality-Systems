@@ -1,0 +1,12 @@
+metric,value
+qos_retention_mean,1.0155958402864251
+qos_retention_median,1.014286038232158
+zero_service_retention_mean,1.015536155692315
+zero_service_retention_median,1.0142860382321595
+equiv_jne_retention_mean,1.0155958402864256
+equiv_jne_retention_median,1.0142860382321595
+valid_seed_count,50
+teacher_no_positive_gain_seed_count,0
+qos_retention_missing_count,0
+zero_service_retention_missing_count,0
+equiv_jne_retention_missing_count,0

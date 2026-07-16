@@ -1,0 +1,42 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "LEAF_GUARD_PARTITION",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f",
+  "direct_predecessor_hashes": {
+    "EXECUTABLE_POLICY_SEMANTICS": "6f0602e34cb82a2f2450d4cb56729b46e6f30021f796b86f5f314952c2e6750d"
+  },
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "TREE",
+    "evidence": {
+      "status": "PASS",
+      "schema_version": "tree_leaf_partition_v1",
+      "node_count": 1,
+      "leaf_count": 2,
+      "state_domain": [
+        0,
+        1000
+      ],
+      "coverage": "z3_exhaustive",
+      "reachable_leaf_ids": [
+        1,
+        2
+      ]
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "59de290933aaf39921d2f705d994ba261a61b1091d8f3e2ad102b7310b85d1b3"
+}

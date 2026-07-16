@@ -1,0 +1,16 @@
+{
+  "workflow_schema_version": "prove_seed_workflow_v1",
+  "taskset_seed": 0,
+  "tree_variant": "best_balanced",
+  "profile": "P0",
+  "primary_claim": "DEPLOYED_HI_SAFETY",
+  "workflow_status": "VERIFIED",
+  "result_status": "DEPLOYED_TREE_PROVED",
+  "verified_summary": "verified/proof_summary.json",
+  "outer_bundle_root": "3c30024a1df75962be1f53ffb52048cc87df92865c98859326d1c3dc612fe256",
+  "fixture_claim_result": "DEPLOYED_TREE_PROVED",
+  "fixture_id": "synthetic_p0",
+  "fixture_kind": "SYNTHETIC_P0",
+  "real_seed_evaluation": "DEFERRED",
+  "exit_code": 0
+}

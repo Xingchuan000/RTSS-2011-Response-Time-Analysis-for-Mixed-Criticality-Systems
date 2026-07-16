@@ -1,0 +1,10 @@
+{
+  "schema_version": "seed_import_diagnostic_v1",
+  "status": "PASS",
+  "fixture_id": "synthetic_p0",
+  "fixture_kind": "SYNTHETIC_P0",
+  "tree_variant": "best_balanced",
+  "source_root": "code_root",
+  "external_seed_paths_read": [],
+  "hout_used": false
+}

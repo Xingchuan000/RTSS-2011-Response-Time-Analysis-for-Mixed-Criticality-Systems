@@ -1,0 +1,23 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "COMPONENT_CONTEXT_INTEGRITY",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.recompute",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "raw_input_context": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f"
+  },
+  "witness": {
+    "context_hash": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f"
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "structural_recomputed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "8e8a6b03fee1cf8edf76452116810193ad98eda327524e7bacdf8589ed99a57a"
+}

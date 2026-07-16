@@ -1,0 +1,14 @@
+{
+  "workflow_schema_version": "prove_seed_workflow_v1",
+  "taskset_seed": 0,
+  "tree_variant": "best_overall",
+  "profile": "P0",
+  "primary_claim": "DEPLOYED_HI_SAFETY",
+  "workflow_status": "VERIFIED",
+  "result_status": "DEPLOYED_TREE_PROVED",
+  "verified_summary": "verified/proof_summary.json",
+  "outer_bundle_root": "b86481c597774b488a5c49810d1f494f546152bb7b2c0f9fe202ed7bbae0e522",
+  "fixture_claim_result": "DEPLOYED_TREE_PROVED",
+  "real_seed_evaluation": "DEFERRED",
+  "exit_code": 0
+}

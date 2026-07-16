@@ -1,0 +1,96 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "CANDIDATE_ENVELOPE",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "CANDIDATE",
+    "evidence": {
+      "status": "PASS",
+      "schema_version": "candidate_envelope_v1",
+      "method": "finite_domain_enumeration",
+      "lower": {
+        "SYN_HI_0": 1,
+        "SYN_LO": 0,
+        "SYN_HI_1": 2
+      },
+      "upper": {
+        "SYN_HI_0": 2,
+        "SYN_LO": 2,
+        "SYN_HI_1": 3
+      },
+      "active_release_budget_upper": {
+        "SYN_HI_0": 2,
+        "SYN_LO": 2,
+        "SYN_HI_1": 3
+      },
+      "domain_certificate_hash": "71eaa7488f8c1cbcc71c0549ff475389074a2aa3129d6fd1f518ea01036f7b9f",
+      "witnesses": [
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        }
+      ]
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "0c5e62a9696139ecc3fc7a8869e791a89bd3ad6faca8cac237b1aea427c38f5a"
+}

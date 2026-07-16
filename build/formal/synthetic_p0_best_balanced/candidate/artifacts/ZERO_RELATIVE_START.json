@@ -1,0 +1,28 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "ZERO_RELATIVE_START",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "not_run": "fresh verifier required"
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "FRESH_VERIFIER_REQUIRED"
+  },
+  "artifact_hash": "54f713b897b0d451776685816fdab144625390ab1ce5e85f7a4ff9c622de6aac"
+}

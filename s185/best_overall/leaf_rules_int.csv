@@ -1,0 +1,7 @@
+leaf_id,path_depth,raw_action_id,action_ranking,path_text
+2,2,9,"[9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]",T08.mc_lo_3.util_budget <= 16260 AND T09.mc_lo_5.recent_cost_norm <= 190037
+3,2,8,"[8, 0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]",T08.mc_lo_3.util_budget <= 16260 AND T09.mc_lo_5.recent_cost_norm > 190037
+6,3,9,"[9, 11, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]",T08.mc_lo_3.util_budget > 16260 AND T09.mc_lo_5.util_budget <= 55240 AND T08.mc_lo_3.risk <= 92546
+7,3,9,"[9, 11, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]",T08.mc_lo_3.util_budget > 16260 AND T09.mc_lo_5.util_budget <= 55240 AND T08.mc_lo_3.risk > 92546
+9,3,11,"[11, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]",T08.mc_lo_3.util_budget > 16260 AND T09.mc_lo_5.util_budget > 55240 AND T11.mc_lo_4.util_budget <= 66270
+10,3,23,"[23, 11, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]",T08.mc_lo_3.util_budget > 16260 AND T09.mc_lo_5.util_budget > 55240 AND T11.mc_lo_4.util_budget > 66270

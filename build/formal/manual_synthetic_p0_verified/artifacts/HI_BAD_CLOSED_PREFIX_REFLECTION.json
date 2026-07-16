@@ -1,0 +1,31 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "HI_BAD_CLOSED_PREFIX_REFLECTION",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "44990a0a0599cb7ef5e712cc9a5de415e1fc1619e5988999adebbbd88aaf1e04",
+  "direct_predecessor_hashes": {
+    "CLOSED_PREFIX_REFINEMENT": "aa327b277be330180d3702b606c5a3e11188335074202749e8b91560de95675e",
+    "REFERENCE_PREFIX_EXTENSION": "0b765a1a5f055f23950dc866517c2b215f91b392e973dd79e4f199566c1da632",
+    "PROTECTED_HI_SAFETY_COROLLARY": "8bf7a1d80aa6d179c93dc48049aa5ffadaf8ec97be9094e758489963bbc5cea7"
+  },
+  "checker_id": "formal_toolchain.verifier.recompute",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "raw_input_context": "44990a0a0599cb7ef5e712cc9a5de415e1fc1619e5988999adebbbd88aaf1e04"
+  },
+  "witness": {
+    "evidence": {
+      "status": "PASS",
+      "hi_bad_prefix_reflected": true,
+      "corollary_hash": "2ab4a42950f379bde1c29a5ab9f6fd366eb23c6a5737246fe9b6100da43a8a44"
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "raw_recomputed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "876e78c0a5f9c359dc68a39a76f90c6952ba5c84028ed8be3c1f7511789aa7b2"
+}

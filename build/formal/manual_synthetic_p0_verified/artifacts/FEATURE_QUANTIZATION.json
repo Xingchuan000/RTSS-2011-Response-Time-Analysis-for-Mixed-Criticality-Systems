@@ -1,0 +1,28 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "FEATURE_QUANTIZATION",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "44990a0a0599cb7ef5e712cc9a5de415e1fc1619e5988999adebbbd88aaf1e04",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.recompute",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "raw_input_context": "44990a0a0599cb7ef5e712cc9a5de415e1fc1619e5988999adebbbd88aaf1e04"
+  },
+  "witness": {
+    "evidence": {
+      "status": "PASS",
+      "schema_version": "quantization_production_differential_v1",
+      "checked": 10000,
+      "independent": true
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "raw_recomputed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "17868b1d6f0e2e865e21bc7f0ee12a8aadd26fb02c6d6de5801348a4336e04b2"
+}

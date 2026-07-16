@@ -1,0 +1,38 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "PROTECTED_HI_RTA_ARITHMETIC",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "44990a0a0599cb7ef5e712cc9a5de415e1fc1619e5988999adebbbd88aaf1e04",
+  "direct_predecessor_hashes": {
+    "REFERENCE_TASKSET": "4b3af06430004bb0831fa774f35b54d8ee29200078930fb671408f281dc40d74",
+    "LO_MODE_RTA": "86cbe7ded65c93b18d5561518a989b725d3922a91556c959cfdec09692ff04c2",
+    "WORST_CASE_START_TIME": "b6bc14252f4a1a3b192018517e307098e9e81ba9c79725f3d830bb1d325b2239",
+    "CASE1_INTEGER_DOMAIN": "42261fd65c968aa1a5963c4798548dca70097345b9e662a736fc37d831137793",
+    "CASE2_INTEGER_DOMAIN": "49c5614c73442b935074d5df91d4e8c332fda3b2b52bac9642db87a36112faf6",
+    "ZERO_RELATIVE_START": "0365260daa8863d1138c139ecd83001eed62d14013b77972260dbbaad93ab2ca",
+    "INHERITED_HI_DOMINATION": "e8b13e01970c3e4d298b577ccd7005a9e8fb4c7e0af2057d8e6a0fcc45b4a8bb",
+    "RELEASE_COUNT": "46542c7bfa21a3990a6edd1efcba06135f22c6222ab9fea94a9b94df076aadec",
+    "DEMAND_DOMINATION": "66670a1d66b7c6b0c3bab32b12bad6f79e8f3da5f890750179d23b4388e16d43"
+  },
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "not_run": "fresh verifier required"
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "FRESH_VERIFIER_REQUIRED"
+  },
+  "artifact_hash": "d28662587c42c9a53e74247b2b5009b6b47688913bb34a81d8199056672e363b"
+}

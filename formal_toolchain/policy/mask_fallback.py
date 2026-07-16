@@ -13,6 +13,8 @@ def evaluate_synthetic_mask(state: Mapping[str, Any], action_definitions: Sequen
     criticality = state.get("criticality")
     if not isinstance(budgets, Mapping) or not isinstance(criticality, Mapping):
         raise ValueError("synthetic mask state 缺少 budgets/criticality")
+    floors = state.get("floors", state.get("floor", {}))
+    caps = state.get("caps", {})
     mask: list[bool] = []; reasons: list[str] = []
     for definition in action_definitions:
         task = definition.get("target_task") or definition.get("task_name")
@@ -23,7 +25,9 @@ def evaluate_synthetic_mask(state: Mapping[str, Any], action_definitions: Sequen
             reason = "unknown_target"
         elif direction == "decrease" and forbid_decreasing_hi_budgets and criticality.get(task) == "HI":
             valid = False; reason = "hi_decrease_guard"
-        elif direction == "decrease" and int(budgets[task]) <= int(state.get("floor", {}).get(task, 1)):
+        elif direction == "increase" and task in caps and int(budgets[task]) >= int(caps[task]):
+            valid = False; reason = "budget_upper_bound"
+        elif direction == "decrease" and int(budgets[task]) <= int(floors.get(task, 1)):
             valid = False; reason = "budget_floor"
         mask.append(valid); reasons.append(reason)
     return tuple(mask), tuple(reasons)

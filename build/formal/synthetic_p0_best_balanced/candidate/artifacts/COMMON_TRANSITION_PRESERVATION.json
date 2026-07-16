@@ -1,0 +1,32 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "COMMON_TRANSITION_PRESERVATION",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "COMMON",
+    "evidence": {
+      "status": "PASS",
+      "schema_version": "common_transition_preservation_v1",
+      "active_release_budget_immutable": true,
+      "controller_budget_write": false,
+      "invariant_checked": true
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "fecc36c97e6cc29f94e5232534cf07d4eb61cf4a177161b3bd74598a7f9429dd"
+}

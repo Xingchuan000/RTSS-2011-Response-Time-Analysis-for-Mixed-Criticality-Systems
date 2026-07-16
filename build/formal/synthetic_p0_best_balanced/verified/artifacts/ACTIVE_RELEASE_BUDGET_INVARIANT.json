@@ -1,0 +1,76 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "ACTIVE_RELEASE_BUDGET_INVARIANT",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f",
+  "direct_predecessor_hashes": {
+    "CANDIDATE_ENVELOPE": "b10f1c534a014b75e11b20c46a2f0b89d23efd6628be27d1e73b9990025739d1",
+    "COMMON_TRANSITION_PRESERVATION": "26b064cebe4db7c7fed1bdd309e86931fff0769d6e9453737659a36951d776a0",
+    "DEPLOYED_POLICY_PRESERVATION": "cb4a70e50b9c2a69345700914a4f143ba8812a99ef044f8298f19e14679ed8b6"
+  },
+  "checker_id": "formal_toolchain.verifier.recompute",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "raw_input_context": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f"
+  },
+  "witness": {
+    "evidence": {
+      "status": "PASS",
+      "schema_version": "deployed_policy_preservation_v1",
+      "leaf_count": 2,
+      "budget_state_count": 12,
+      "selected_action_ids": [
+        0,
+        1,
+        2
+      ],
+      "first_valid_positions": [
+        0,
+        1,
+        2
+      ],
+      "noop_state_count": 4,
+      "witnesses": [
+        {
+          "action_id": 0,
+          "checked": true,
+          "finite_domain_states": 12
+        },
+        {
+          "action_id": 1,
+          "checked": true,
+          "finite_domain_states": 12
+        },
+        {
+          "action_id": 2,
+          "checked": true,
+          "finite_domain_states": 12
+        },
+        {
+          "action_id": 3,
+          "checked": false,
+          "masked": true
+        },
+        {
+          "action_id": 4,
+          "checked": false,
+          "masked": true
+        },
+        {
+          "action_id": 5,
+          "checked": false,
+          "masked": true
+        }
+      ],
+      "implicit_noop_checked": true
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "raw_recomputed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "1372a6a6d0f6ea86d37ae8f5a879597360e31e37bc236309bcd84f914415428c"
+}

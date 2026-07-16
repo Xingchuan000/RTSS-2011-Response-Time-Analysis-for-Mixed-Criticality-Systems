@@ -1,0 +1,76 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "REFERENCE_TASKSET",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "44990a0a0599cb7ef5e712cc9a5de415e1fc1619e5988999adebbbd88aaf1e04",
+  "direct_predecessor_hashes": {
+    "CERTIFIED_ENVELOPE": "ae8567a1e1c26c5a0969e35e4b84409528e5129cf0988e8580a68918ff8f808c",
+    "CODE_REFERENCE_UPPER_BOUND_MAPPING": "8a17ca2ce2320efb40c2fb1b35db90a5d3b9f22ad99da22793aba1fc7386a583"
+  },
+  "checker_id": "formal_toolchain.verifier.recompute",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "raw_input_context": "44990a0a0599cb7ef5e712cc9a5de415e1fc1619e5988999adebbbd88aaf1e04"
+  },
+  "witness": {
+    "evidence": {
+      "status": "PASS",
+      "taskset": {
+        "schema_version": "reference_taskset_v1",
+        "tasks": [
+          {
+            "name": "SYN_HI_0",
+            "period": 20,
+            "deadline": 20,
+            "c_lo": 1,
+            "c_hi": 2,
+            "criticality": "HI",
+            "priority_index": 0,
+            "code_c_lo": 1,
+            "code_c_hi": 2,
+            "degraded_cost": null
+          },
+          {
+            "name": "SYN_LO",
+            "period": 30,
+            "deadline": 2,
+            "c_lo": 3,
+            "c_hi": 1,
+            "criticality": "LO",
+            "priority_index": 1,
+            "code_c_lo": 1,
+            "code_c_hi": 1,
+            "degraded_cost": 1
+          },
+          {
+            "name": "SYN_HI_1",
+            "period": 50,
+            "deadline": 50,
+            "c_lo": 2,
+            "c_hi": 3,
+            "criticality": "HI",
+            "priority_index": 2,
+            "code_c_lo": 2,
+            "code_c_hi": 3,
+            "degraded_cost": null
+          }
+        ],
+        "priority_order": [
+          "SYN_HI_0",
+          "SYN_LO",
+          "SYN_HI_1"
+        ],
+        "source_context_hash": "cb393ed4a75b539afc988a9971119b22db42cbe4669c15f5a6d2d534343006da",
+        "fingerprint": "5e953131cb0392814b9a6ee1adc698fafb451b5f6fbff8b8342a6344f5e434d9"
+      }
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "raw_recomputed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "d6c99842723aee9af58e54d12339bb33333871c390c56289a7ed670627b11847"
+}

@@ -1,0 +1,16 @@
+|--- T08.mc_lo_3.util_budget <= 16260.00
+|   |--- T09.mc_lo_5.recent_cost_norm <= 190037.00
+|   |   |--- class: 9
+|   |--- T09.mc_lo_5.recent_cost_norm >  190037.00
+|   |   |--- class: 8
+|--- T08.mc_lo_3.util_budget >  16260.00
+|   |--- T09.mc_lo_5.util_budget <= 55240.00
+|   |   |--- T08.mc_lo_3.risk <= 92546.50
+|   |   |   |--- class: 9
+|   |   |--- T08.mc_lo_3.risk >  92546.50
+|   |   |   |--- class: 9
+|   |--- T09.mc_lo_5.util_budget >  55240.00
+|   |   |--- T11.mc_lo_4.util_budget <= 66270.00
+|   |   |   |--- class: 11
+|   |   |--- T11.mc_lo_4.util_budget >  66270.00
+|   |   |   |--- class: 23

@@ -1,0 +1,34 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "PROTECTED_HI_SAFETY_COROLLARY",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f",
+  "direct_predecessor_hashes": {
+    "PROTECTED_HI_RTA_ARITHMETIC": "7d2cdd320a65d4ed20295cce36753aba4af87eb40ca1beb8f0cfb8f951fe2ee5",
+    "PER_HI_TASK_INDUCTIVE_WCRT": "9d5e7d8b231ac81ce67845a3a1ca21e725214bbed624de47595b5e7b8a5b5ec7",
+    "ZERO_RELATIVE_START": "54f713b897b0d451776685816fdab144625390ab1ce5e85f7a4ff9c622de6aac",
+    "INHERITED_HI_DOMINATION": "60b9ba5d35e8d6dbb4d8e14e2abf81ae122968eba21ae72d0808e8d12d421dbd",
+    "DISCRETE_TICK_EMBEDDING": "c9d1460b1f35fd86e51723de0a3a08bf22c6d5d580e4a5ef534808827803f3de"
+  },
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "not_run": "fresh verifier required"
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "FRESH_VERIFIER_REQUIRED"
+  },
+  "artifact_hash": "0f8556239d77d783fed215e6dd0d5f850b600114ed7255c2b64892d0522597dd"
+}

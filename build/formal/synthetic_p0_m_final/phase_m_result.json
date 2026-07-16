@@ -1,0 +1,14 @@
+{
+  "phase": "M",
+  "phase_result": "PHASE_M_ACCEPTED",
+  "fixture": "synthetic_p0",
+  "fixture_claim_result": "DEPLOYED_TREE_PROVED",
+  "real_seed_evaluation": "DEFERRED",
+  "single_command_root": "b86481c597774b488a5c49810d1f494f546152bb7b2c0f9fe202ed7bbae0e522",
+  "manual_four_command_root": "b86481c597774b488a5c49810d1f494f546152bb7b2c0f9fe202ed7bbae0e522",
+  "single_command_root_equals_manual_root": true,
+  "certificate_context_hash_equal": true,
+  "alternate_tree_result": "DEPLOYED_TREE_PROVED",
+  "alternate_tree_context_invalidated": true,
+  "tamper_rejected": true
+}

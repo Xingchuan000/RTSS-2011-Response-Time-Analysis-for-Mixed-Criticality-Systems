@@ -1,0 +1,88 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "MASK_FALLBACK",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "44990a0a0599cb7ef5e712cc9a5de415e1fc1619e5988999adebbbd88aaf1e04",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "MASK",
+    "evidence": {
+      "status": "PASS",
+      "schema_version": "mask_fallback_v1",
+      "action_dim": 6,
+      "cases": [
+        {
+          "ranking": [
+            3,
+            2,
+            0,
+            1,
+            4,
+            5
+          ],
+          "mask": [
+            true,
+            false,
+            true,
+            false,
+            false,
+            false
+          ],
+          "selected_action": 2,
+          "reject_reasons": [
+            "accepted",
+            "budget_upper_bound",
+            "accepted",
+            "hi_decrease_guard",
+            "budget_floor",
+            "hi_decrease_guard"
+          ]
+        },
+        {
+          "ranking": [
+            3,
+            4,
+            5,
+            0,
+            1,
+            2
+          ],
+          "mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "selected_action": null,
+          "reject_reasons": [
+            "budget_upper_bound",
+            "budget_upper_bound",
+            "budget_upper_bound",
+            "hi_decrease_guard",
+            "budget_floor",
+            "hi_decrease_guard"
+          ]
+        }
+      ],
+      "implicit_noop": true,
+      "selection": "first_valid"
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "f76a25d2064ab8f165be3de87d56ae44726f9d5a558b3441b26d77f30d1fa153"
+}

@@ -1,0 +1,9 @@
+{
+  "input_max": 1.0,
+  "input_min": 0.0,
+  "output_max": 1000000,
+  "output_min": 0,
+  "rounding_mode": "half_up_nonnegative",
+  "scale": 1000000,
+  "schema_version": "fixed_point_v1"
+}

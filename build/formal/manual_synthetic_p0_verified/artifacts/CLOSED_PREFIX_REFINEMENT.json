@@ -1,0 +1,41 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "CLOSED_PREFIX_REFINEMENT",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "44990a0a0599cb7ef5e712cc9a5de415e1fc1619e5988999adebbbd88aaf1e04",
+  "direct_predecessor_hashes": {
+    "SCHEDULER_MODEL": "e245dddbc813fbe89ee8f04812facc42882537b3f2a245f72115c13b3f2d81f1",
+    "MODE_SEMANTICS_CONFORMANCE": "05bde48cea1ed4372d4a816e1c5c18945ddc44e3e1b7c0bbd1353646f166b5de",
+    "DEMAND_ORACLE_BATCH_CONTRACT": "a1d5d5dc972dfe1722a98ad98359d07792fad45b4df37d7c56b345bf0a09533c",
+    "HI_EXECUTION_CONTRACT": "e7fac6b06d24801bed57292bc3f9127ef086850a7cdc9262dffb6c8c629ac537",
+    "REMOVAL_COMPLETENESS": "52982c9ef6d80c480ba14f8e1edafcb6d21165181918431f657e401ab2338423",
+    "HI_NONTRUNCATION": "51ff481ff30deb863f80359880b55c1390ac6233d60301299943aa6ecfeb9fe3",
+    "DEADLINE_OBSERVATION": "3c53f967d4e4639efa2cbd86f2df61bf166b8d1dc2dd899a15e4e99d8685670f",
+    "BATCH_CLOSURE": "fbff66688eee31b1785974663e51e777cdbddc2b32fa81245e0aead1152f8bd9",
+    "CONTROLLER_POSTCLOSURE": "0fa2c089fdfcabe5e724567eb3f509971c612726d152015bc442222b2461e590",
+    "TIME_PROGRESS": "d5e44a1e631808f0a7713762422d10237d594fce4c9ce4c0757bab6e5f270b2d",
+    "WINDOW_MODE_NORMALIZATION": "748c89bbb50931ca4fe6ade44ffa01a1d0c7749e381e28e2f76cc048b93b9a14",
+    "RELEASE_FIXED_REMOVAL_MAPPING": "5f7f4cb0b6b7a41bd101b6070f40fd907a506647cf1bc7cbe32b56b56340eee4",
+    "CERTIFIED_ENVELOPE": "ae8567a1e1c26c5a0969e35e4b84409528e5129cf0988e8580a68918ff8f808c"
+  },
+  "checker_id": "formal_toolchain.verifier.recompute",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "raw_input_context": "44990a0a0599cb7ef5e712cc9a5de415e1fc1619e5988999adebbbd88aaf1e04"
+  },
+  "witness": {
+    "evidence": {
+      "status": "PASS",
+      "transition_count": 6,
+      "transition_hash": "c2e3e58b61315d093c1aa06610261e92eef0ca805098f0ba5b1690f823fcc8a0"
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "raw_recomputed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "aa327b277be330180d3702b606c5a3e11188335074202749e8b91560de95675e"
+}

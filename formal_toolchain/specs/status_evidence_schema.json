@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": {
+    "type": "object",
+    "required": ["obligation_id", "obligation_status", "certificate_hash", "verified", "outer_bundle_root"],
+    "properties": {
+      "obligation_id": {"type": "string"},
+      "obligation_status": {"enum": ["PASS", "FAIL", "UNRESOLVED", "NOT_APPLICABLE"]},
+      "certificate_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+      "verified": {"const": true},
+      "outer_bundle_root": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    }
+  }
+}

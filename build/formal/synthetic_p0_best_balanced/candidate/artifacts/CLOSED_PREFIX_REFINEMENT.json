@@ -1,0 +1,42 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "CLOSED_PREFIX_REFINEMENT",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f",
+  "direct_predecessor_hashes": {
+    "SCHEDULER_MODEL": "d8be9e5680f2d540a0047bdfdd2bcfb316592c599c1ef41018796b93d2426f0e",
+    "MODE_SEMANTICS_CONFORMANCE": "3b6d5de093a3f16c5bb4ef92a277ab3b6840b39fe5fc361f8c152e850f075ae4",
+    "DEMAND_ORACLE_BATCH_CONTRACT": "d672dd77b46fda2acfef0e5a58e377f9d5bee176a7e637bfe66a5e37b11f60ff",
+    "HI_EXECUTION_CONTRACT": "85471a1684f997fc5dcfd732e730b6b5ad00210b78f0b836cbd089164eda2811",
+    "REMOVAL_COMPLETENESS": "cc3e94eb5a9e42596ee54783ba4f2d5de41efecbc44d66e7e44809c42c1a01db",
+    "HI_NONTRUNCATION": "ede9d1d5e640e1aecb45e4746f3ae611ad645b4643b3942af5aa08c51313dde2",
+    "DEADLINE_OBSERVATION": "b99b35a93f74f9797ac794353d99de85391d8efbf70858f120fa019f21575caa",
+    "BATCH_CLOSURE": "16072a6a0f5483d8bd6d431efd4dc3bd9d3f06b362a3002c1e5af3f423bdb128",
+    "CONTROLLER_POSTCLOSURE": "28d263600dadaba1342fc3719b44de90be5754b6683268ab116491a6875bac53",
+    "TIME_PROGRESS": "8309acbac7ac57997f7ae6554a93e9d6dcd5ee7c30e0cdc4a7ea131b0fbdc280",
+    "WINDOW_MODE_NORMALIZATION": "f513757a4997e939cc4ecdcfb8a1f51005b2ccf01a94192a465c61e8c3c8ce8c",
+    "RELEASE_FIXED_REMOVAL_MAPPING": "d8a96edb68eb3f1a717a5fef86c96aa3b43bcfb23a417b521a1646a8ca63d49e",
+    "CERTIFIED_ENVELOPE": "3903d23747a996ce9eb9c2aa8b92b6b691af9e1e035239ad5009cf134835db7a"
+  },
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "not_run": "fresh verifier required"
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "FRESH_VERIFIER_REQUIRED"
+  },
+  "artifact_hash": "3b7bf4b854384e73fb13e62d0758b6a1f3108a19ca62ebaad346f9b35791fbca"
+}

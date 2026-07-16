@@ -78,23 +78,27 @@ def build_runtime_adapter(target: Any, actions: Sequence[BudgetAction]) -> dict[
 
 def build_transition_witness(domain: Mapping[str, Any], tasks: Sequence[Task]) -> dict[str, dict[str, Any]]:
     """生成 synthetic 正常 release/completion/cancellation/recovery witness。"""
+    if len(tasks) < 2:
+        raise ValueError("synthetic transition witness 至少需要两个 task")
     initial = {task.name: int(domain["tasks"][task.name]["initial"]) for task in tasks}
-    release_before = {"SYN_HI:0": initial[tasks[0].name]}
-    release_after = dict(release_before); release_after["SYN_LO:0"] = initial[tasks[1].name]
-    completion_before = dict(release_after); completion_after = {"SYN_LO:0": initial[tasks[1].name]}
+    first_job = f"{tasks[0].name}:0"
+    second_job = f"{tasks[1].name}:0"
+    release_before = {first_job: initial[tasks[0].name]}
+    release_after = dict(release_before); release_after[second_job] = initial[tasks[1].name]
+    completion_before = dict(release_after); completion_after = {second_job: initial[tasks[1].name]}
     cancellation_before = dict(completion_after); cancellation_after = {}
-    recovery_before = {"SYN_HI:1": initial[tasks[0].name]}; recovery_after = dict(recovery_before)
+    recovery_before = {f"{tasks[0].name}:1": initial[tasks[0].name]}; recovery_after = dict(recovery_before)
     rows = {"boot": {"budget_write": False, "budget_before": {}, "budget_after": initial,
                       "active_release_before": {}, "active_release_after": {}, "transition_semantics": "boot"},
             "release_snapshot": {"budget_write": False, "budget_before": initial, "budget_after": initial,
                       "active_release_before": release_before, "active_release_after": release_after,
-                      "transition_semantics": "release", "released_task": tasks[1].name, "released_job": "SYN_LO:0"},
+                      "transition_semantics": "release", "released_task": tasks[1].name, "released_job": second_job},
             "completion": {"budget_write": False, "budget_before": initial, "budget_after": initial,
                       "active_release_before": completion_before, "active_release_after": completion_after,
-                      "transition_semantics": "remove", "removed_job": "SYN_HI:0"},
+                      "transition_semantics": "remove", "removed_job": first_job},
             "cancellation": {"budget_write": False, "budget_before": initial, "budget_after": initial,
                       "active_release_before": cancellation_before, "active_release_after": cancellation_after,
-                      "transition_semantics": "remove", "removed_job": "SYN_LO:0"},
+                      "transition_semantics": "remove", "removed_job": second_job},
             "recovery": {"budget_write": False, "budget_before": initial, "budget_after": initial,
                       "active_release_before": recovery_before, "active_release_after": recovery_after,
                       "transition_semantics": "preserve"},

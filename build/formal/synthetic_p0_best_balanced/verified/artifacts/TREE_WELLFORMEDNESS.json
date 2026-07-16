@@ -1,0 +1,39 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "TREE_WELLFORMEDNESS",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f",
+  "direct_predecessor_hashes": {
+    "EXECUTABLE_POLICY_SEMANTICS": "dd811e732224d83f89c3fc05744ca9c3a9e797e456cc7ac4ecc2ee4eb2911b03"
+  },
+  "checker_id": "formal_toolchain.verifier.recompute",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "raw_input_context": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f"
+  },
+  "witness": {
+    "evidence": {
+      "status": "PASS",
+      "schema_version": "tree_leaf_partition_v1",
+      "node_count": 1,
+      "leaf_count": 2,
+      "state_domain": [
+        0,
+        1000
+      ],
+      "coverage": "z3_exhaustive",
+      "reachable_leaf_ids": [
+        1,
+        2
+      ]
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "raw_recomputed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "eba67d5d089052d32ff5f5af5be7d1088a17c7cff884a2790a5bf171c4a42685"
+}

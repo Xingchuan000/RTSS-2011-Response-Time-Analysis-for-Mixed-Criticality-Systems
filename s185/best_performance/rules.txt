@@ -1,0 +1,28 @@
+|--- T08.mc_lo_3.util_budget <= 16260.00
+|   |--- T09.mc_lo_5.recent_cost_norm <= 190037.00
+|   |   |--- class: 9
+|   |--- T09.mc_lo_5.recent_cost_norm >  190037.00
+|   |   |--- class: 8
+|--- T08.mc_lo_3.util_budget >  16260.00
+|   |--- T09.mc_lo_5.util_budget <= 55240.00
+|   |   |--- T08.mc_lo_3.risk <= 92546.50
+|   |   |   |--- T06.mc_hi_5.recent_cost_norm <= 716225.00
+|   |   |   |   |--- class: 9
+|   |   |   |--- T06.mc_hi_5.recent_cost_norm >  716225.00
+|   |   |   |   |--- class: 9
+|   |   |--- T08.mc_lo_3.risk >  92546.50
+|   |   |   |--- global.lo_budget_util <= 268090.00
+|   |   |   |   |--- class: 9
+|   |   |   |--- global.lo_budget_util >  268090.00
+|   |   |   |   |--- class: 11
+|   |--- T09.mc_lo_5.util_budget >  55240.00
+|   |   |--- global.lo_budget_util <= 315890.00
+|   |   |   |--- T11.mc_lo_4.util_budget <= 52410.00
+|   |   |   |   |--- class: 11
+|   |   |   |--- T11.mc_lo_4.util_budget >  52410.00
+|   |   |   |   |--- class: 11
+|   |   |--- global.lo_budget_util >  315890.00
+|   |   |   |--- T01.mc_hi_1.recent_cost_norm <= 853627.00
+|   |   |   |   |--- class: 11
+|   |   |   |--- T01.mc_hi_1.recent_cost_norm >  853627.00
+|   |   |   |   |--- class: 23

@@ -1,0 +1,98 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "BUDGET_DOMAIN",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "44990a0a0599cb7ef5e712cc9a5de415e1fc1619e5988999adebbbd88aaf1e04",
+  "direct_predecessor_hashes": {
+    "BOOT_INITIALIZATION": "d972532f0ce370079ab83f94007844abef8711178c8f226d1241c56c5948855f"
+  },
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "DOMAIN",
+    "evidence": {
+      "status": "PASS",
+      "schema_version": "budget_domain_v1",
+      "integer_arithmetic": "python_unbounded_int",
+      "processor_overhead": 0,
+      "tasks": {
+        "SYN_HI_0": {
+          "initial": 1,
+          "code_lower": 1,
+          "code_upper": 2,
+          "runtime_floor": 1,
+          "runtime_deploy_cap": 2,
+          "finite_integer_domain": [
+            1,
+            2
+          ],
+          "active_release_budget_domain": [
+            1,
+            2
+          ],
+          "provenance": {
+            "initial_runtime_budget": 1,
+            "budget_floor": 1,
+            "budget_cap": 2
+          }
+        },
+        "SYN_LO": {
+          "initial": 2,
+          "code_lower": 1,
+          "code_upper": 1,
+          "runtime_floor": 2,
+          "runtime_deploy_cap": 2,
+          "finite_integer_domain": [
+            0,
+            1,
+            2
+          ],
+          "active_release_budget_domain": [
+            0,
+            1,
+            2
+          ],
+          "provenance": {
+            "initial_runtime_budget": 2,
+            "budget_floor": 2,
+            "budget_cap": 2
+          }
+        },
+        "SYN_HI_1": {
+          "initial": 2,
+          "code_lower": 2,
+          "code_upper": 3,
+          "runtime_floor": 2,
+          "runtime_deploy_cap": 3,
+          "finite_integer_domain": [
+            2,
+            3
+          ],
+          "active_release_budget_domain": [
+            2,
+            3
+          ],
+          "provenance": {
+            "initial_runtime_budget": 2,
+            "budget_floor": 2,
+            "budget_cap": 3
+          }
+        }
+      },
+      "context_hash": "44990a0a0599cb7ef5e712cc9a5de415e1fc1619e5988999adebbbd88aaf1e04"
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "9d2a885ba7198a1bdd991f765fbeaa1c4103262971aeacd1c340cfb77d329513"
+}

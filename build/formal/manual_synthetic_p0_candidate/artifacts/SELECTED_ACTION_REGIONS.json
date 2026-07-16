@@ -1,0 +1,186 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "SELECTED_ACTION_REGIONS",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "44990a0a0599cb7ef5e712cc9a5de415e1fc1619e5988999adebbbd88aaf1e04",
+  "direct_predecessor_hashes": {
+    "EXECUTABLE_POLICY_SEMANTICS": "15a0bf55dad194bf3bdf77c946cf69a38d308a3ba35996616cb767f40b5a99b0"
+  },
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "EXECUTABLE",
+    "evidence": {
+      "status": "PASS",
+      "states": [
+        {
+          "status": "PASS",
+          "quantized": [
+            500,
+            500,
+            500,
+            500,
+            0,
+            0,
+            500,
+            1000,
+            0,
+            500,
+            1000,
+            1000,
+            1000,
+            1000,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1000,
+            667,
+            667,
+            667,
+            667,
+            0,
+            0,
+            333,
+            1000,
+            0,
+            667,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            500
+          ],
+          "leaf_id": 1,
+          "ranking": [
+            3,
+            2,
+            0,
+            1,
+            4,
+            5
+          ],
+          "selected_action": 2,
+          "mask": [
+            true,
+            false,
+            true,
+            false,
+            false,
+            false
+          ],
+          "mask_reasons": [
+            "accepted",
+            "no_effective_budget_change",
+            "accepted",
+            "decrease_hi_forbidden",
+            "budget_floor_violation",
+            "decrease_hi_forbidden"
+          ],
+          "implicit_noop": false,
+          "budget_after": {
+            "SYN_HI_1": 3
+          }
+        },
+        {
+          "status": "PASS",
+          "quantized": [
+            1000,
+            1000,
+            1000,
+            1000,
+            0,
+            0,
+            0,
+            1000,
+            0,
+            1000,
+            1000,
+            1000,
+            1000,
+            1000,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1000,
+            1000,
+            1000,
+            1000,
+            1000,
+            0,
+            0,
+            0,
+            1000,
+            0,
+            1000,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1000
+          ],
+          "leaf_id": 2,
+          "ranking": [
+            3,
+            4,
+            5,
+            0,
+            1,
+            2
+          ],
+          "selected_action": null,
+          "mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "mask_reasons": [
+            "no_effective_budget_change",
+            "no_effective_budget_change",
+            "no_effective_budget_change",
+            "decrease_hi_forbidden",
+            "budget_floor_violation",
+            "decrease_hi_forbidden"
+          ],
+          "implicit_noop": true,
+          "budget_after": null
+        }
+      ],
+      "region_summary": {
+        "fallback_success": true,
+        "implicit_noop": true,
+        "selected_action_ids": [
+          0,
+          1,
+          2
+        ],
+        "state_count": 12
+      }
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "57a624af1d38e995f31425ea27e4752398cb1c0c961114d00324a8446c3de6b7"
+}

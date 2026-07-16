@@ -1,0 +1,29 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "COMMON_TRANSITION_PRESERVATION",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.recompute",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "raw_input_context": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f"
+  },
+  "witness": {
+    "evidence": {
+      "status": "PASS",
+      "schema_version": "common_transition_preservation_v1",
+      "active_release_budget_immutable": true,
+      "controller_budget_write": false,
+      "invariant_checked": true
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "raw_recomputed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "26b064cebe4db7c7fed1bdd309e86931fff0769d6e9453737659a36951d776a0"
+}

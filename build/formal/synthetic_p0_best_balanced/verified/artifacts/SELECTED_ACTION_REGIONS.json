@@ -1,0 +1,183 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "SELECTED_ACTION_REGIONS",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f",
+  "direct_predecessor_hashes": {
+    "EXECUTABLE_POLICY_SEMANTICS": "dd811e732224d83f89c3fc05744ca9c3a9e797e456cc7ac4ecc2ee4eb2911b03"
+  },
+  "checker_id": "formal_toolchain.verifier.recompute",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "raw_input_context": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f"
+  },
+  "witness": {
+    "evidence": {
+      "status": "PASS",
+      "states": [
+        {
+          "status": "PASS",
+          "quantized": [
+            500,
+            500,
+            500,
+            500,
+            0,
+            0,
+            500,
+            1000,
+            0,
+            500,
+            1000,
+            1000,
+            1000,
+            1000,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1000,
+            667,
+            667,
+            667,
+            667,
+            0,
+            0,
+            333,
+            1000,
+            0,
+            667,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            500
+          ],
+          "leaf_id": 2,
+          "ranking": [
+            2,
+            1,
+            0,
+            3,
+            4,
+            5
+          ],
+          "selected_action": 2,
+          "mask": [
+            true,
+            false,
+            true,
+            false,
+            false,
+            false
+          ],
+          "mask_reasons": [
+            "accepted",
+            "no_effective_budget_change",
+            "accepted",
+            "decrease_hi_forbidden",
+            "budget_floor_violation",
+            "decrease_hi_forbidden"
+          ],
+          "implicit_noop": false,
+          "budget_after": {
+            "SYN_HI_1": 3
+          }
+        },
+        {
+          "status": "PASS",
+          "quantized": [
+            1000,
+            1000,
+            1000,
+            1000,
+            0,
+            0,
+            0,
+            1000,
+            0,
+            1000,
+            1000,
+            1000,
+            1000,
+            1000,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1000,
+            1000,
+            1000,
+            1000,
+            1000,
+            0,
+            0,
+            0,
+            1000,
+            0,
+            1000,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1000
+          ],
+          "leaf_id": 2,
+          "ranking": [
+            2,
+            1,
+            0,
+            3,
+            4,
+            5
+          ],
+          "selected_action": null,
+          "mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "mask_reasons": [
+            "no_effective_budget_change",
+            "no_effective_budget_change",
+            "no_effective_budget_change",
+            "decrease_hi_forbidden",
+            "budget_floor_violation",
+            "decrease_hi_forbidden"
+          ],
+          "implicit_noop": true,
+          "budget_after": null
+        }
+      ],
+      "region_summary": {
+        "fallback_success": true,
+        "implicit_noop": true,
+        "selected_action_ids": [
+          0,
+          1,
+          2
+        ],
+        "state_count": 12
+      }
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "raw_recomputed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "bedc157aeedc96b5fd5b827a158301424a243b6c4fe599584b5792df367ab97b"
+}

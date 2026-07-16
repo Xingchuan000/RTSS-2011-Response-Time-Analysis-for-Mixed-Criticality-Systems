@@ -1,0 +1,93 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "CANDIDATE_ENVELOPE",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.recompute",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "raw_input_context": "097dd004670772795858cbd11fb8abe1ecf7d2c0d0d56de5a753ce355e2e3a4f"
+  },
+  "witness": {
+    "evidence": {
+      "status": "PASS",
+      "schema_version": "candidate_envelope_v1",
+      "method": "finite_domain_enumeration",
+      "lower": {
+        "SYN_HI_0": 1,
+        "SYN_LO": 0,
+        "SYN_HI_1": 2
+      },
+      "upper": {
+        "SYN_HI_0": 2,
+        "SYN_LO": 2,
+        "SYN_HI_1": 3
+      },
+      "active_release_budget_upper": {
+        "SYN_HI_0": 2,
+        "SYN_LO": 2,
+        "SYN_HI_1": 3
+      },
+      "domain_certificate_hash": "71eaa7488f8c1cbcc71c0549ff475389074a2aa3129d6fd1f518ea01036f7b9f",
+      "witnesses": [
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        },
+        {
+          "action_id": 5,
+          "checked": true
+        }
+      ]
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "raw_recomputed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "b10f1c534a014b75e11b20c46a2f0b89d23efd6628be27d1e73b9990025739d1"
+}

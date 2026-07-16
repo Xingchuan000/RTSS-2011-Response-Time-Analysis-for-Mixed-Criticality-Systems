@@ -1,0 +1,85 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "MASK_FALLBACK",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "44990a0a0599cb7ef5e712cc9a5de415e1fc1619e5988999adebbbd88aaf1e04",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.recompute",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "raw_input_context": "44990a0a0599cb7ef5e712cc9a5de415e1fc1619e5988999adebbbd88aaf1e04"
+  },
+  "witness": {
+    "evidence": {
+      "status": "PASS",
+      "schema_version": "mask_fallback_v1",
+      "action_dim": 6,
+      "cases": [
+        {
+          "ranking": [
+            3,
+            2,
+            0,
+            1,
+            4,
+            5
+          ],
+          "mask": [
+            true,
+            false,
+            true,
+            false,
+            false,
+            false
+          ],
+          "selected_action": 2,
+          "reject_reasons": [
+            "accepted",
+            "budget_upper_bound",
+            "accepted",
+            "hi_decrease_guard",
+            "budget_floor",
+            "hi_decrease_guard"
+          ]
+        },
+        {
+          "ranking": [
+            3,
+            4,
+            5,
+            0,
+            1,
+            2
+          ],
+          "mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "selected_action": null,
+          "reject_reasons": [
+            "budget_upper_bound",
+            "budget_upper_bound",
+            "budget_upper_bound",
+            "hi_decrease_guard",
+            "budget_floor",
+            "hi_decrease_guard"
+          ]
+        }
+      ],
+      "implicit_noop": true,
+      "selection": "first_valid"
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "raw_recomputed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "2a7d3e01eae10b0173d6fabed195990dda6cc5fad0956d495ec86e306fb5206f"
+}

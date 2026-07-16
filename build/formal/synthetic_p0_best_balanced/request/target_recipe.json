@@ -1,0 +1,4 @@
+{
+  "factory": "tests.formal.fixtures.synthetic_p0.formal_inputs.target:build_target",
+  "kwargs": {}
+}
