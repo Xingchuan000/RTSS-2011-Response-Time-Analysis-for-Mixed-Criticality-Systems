@@ -106,7 +106,7 @@ def build_parameterized_release_mapping_certificate(*, source_context_hash: str)
               "source_context_hash": source_context_hash, "input_schema": schema,
               "formulas": formulas, "finite_boundary_evidence": []}
     result.update(obligation_certificate(
-        obligation_id="RELEASE_FIXED_REMOVAL_PARAMETERIZED", status="PASS",
+        obligation_id="RELEASE_FIXED_REMOVAL_MAPPING", status="PASS",
         context_hash=source_context_hash, inputs={"formula_schema": schema},
         witness={"input_schema": schema, "formulas": formulas},
         checker_id="formal_toolchain.bridge.job_mapping", checker_version="phase-k-v2"))
@@ -115,7 +115,7 @@ def build_parameterized_release_mapping_certificate(*, source_context_hash: str)
 
 def verify_parameterized_release_mapping_certificate(certificate: Mapping[str, Any]) -> bool:
     """验证参数化公式对象本身，不能被有限样例替代。"""
-    return (certificate.get("obligation_id") == "RELEASE_FIXED_REMOVAL_PARAMETERIZED"
+    return (certificate.get("obligation_id") == "RELEASE_FIXED_REMOVAL_MAPPING"
             and certificate.get("obligation_status") == "PASS"
             and verify_obligation_certificate(certificate)
             and certificate.get("formulas") == {

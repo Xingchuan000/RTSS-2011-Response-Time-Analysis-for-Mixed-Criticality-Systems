@@ -7,6 +7,7 @@ from typing import Iterable
 from formal_toolchain.core.hashing import sha256_object
 from .state_relation import p0_state_relation_schema_hash
 from .state_relation import p0_smt_relation_fields
+from .model_bounds import P0ModelBounds, _legacy_test_bounds
 
 
 REQUIRED_P0_CASE_IDS = (
@@ -47,8 +48,17 @@ class TransitionCaseProof:
     idle_precondition_bound: bool = False
     affected_job_identity_bound: bool = False
     frame_predicates_bound: bool = False
+    guard_ast_hash: str = ""
+    effect_ir_hash: str = ""
+    path_ast_hash: str = ""
+    queue_relation_hash: str = ""
+    source_context_hash: str = ""
+    model_bounds_hash: str = ""
+    compiled_guard_hashes: tuple[str, ...] = ()
+    consumed_effect_hashes: tuple[str, ...] = ()
+    non_state_effect_hashes: tuple[str, ...] = ()
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
@@ -61,12 +71,14 @@ def prove_smt2_case(*, case_id: str, source_branch_id: str,
                     declarations: str, precondition: str,
                     preservation: str, concrete_delta: str,
                     projected_reference_delta: str,
-                    bound_source_hash: str) -> TransitionCaseProof:
+                    bound_source_hash: str,
+                    bounds: P0ModelBounds | None = None) -> TransitionCaseProof:
     """检查 concrete 可行性及 ``Concrete => exists Reference`` simulation。
 
     输入是带声明的 SMT-LIB2 片段，而不是调用方传入的 PASS 标志。若 Z3
     未安装或片段无法解析，结果明确为 UNRESOLVED，绝不降级为 PASS。
     """
+    bounds = bounds or _legacy_test_bounds()
     base = {
         "case_id": case_id, "precondition_formula": precondition,
         "concrete_delta": concrete_delta,
@@ -75,7 +87,8 @@ def prove_smt2_case(*, case_id: str, source_branch_id: str,
         "bound_source_hash": bound_source_hash, "source_branch_id": source_branch_id,
         "concrete_delta_hash": sha256_object(concrete_delta),
         "projected_reference_delta_hash": sha256_object(projected_reference_delta),
-        "state_relation_schema_hash": p0_state_relation_schema_hash(),
+        "state_relation_schema_hash": p0_state_relation_schema_hash(bounds),
+        "model_bounds_hash": bounds.fingerprint,
     }
     try:
         import z3
@@ -88,7 +101,7 @@ def prove_smt2_case(*, case_id: str, source_branch_id: str,
         feasibility.from_string(declarations + f"\n(assert {precondition})\n(assert {concrete_delta})\n")
         feasible_result = feasibility.check()
         concrete_feasibility = "SAT" if feasible_result == z3.sat else ("UNSAT" if feasible_result == z3.unsat else "UNRESOLVED")
-        post_vars = " ".join(f"(r_{field}_post Int)" for field in p0_smt_relation_fields())
+        post_vars = " ".join(f"(r_{field}_post Int)" for field in p0_smt_relation_fields(bounds))
         def counterexample(body: str) -> object:
             solver = z3.Solver()
             solver.from_string(declarations + f"\n(assert {precondition})\n(assert {concrete_delta})\n(assert (not (exists ({post_vars}) {body})))\n")

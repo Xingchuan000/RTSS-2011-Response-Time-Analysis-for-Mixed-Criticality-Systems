@@ -2,6 +2,6 @@
   "schema_version": "migration_manifest_v1",
   "registry_schema_version": "obligation_registry_v3",
   "breaking_change_requires": ["schema_version", "migration_id"],
-  "migration_id": "phase-abe-theory-contract-r2",
+  "migration_id": "phase-ijk-seventh-round-semantic-binding-v1",
   "registry_fingerprint": "1e849a756defe14f9f254614c2bdca5901a37e8e6440438b4c573c9a55cc9a72"
 }

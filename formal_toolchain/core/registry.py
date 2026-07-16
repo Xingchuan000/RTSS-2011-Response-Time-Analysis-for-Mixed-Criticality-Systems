@@ -44,6 +44,65 @@ def active_obligations_for_claim(entries: list[dict[str, Any]], *, claim: str,
     return sorted(result)
 
 
+def phase_ijk_obligation_closure(entries: list[dict[str, Any]]) -> list[str]:
+    """计算 Phase I-K 的 canonical registry 闭包。
+
+    正式入口只能消费 registry 中的依赖关系；本地 bridge witness 不得再
+    自己维护另一套“必要前置列表”。
+    """
+    validate_registry(entries)
+    roots = {
+        "PROTECTED_HI_SAFETY_COROLLARY", "RELEASE_FIXED_REMOVAL_MAPPING",
+        "CLOSED_PREFIX_REFINEMENT", "REFERENCE_PREFIX_EXTENSION",
+        "HI_BAD_CLOSED_PREFIX_REFLECTION",
+    }
+    by_id = {str(entry["id"]): entry for entry in entries}
+    if not roots <= set(by_id):
+        raise ValueError(f"Phase I-K canonical obligation 缺失: {sorted(roots - set(by_id))}")
+    result: set[str] = set()
+    def visit(obligation_id: str) -> None:
+        if obligation_id in result:
+            return
+        entry = by_id[obligation_id]
+        if entry.get("activation") != "active":
+            raise ValueError(f"Phase I-K 依赖不是 active: {obligation_id}")
+        result.add(obligation_id)
+        for dep in entry.get("depends_on", []):
+            visit(str(dep))
+    for root in sorted(roots):
+        visit(root)
+    return sorted(result)
+
+
+def verify_registry_local_closure(entries: list[dict[str, Any]], certificates: dict[str, Any], *,
+                                  context_hash: str) -> dict[str, Any]:
+    """校验 Phase I-K 闭包中的证书、ID、上下文和 direct predecessors。"""
+    try:
+        closure = phase_ijk_obligation_closure(entries)
+    except ValueError as exc:
+        return {"status": "UNRESOLVED", "failure": str(exc)}
+    by_id = {str(entry["id"]): entry for entry in entries}
+    missing = [item for item in closure if item not in certificates]
+    if missing:
+        return {"status": "UNRESOLVED", "failure": "REGISTRY_CLOSURE_CERTIFICATE_MISSING", "missing": missing,
+                "closure": closure}
+    from .artifact import verify_obligation_certificate
+    bad = []
+    for obligation_id in closure:
+        cert = certificates[obligation_id]
+        if not isinstance(cert, dict) or cert.get("obligation_id") != obligation_id:
+            bad.append((obligation_id, "ID")); continue
+        if cert.get("obligation_status") != "PASS" or cert.get("certificate_context_hash") != context_hash:
+            bad.append((obligation_id, "STATUS_OR_CONTEXT")); continue
+        if not verify_obligation_certificate(cert):
+            bad.append((obligation_id, "HASH")); continue
+        expected = set(by_id[obligation_id].get("depends_on", [])) & set(closure)
+        actual = set(cert.get("direct_predecessor_hashes", {}))
+        if not expected <= actual:
+            bad.append((obligation_id, "DIRECT_PREDECESSOR"))
+    return {"status": "PASS" if not bad else "UNRESOLVED", "closure": closure, "bad": bad}
+
+
 def validate_registry(entries: list[dict[str, Any]]) -> None:
     schema_path = Path(__file__).parents[1] / "specs/registry_meta_schema.json"
     try:

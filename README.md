@@ -174,8 +174,34 @@ inputs；Phase K 再从真实 runtime handler 的完整 transition-path map、�
 `transition_case_proofs` 或
 `bridge_certificates`；有限 release mapping 只能作为边界证据，不能替代参数化公式证书。
 旧的 `case_by_branch`/if-node 映射不是正式输入；`phase_k_case_map.json` 必须是
-`phase_k_transition_path_map_v1`，覆盖 18 个完整路径，并且每条路径的 handler、行号、
-guard、effects、terminal 和哈希必须与当前 `amc_py/event_runtime.py` 一致。
+`phase_k_transition_path_map_v2_cfg_ir`，覆盖 18 个计划 case。每条路径都带有由
+Python AST/有限 CFG 提取器生成的 `guard_ir`、有序 `effect_ir`、terminal、queue
+relation 及其哈希；源码 hash、IR hash 或路径集合不一致都会 fail-closed。正常 runtime
+中额外会消费的 dispatch no-op/idle、stale completion/overrun、missing job、预算未越界、
+LO deadline observation、release/deadline/completion/overrun 调度、token invalidation、
+response-expiry 不可达分支以及实际 `runtime_wrapper → engine.apply_budget_updates()`
+也会进入 normal path coverage，不能只用 18 个宏 case 代替。
+
+`bridge_context_hash` 由正式入口根据 reference context、当前源码/path-map hash 和
+P0 case manifest hash 派生，fixture 不保存这个易过期的派生值。SMT relation 使用有限
+job-slot、task-budget-slot 和 queue-event-slot 逐字段绑定 active/ready/running、job key、
+criticality、release/deadline/service、task budget、event time/type/job key/token 及最小
+未来 timing boundary；旧的计数、求和 digest 和普通 frame 标志不再是 job/frame/queue
+relation 的唯一依据。PreClosed(0) reference state 由 release-fixed demand 和 projected
+queue 独立重建，不直接复制 concrete state 或 runtime heap。
+
+Arrival batch、event handler 和 controller 不再被当作互不相干的原子函数：入口会现场
+检查 batch pop/sort/mode-switch/single-arrival loop/reschedule、event advance/guarded
+microstep/recovery/reschedule，以及 `apply_budget_updates()` 的 settle/update/force
+reschedule 顺序。time-0 base 由真实 `EventRuntimeEngine` 处理 fixture task 的 arrival
+closure 后投影为 `PreClosed(0)`，不由固定的空状态构造。Phase I-K 的最终输出还必须包含
+磁盘 obligation registry 的 canonical 闭包：
+`RELEASE_FIXED_REMOVAL_MAPPING`、`CLOSED_PREFIX_REFINEMENT`、
+`REFERENCE_PREFIX_EXTENSION`、`HI_BAD_CLOSED_PREFIX_REFLECTION` 和
+`PROTECTED_HI_SAFETY_COROLLARY` 及其递归 predecessors；缺少任一真实证据时输出
+`PHASE_IJK_UNRESOLVED`。结果 schema 已升级为
+`phase_ijk_result_v3_breaking`，migration id 为
+`phase-ijk-seventh-round-semantic-binding-v1`。
 前缀扩展证书的 theorem ID 必须精确为 `REFERENCE_PREFIX_EXTENSION`，不得替换为
 `DISCRETE_TICK_FPPS_EMBEDDING`。缺少真实前置对象或 Z3 时返回
 `PHASE_IJK_UNRESOLVED`，不会使用 synthetic 默认值：
@@ -185,9 +211,11 @@ python scripts/run_phase_ijk_acceptance.py --fixture synthetic_p0 \
   --out build/formal/phase_ijk/phase_ijk_result.json
 ```
 
-正常流程在具备 formal 依赖时返回 `PHASE_IJK_ACCEPTED`，并在输出目录写入
-`branch_map.json`、`transition_case_proofs.json`、五类内部前置证书以及两个参数化
-theorem certificate。其 `final_safety_claim` 固定为 `NOT_EVALUATED`，不表示
+正常流程在具备 formal 依赖时返回 `workflow_status: VERIFIED` 与
+`phase_result: PHASE_IJK_ACCEPTED`，并在输出目录写入
+`branch_map.json`、`transition_case_proofs.json`、五类内部前置证书、两个参数化
+theorem certificate 以及 `registry_certificates`/`registry_closure`。其
+`final_safety_claim` 固定为 `NOT_EVALUATED`，不表示
 `DEPLOYED_TREE_PROVED`。
 
 ## 3.3 Phase F/G/H 形式化工具链
@@ -4201,3 +4229,32 @@ conda run -n amc-repro python scripts/run_phase_ae_acceptance.py
 成功输出 `phase_result: PHASE_AE_ACCEPTED`、`workflow_status: VERIFIED` 和
 `final_safety_claim: NOT_EVALUATED`。该入口不会构造或输出 `DEPLOYED_TREE_PROVED`；真实 seed、
 candidate/certified envelope、C-AMC-sem RTA 及 Phase F-K 仍未评价。
+
+### Phase I-K 本轮修改后的使用说明
+
+Phase K 的 SMT 容量由 Phase I canonical `reference_taskset` 现场推导，不再固定为
+4 task、4 job、8 queue slot。真实 t10 target 会生成至少 10 个 task slot，并将
+`model_bounds_hash` 绑定到每条 transition proof 和 state-relation schema。
+
+运行 Phase I-K 验收：
+
+```bash
+python scripts/run_phase_ijk_acceptance.py \
+  --fixture synthetic_p0 \
+  --out build/formal/phase_ijk
+```
+
+正式路径必须来自真实源码 CFG 的 `guard_ir` 和有序 `effect_ir`；guard 极性、job/queue
+slot、token 及 queue 最小时间都会进入证明。未知 effect、路径不唯一、源码或 path-map
+hash 不一致会返回 `PHASE_IJK_UNRESOLVED`，不会使用 unchanged 或 synthetic 兜底。
+正式 transition compiler 通过 `compile_source_guards(guard_ir)` 和
+`compile_effect_ir(effect_ir, bounds=...)` 生成 concrete SMT；每条 guard/effect 的
+AST hash 都写入 proof witness，纯局部表达式和循环调用边界也会显式消费并留痕。
+复合 handler 的 decomposition 还必须消费对应 micro-step proof 的 concrete/reference
+delta hash，并生成有序组合记录；PreClosed(0) base certificate 消费该 decomposition
+证书本身，不再把外部 `BATCH_CLOSURE` 证书当作 arrival handler 组合证明。
+
+PreClosed(0) base proof 使用空 boot、demand oracle、arrival-batch 分解、事件顺序和
+三类 release case 的参数化证据；nominal runtime 样例不再作为正式 base。I-K registry
+中的预算不变量只绑定 fresh Phase F-H registry 的权威证书，任务名是否以 `HI` 结尾不
+参与 criticality 判断。

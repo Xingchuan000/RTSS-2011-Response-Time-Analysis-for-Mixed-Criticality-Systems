@@ -22,7 +22,7 @@ def test_theory_manifest_is_verified_and_has_no_instance_data():
     result = verify_theory_library(ROOT / "formal_toolchain/theory")
     assert result["status"] == "PASS"
     # Phase K 第四轮新增独立的 REFERENCE_PREFIX_EXTENSION 理论条目。
-    assert result["theorem_count"] == 11
+    assert result["theorem_count"] == 13
 
 
 def test_theory_verifier_rejects_seed_specific_tcb(tmp_path: Path):

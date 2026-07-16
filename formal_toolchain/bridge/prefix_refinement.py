@@ -9,24 +9,42 @@ from typing import Any, Mapping, Sequence
 from formal_toolchain.core.canonical_json import canonical_dumps
 from formal_toolchain.core.artifact import obligation_certificate
 from formal_toolchain.core.artifact import verify_obligation_certificate
+from formal_toolchain.core.hashing import sha256_object
 
 from .event_projection import project_events
 from .state_relation import P0ConcreteState, P0Event, P0ReferenceState, relation_holds
 from .transition_cases import TransitionCaseProof, check_handler_coverage
 
 
-def closed_prefix_certificate(base_concrete: P0ConcreteState, base_reference: P0ReferenceState,
-                              cases: Sequence[TransitionCaseProof], *, source_hash: str,
+def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
+                              cases: Sequence[TransitionCaseProof], source_hash: str,
                               bridge_context_hash: str | None = None,
                               source_branch_ids: Sequence[str] | None = None,
                               branch_map: Mapping[str, Any] | None = None,
                               prerequisite_certificates: Mapping[str, Mapping[str, Any]] | None = None,
-                              theorem_hash: str | None = None) -> dict[str, Any]:
+                              theorem_hash: str | None = None,
+                              upstream_certificates: Mapping[str, Mapping[str, Any]] | None = None,
+                              release_mapping_certificate: Mapping[str, Any] | None = None,
+                              transition_case_certificates: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """聚合真实 case proof；缺 case、hash 或 Z3 结果时保持未解析。"""
-    if not relation_holds(base_concrete, base_reference):
-        return {"status": "FAIL", "failure": "BASE_RELATION_FAILED"}
+    if (base_relation_certificate.get("obligation_id") != "PRECLOSED0_BASE_RELATION"
+            or base_relation_certificate.get("obligation_status") != "PASS"
+            or not verify_obligation_certificate(base_relation_certificate)):
+        return {"obligation_status": "UNRESOLVED", "failure": "PRECLOSED0_BASE_RELATION_REQUIRED"}
     if not source_hash:
         return {"status": "UNRESOLVED", "failure": "SOURCE_HASH_MISSING"}
+    required_upstream = ("SCHEDULER_MODEL", "MODE_SEMANTICS_CONFORMANCE",
+                         "DEMAND_ORACLE_BATCH_CONTRACT", "HI_EXECUTION_CONTRACT",
+                         "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION", "DEADLINE_OBSERVATION",
+                         "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE", "CONTROLLER_POSTCLOSURE",
+                         "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION", "CERTIFIED_ENVELOPE")
+    if (not isinstance(upstream_certificates, Mapping)
+            or any(upstream_certificates.get(name, {}).get("obligation_status") != "PASS"
+                   for name in required_upstream)
+            or not isinstance(release_mapping_certificate, Mapping)
+            or release_mapping_certificate.get("obligation_id") != "RELEASE_FIXED_REMOVAL_MAPPING"
+            or release_mapping_certificate.get("obligation_status") != "PASS"):
+        return {"status": "UNRESOLVED", "failure": "REGISTRY_UPSTREAM_CLOSURE_REQUIRED"}
     if not bridge_context_hash or not isinstance(theorem_hash, str) or len(theorem_hash) != 64:
         return {"status": "UNRESOLVED", "failure": "BRIDGE_THEOREM_CONTEXT_REQUIRED"}
     required_prerequisites = ("base_relation", "same_timestamp", "positive_time",
@@ -52,6 +70,13 @@ def closed_prefix_certificate(base_concrete: P0ConcreteState, base_reference: P0
         return {"status": "FAIL", "failure": "SOURCE_BRANCH_MAP_INPUT_MISMATCH"}
     if not cases:
         return {"status": "UNRESOLVED", "failure": "CASEWISE_PROOF_INCOMPLETE"}
+    if (not isinstance(transition_case_certificates, Sequence)
+            or len(transition_case_certificates) != len(cases)
+            or any(not verify_obligation_certificate(item)
+                   or item.get("obligation_status") != "PASS"
+                   or item.get("certificate_context_hash") != bridge_context_hash
+                   for item in transition_case_certificates)):
+        return {"status": "UNRESOLVED", "failure": "TRANSITION_CASE_CERTIFICATES_REQUIRED"}
     if any(not isinstance(case, TransitionCaseProof) for case in cases):
         return {"status": "UNRESOLVED", "failure": "CASE_OBJECT_REQUIRED"}
     if any(case.bound_source_hash != source_hash for case in cases):
@@ -73,11 +98,19 @@ def closed_prefix_certificate(base_concrete: P0ConcreteState, base_reference: P0
         obligation_id="CLOSED_PREFIX_REFINEMENT", status="PASS", context_hash=bridge_context_hash,
         inputs={"source_branch_count": len(derived_branch_ids),
                  "branch_map_hash": str(branch_map.get("path_map_hash")),
-                 "prerequisite_hashes": {key: prerequisite_certificates[key]["artifact_hash"]
+               "prerequisite_hashes": {key: prerequisite_certificates[key]["artifact_hash"]
                                          for key in required_prerequisites},
-                 "theorem_hash": theorem_hash},
-        direct_predecessor_hashes={key: prerequisite_certificates[key]["artifact_hash"]
+                 "theorem_hash": theorem_hash,
+                 "upstream_hashes": {key: upstream_certificates[key].get("artifact_hash", sha256_object(upstream_certificates[key]))
+                                     for key in required_upstream},
+                 "release_mapping_hash": release_mapping_certificate.get("artifact_hash", sha256_object(release_mapping_certificate))},
+        direct_predecessor_hashes={**{key: prerequisite_certificates[key]["artifact_hash"]
                                   for key in required_prerequisites},
+                                  **{key: upstream_certificates[key].get("artifact_hash", sha256_object(upstream_certificates[key]))
+                                     for key in required_upstream},
+                                  "release_mapping": release_mapping_certificate.get("artifact_hash", sha256_object(release_mapping_certificate)),
+                                  **{f"case:{index}": case_artifact["artifact_hash"]
+                                     for index, case_artifact in enumerate(transition_case_certificates)}},
         witness={"case_ids": result["case_ids"], "coverage": coverage},
         checker_id="formal_toolchain.bridge.prefix_refinement", checker_version="phase-k-v1",
     ))
@@ -187,7 +220,7 @@ def reflect_first_hi_miss(*, concrete_events: Sequence[P0Event], reference_event
               "job_key": list(c_miss.job_key) if c_miss.job_key else None,
               "miss_time": c_miss.time}
     result.update(obligation_certificate(
-        obligation_id="HI_BAD_PREFIX_REFLECTION", status="PASS", context_hash=bridge_context_hash,
+        obligation_id="HI_BAD_CLOSED_PREFIX_REFLECTION", status="PASS", context_hash=bridge_context_hash,
         inputs={"stop_at_first_miss": stop_at_first_miss},
         witness={"job_key": result["job_key"], "miss_time": c_miss.time,
                  "closure": result["closure"]},

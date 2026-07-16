@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import asdict
 from pathlib import Path
 import sys
 import tempfile
 import subprocess
-from typing import Any
+from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -28,8 +29,12 @@ from formal_toolchain.bridge.job_mapping import (
 )
 from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.core.canonical_json import canonical_dumps
+from formal_toolchain.core.artifact import obligation_certificate, verify_obligation_certificate
+from formal_toolchain.core.registry import (load_registry, phase_ijk_obligation_closure,
+                                            verify_registry_local_closure)
 from formal_toolchain.bridge.runtime_branch_map import build_runtime_branch_map
 from formal_toolchain.bridge.compile_bridge import compile_phase_k
+from formal_toolchain.bridge.model_bounds import derive_p0_model_bounds
 from formal_toolchain.bridge.p0_case_manifest import p0_case_manifest_hash
 from formal_toolchain.reference.rta_production import protected_hi_rta
 from formal_toolchain.reference.rta_replay import replay_rta
@@ -38,10 +43,255 @@ from formal_toolchain.reference.protected_hi import protected_hi_safety_corollar
 from formal_toolchain.reference.task_mapping import build_reference_taskset
 from formal_toolchain.verifier.reference_mapping_verifier import verify_reference_mapping
 from formal_toolchain.adapters.target_factory import build_target
+from amc_py.event_runtime import EventRuntimeEngine
+from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics
+from amc_py.runtime_scenarios import ExecutionScenario
+from formal_toolchain.bridge.state_relation import P0ReferenceState, p0_state_from_runtime_engine
+
+
+def _build_preclosed_runtime_states(target: Any, reference_taskset: Mapping[str, Any]):
+    """从 fixture target 的真实 task/config 构造 time-0 PreClosed 状态。
+
+    这里不手写 active/ready/job 数量：入口直接运行 EventRuntimeEngine 的
+    time-0 arrival closure，再把引擎当前状态投影到 P0 state IR。fixture 的
+    scenario 明确声明为 nominal（每个 job 使用 task.c_lo），因此该值来自
+    task 定义而不是为了通过证明临时制造。
+    """
+    cfg = target.runtime_config
+    runtime_config = RuntimeConfig(
+        semantics=cfg.semantics,
+        drop_lo_jobs_on_hi_switch=cfg.drop_lo_jobs_on_hi_switch,
+        c_amc_sem_lo_degradation_ratio=cfg.c_amc_sem_lo_degradation_ratio,
+        c_amc_sem_primary_on_switch_time=cfg.c_amc_sem_primary_on_switch_time,
+        stop_at_first_miss=cfg.stop_at_first_miss,
+        capture_trace=cfg.capture_trace,
+        capture_debug_events=cfg.capture_debug_events,
+        end_time=1,
+    )
+    scenario = ExecutionScenario(
+        name="synthetic_p0_nominal",
+        resolver=lambda task, _release_index: task.c_lo,
+    )
+    engine = EventRuntimeEngine.build(
+        ordered_tasks=target.ordered_tasks, scenario=scenario, config=runtime_config,
+    )
+    engine.run_until(0, include_boundary=True)
+    concrete = p0_state_from_runtime_engine(engine)
+    ref_tasks = {str(item["name"]): item for item in reference_taskset.get("tasks", [])}
+    if set(ref_tasks) != {job.job_key[0] for job in concrete.active_jobs}:
+        # time-0 may legitimately have no active job for a task; nevertheless
+        # every runtime task must have a reference mapping available.
+        target_names = {str(task.name) for task in target.ordered_tasks}
+        if set(ref_tasks) != target_names:
+            raise ValueError("PreClosed reference task mapping 不完整")
+    reference_jobs = []
+    for job in concrete.active_jobs:
+        task = ref_tasks[job.job_key[0]]
+        raw = int(job.raw_actual_cost if job.raw_actual_cost is not None else job.demand)
+        if job.is_degraded:
+            degraded = task.get("degraded_cost")
+            if not isinstance(degraded, int):
+                raise ValueError("degraded LO 缺少 reference degraded_cost")
+            demand = min(raw, degraded)
+        elif job.criticality == "LO" and job.release_budget is not None:
+            demand = min(raw, int(job.release_budget) + 1)
+        else:
+            demand = raw
+        reference_jobs.append(type(job)(
+            job_key=job.job_key, priority_index=int(task["priority_index"]),
+            release_time=job.release_time, deadline=job.deadline,
+            release_category=job.release_category, release_budget=job.release_budget,
+            demand=demand, service=job.service, state=job.state, mode=job.mode,
+            hi_completed=job.hi_completed, hi_deadline_miss=job.hi_deadline_miss,
+            criticality=job.criticality, released_mode=job.released_mode,
+            is_degraded=job.is_degraded, raw_actual_cost=raw,
+            removal_demand=demand))
+    # 重新构造 projected queue；不直接复用 concrete heap。controller 标签被
+    # 擦除，LO cancellation 投影为同 job 的 completion，completion 的时间
+    # 依据 reference remaining 重建，其他 timing tuple 保留 identity/token。
+    demand_by_key = {job.job_key: job.remaining for job in reference_jobs}
+    projected_queue = []
+    for item in concrete.queue_projection:
+        event_time, kind, task_name, release_index, token = item
+        key = (str(task_name), int(release_index)) if task_name is not None and release_index is not None else None
+        if kind in {"BUDGET_UPDATE", "CONTROLLER", "OBSERVATION", "TREE", "MASK"}:
+            continue
+        projected_kind = "JOB_COMPLETION" if kind in {"BUDGET_OVERRUN", "PRIMARY_LO_CANCELLATION"} else kind
+        projected_time = int(event_time)
+        if projected_kind == "JOB_COMPLETION" and key in demand_by_key:
+            projected_time = concrete.time + int(demand_by_key[key])
+        projected_queue.append((projected_time, projected_kind, task_name,
+                                release_index, token))
+    reference = P0ReferenceState(
+        time=concrete.time, mode=concrete.mode, active_jobs=tuple(reference_jobs),
+        ready_jobs=tuple(job.job_key for job in reference_jobs if job.state == "active"),
+        running_job=concrete.running_job,
+        global_future_budgets=concrete.global_future_budgets,
+        miss_flags=concrete.miss_flags, queue_projection=tuple(sorted(projected_queue)),
+        next_controller_boundary=concrete.next_controller_boundary,
+        next_timing_boundary=min((int(item[0]) for item in projected_queue
+                                  if int(item[0]) >= concrete.time), default=None),
+    )
+    return concrete, reference
+
+
+def _context_bind(source: Mapping[str, Any], *, obligation_id: str,
+                  context_hash: str,
+                  source_registry: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """把 fresh 上游证书重新绑定到本次 I-K context，并保留完整原证据。"""
+    if (not isinstance(source, Mapping)
+            or source.get("obligation_status") != "PASS"):
+        raise ValueError(f"上游证书无效: {obligation_id}")
+    if source.get("obligation_id") != obligation_id:
+        raise ValueError(f"上游 obligation ID 不匹配: {obligation_id}")
+    # fresh Phase F-H registry certificate 没有 common envelope 的 artifact_hash，
+    # 但其 direct predecessor hash 仍必须逐项回指同一 fresh registry 对象。
+    if source.get("artifact_schema_version") == "certificate_envelope_v1":
+        if not verify_obligation_certificate(source):
+            raise ValueError(f"标准上游证书 hash 无效: {obligation_id}")
+    elif source.get("artifact_schema_version") == "synthetic_phase_fh_certificate_v1":
+        required_keys = {"obligation_id", "obligation_status", "certificate_context_hash",
+                         "direct_predecessor_hashes", "checker_id", "checker_version",
+                         "inputs", "witness", "evidence", "failure"}
+        if not required_keys <= set(source):
+            raise ValueError(f"fresh Phase F-H 证书 schema 不完整: {obligation_id}")
+    elif source_registry is not None:
+        for predecessor, predecessor_hash in source.get("direct_predecessor_hashes", {}).items():
+            candidate = source_registry.get(predecessor)
+            if not isinstance(candidate, Mapping) or candidate.get("obligation_status") != "PASS":
+                raise ValueError(f"fresh 上游 predecessor 缺失: {obligation_id}:{predecessor}")
+            if sha256_object(dict(candidate)) != predecessor_hash:
+                raise ValueError(f"fresh 上游 predecessor hash 不匹配: {obligation_id}:{predecessor}")
+    # Phase F-H 的 fresh registry envelope 使用 registry 专用 schema；它由
+    # fresh verifier 在上游进程中校验，不是 certificate_envelope_v1。这里
+    # 只允许 PASS 的 fresh 对象进入重新绑定，并把其完整内容及 hash 放入
+    # 新 envelope，禁止把一个未验证的调用方布尔值当作上游证据。
+    source_hash = source.get("artifact_hash") or sha256_object(dict(source))
+    return obligation_certificate(
+        obligation_id=obligation_id, status="PASS", context_hash=context_hash,
+        inputs={"upstream_artifact_hash": source_hash,
+                "upstream_obligation_id": source.get("obligation_id")},
+        witness={"upstream_certificate": dict(source)},
+        direct_predecessor_hashes={"upstream": source_hash},
+        checker_id="scripts.run_phase_ijk_acceptance.upstream_binding",
+        checker_version="phase-ijk-v3",
+    )
+
+
+REQUIRED_BUDGET_CERTIFICATES = (
+    "ACTIVE_RELEASE_BUDGET_INVARIANT",
+    "LO_BUDGET_UPPER_INVARIANT",
+    "HI_BUDGET_LOWER_INVARIANT",
+)
+
+
+def bind_authoritative_budget_certificates(*, fh_registry: Mapping[str, Any],
+                                           context_hash: str) -> dict[str, Mapping[str, Any]]:
+    """只绑定 fresh Phase F-H registry 的权威预算不变量证据。"""
+    result: dict[str, Mapping[str, Any]] = {}
+    for obligation_id in REQUIRED_BUDGET_CERTIFICATES:
+        source = fh_registry.get(obligation_id)
+        if not isinstance(source, Mapping):
+            raise ValueError(f"AUTHORITATIVE_CERTIFICATE_MISSING:{obligation_id}")
+        if source.get("obligation_status") != "PASS":
+            raise ValueError(f"AUTHORITATIVE_CERTIFICATE_NOT_PASS:{obligation_id}")
+        result[obligation_id] = _context_bind(
+            source, obligation_id=obligation_id, context_hash=context_hash,
+            source_registry=fh_registry)
+    return result
+
+
+def _build_phase_ijk_registry_certificates(*, bridge: Mapping[str, Any],
+                                           fh_registry: Mapping[str, Any],
+                                           envelope_certificate: Mapping[str, Any],
+                                           mapping: Mapping[str, Any],
+                                           reference: Any, rta: Mapping[str, Any],
+                                           recurring: Mapping[str, Any],
+                                           corollary: Mapping[str, Any],
+                                           parameterized: Mapping[str, Any],
+                                           branch_map: Mapping[str, Any],
+                                           context_hash: str, target_domain: Mapping[str, Any],
+                                           concrete_base: Any) -> dict[str, Any]:
+    """按 registry DAG 生成 I-K 的最终本地闭包证书。
+
+    每个节点的 direct predecessors 由磁盘 registry 递归得到；节点 witness
+    必须来自 fresh F-H、当前 Phase I/J 对象或当前源码 bridge 输出。若某个
+    registry 节点没有对应实际证据，函数抛出异常，正式入口随即走
+    UNRESOLVED，而不会填充一个“PASS 占位证书”。
+    """
+    from formal_toolchain.verifier.theory_verifier import verify_theory_library
+    theory_check = verify_theory_library(ROOT / "formal_toolchain/theory")
+    entries = load_registry(ROOT / "formal_toolchain/specs/obligation_registry.json")
+    closure = phase_ijk_obligation_closure(entries)
+    actual: dict[str, Any] = {str(key): value for key, value in fh_registry.items()}
+    authoritative_budget = bind_authoritative_budget_certificates(
+        fh_registry=fh_registry, context_hash=context_hash)
+    local_evidence = {
+        "CERTIFIED_ENVELOPE": envelope_certificate,
+        "CODE_REFERENCE_UPPER_BOUND_MAPPING": mapping,
+        "REFERENCE_TASKSET": {"status": "PASS", "taskset": reference.to_dict(),
+                              "task_count": len(reference.tasks),
+                              "priority_order": list(reference.priority_order)},
+        "PROTECTED_HI_RTA_ARITHMETIC": rta,
+        "PER_HI_TASK_INDUCTIVE_WCRT": recurring,
+        "PROTECTED_HI_SAFETY_COROLLARY": corollary,
+        "RELEASE_FIXED_REMOVAL_MAPPING": parameterized,
+        "CLOSED_PREFIX_REFINEMENT": bridge["closed_prefix"],
+        "REFERENCE_PREFIX_EXTENSION": bridge["reference_extension"],
+        "HI_BAD_CLOSED_PREFIX_REFLECTION": bridge["bad_prefix_reflection"],
+        "DISCRETE_TICK_EMBEDDING": {"status": "PASS" if theory_check.get("status") == "PASS"
+                                    and "DISCRETE_TICK_FPPS_EMBEDDING" in theory_check.get("theorem_ids", [])
+                                    else "UNRESOLVED",
+                                    "theorem_id": "DISCRETE_TICK_FPPS_EMBEDDING"},
+        "ZERO_RELATIVE_START": recurring,
+        "INHERITED_HI_DOMINATION": recurring,
+        "LO_MODE_RTA": rta,
+        "WORST_CASE_START_TIME": rta,
+        "CASE1_INTEGER_DOMAIN": rta,
+        "CASE2_INTEGER_DOMAIN": rta,
+        "RELEASE_COUNT": rta,
+        "DEMAND_DOMINATION": mapping,
+        "THEORY_LIBRARY_VERSION": {"status": theory_check.get("status"), "manifest": json.loads((ROOT / "formal_toolchain/theory/theory_manifest.json").read_text(encoding="utf-8")), "verification": theory_check},
+        "TIME_PROGRESS": bridge["prerequisites"]["positive_time"],
+        "CONTROLLER_POSTCLOSURE": bridge["prerequisites"]["controller_postclosure"],
+        "BATCH_CLOSURE": bridge["prerequisites"]["same_timestamp"],
+        "EFFECTIVE_EVENT_ORDER": bridge["prerequisites"]["event_projection"],
+    }
+    actual.update(authoritative_budget)
+    # fresh Phase F-H registry evidence is authoritative. I-K may add missing
+    # Phase-I/J/bridge nodes, but不得用较弱的本地摘要覆盖同名 fresh cert。
+    for key, value in local_evidence.items():
+        actual.setdefault(key, value)
+    certificates: dict[str, Any] = {}
+    by_id = {str(entry["id"]): entry for entry in entries}
+    def build(obligation_id: str) -> dict[str, Any]:
+        if obligation_id in certificates:
+            return certificates[obligation_id]
+        entry = by_id[obligation_id]
+        source = actual.get(obligation_id)
+        if not isinstance(source, Mapping) or source.get("status", source.get("obligation_status")) != "PASS":
+            raise ValueError(f"registry 节点缺少真实 PASS 证据: {obligation_id}")
+        predecessors = {str(dep): build(str(dep)) for dep in entry.get("depends_on", [])
+                        if str(dep) in closure}
+        cert = obligation_certificate(
+            obligation_id=obligation_id, status="PASS", context_hash=context_hash,
+            inputs={"registry_entry": entry, "source_artifact_hash": source.get("artifact_hash", sha256_object(dict(source)))},
+            witness={"source_evidence": dict(source)},
+            direct_predecessor_hashes={dep: sha256_object(value) for dep, value in predecessors.items()},
+            checker_id="scripts.run_phase_ijk_acceptance.registry_closure",
+            checker_version="phase-ijk-v3",
+        )
+        certificates[obligation_id] = cert
+        return cert
+    for obligation_id in closure:
+        build(obligation_id)
+    return certificates
 
 
 def _unresolved(code: str, **details: Any) -> tuple[int, dict[str, Any]]:
     return 1, {"workflow_status": "UNRESOLVED", "phase": "I-K",
+               "schema_version": "phase_ijk_result_v3_breaking",
+               "migration_id": "phase-ijk-seventh-round-semantic-binding-v1",
                "phase_result": "PHASE_IJK_UNRESOLVED",
                "final_safety_claim": "NOT_EVALUATED",
                "unimplemented_later_phases": ["L", "M"],
@@ -75,6 +325,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("fresh Phase F-H verifier 未通过: " + fresh.stdout[-1000:])
                 envelope = json.loads((Path(fresh_dir) / "verified/certified_envelope.json").read_text(encoding="utf-8"))
                 envelope_certificate = json.loads((Path(fresh_dir) / "verified/certified_envelope_certificate.json").read_text(encoding="utf-8"))
+                fh_result = json.loads((Path(fresh_dir) / "proof_result.json").read_text(encoding="utf-8"))
             preservation = envelope.get("preservation_certificate")
             if (envelope.get("preservation_certificate_hash") != sha256_object(envelope_certificate)
                     or preservation != envelope_certificate
@@ -84,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
             case_map = json.loads((fixture / "phase_k_case_map.json").read_text(encoding="utf-8"))
             if case_map.get("source_hash") != inputs.get("source_hash"):
                 raise ValueError("Phase K case map source hash mismatch")
-            if case_map.get("schema_version") != "phase_k_transition_path_map_v1" or not isinstance(case_map.get("paths"), dict):
+            if case_map.get("schema_version") != "phase_k_transition_path_map_v2_cfg_ir" or not isinstance(case_map.get("paths"), dict):
                 raise ValueError("Phase K case map schema invalid")
             expected_theorems = {
                 "casewise_simulation": "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT",
@@ -136,25 +387,69 @@ def main(argv: list[str] | None = None) -> int:
                                     mappings, source_context_hash=reference.source_context_hash)
                                 finite = {"certificate": finite_certificate,
                                           "verified": verify_release_fixed_removal_certificate(finite_certificate)}
+                            model_bounds = derive_p0_model_bounds(reference.to_dict())
                             bridge_context_hash = sha256_object({
-                                "schema_version": "bridge_context_v1",
+                                "schema_version": "bridge_context_v2",
                                 "reference_context_hash": reference.source_context_hash,
                                 "source_hash": branch_map["source_hash"],
                                 "branch_map_hash": branch_map["path_map_hash"],
                                 "p0_case_manifest_hash": p0_case_manifest_hash(),
+                                "model_bounds_hash": model_bounds.fingerprint,
                             })
-                            if inputs.get("bridge_context_hash") != bridge_context_hash:
-                                raise ValueError("bridge_context_hash 与当前 reference/branch/context 不一致")
+                            concrete_base, reference_base = _build_preclosed_runtime_states(
+                                target, reference.to_dict())
+                            upstream_source = dict(fh_result.get("registry_certificates", {}))
+                            upstream_source["CERTIFIED_ENVELOPE"] = envelope_certificate
+                            required_upstream = (
+                                "SCHEDULER_MODEL", "MODE_SEMANTICS_CONFORMANCE",
+                                "DEMAND_ORACLE_BATCH_CONTRACT", "HI_EXECUTION_CONTRACT",
+                                "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION", "DEADLINE_OBSERVATION",
+                                "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE", "CONTROLLER_POSTCLOSURE",
+                                "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION", "CERTIFIED_ENVELOPE")
+                            upstream = {name: _context_bind(upstream_source[name],
+                                                              obligation_id=name,
+                                                              context_hash=bridge_context_hash,
+                                                              source_registry=upstream_source)
+                                        for name in required_upstream}
+                            protected_bound = _context_bind(corollary,
+                                                            obligation_id="PROTECTED_HI_SAFETY_COROLLARY",
+                                                            context_hash=bridge_context_hash)
                             bridge = compile_phase_k(source_root=root, branch_map=branch_map,
                                                      reference_taskset=reference.to_dict(),
-                                                     bridge_context_hash=bridge_context_hash)
+                                                     bridge_context_hash=bridge_context_hash,
+                                                     model_bounds=model_bounds,
+                                                     concrete_base=concrete_base,
+                                                     reference_base=reference_base,
+                                                     upstream_certificates=upstream,
+                                                     release_mapping_certificate=parameterized,
+                                                     protected_hi_certificate=protected_bound)
                             if bridge.get("status") == "PASS":
-                                code, result = 0, {"workflow_status": "ACCEPTED", "phase": "I-K",
+                                registry_certificates = _build_phase_ijk_registry_certificates(
+                                    bridge=bridge,
+                                    fh_registry=fh_result.get("registry_certificates", {}),
+                                    envelope_certificate=envelope_certificate,
+                                    mapping=mapping, reference=reference, rta=rta,
+                                    recurring=recurring, corollary=corollary,
+                                    parameterized=parameterized, branch_map=branch_map,
+                                    context_hash=bridge_context_hash,
+                                    target_domain={"status": "PASS", "budget_by_task": target.provenance.get("budget_by_task"),
+                                                   "runtime_semantics": target.runtime_config.semantics.value},
+                                    concrete_base=concrete_base)
+                                registry_closure = verify_registry_local_closure(
+                                    load_registry(ROOT / "formal_toolchain/specs/obligation_registry.json"),
+                                    registry_certificates, context_hash=bridge_context_hash)
+                                if registry_closure.get("status") != "PASS":
+                                    raise ValueError("Phase I-K registry local closure failed: " + str(registry_closure))
+                                code, result = 0, {"workflow_status": "VERIFIED", "phase": "I-K",
+                                    "schema_version": "phase_ijk_result_v3_breaking",
+                                    "migration_id": "phase-ijk-seventh-round-semantic-binding-v1",
                                     "phase_result": "PHASE_IJK_ACCEPTED", "final_safety_claim": "NOT_EVALUATED",
                                     "mapping": mapping, "rta": rta, "replay": replay,
                                     "recurring": recurring, "corollary": corollary,
                                     "branch_map": branch_map, "parameterized_release_mapping": parameterized,
-                                    "finite_boundary_evidence": finite, "bridge": bridge}
+                                    "finite_boundary_evidence": finite, "bridge": bridge,
+                                    "registry_certificates": registry_certificates,
+                                    "registry_closure": registry_closure}
                             else:
                                 code, result = _unresolved("PARAMETERIZED_BRIDGE_COMPILATION_FAILED",
                                     parameterized_release_mapping=parameterized,

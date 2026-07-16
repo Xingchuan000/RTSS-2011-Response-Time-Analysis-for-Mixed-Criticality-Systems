@@ -1,0 +1,15 @@
+{
+  "theorem_id": "ARRIVAL_BATCH_LOOP_DECOMPOSITION",
+  "exact_statement": "For every finite same-timestamp arrival batch, the runtime batch handler is equivalent to priority sorting, abnormal-arrival mode decision, one single-arrival transition per element, and one terminal reschedule.",
+  "assumptions": [
+    "finite_arrival_batch",
+    "source_ast_cfg_binding",
+    "terminal_effect_binding"
+  ],
+  "conclusion": "forall finite batches, batch_handler = sort_then_single_arrivals_then_reschedule",
+  "source_reference": "Phase I-K runtime handler decomposition contract",
+  "assurance_level": "DECLARED_AXIOM_TCB",
+  "version": "p0-theory-r3",
+  "statement_hash": "776435a971078d7a2ac46588b6ef9547836a59fcdfdb17a5bddb2e38f10081f0",
+  "assumption_hash": "103d396777ca65407ebda72a0b92134ed7aeded011ca41d3e9fdeef954cafa40"
+}

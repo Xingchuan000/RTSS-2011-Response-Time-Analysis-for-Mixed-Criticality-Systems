@@ -1,6 +1,14 @@
 {
   "schema_version": "theory_hashes_v2",
   "statements": {
+    "ARRIVAL_BATCH_LOOP_DECOMPOSITION": {
+      "statement_hash": "776435a971078d7a2ac46588b6ef9547836a59fcdfdb17a5bddb2e38f10081f0",
+      "assumption_hash": "103d396777ca65407ebda72a0b92134ed7aeded011ca41d3e9fdeef954cafa40"
+    },
+    "EVENT_HANDLER_MICROSTEP_DECOMPOSITION": {
+      "statement_hash": "cfd65c4734366cebe133512673b3756bbcfebac04447808803d763697b42c668",
+      "assumption_hash": "c7d89211898f04b3f4f80eb655b9b57520e0349a15b9c7e012d51aad57a312e4"
+    },
     "REFERENCE_PREFIX_EXTENSION": {
       "statement_hash": "4c92bb1ac7c9be6eefba564d1b8e32a2814dccc86f01514fb668bad9bd34f297",
       "assumption_hash": "5303e2f971399fd96dc2735d7017634d811ed74b048fce2516ab1177fbfdaee8"

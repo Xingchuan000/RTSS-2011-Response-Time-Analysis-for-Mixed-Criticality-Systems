@@ -1,6 +1,6 @@
 {
   "schema_version": "theory_manifest_v2",
-  "library_version": "p0-theory-r2",
+  "library_version": "p0-theory-r3",
   "proof_schema_version": "common_certificate_v1",
   "registry_fingerprint": "1e849a756defe14f9f254614c2bdca5901a37e8e6440438b4c573c9a55cc9a72",
   "proof_schema_compatible": ["proof_request_v1", "common_certificate_v1"],
@@ -16,5 +16,7 @@
     "PROTECTED_HI_SAFETY_COROLLARY",
     "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT",
     "FINITE_HI_BAD_PREFIX_REFLECTION"
+    ,"ARRIVAL_BATCH_LOOP_DECOMPOSITION"
+    ,"EVENT_HANDLER_MICROSTEP_DECOMPOSITION"
   ]
 }

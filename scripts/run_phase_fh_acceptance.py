@@ -10,6 +10,10 @@ import sys
 import tempfile
 from itertools import product
 
+ROOT = Path(__file__).parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from amc_py.models import Criticality, Task
 from amc_py.rl.actions import build_budget_action_space
 from formal_toolchain.binding.event_runtime_binding import bind_event_runtime
@@ -46,11 +50,6 @@ from formal_toolchain.policy.mask_fallback import build_mask_fallback_certificat
 from formal_toolchain.adapters.synthetic_runtime import evaluate_synthetic_runtime_mask
 from formal_toolchain.policy.quantization import deterministic_samples, replay_quantize
 from formal_toolchain.verifier.artifact_verifier import verify_certificate
-
-
-ROOT = Path(__file__).parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 
 def main(argv=None) -> int:
@@ -295,7 +294,9 @@ def main(argv=None) -> int:
                       "certificate_context_hash": certificate_object["certificate_context_hash"] if certificate_object else None,
                       "certified_envelope_hash": sha256_object(envelope_object) if envelope_object else None,
                       "certified_certificate_hash": sha256_object(certificate_object) if certificate_object else None,
-                      "verified_artifacts": ["verified/certified_envelope.json", "verified/certified_envelope_certificate.json"] if args.out else []}
+                      "verified_artifacts": ["verified/certified_envelope.json", "verified/certified_envelope_certificate.json"] if args.out else [],
+                      "registry_certificates": built,
+                      "registry_closure": active_ids}
     if args.out:
         output = Path(args.out); (output / "verified").mkdir(parents=True, exist_ok=True)
         (output / "proof_result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
