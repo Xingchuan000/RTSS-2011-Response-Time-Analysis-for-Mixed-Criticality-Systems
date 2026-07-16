@@ -876,7 +876,16 @@ class EventRuntimeEngine:
         original_actual_cost = None
         original_runtime_budget_at_release = runtime_budget_at_release
 
-        if release_mode is SystemMode.HI and task.criticality is Criticality.LO:
+        # 先把 HI task release 作为独立源码分支暴露给 CFG/formal binder。
+        # HI release 的 demand 与是否启用 response-time-expiry 无关；后者只
+        # 决定是否额外安排一个 timing event。C-AMC-sem 子分支
+        # 显式保留在真实 CFG 中，使正式 path 证书同时绑定“HI
+        # task”和“C-AMC-sem”，而不会借用 AMC-RA/AMC-RH 的 path。
+        # 该赋值与上方初值一致，不改变 runtime 数值行为。
+        if task.criticality is Criticality.HI:
+            if _is_c_amc_semantics(self.config.semantics):
+                actual_cost_override = None
+        elif release_mode is SystemMode.HI:
             if _is_c_amc_semantics(self.config.semantics):
                 # C-AMC-sem 下 HI mode 中的 LO release 不能被 suppress，而是要
                 # 用 XF 缩放后的 degraded budget 重新构造 job，并把实际执行需求

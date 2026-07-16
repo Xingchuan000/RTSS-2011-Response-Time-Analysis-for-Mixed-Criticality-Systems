@@ -1,7 +1,7 @@
 {
-  "timestamp_utc": "2026-07-16T01:25:58.243748+00:00",
-  "python": "3.11.15 | packaged by conda-forge | (main, Mar  5 2026, 16:59:26) [Clang 19.1.7 ]",
-  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "timestamp_utc": "2026-07-16T07:19:42.314561+00:00",
+  "python": "3.13.12 | packaged by Anaconda, Inc. | (main, Feb 24 2026, 16:07:20) [Clang 20.1.8 ]",
+  "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
   "tests": [
     "tests/test_event_models.py",
     "tests/test_event_runtime_c_amc_sem.py",

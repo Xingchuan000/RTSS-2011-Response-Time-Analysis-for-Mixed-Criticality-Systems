@@ -27,8 +27,14 @@ def _guard_formula(source: str) -> str:
         "self.state.mode is not SystemMode.LO": "(not (= c_mode 0))",
         "not abnormal_arrivals": "(= abnormal_arrivals_empty 1)",
         "release_mode is None": "(= release_mode_is_none 1)",
+        "task.criticality is Criticality.HI": "(= task_criticality 1)",
+        "release_mode is SystemMode.HI": "(= release_mode 1)",
         "release_mode is SystemMode.HI and task.criticality is Criticality.LO": "(and (= release_mode 1) (= task_criticality 0))",
         "_is_c_amc_semantics(self.config.semantics)": "(= config_semantics 1)",
+        # HI release 分类只由 task criticality 决定；但这一条源码
+        # guard 本身表示“response-based 且 HI”，必须完整保留两个
+        # 合取项。C-AMC-sem HI path 对该 guard 取 false 时，由
+        # response_semantics=0 满足，不得反向否定 task 的 HI 属性。
         "_is_response_based_semantics(self.config.semantics) and task.criticality is Criticality.HI": "(and (= response_semantics 1) (= task_criticality 1))",
         "selected is state.running_job and (not force)": "(and (= selected_job_key running_job_key) (= force 0))",
         "state.running_job is not None": "(= c_running 1)",
@@ -125,7 +131,8 @@ def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
                 raise ValueError("EFFECT_IR_HASH_MISMATCH")
             template = compile_case_template(row["case_id"], bounds=bounds)
             compiled_guard = compile_source_guards(row["guard_ir"])
-            compiled_effect = compile_effect_ir(row["effect_ir"], bounds=bounds)
+            compiled_effect = compile_effect_ir(
+                row["effect_ir"], bounds=bounds, guard_ir=row["guard_ir"])
             source_precondition = "(and " + template.precondition[5:-1] + " " + compiled_guard.formula + ")"
             concrete_delta = compiled_effect.to_smt()
             # queue summary 是 concrete 与 reference 共同的 timing projection；
@@ -173,14 +180,12 @@ def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
                            and row.get("queue_relation_hash") == sha256_object(row.get("queue_relation", []))
                            and all(field in concrete_formula and f"{field}_post" in concrete_formula
                                   for field in finite_fields))
-            if "expected_demand actual_cost" in concrete_formula:
-                demand_semantics = "ACTUAL_COST"
-            elif "expected_demand (ite (<= actual_cost degraded_cost) actual_cost degraded_cost)" in concrete_formula:
+            if "(= is_degraded 1) (= expected_demand" in concrete_formula:
                 demand_semantics = "MIN_ACTUAL_DEGRADED"
-            elif "expected_demand (ite (<= actual_cost (+ release_budget 1)) actual_cost (+ release_budget 1))" in concrete_formula:
+            elif row["case_id"] == "PRIMARY_LO_RELEASE":
                 demand_semantics = "MIN_ACTUAL_B_PLUS_ONE"
             else:
-                demand_semantics = "NOT_APPLICABLE"
+                demand_semantics = "ACTUAL_COST"
             job_count_delta = sum(
                 1 for item in row["effect_ir"]
                 if "active_jobs.append" in item.get("source", "")

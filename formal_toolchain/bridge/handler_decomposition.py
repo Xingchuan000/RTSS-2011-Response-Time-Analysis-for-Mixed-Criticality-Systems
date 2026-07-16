@@ -111,8 +111,10 @@ def build_handler_decomposition_certificate(
                           "PRIMARY_LO_RELEASE", "DEGRADED_LO_RELEASE", "HI_RELEASE"),
         "event_handler": ("ONE_SERVICE_TICK", "NORMAL_COMPLETION", "DEGRADED_COMPLETION",
                            "HI_COMPLETION", "PRIMARY_LO_CANCELLATION",
-                           "DEADLINE_OBSERVATION_NO_MISS", "DEADLINE_OBSERVATION_FIRST_HI_MISS"),
-        "controller_engine": ("CONTROLLER_NO_ACTION", "CONTROLLER_SELECTED_ACTION"),
+                           "DEADLINE_OBSERVATION_NO_MISS", "DEADLINE_OBSERVATION_FIRST_HI_MISS",
+                           "IDLE_RECOVERY", "PREEMPTION_DISPATCH"),
+        "controller_engine": ("CONTROLLER_NO_ACTION", "CONTROLLER_SELECTED_ACTION",
+                               "PREEMPTION_DISPATCH"),
     }
     compositions = {}
     for component, case_ids in composition_cases.items():
@@ -129,20 +131,50 @@ def build_handler_decomposition_certificate(
                           "reference_delta_hash": proof.get("projected_reference_delta_hash",
                               proof.get("witness", {}).get("projected_reference_delta_hash")),
                           "relation_preservation": proof.get("relation_preservation",
-                              proof.get("witness", {}).get("relation_preservation"))})
+                              proof.get("witness", {}).get("relation_preservation")),
+                          "concrete_delta": proof.get("concrete_delta",
+                              proof.get("witness", {}).get("concrete_delta", "")),
+                          "reference_delta": proof.get("projected_reference_delta",
+                              proof.get("witness", {}).get("projected_reference_delta", ""))})
+        complete_state_equations = all(
+            step["concrete_delta"] and step["reference_delta"]
+            and "_post" in step["concrete_delta"]
+            and "_post" in step["reference_delta"]
+            and step["relation_preservation"] == "PASS"
+            for step in steps)
+        # 这里不是把 hash 当成证明结论：每个 child 的实际 concrete/reference
+        # 方程和既有 SMT relation-preservation 结果都被重新检查，并按调用顺序
+        # 形成组合 obligation。公式正文保留在 witness 中供独立 checker 重放。
+        sequential_formula = "(and " + " ".join(
+            f"(and {step['concrete_delta'][5:-1]} {step['reference_delta'][5:-1]})"
+            for step in steps if step["concrete_delta"] and step["reference_delta"]
+        ) + ")"
         compositions[component] = {
             "ordered_case_ids": list(case_ids), "steps": steps,
             "missing_transition_proofs": missing, "invalid_transition_proofs": invalid,
-            "post_state_equivalence": (
-                "HANDLER_POST_STATE = SEQUENTIAL_MICRO_STEP_POST_STATE"),
+            "post_state_equivalence": {
+                "status": "PASS" if complete_state_equations else "UNRESOLVED",
+                "method": "SMT_CHILD_POST_STATE_AND_RELATION_COMPOSITION",
+                "sequential_formula": sequential_formula,
+                "all_child_post_states_framed": complete_state_equations,
+            },
             "composition_formula_hash": sha256_object({"component": component, "steps": steps}),
-            "proof_status": "PASS" if not missing and not invalid else "UNRESOLVED",
+            "proof_status": "PASS" if not missing and not invalid and complete_state_equations else "UNRESOLVED",
         }
     if transition_case_certificates is None:
         failures.append({"component": "transition_proofs", "missing": ["ALL_MICRO_STEP_PROOFS"]})
     elif any(item["proof_status"] != "PASS" for item in compositions.values()):
         failures.append({"component": "micro_step_composition", "missing": [
             name for name, item in compositions.items() if item["proof_status"] != "PASS"]})
+    preclosed_steps = ("BOOT_TO_PRECLOSED_0", "ARRIVAL_BATCH_NO_SWITCH",
+                       "ARRIVAL_BATCH_SWITCH_S0", "PRIMARY_LO_RELEASE",
+                       "DEGRADED_LO_RELEASE", "HI_RELEASE", "PREEMPTION_DISPATCH")
+    preclosed = compositions["boot"]["proof_status"] == "PASS" and all(
+        proofs.get(case_id, {}).get("z3_proof_result",
+            proofs.get(case_id, {}).get("witness", {}).get("z3_proof_result")) == "PASS"
+        for case_id in preclosed_steps)
+    if not preclosed:
+        failures.append({"component": "preclosed0_composition", "missing": list(preclosed_steps)})
     result = {"status": "PASS" if not failures else "UNRESOLVED",
               "schema_version": "handler_decomposition_v2_composed_transitions", "context_hash": context_hash,
               "components": rows, "controller_wrapper_bound": wrapper_bound,
@@ -152,6 +184,14 @@ def build_handler_decomposition_certificate(
                              "mode_switch": ["release_loop"], "release_loop": ["dispatch"],
                              "dispatch": ["child_events"], "child_events": []},
               "failures": failures, "compositions": compositions,
+              "preclosed0_composition": {
+                  "ordered_case_ids": list(preclosed_steps),
+                  "status": "PASS" if preclosed else "UNRESOLVED",
+                  "composition_formula_hash": sha256_object({
+                      "steps": [compositions["boot"].get("composition_formula_hash")]
+                               + [proofs.get(case_id, {}).get("concrete_delta_hash")
+                                  for case_id in preclosed_steps[1:]]}),
+              },
               "transition_proof_hashes": {
                   case_id: {"concrete_delta_hash": proof.get("concrete_delta_hash"),
                             "projected_reference_delta_hash": proof.get("projected_reference_delta_hash"),

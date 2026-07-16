@@ -47,6 +47,7 @@ from amc_py.event_runtime import EventRuntimeEngine
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics
 from amc_py.runtime_scenarios import ExecutionScenario
 from formal_toolchain.bridge.state_relation import P0ReferenceState, p0_state_from_runtime_engine
+from formal_toolchain.bridge.budget_invariant_derivation import derive_budget_invariant_evidence
 
 
 def _build_preclosed_runtime_states(target: Any, reference_taskset: Mapping[str, Any]):
@@ -178,27 +179,8 @@ def _context_bind(source: Mapping[str, Any], *, obligation_id: str,
     )
 
 
-REQUIRED_BUDGET_CERTIFICATES = (
-    "ACTIVE_RELEASE_BUDGET_INVARIANT",
-    "LO_BUDGET_UPPER_INVARIANT",
-    "HI_BUDGET_LOWER_INVARIANT",
-)
-
-
-def bind_authoritative_budget_certificates(*, fh_registry: Mapping[str, Any],
-                                           context_hash: str) -> dict[str, Mapping[str, Any]]:
-    """只绑定 fresh Phase F-H registry 的权威预算不变量证据。"""
-    result: dict[str, Mapping[str, Any]] = {}
-    for obligation_id in REQUIRED_BUDGET_CERTIFICATES:
-        source = fh_registry.get(obligation_id)
-        if not isinstance(source, Mapping):
-            raise ValueError(f"AUTHORITATIVE_CERTIFICATE_MISSING:{obligation_id}")
-        if source.get("obligation_status") != "PASS":
-            raise ValueError(f"AUTHORITATIVE_CERTIFICATE_NOT_PASS:{obligation_id}")
-        result[obligation_id] = _context_bind(
-            source, obligation_id=obligation_id, context_hash=context_hash,
-            source_registry=fh_registry)
-    return result
+# 预算不变量 evidence 已改为从 Phase F-H 现有 artifact 严格推导，
+# 不再要求 F-H 直接输出三个同名独立证书。
 
 
 def _build_phase_ijk_registry_certificates(*, bridge: Mapping[str, Any],
@@ -211,7 +193,8 @@ def _build_phase_ijk_registry_certificates(*, bridge: Mapping[str, Any],
                                            parameterized: Mapping[str, Any],
                                            branch_map: Mapping[str, Any],
                                            context_hash: str, target_domain: Mapping[str, Any],
-                                           concrete_base: Any) -> dict[str, Any]:
+                                           concrete_base: Any,
+                                           derived_budget: Mapping[str, Any]) -> dict[str, Any]:
     """按 registry DAG 生成 I-K 的最终本地闭包证书。
 
     每个节点的 direct predecessors 由磁盘 registry 递归得到；节点 witness
@@ -224,8 +207,7 @@ def _build_phase_ijk_registry_certificates(*, bridge: Mapping[str, Any],
     entries = load_registry(ROOT / "formal_toolchain/specs/obligation_registry.json")
     closure = phase_ijk_obligation_closure(entries)
     actual: dict[str, Any] = {str(key): value for key, value in fh_registry.items()}
-    authoritative_budget = bind_authoritative_budget_certificates(
-        fh_registry=fh_registry, context_hash=context_hash)
+    actual.update(derived_budget)
     local_evidence = {
         "CERTIFIED_ENVELOPE": envelope_certificate,
         "CODE_REFERENCE_UPPER_BOUND_MAPPING": mapping,
@@ -257,7 +239,6 @@ def _build_phase_ijk_registry_certificates(*, bridge: Mapping[str, Any],
         "BATCH_CLOSURE": bridge["prerequisites"]["same_timestamp"],
         "EFFECTIVE_EVENT_ORDER": bridge["prerequisites"]["event_projection"],
     }
-    actual.update(authoritative_budget)
     # fresh Phase F-H registry evidence is authoritative. I-K may add missing
     # Phase-I/J/bridge nodes, but不得用较弱的本地摘要覆盖同名 fresh cert。
     for key, value in local_evidence.items():
@@ -325,6 +306,9 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("fresh Phase F-H verifier 未通过: " + fresh.stdout[-1000:])
                 envelope = json.loads((Path(fresh_dir) / "verified/certified_envelope.json").read_text(encoding="utf-8"))
                 envelope_certificate = json.loads((Path(fresh_dir) / "verified/certified_envelope_certificate.json").read_text(encoding="utf-8"))
+                candidate_envelope = json.loads((Path(fresh_dir) / "candidate/candidate_envelope.json").read_text(encoding="utf-8"))
+                common_preservation = json.loads((Path(fresh_dir) / "candidate/common_preservation.json").read_text(encoding="utf-8"))
+                deployed_preservation = json.loads((Path(fresh_dir) / "candidate/deployed_preservation.json").read_text(encoding="utf-8"))
                 fh_result = json.loads((Path(fresh_dir) / "proof_result.json").read_text(encoding="utf-8"))
             preservation = envelope.get("preservation_certificate")
             if (envelope.get("preservation_certificate_hash") != sha256_object(envelope_certificate)
@@ -350,6 +334,14 @@ def main(argv: list[str] | None = None) -> int:
                 certified_envelope=envelope,
                 semantic_context_hash=inputs["semantic_context_hash"],
                 effective_runtime_config_hash=inputs["effective_runtime_config_hash"],
+            )
+            derived_budget = derive_budget_invariant_evidence(
+                reference_taskset=reference.to_dict(),
+                candidate=candidate_envelope,
+                common=common_preservation,
+                deployed=deployed_preservation,
+                certified_envelope=envelope,
+                certified_certificate=envelope_certificate,
             )
             mapping = verify_reference_mapping(
                 reference=reference, ordered_tasks=target.ordered_tasks,
@@ -434,7 +426,8 @@ def main(argv: list[str] | None = None) -> int:
                                     context_hash=bridge_context_hash,
                                     target_domain={"status": "PASS", "budget_by_task": target.provenance.get("budget_by_task"),
                                                    "runtime_semantics": target.runtime_config.semantics.value},
-                                    concrete_base=concrete_base)
+                                    concrete_base=concrete_base,
+                                    derived_budget=derived_budget)
                                 registry_closure = verify_registry_local_closure(
                                     load_registry(ROOT / "formal_toolchain/specs/obligation_registry.json"),
                                     registry_certificates, context_hash=bridge_context_hash)

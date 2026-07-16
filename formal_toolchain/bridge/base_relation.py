@@ -49,6 +49,9 @@ def build_preclosed0_base_certificate(*, context_hash: str,
     arrival_composition = handler_decomposition_certificate.get("compositions", {}).get("arrival_batch", {})
     if arrival_composition.get("proof_status") != "PASS":
         raise ValueError("ARRIVAL_MICROSTEP_COMPOSITION_REQUIRED")
+    preclosed_composition = handler_decomposition_certificate.get("preclosed0_composition", {})
+    if preclosed_composition.get("status") != "PASS":
+        raise ValueError("PRECLOSED0_MICROSTEP_COMPOSITION_REQUIRED")
     if event_order_certificate.get("obligation_status") != "PASS":
         raise ValueError("EVENT_ORDER_REQUIRED")
     by_case = {str(item.get("case_id", item.get("inputs", {}).get("case_id"))): item
@@ -74,6 +77,7 @@ def build_preclosed0_base_certificate(*, context_hash: str,
         direct_predecessor_hashes=direct,
         witness={"base": "EMPTY_BOOT_RELATION",
                  "closure": "PARAMETRIC_TIME0_BATCH_COMPOSITION",
+                 "composition": preclosed_composition,
                  "demand_language": "DEMAND_ORACLE_BATCH_CONTRACT"},
         checker_id="formal_toolchain.bridge.base_relation.build_preclosed0_base_certificate",
         checker_version="phase-k-v2")

@@ -46,7 +46,8 @@ def _semantic_path_predicate(case_id: str):
         return lambda path: _has_guard_sequence(path, tuple(items))
 
     release_mode = "release_mode is None"
-    release_hi_lo = "release_mode is SystemMode.HI and task.criticality is Criticality.LO"
+    task_hi = "task.criticality is Criticality.HI"
+    release_hi = "release_mode is SystemMode.HI"
     c_amc = "_is_c_amc_semantics(self.config.semantics)"
     response = "_is_response_based_semantics(self.config.semantics) and task.criticality is Criticality.HI"
     completion = "event.event_type is EventType.JOB_COMPLETION"
@@ -57,11 +58,17 @@ def _semantic_path_predicate(case_id: str):
     deadline = "event.event_type is EventType.DEADLINE_CHECK"
     overrun = "event.event_type is EventType.BUDGET_OVERRUN"
     if case_id == "PRIMARY_LO_RELEASE":
-        return exact((release_mode, False), (release_hi_lo, False), (response, False), (response, False))
+        return exact((release_mode, False), (task_hi, False), (release_hi, False),
+                     (response, False), (response, False))
     if case_id == "DEGRADED_LO_RELEASE":
-        return exact((release_mode, False), (release_hi_lo, True), (c_amc, True), (response, False), (response, False))
+        return exact((release_mode, False), (task_hi, False), (release_hi, True),
+                     (c_amc, True), (response, False), (response, False))
     if case_id == "HI_RELEASE":
-        return exact((release_mode, False), (release_hi_lo, False), (response, True), (response, True))
+        # C-AMC-sem 不是 response based；两个 response-expiry guard 都必须
+        # 走 false，并且必须消费真实 C-AMC-sem guard，确保 raw
+        # path 不包含 AMC-RA/AMC-RH 的 expiry scheduling effect。
+        return exact((release_mode, False), (task_hi, True), (c_amc, True),
+                     (response, False), (response, False))
     if case_id == "PREEMPTION_DISPATCH":
         return exact(("selected is state.running_job and (not force)", False),
                      ("state.running_job is not None", True),

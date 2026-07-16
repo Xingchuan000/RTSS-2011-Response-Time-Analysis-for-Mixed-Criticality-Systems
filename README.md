@@ -182,6 +182,17 @@ LO deadline observation、release/deadline/completion/overrun 调度、token inv
 response-expiry 不可达分支以及实际 `runtime_wrapper → engine.apply_budget_updates()`
 也会进入 normal path coverage，不能只用 18 个宏 case 代替。
 
+`HI_RELEASE` 的正式 path 使用真实 GuardIR 同时绑定
+`task.criticality == HI` 和 `semantics == C_AMC_SEM`，并强制两个
+response-based guard 均走 false。因此该 path 只生成 next-release 与
+deadline 两个 timing push，`queue_event_count` 为 `+2`，不生成
+response-expiry；同时 demand 仍为 `actual_cost`。若后续修改 release
+handler，可运行上述单命令验收入口，或先运行以下定向回归：
+
+```bash
+python -m pytest -q tests/formal/integration/test_real_source_binding.py
+```
+
 `bridge_context_hash` 由正式入口根据 reference context、当前源码/path-map hash 和
 P0 case manifest hash 派生，fixture 不保存这个易过期的派生值。SMT relation 使用有限
 job-slot、task-budget-slot 和 queue-event-slot 逐字段绑定 active/ready/running、job key、
@@ -4253,6 +4264,17 @@ AST hash 都写入 proof witness，纯局部表达式和循环调用边界也会
 复合 handler 的 decomposition 还必须消费对应 micro-step proof 的 concrete/reference
 delta hash，并生成有序组合记录；PreClosed(0) base certificate 消费该 decomposition
 证书本身，不再把外部 `BATCH_CLOSURE` 证书当作 arrival handler 组合证明。
+release demand 的分类只依据 task criticality、release mode 和 degraded 标记：HI
+task 始终使用 `actual_cost`，包括 C-AMC-sem；response-time-expiry 只表示后续调度
+事件，不参与 HI release 分类。
+queue concrete delta 使用有序的 `pushed_event_0..3_*` timing 输入和 summary 聚合：
+多个 push 会累加 `queue_event_count`，并按事件时间/类型/job/token 计算最小事件；
+dispatch 的 completion/overrun 两个事件、token invalidation 和 event consumption 均进入
+delta。该实现不展开 queue heap slot，t10 的 queue summary 字段数量保持固定。
+handler decomposition 的 arrival、event-handler、controller 组合分别包含后续
+dispatch（以及 event-handler 的 idle recovery），并消费 child concrete/reference
+post-state 方程和 relation-preservation 结果；PreClosed(0) 组合显式闭合
+boot→arrival batch→release→dispatch。
 
 PreClosed(0) base proof 使用空 boot、demand oracle、arrival-batch 分解、事件顺序和
 三类 release case 的参数化证据；nominal runtime 样例不再作为正式 base。I-K registry

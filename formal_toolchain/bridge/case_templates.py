@@ -30,7 +30,7 @@ class CompiledTransitionCase:
 
 def _declarations(bounds: P0ModelBounds) -> str:
     fields = p0_smt_relation_fields(bounds)
-    return "\n".join(
+    return ("\n".join(
         f"(declare-const {p}_{field}{'_post' if post else ''} Int)"
         for p in ("c", "r") for field in fields for post in (False, True)
     ) + "\n" + "\n".join(
@@ -49,7 +49,8 @@ def _declarations(bounds: P0ModelBounds) -> str:
         "event_queue_slot", "release_queue_slot", "deadline_queue_slot",
         "update_target_slot",
         "queue_next_timing_boundary", "pushed_event_time", "pushed_event_kind",
-        "pushed_event_job_key", "pushed_event_token", "ordered_tasks_empty",
+        "queue_next_timing_boundary_kind", "queue_next_timing_boundary_job_key",
+        "queue_next_timing_boundary_token", "pushed_event_job_key", "pushed_event_token", "ordered_tasks_empty",
         "task_names_duplicate", "abnormal_arrivals_empty", "release_mode_is_none",
         "response_semantics", "force", "selected_job_present", "selected_started",
         "time_reversed", "capture_trace", "token_invalid", "job_or_running_invalid",
@@ -58,6 +59,13 @@ def _declarations(bounds: P0ModelBounds) -> str:
         "halted_now", "halted", "idle_recovery_enabled",
     )
     )
+    # queue summary 只为本次 transition 中真实出现的 push 保留有序事件
+    # 输入；不展开 heap slot。最多支持计划内的四个 timing push。
+    + "\n" + "\n".join(
+        f"(declare-const pushed_event_{index}_{field} Int)"
+        for index in range(4)
+        for field in ("time", "kind", "job_key", "token")
+    ))
 
 
 def state_relation_schema(bounds: P0ModelBounds) -> tuple[str, ...]:
