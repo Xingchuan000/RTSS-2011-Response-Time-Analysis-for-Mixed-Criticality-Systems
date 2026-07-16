@@ -1,0 +1,327 @@
+{
+  "schema_version": "phase_k_transition_path_map_v1",
+  "source_hash": "74902f0f7d9812c549f916cacd7ac1338d2c9807c815cdef8f52cb02c658eeb4",
+  "paths": {
+    "boot/preclosed_0": {
+      "path_id": "boot/preclosed_0",
+      "handler": "EventRuntimeEngine.build",
+      "case_id": "BOOT_TO_PRECLOSED_0",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 535,
+      "line_end": 586,
+      "guard": "initial_state_and_queue",
+      "guard_hash": "6a2ba81f6ae83d24cc2fc6ac3ab21efca4e6c54a5f0081b1114b85b4e931226f",
+      "effects": [
+        "boot",
+        "budget_frame"
+      ],
+      "path_effect_hash": "ed3e66d9f9699b0a1fa4f3274d8d412fa866d48530075aac1363cf43dca2d9e3",
+      "handler_hash": "9167af97d794bdc6410b9218aa1fd73009507a1d1e3673fd3a619100ccd3dffc",
+      "terminal": "EventRuntimeEngine.build:586:return_or_closure"
+    },
+    "arrival_batch/no_switch": {
+      "path_id": "arrival_batch/no_switch",
+      "handler": "EventRuntimeEngine._process_job_arrival_batch",
+      "case_id": "ARRIVAL_BATCH_NO_SWITCH",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 958,
+      "line_end": 986,
+      "guard": "not switched_by_c_amc_sem_batch",
+      "guard_hash": "dfdaf269296aef520989be287d39d3d19483865c78266f079ce7f2c1f19d17aa",
+      "effects": [
+        "arrival_batch",
+        "release",
+        "reschedule"
+      ],
+      "path_effect_hash": "79e0e31bf247d534133e83d7798f796f57577094db38e74fc31ac9e7f294f027",
+      "handler_hash": "544dab826a1889f9c6a67c5d4db792df1d061047000178c8121def4d66265493",
+      "terminal": "EventRuntimeEngine._process_job_arrival_batch:986:return_or_closure"
+    },
+    "arrival_batch/switch_s0": {
+      "path_id": "arrival_batch/switch_s0",
+      "handler": "EventRuntimeEngine._maybe_enter_c_amc_sem_hi_mode_at_arrival",
+      "case_id": "ARRIVAL_BATCH_SWITCH_S0",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 779,
+      "line_end": 816,
+      "guard": "abnormal_arrivals and mode_is_LO",
+      "guard_hash": "d4cb426e183250fe9da597733a13a0d2bff10a642091bfda326e17fdb1433d1f",
+      "effects": [
+        "mode=HI",
+        "mode_switch",
+        "same_batch"
+      ],
+      "path_effect_hash": "c0a715f393a747f9cf9a9d552e5423c42623cd24a80449f8e9a37a29d29ab103",
+      "handler_hash": "8512e1096e3426e3ac0b480830c80541fa623653b710f8592310eeae2927402c",
+      "terminal": "EventRuntimeEngine._maybe_enter_c_amc_sem_hi_mode_at_arrival:816:return_or_closure"
+    },
+    "release/primary_lo": {
+      "path_id": "release/primary_lo",
+      "handler": "EventRuntimeEngine._process_single_arrival_in_priority_order",
+      "case_id": "PRIMARY_LO_RELEASE",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 848,
+      "line_end": 929,
+      "guard": "release_mode=LO and task_is_LO",
+      "guard_hash": "5622398e6f9c37d9b28520e1bdf41a63813c47f712ebed2cf9aeb0004873fcbb",
+      "effects": [
+        "build_job",
+        "release_fixed_budget",
+        "active_add",
+        "ready_add"
+      ],
+      "path_effect_hash": "9b9e3c78bf5694e2ac305050fbf027af377a1cd6c294f26b761b46f20d2e26ab",
+      "handler_hash": "2b5654938a98d0748d9b02e4fa97164b3941a939698e1c1854943563c837a641",
+      "terminal": "EventRuntimeEngine._process_single_arrival_in_priority_order:929:return_or_closure"
+    },
+    "release/degraded_lo": {
+      "path_id": "release/degraded_lo",
+      "handler": "EventRuntimeEngine._process_single_arrival_in_priority_order",
+      "case_id": "DEGRADED_LO_RELEASE",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 848,
+      "line_end": 929,
+      "guard": "release_mode=HI and task_is_LO and c_amc_sem",
+      "guard_hash": "53b5b15012dedad5027949e4201ef2f86737486af1a6d70be5cd4a59db4b060a",
+      "effects": [
+        "degraded_budget",
+        "actual_cost_clamp",
+        "active_add",
+        "ready_add"
+      ],
+      "path_effect_hash": "66f45420b0aa2237c9aa75622b48a82828f1b6f5b51a0c84a8465ef558f1cd9f",
+      "handler_hash": "2b5654938a98d0748d9b02e4fa97164b3941a939698e1c1854943563c837a641",
+      "terminal": "EventRuntimeEngine._process_single_arrival_in_priority_order:929:return_or_closure"
+    },
+    "release/hi": {
+      "path_id": "release/hi",
+      "handler": "EventRuntimeEngine._process_single_arrival_in_priority_order",
+      "case_id": "HI_RELEASE",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 848,
+      "line_end": 929,
+      "guard": "task_is_HI",
+      "guard_hash": "3af23531f31ecfcb69b7f33d387b6d152924b62f0f90b7d9a6a3f7c61a63c09d",
+      "effects": [
+        "build_job",
+        "release_fixed_budget",
+        "active_add",
+        "ready_add"
+      ],
+      "path_effect_hash": "079824fa59a76af8abc5b73262d8fab71e846db2e5569aa1fe72fceb42d84f23",
+      "handler_hash": "2b5654938a98d0748d9b02e4fa97164b3941a939698e1c1854943563c837a641",
+      "terminal": "EventRuntimeEngine._process_single_arrival_in_priority_order:929:return_or_closure"
+    },
+    "dispatch/preempt": {
+      "path_id": "dispatch/preempt",
+      "handler": "_reschedule",
+      "case_id": "PREEMPTION_DISPATCH",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 438,
+      "line_end": 469,
+      "guard": "selected_is_not_previous_or_force",
+      "guard_hash": "7d30ecf0b2006af883b03bba664ac722ae7d74da205e7a033ab33a16aaa74a57",
+      "effects": [
+        "highest_priority_select",
+        "running_update",
+        "preempt_invalidate"
+      ],
+      "path_effect_hash": "55915dd74b0334574f7221caf3f93ae67ef611720780fdf442b9e29d915b0d58",
+      "handler_hash": "8c9ffc449915e5f8a90c54229cd7955d85d927b2bad36e3dc940e003396ed52e",
+      "terminal": "_reschedule:469:return_or_closure"
+    },
+    "service/one_tick": {
+      "path_id": "service/one_tick",
+      "handler": "EventRuntimeEngine._advance_time",
+      "case_id": "ONE_SERVICE_TICK",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 676,
+      "line_end": 704,
+      "guard": "event_before_boundary",
+      "guard_hash": "aef22b588ab811e4efa75bb9b19886d13fdeefb6815961afc47a579ff18c82d9",
+      "effects": [
+        "advance_time",
+        "service_accounting",
+        "remaining_update"
+      ],
+      "path_effect_hash": "0dbd21f8a2d556e4c4ae5940f36a866388a2321592f78b53fc0b4f18d9dfc9c9",
+      "handler_hash": "26d189edaf662e380813202b8484ed467fe45b9ef033675310410e757c3a6c07",
+      "terminal": "EventRuntimeEngine._advance_time:704:return_or_closure"
+    },
+    "completion/normal": {
+      "path_id": "completion/normal",
+      "handler": "EventRuntimeEngine._process_event",
+      "case_id": "NORMAL_COMPLETION",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 1047,
+      "line_end": 1086,
+      "guard": "event_is_JOB_COMPLETION and job_is_normal",
+      "guard_hash": "852c87694b69d0bf6e9f4483e8a120278d17503900ff7f9ecd7f6480651190c9",
+      "effects": [
+        "executed_to_actual",
+        "active_remove",
+        "running_clear"
+      ],
+      "path_effect_hash": "d94b02b7a2084c4f53f0ccb4789f94560766086bbbee2e705fe19b3ac0495106",
+      "handler_hash": "de092baa7b28369adfbb5e5d5350f5831b0dd2b2eaeec83a8e7e78ba63b42e1a",
+      "terminal": "EventRuntimeEngine._process_event:1086:return_or_closure"
+    },
+    "completion/degraded": {
+      "path_id": "completion/degraded",
+      "handler": "EventRuntimeEngine._process_event",
+      "case_id": "DEGRADED_COMPLETION",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 1047,
+      "line_end": 1086,
+      "guard": "event_is_JOB_COMPLETION and job_is_degraded",
+      "guard_hash": "95d231deb30cff7bf4e1c470c8cab1f1c93f27ff00ce5f76cb57dbe88f4d34f5",
+      "effects": [
+        "executed_to_actual",
+        "active_remove",
+        "running_clear"
+      ],
+      "path_effect_hash": "bc19c94c78c8bcb4c8f10e72b2ac18dd594ddba30a5b38be603b313244e1b729",
+      "handler_hash": "de092baa7b28369adfbb5e5d5350f5831b0dd2b2eaeec83a8e7e78ba63b42e1a",
+      "terminal": "EventRuntimeEngine._process_event:1086:return_or_closure"
+    },
+    "completion/hi": {
+      "path_id": "completion/hi",
+      "handler": "EventRuntimeEngine._process_event",
+      "case_id": "HI_COMPLETION",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 1047,
+      "line_end": 1086,
+      "guard": "event_is_JOB_COMPLETION and job_is_HI",
+      "guard_hash": "7657346818866d16dbdd4ec8315c9b6778a2389b6b266926edbbad0ebcc437f3",
+      "effects": [
+        "executed_to_actual",
+        "active_remove",
+        "running_clear",
+        "hi_complete"
+      ],
+      "path_effect_hash": "4ce79e6c1fa832fc69a2eb48f2d16d872d2830633d76a85547594ce05b4632ff",
+      "handler_hash": "de092baa7b28369adfbb5e5d5350f5831b0dd2b2eaeec83a8e7e78ba63b42e1a",
+      "terminal": "EventRuntimeEngine._process_event:1086:return_or_closure"
+    },
+    "cancellation/primary_lo": {
+      "path_id": "cancellation/primary_lo",
+      "handler": "EventRuntimeEngine._process_event",
+      "case_id": "PRIMARY_LO_CANCELLATION",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 1128,
+      "line_end": 1195,
+      "guard": "lo_budget_overrun and c_amc_sem",
+      "guard_hash": "dc9dae434762f48cfc1234e03769a05817706692247d6af3d39cb76007dbda1d",
+      "effects": [
+        "active_remove",
+        "running_clear",
+        "cancellation_event"
+      ],
+      "path_effect_hash": "9b5940672e22ff33653da3b3abc02e518b6f3d74856a4a5e93ccbb11d02a2a81",
+      "handler_hash": "de092baa7b28369adfbb5e5d5350f5831b0dd2b2eaeec83a8e7e78ba63b42e1a",
+      "terminal": "EventRuntimeEngine._process_event:1195:return_or_closure"
+    },
+    "deadline/no_miss": {
+      "path_id": "deadline/no_miss",
+      "handler": "EventRuntimeEngine._process_event",
+      "case_id": "DEADLINE_OBSERVATION_NO_MISS",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 1006,
+      "line_end": 1045,
+      "guard": "job_finished",
+      "guard_hash": "0c2f0c21df4ae1f49258ab6876293bdbb186131583116114e6e1e48f40bceb6b",
+      "effects": [
+        "deadline_observe_only"
+      ],
+      "path_effect_hash": "7fd65a7c28c8cbbad5ebc3dd57751682405e8dd909771d3db95771e6fb5dc9ed",
+      "handler_hash": "de092baa7b28369adfbb5e5d5350f5831b0dd2b2eaeec83a8e7e78ba63b42e1a",
+      "terminal": "EventRuntimeEngine._process_event:1045:return_or_closure"
+    },
+    "deadline/first_hi_miss": {
+      "path_id": "deadline/first_hi_miss",
+      "handler": "EventRuntimeEngine._process_event",
+      "case_id": "DEADLINE_OBSERVATION_FIRST_HI_MISS",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 1006,
+      "line_end": 1045,
+      "guard": "not job_finished and task_is_HI",
+      "guard_hash": "1a57014ccd067ac30cffd5b16f5f30188d71381dca0e46a431cb9ab5d03d4eb3",
+      "effects": [
+        "hi_miss_flag",
+        "deadline_observe_only"
+      ],
+      "path_effect_hash": "e7ff36b0fd3163dcc9f1d10ffe09aade0a0b0b1b7b88b870fffecbdffc1f8f92",
+      "handler_hash": "de092baa7b28369adfbb5e5d5350f5831b0dd2b2eaeec83a8e7e78ba63b42e1a",
+      "terminal": "EventRuntimeEngine._process_event:1045:return_or_closure"
+    },
+    "recovery/idle": {
+      "path_id": "recovery/idle",
+      "handler": "_maybe_recover_to_lo",
+      "case_id": "IDLE_RECOVERY",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 201,
+      "line_end": 213,
+      "guard": "uses_idle_recovery and HI and quiescent",
+      "guard_hash": "fd09292dde1291b3ef1a8e7eaa5f1709b219fb767b6ccdade545da4f56c23a2d",
+      "effects": [
+        "mode=LO",
+        "recovery_event"
+      ],
+      "path_effect_hash": "9bfb5228e80d5f1b6a39cc228767251d9f3d526073fbc5c41dfb48e7e7680118",
+      "handler_hash": "d95a0b17c7e66b611b22e0c2c1228ed7fcd4959fd65428dfd636388a85169407",
+      "terminal": "_maybe_recover_to_lo:213:return_or_closure"
+    },
+    "controller/no_action": {
+      "path_id": "controller/no_action",
+      "handler": "EventRuntimeEngine._process_event",
+      "case_id": "CONTROLLER_NO_ACTION",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 988,
+      "line_end": 1001,
+      "guard": "event_is_BUDGET_UPDATE and no_updates",
+      "guard_hash": "07b1ddc4d98a290d0a7788fb657173153b420c0da5ebff9c72df1a9303cc426b",
+      "effects": [
+        "budget_frame",
+        "event_projection"
+      ],
+      "path_effect_hash": "7f352f9e341bada1fe2e73aeb03c0664da7e252ddaaccb6751a91d3ef08c64bc",
+      "handler_hash": "de092baa7b28369adfbb5e5d5350f5831b0dd2b2eaeec83a8e7e78ba63b42e1a",
+      "terminal": "EventRuntimeEngine._process_event:1001:return_or_closure"
+    },
+    "controller/selected_action": {
+      "path_id": "controller/selected_action",
+      "handler": "EventRuntimeEngine._process_event",
+      "case_id": "CONTROLLER_SELECTED_ACTION",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 988,
+      "line_end": 1001,
+      "guard": "event_is_BUDGET_UPDATE and updates",
+      "guard_hash": "3e8a66a225ed118c7de71712e36b051d8ffb9fca7c76b32e30a833d897767b5c",
+      "effects": [
+        "future_budget_update",
+        "event_projection"
+      ],
+      "path_effect_hash": "af6e1978064a57eb3ea7ea7b6059c5791ac7872b638451eb0c6841be38b37e39",
+      "handler_hash": "de092baa7b28369adfbb5e5d5350f5831b0dd2b2eaeec83a8e7e78ba63b42e1a",
+      "terminal": "EventRuntimeEngine._process_event:1001:return_or_closure"
+    },
+    "time/jump_to_next_event": {
+      "path_id": "time/jump_to_next_event",
+      "handler": "EventRuntimeEngine.run_until",
+      "case_id": "JUMP_TO_NEXT_EVENT",
+      "source_file": "amc_py/event_runtime.py",
+      "line_start": 1251,
+      "line_end": 1276,
+      "guard": "ready_empty and next_event_exists",
+      "guard_hash": "1041321ab654898e29281c98333a12fb26a6983c713ee655fbdfcc7d5c43ce7b",
+      "effects": [
+        "next_event_min",
+        "time_jump",
+        "no_service"
+      ],
+      "path_effect_hash": "dacb9391dc50b3061ae42dfe83d203907e7dfa9b51b14819f70f466fe5943be1",
+      "handler_hash": "b3c9e625330d7b8d29e9ee014879da53c96970a54e69e4fa4a9d5d897b00af68",
+      "terminal": "EventRuntimeEngine.run_until:1276:return_or_closure"
+    }
+  }
+}

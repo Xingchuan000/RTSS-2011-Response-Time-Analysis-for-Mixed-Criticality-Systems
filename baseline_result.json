@@ -1,0 +1,20 @@
+{
+  "timestamp_utc": "2026-07-16T01:25:58.243748+00:00",
+  "python": "3.11.15 | packaged by conda-forge | (main, Mar  5 2026, 16:59:26) [Clang 19.1.7 ]",
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "tests": [
+    "tests/test_event_models.py",
+    "tests/test_event_runtime_c_amc_sem.py",
+    "tests/test_runtime_mode_recovery.py",
+    "tests/test_viper_fixed_point.py",
+    "tests/test_viper_integer_tree.py",
+    "tests/test_viper_tree_policy.py",
+    "tests/test_rl_action_mask.py"
+  ],
+  "status": "PASS",
+  "returncode": 0,
+  "passed": 38,
+  "failed": 0,
+  "skipped": 0,
+  "collected": 38
+}

@@ -71,6 +71,170 @@ conda run -n amc-repro python scripts/run_small_experiment.py
 
 运行完成后可在 `outputs/` 查看 CSV 与图表文件。
 
+## 3.2 Phase I/J/K：代码到参考模型、Protected-HI RTA 与 release-fixed bridge
+
+本次实现严格对应实现计划 `implementation-plan-r2` 的 Phase I、Phase J、Phase K。
+新增代码位于 `formal_toolchain/reference/` 和 `formal_toolchain/bridge/`，不修改
+`amc_py` 的训练、VIPER 或 runtime 语义。
+
+### 3.2.1 使用 Phase I 映射
+
+映射必须显式提供按任务名索引的 `budget_by_task` 和 degraded 比例 `xf`：
+
+```python
+from formal_toolchain.reference.task_mapping import build_reference_taskset
+from formal_toolchain.core.hashing import sha256_object
+
+certified_envelope = {"...": "由 Phase H verifier 生成的实际对象"}
+
+reference = build_reference_taskset(
+    ordered_tasks,
+    budget_by_task={
+        # b_bar 只能与 Phase H certified_envelope.upper[task_a] 一致；
+        # 实际 B̄ 数值由 envelope 读取，不能用 budget_floor、budget_cap 或默认值替代。
+        "task_a": {"b_bar": 3,
+                    "certified_envelope_hash": sha256_object(certified_envelope)},
+        # 其余任务同样必须显式列出
+    },
+    xf=0.5,
+    certified_envelope=certified_envelope,
+    # 以下两个 hash 必须来自真实 semantic/effective-config certificate；
+    # 正式流程会据此自动计算 reference_context_hash。
+    semantic_context_hash="0" * 64,
+    effective_runtime_config_hash="0" * 64,
+)
+```
+
+LO task 的 degraded 成本使用 Python `round` 的 ties-to-even 语义，再计算
+`Cref(LO)=max(B̄+1,Cdeg)`、`Cref(HI)=Cdeg`；其中 B̄ 必须来自 Phase H
+已认证 envelope。HI task 保持代码的 LO/HI 成本。
+任务顺序、priority、周期、截止期和 criticality 不会被自动修正，输入缺失或
+不一致会直接失败。独立 verifier 入口为：
+
+```python
+from formal_toolchain.verifier.reference_mapping_verifier import verify_reference_mapping
+
+mapping_certificate = verify_reference_mapping(
+    reference=reference, ordered_tasks=ordered_tasks,
+    budget_by_task=budget_by_task, certified_envelope=certified_envelope,
+    xf=0.5, semantic_context_hash=semantic_context_hash,
+    effective_runtime_config_hash=effective_runtime_config_hash,
+)
+```
+
+### 3.2.2 使用 Phase J RTA
+
+```python
+from formal_toolchain.reference.rta_production import protected_hi_rta
+from formal_toolchain.reference.rta_replay import replay_rta
+
+production = protected_hi_rta(reference)
+replay = replay_rta(reference, production)
+```
+
+`production` 只在所有 HI task 的 LO post-fixed、Case 1 和 Case 2 候选均在
+deadline 内时返回 `status="PASS"`；RTA 失败的 route 固定为
+`REFERENCE_CERTIFICATE_FAILED`。Case 1 的响应值是公式得到的 `R`，Case 2
+使用 `R-s` 相对窗口语义；两者由独立函数计算。`replay_rta` 使用独立算术路径重算，不把
+bounded replay 或 HOUT 指标当作全称证明。`formal_toolchain/reference/arithmetic.py`
+中的除法函数只接受非负整数。
+
+### 3.2.3 使用 Phase K bridge
+
+```python
+from formal_toolchain.bridge.deadline_removal import map_release_fixed_job
+from formal_toolchain.bridge.event_projection import project_events
+
+mapping = map_release_fixed_job(
+    task_name="task_a", release_index=0, actual_cost=4,
+    primary_mode="LO", release_budget=3,
+)
+projected = project_events(concrete_events)
+```
+
+release budget 在 job 释放时冻结；LO、degraded LO、HI 分别严格执行计划中的
+三条 `E_C(J)` 公式。P0 state IR 只保存调度时序字段，controller/observation/
+tree/mask 标签在事件投影中擦除，budget-update 标签也被擦除，其未来预算效果必须存在于
+state IR；primary LO cancellation 投影为
+`JOB_COMPLETION`。桥接 proof object 只有在 base relation、transition case
+覆盖和 reference prefix extension 条件均满足时才能报告 PASS。
+
+Phase I/J/K 的单元、负向和 toy golden 测试：
+
+```bash
+python -m pytest -q tests/formal/unit/test_phase_ijk.py
+```
+
+Phase I-K 局部集成入口会在本次运行中由 fresh Phase F-H verifier 生成并绑定
+`certified_envelope_certificate.json` 的 certified envelope、context 和 runtime proof
+inputs；Phase K 再从真实 runtime handler 的完整 transition-path map、源码哈希、guard
+哈希和 effect 哈希现场生成 proofs。concrete delta 只能来自
+`BOUND_PATH_IR`，reference delta 只能来自独立 P0 模板；未知 effect 会返回
+`PHASE_IJK_UNRESOLVED`，不会用 unchanged 兜底。fixture 不保存
+`transition_case_proofs` 或
+`bridge_certificates`；有限 release mapping 只能作为边界证据，不能替代参数化公式证书。
+旧的 `case_by_branch`/if-node 映射不是正式输入；`phase_k_case_map.json` 必须是
+`phase_k_transition_path_map_v1`，覆盖 18 个完整路径，并且每条路径的 handler、行号、
+guard、effects、terminal 和哈希必须与当前 `amc_py/event_runtime.py` 一致。
+前缀扩展证书的 theorem ID 必须精确为 `REFERENCE_PREFIX_EXTENSION`，不得替换为
+`DISCRETE_TICK_FPPS_EMBEDDING`。缺少真实前置对象或 Z3 时返回
+`PHASE_IJK_UNRESOLVED`，不会使用 synthetic 默认值：
+
+```bash
+python scripts/run_phase_ijk_acceptance.py --fixture synthetic_p0 \
+  --out build/formal/phase_ijk/phase_ijk_result.json
+```
+
+正常流程在具备 formal 依赖时返回 `PHASE_IJK_ACCEPTED`，并在输出目录写入
+`branch_map.json`、`transition_case_proofs.json`、五类内部前置证书以及两个参数化
+theorem certificate。其 `final_safety_claim` 固定为 `NOT_EVALUATED`，不表示
+`DEPLOYED_TREE_PROVED`。
+
+## 3.3 Phase F/G/H 形式化工具链
+
+本次实现严格对应实现计划 `implementation-plan-r2` 的 Phase F、G、H，代码位于
+`formal_toolchain/`，不改变 `amc_py/` 的训练、VIPER 或 runtime 语义。三个 Phase
+的职责如下：
+
+- Phase F：检查 P0 单处理器/整数 tick/严格优先级合同，导出有限预算域，冻结同刻 arrival demand，并聚合 model-conformance 证书。
+- Phase G：独立重放 fixed-point 量化，检查整数树结构和 leaf partition，生成 single-action transition table，验证 mask 的 first-valid/fallback/noop 语义，并串起 observation→tree→mask→action。
+- Phase H：只消费 Phase F 已通过的 budget domain，按有限整数域合成 candidate envelope，检查共同转移与 deployed policy preservation；只有全部检查 PASS 才生成 certified envelope。
+
+这些模块是只读适配/检查接口；遇到缺失 provenance、非有限域、动态未支持动作或不一致 context 会失败或返回 `UNRESOLVED`，不会用默认值或 HOUT 数据补齐证明前提。
+
+运行基础回归和形式化单元测试：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+python -m pytest -q
+```
+
+常用入口模块示例（传入已经由 Phase D 导出的真实对象和证书）：
+
+```python
+from formal_toolchain.conformance.scheduler import check_scheduler_model, check_strict_priority_order
+from formal_toolchain.conformance.time_domain import build_budget_domain
+from formal_toolchain.invariant.domains import consume_budget_domain
+from formal_toolchain.policy.quantization import replay_quantize
+
+check_scheduler_model(ordered_tasks, scheduler_facts=authoritative_scheduler_facts)
+check_strict_priority_order(ordered_tasks)
+budget_certificate = build_budget_domain(ordered_tasks, budget_metadata, runtime_config=effective_runtime_config)
+consume_budget_domain(budget_certificate)
+replay_quantize(observation_value, fixed_point_config)
+```
+
+Phase H 的 `certify_envelope()` 只能接收已通过的 candidate/common/deployed 证书；它不会把 candidate 结果直接改名为 certified。完整 seed 导入与顶层命令入口仍按实现计划后续 Phase L/M 的工作流使用。
+
+无真实 Seed 的 Phase F–H synthetic 验收入口：
+
+```bash
+cd /Users/x1ngchuan/Documents/AMC
+python scripts/run_phase_fh_acceptance.py
+```
+
+通过时只输出 `PHASE_FH_ACCEPTED`，并明确标记 `final_safety_claim=NOT_EVALUATED`、`real_seed_evaluation=DEFERRED`；最终 certified envelope 由 fresh-process verifier 生成。
+
 ## 4. 如何运行单示例
 
 ```bash

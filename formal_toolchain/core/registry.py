@@ -22,6 +22,28 @@ def load_registry(path: Path) -> list[dict[str, Any]]:
     return [dict(entry) for entry in data.get("entries", data)]
 
 
+def active_obligations_for_claim(entries: list[dict[str, Any]], *, claim: str,
+                                  phase_ids: set[str] | None = None) -> list[str]:
+    """由 Registry 计算 claim 的 active closure，不接受调用方自行删减。"""
+    validate_registry(entries)
+    by_id = {str(entry["id"]): entry for entry in entries}
+    roots = {item for item, entry in by_id.items()
+             if entry.get("activation") == "active" and claim in entry.get("gates_claims", [])}
+    if phase_ids is not None:
+        roots &= phase_ids
+    result: set[str] = set()
+    def visit(obligation_id: str) -> None:
+        if obligation_id in result:
+            return
+        result.add(obligation_id)
+        for predecessor in by_id[obligation_id].get("depends_on", []):
+            if predecessor in by_id and by_id[predecessor].get("activation") == "active":
+                visit(str(predecessor))
+    for root in sorted(roots):
+        visit(root)
+    return sorted(result)
+
+
 def validate_registry(entries: list[dict[str, Any]]) -> None:
     schema_path = Path(__file__).parents[1] / "specs/registry_meta_schema.json"
     try:

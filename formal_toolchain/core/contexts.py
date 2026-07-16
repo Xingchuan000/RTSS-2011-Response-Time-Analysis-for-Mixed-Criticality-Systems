@@ -76,3 +76,27 @@ def build_contexts(inputs: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def context_mutation_scope(before: dict[str, dict[str, Any]], after: dict[str, dict[str, Any]]) -> set[str]:
     """返回 context hash 发生变化的层，供 B05 mutation matrix 使用。"""
     return {name for name in before if before[name].get("hash") != after.get(name, {}).get("hash")}
+
+
+def build_reference_context(*, semantic_context_hash: str,
+                            certified_envelope_hash: str,
+                            code_taskset_fingerprint: str,
+                            priority_order: list[str] | tuple[str, ...],
+                            xf: str,
+                            effective_runtime_config_hash: str,
+                            reference_taskset_fingerprint: str,
+                            mapping_schema_version: str = "reference_mapping_v1") -> dict[str, Any]:
+    """按 Phase I 冻结的 preimage 计算唯一 reference context。"""
+    preimage = {
+        "schema_version": "reference_context_v1",
+        "mapping_schema_version": mapping_schema_version,
+        "semantic_context_hash": semantic_context_hash,
+        "certified_envelope_hash": certified_envelope_hash,
+        "code_taskset_fingerprint": code_taskset_fingerprint,
+        "priority_order": list(priority_order),
+        "xf": xf,
+        "effective_runtime_config_hash": effective_runtime_config_hash,
+        "reference_taskset_fingerprint": reference_taskset_fingerprint,
+    }
+    preimage["hash"] = sha256_object(preimage)
+    return preimage

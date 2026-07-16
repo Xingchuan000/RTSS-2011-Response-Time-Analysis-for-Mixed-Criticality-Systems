@@ -8,7 +8,7 @@ from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics
 from amc_py.runtime_scenarios import make_table_scenario
 
 SCENARIOS = ("completion_at_deadline", "deadline_observe_only", "primary_lo_b_plus_one",
-             "hi_nontruncation", "idle_recovery", "c_amc_single_switch")
+             "hi_nontruncation", "idle_recovery", "c_amc_single_switch", "inherited_hi_entry")
 
 
 def _run(name: str) -> dict[str, object]:
@@ -16,7 +16,7 @@ def _run(name: str) -> dict[str, object]:
         tasks = (Task("SYN_HI", 10, 2, 2, 3, Criticality.HI), Task("SYN_LO", 12, 6, 1, 1, Criticality.LO))
         actual = {("SYN_HI", 0): 2 if name == "completion_at_deadline" else 3, ("SYN_LO", 0): 1}
         end_time = 3
-    elif name == "c_amc_single_switch":
+    elif name in {"c_amc_single_switch", "inherited_hi_entry"}:
         tasks = (Task("SYN_HI_A", 10, 5, 1, 2, Criticality.HI), Task("SYN_HI_B", 10, 5, 1, 2, Criticality.HI), Task("SYN_LO", 12, 6, 1, 1, Criticality.LO))
         actual = {("SYN_HI_A", 0): 2, ("SYN_HI_B", 0): 2, ("SYN_LO", 0): 1}
         end_time = 6
@@ -50,15 +50,23 @@ def _run(name: str) -> dict[str, object]:
                            "completion_or_explicit_removal": jobs["SYN_LO"].completion_time is not None or bool(result.job_cancellations)})
     elif name == "idle_recovery":
         assertions.update({"mode_switched": len(result.mode_switches) == 1, "recovered_to_lo": len(result.mode_recoveries) == 1})
-    elif name == "c_amc_single_switch":
+    elif name in {"c_amc_single_switch", "inherited_hi_entry"}:
         assertions.update({"single_switch": len(result.mode_switches) == 1,
-                           "same_batch_jobs_preserved": all(not job.dropped for job in result.jobs)})
+                           "same_batch_jobs_preserved": all(not job.dropped for job in result.jobs),
+                           "inherited_hi_entry": (name != "inherited_hi_entry" or
+                               any(snapshot["mode"] == "HI" for snapshot in snapshots) and
+                               any("job_arrival" in event for event in events))})
     if not all(assertions.values()):
         raise AssertionError(f"synthetic scenario {name} runtime evidence incomplete")
     return {"initial_state": {"mode": "LO", "tasks": [task.name for task in tasks]},
             "event_sequence": events, "state_snapshots": snapshots,
             "service_by_job": {key: {"executed_time": job.executed_time, "completion_time": job.completion_time,
-                                     "dropped": job.dropped} for key, job in jobs.items()},
+                                     "dropped": job.dropped,
+                                     "release_budget": job.task.c_lo,
+                                     "hi_budget": job.task.c_hi,
+                                     "criticality": job.task.criticality.value,
+                                     "cancellation_reason": getattr(job, "cancellation_reason", None)}
+                               for key, job in jobs.items()},
             "removal_reason": [event.reason for event in result.job_cancellations],
             "deadline_flags": {"deadline_miss_count": len(result.deadline_misses)},
             "mode_changes": {"switches": len(result.mode_switches), "recoveries": len(result.mode_recoveries)},

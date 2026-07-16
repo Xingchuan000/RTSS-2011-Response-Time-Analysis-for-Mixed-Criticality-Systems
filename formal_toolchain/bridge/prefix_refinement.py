@@ -1,0 +1,203 @@
+"""Phase K07-K09：桥接 proof object 的结构化输出。"""
+
+from __future__ import annotations
+
+from collections import Counter
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+from formal_toolchain.core.canonical_json import canonical_dumps
+from formal_toolchain.core.artifact import obligation_certificate
+from formal_toolchain.core.artifact import verify_obligation_certificate
+
+from .event_projection import project_events
+from .state_relation import P0ConcreteState, P0Event, P0ReferenceState, relation_holds
+from .transition_cases import TransitionCaseProof, check_handler_coverage
+
+
+def closed_prefix_certificate(base_concrete: P0ConcreteState, base_reference: P0ReferenceState,
+                              cases: Sequence[TransitionCaseProof], *, source_hash: str,
+                              bridge_context_hash: str | None = None,
+                              source_branch_ids: Sequence[str] | None = None,
+                              branch_map: Mapping[str, Any] | None = None,
+                              prerequisite_certificates: Mapping[str, Mapping[str, Any]] | None = None,
+                              theorem_hash: str | None = None) -> dict[str, Any]:
+    """聚合真实 case proof；缺 case、hash 或 Z3 结果时保持未解析。"""
+    if not relation_holds(base_concrete, base_reference):
+        return {"status": "FAIL", "failure": "BASE_RELATION_FAILED"}
+    if not source_hash:
+        return {"status": "UNRESOLVED", "failure": "SOURCE_HASH_MISSING"}
+    if not bridge_context_hash or not isinstance(theorem_hash, str) or len(theorem_hash) != 64:
+        return {"status": "UNRESOLVED", "failure": "BRIDGE_THEOREM_CONTEXT_REQUIRED"}
+    required_prerequisites = ("base_relation", "same_timestamp", "positive_time",
+                              "controller_postclosure", "event_projection")
+    if (not isinstance(prerequisite_certificates, Mapping)
+            or any(not isinstance(prerequisite_certificates.get(name), Mapping)
+                   or not verify_obligation_certificate(prerequisite_certificates[name])
+                   or prerequisite_certificates[name].get("obligation_status") != "PASS"
+                   or prerequisite_certificates[name].get("certificate_context_hash") != bridge_context_hash
+                   for name in required_prerequisites)):
+        return {"status": "UNRESOLVED", "failure": "PARAMETERIZED_PREFIX_PREREQUISITES_REQUIRED"}
+    if branch_map is None or branch_map.get("status") != "PASS":
+        return {"status": "UNRESOLVED", "failure": "REAL_BRANCH_MAP_REQUIRED"}
+    if branch_map.get("source_hash") != source_hash:
+        return {"status": "FAIL", "failure": "BRANCH_MAP_SOURCE_HASH_MISMATCH"}
+    branches = branch_map.get("paths")
+    if not isinstance(branches, list) or not branches:
+        return {"status": "UNRESOLVED", "failure": "REAL_BRANCH_MAP_EMPTY"}
+    derived_branch_ids = [branch.get("path_id") for branch in branches]
+    if any(not isinstance(item, str) for item in derived_branch_ids):
+        return {"status": "FAIL", "failure": "REAL_BRANCH_ID_INVALID"}
+    if source_branch_ids is not None and list(source_branch_ids) != derived_branch_ids:
+        return {"status": "FAIL", "failure": "SOURCE_BRANCH_MAP_INPUT_MISMATCH"}
+    if not cases:
+        return {"status": "UNRESOLVED", "failure": "CASEWISE_PROOF_INCOMPLETE"}
+    if any(not isinstance(case, TransitionCaseProof) for case in cases):
+        return {"status": "UNRESOLVED", "failure": "CASE_OBJECT_REQUIRED"}
+    if any(case.bound_source_hash != source_hash for case in cases):
+        return {"status": "FAIL", "failure": "CASE_SOURCE_HASH_MISMATCH"}
+    expected_case = {branch["path_id"]: branch.get("case_id") for branch in branches}
+    if any(expected_case.get(case.source_branch_id) != case.case_id for case in cases):
+        return {"status": "FAIL", "failure": "CASE_BRANCH_BINDING_MISMATCH"}
+    coverage = check_handler_coverage(derived_branch_ids,
+                                      cases, require_all_p0_cases=True)
+    if coverage["status"] != "PASS":
+        return {"status": "UNRESOLVED" if coverage["unresolved_cases"] else "FAIL",
+                "failure": "CASEWISE_PROOF_INCOMPLETE", "coverage": coverage}
+    result = {"status": "PASS", "schema_version": "closed_prefix_refinement_v1",
+              "theorem": "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT",
+              "case_count": len(cases), "source_hash": source_hash,
+              "bridge_context_hash": bridge_context_hash, "theorem_hash": theorem_hash,
+              "case_ids": sorted(case.case_id for case in cases), "coverage": coverage}
+    result.update(obligation_certificate(
+        obligation_id="CLOSED_PREFIX_REFINEMENT", status="PASS", context_hash=bridge_context_hash,
+        inputs={"source_branch_count": len(derived_branch_ids),
+                 "branch_map_hash": str(branch_map.get("path_map_hash")),
+                 "prerequisite_hashes": {key: prerequisite_certificates[key]["artifact_hash"]
+                                         for key in required_prerequisites},
+                 "theorem_hash": theorem_hash},
+        direct_predecessor_hashes={key: prerequisite_certificates[key]["artifact_hash"]
+                                  for key in required_prerequisites},
+        witness={"case_ids": result["case_ids"], "coverage": coverage},
+        checker_id="formal_toolchain.bridge.prefix_refinement", checker_version="phase-k-v1",
+    ))
+    return result
+
+
+def reference_prefix_extension(*, ready_jobs: bool | None = None,
+                               next_release_exists: bool | None = None,
+                               phase_legal: bool | None = None,
+                               reference_state: P0ReferenceState | None = None,
+                               next_release_times: Sequence[int] = (),
+                               context_hash: str | None = None,
+                               extension_theorem_hash: str | None = None,
+                               extension_proof: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """基于具体 reference state 检查 prefix 至少存在一个合法继续步骤。"""
+    if reference_state is None or ready_jobs is None or next_release_exists is None or phase_legal is None:
+        return {"status": "UNRESOLVED", "failure": "REFERENCE_STATE_REQUIRED"}
+    if (not isinstance(extension_proof, Mapping)
+            or not verify_obligation_certificate(extension_proof)
+            or extension_proof.get("obligation_id") != "PARAMETERIZED_PREFIX_EXTENSION"
+            or extension_proof.get("obligation_status") != "PASS"
+            or extension_proof.get("certificate_context_hash") != context_hash
+            or extension_proof.get("inputs", {}).get("theorem_hash") != extension_theorem_hash):
+        return {"status": "UNRESOLVED", "failure": "PARAMETERIZED_EXTENSION_CERTIFICATE_REQUIRED"}
+    if not isinstance(extension_theorem_hash, str) or len(extension_theorem_hash) != 64:
+        return {"status": "UNRESOLVED", "failure": "EXTENSION_THEOREM_HASH_REQUIRED"}
+    derived_ready = bool(reference_state.ready_jobs)
+    derived_next = any(time > reference_state.time for time in next_release_times)
+    if derived_ready != ready_jobs or derived_next != next_release_exists:
+        return {"status": "FAIL", "failure": "REFERENCE_EXTENSION_INPUT_MISMATCH"}
+    if not phase_legal or reference_state.time < 0 or reference_state.mode not in {"LO", "HI"}:
+        return {"status": "FAIL", "failure": "ILLEGAL_REFERENCE_PHASE"}
+    if not derived_ready and not derived_next:
+        return {"status": "FAIL", "failure": "REFERENCE_PREFIX_DEAD_END"}
+    if not context_hash:
+        return {"status": "UNRESOLVED", "failure": "BRIDGE_CONTEXT_REQUIRED"}
+    result = {"status": "PASS", "schema_version": "reference_prefix_extension_v1",
+              "continuation": "SERVICE" if derived_ready else "WAIT_FOR_RELEASE"}
+    result.update(obligation_certificate(
+        obligation_id="REFERENCE_PREFIX_EXTENSION", status="PASS", context_hash=context_hash,
+        inputs={"time": reference_state.time, "extension_theorem_hash": extension_theorem_hash},
+        witness={"continuation": result["continuation"],
+                 "extension_theorem_hash": extension_theorem_hash,
+                 "extension_proof": dict(extension_proof)},
+        checker_id="formal_toolchain.bridge.prefix_refinement", checker_version="phase-k-v1",
+    ))
+    return result
+
+
+def reflect_first_hi_miss(*, concrete_events: Sequence[P0Event], reference_events: Sequence[P0Event],
+                         stop_at_first_miss: bool, closure_complete: bool | None = None,
+                         concrete_state: P0ConcreteState | None = None,
+                         reference_state: P0ReferenceState | None = None,
+                         bridge_context_hash: str | None = None,
+                         closed_prefix_certificate: Mapping[str, Any] | None = None,
+                         prefix_extension_certificate: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """检查 earliest HI miss、同刻 closure 和 job mapping。"""
+    if stop_at_first_miss and closure_complete is not True:
+        return {"status": "UNRESOLVED", "failure": "EARLY_STOP_CLOSURE_INCOMPLETE"}
+    if concrete_state is None or reference_state is None:
+        return {"status": "UNRESOLVED", "failure": "STATE_RELATION_REQUIRED"}
+    if not relation_holds(concrete_state, reference_state):
+        return {"status": "FAIL", "failure": "STATE_RELATION_FAILED"}
+    if (prefix_extension_certificate is None
+            or not verify_obligation_certificate(prefix_extension_certificate)
+            or prefix_extension_certificate.get("obligation_id") != "REFERENCE_PREFIX_EXTENSION"
+            or prefix_extension_certificate.get("obligation_status") != "PASS"):
+        return {"status": "UNRESOLVED", "failure": "PREFIX_EXTENSION_CERTIFICATE_REQUIRED"}
+    if (closed_prefix_certificate is None
+            or not verify_obligation_certificate(closed_prefix_certificate)
+            or closed_prefix_certificate.get("obligation_id") != "CLOSED_PREFIX_REFINEMENT"
+            or closed_prefix_certificate.get("obligation_status") != "PASS"
+            or closed_prefix_certificate.get("certificate_context_hash") != bridge_context_hash):
+        return {"status": "UNRESOLVED", "failure": "CLOSED_PREFIX_CERTIFICATE_REQUIRED"}
+    concrete = project_events(list(concrete_events))
+    reference = tuple(reference_events)
+    if any(left.time > right.time for left, right in zip(concrete, concrete[1:])):
+        return {"status": "FAIL", "failure": "CONCRETE_EVENT_ORDER_INVALID"}
+    if any(left.time > right.time for left, right in zip(reference, reference[1:])):
+        return {"status": "FAIL", "failure": "REFERENCE_EVENT_ORDER_INVALID"}
+    c_miss = next((event for event in concrete if event.kind == "HI_DEADLINE_MISS"), None)
+    r_miss = next((event for event in reference if event.kind == "HI_DEADLINE_MISS"), None)
+    if c_miss is None:
+        return {"status": "NOT_APPLICABLE", "reason": "NO_CONCRETE_HI_MISS"}
+    if r_miss is None or c_miss.job_key != r_miss.job_key or c_miss.time != r_miss.time:
+        return {"status": "FAIL", "failure": "HI_BAD_PREFIX_NOT_REFLECTED"}
+    concrete_jobs = {job.job_key: job for job in concrete_state.active_jobs}
+    reference_jobs = {job.job_key: job for job in reference_state.active_jobs}
+    if c_miss.job_key not in concrete_jobs or c_miss.job_key not in reference_jobs:
+        return {"status": "FAIL", "failure": "GHOST_MISS_JOB"}
+    c_job = concrete_jobs[c_miss.job_key]
+    r_job = reference_jobs[c_miss.job_key]
+    if (not c_job.hi_deadline_miss or not r_job.hi_deadline_miss
+            or c_job.release_time != r_job.release_time
+            or c_job.deadline != r_job.deadline
+            or c_job.service != r_job.service):
+        return {"status": "FAIL", "failure": "MISS_JOB_RELATION_FAILED"}
+    concrete_same_time = [event for event in concrete if event.time == c_miss.time]
+    reference_same_time = [event for event in reference if event.time == r_miss.time]
+    concrete_keys = Counter((event.kind, event.job_key) for event in concrete_same_time)
+    reference_keys = Counter((event.kind, event.job_key) for event in reference_same_time)
+    if any(reference_keys[key] < count for key, count in concrete_keys.items()):
+        return {"status": "FAIL", "failure": "SAME_TIME_CLOSURE_NOT_REFLECTED"}
+    if not bridge_context_hash:
+        return {"status": "UNRESOLVED", "failure": "BRIDGE_CONTEXT_REQUIRED"}
+    result = {"status": "PASS", "closure": "NOT_APPLICABLE" if not stop_at_first_miss else "COMPLETED",
+              "job_key": list(c_miss.job_key) if c_miss.job_key else None,
+              "miss_time": c_miss.time}
+    result.update(obligation_certificate(
+        obligation_id="HI_BAD_PREFIX_REFLECTION", status="PASS", context_hash=bridge_context_hash,
+        inputs={"stop_at_first_miss": stop_at_first_miss},
+        witness={"job_key": result["job_key"], "miss_time": c_miss.time,
+                 "closure": result["closure"]},
+        checker_id="formal_toolchain.bridge.prefix_refinement", checker_version="phase-k-v1",
+    ))
+    return result
+
+
+def write_json_certificate(path: str | Path, certificate: dict[str, Any]) -> None:
+    """按计划输出 machine-readable bridge certificate。"""
+    if certificate.get("status") not in {"PASS", "FAIL", "UNRESOLVED"}:
+        raise ValueError("certificate status 无效")
+    Path(path).write_text(canonical_dumps(certificate), encoding="utf-8")

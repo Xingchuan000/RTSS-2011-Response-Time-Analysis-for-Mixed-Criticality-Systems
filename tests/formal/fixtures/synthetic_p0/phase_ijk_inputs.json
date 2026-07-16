@@ -1,0 +1,17 @@
+{
+  "schema_version": "phase_ijk_inputs_v2",
+  "source_hash": "74902f0f7d9812c549f916cacd7ac1338d2c9807c815cdef8f52cb02c658eeb4",
+  "xf": 0.5,
+  "semantic_context_hash": "32f1187bb74963c62cb270c88176a1a20c2f2b3d7eca020646e422fca99f08cd",
+  "effective_runtime_config_hash": "517573802ac5b48b4d2e13d10eede14c57884a341f62a5f44baa332469faf62c",
+  "bridge_context_hash": "fe756a9452d7662210bee416f2f583c5650f4bceeb9628351bc33ad83b7d7c92",
+  "budget_by_task": {
+    "SYN_HI": {"b_bar": 3, "budget_floor": 1, "certified_envelope_hash": "3daa8d35405196cf4dd2c54db1aa93482daf2804b6084b14c5efb91dbe624483"},
+    "SYN_LO": {"b_bar": 15, "budget_floor": 1, "certified_envelope_hash": "3daa8d35405196cf4dd2c54db1aa93482daf2804b6084b14c5efb91dbe624483"}
+  },
+  "theorem_ids": {
+    "casewise_simulation": "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT",
+    "prefix_extension": "REFERENCE_PREFIX_EXTENSION",
+    "bad_prefix_reflection": "FINITE_HI_BAD_PREFIX_REFLECTION"
+  }
+}

@@ -1,6 +1,10 @@
 {
   "schema_version": "theory_hashes_v2",
   "statements": {
+    "REFERENCE_PREFIX_EXTENSION": {
+      "statement_hash": "4c92bb1ac7c9be6eefba564d1b8e32a2814dccc86f01514fb668bad9bd34f297",
+      "assumption_hash": "5303e2f971399fd96dc2735d7017634d811ed74b048fce2516ab1177fbfdaee8"
+    },
     "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT": {
       "statement_hash": "e660e145e4c922a4ed03a90434ae032ccde308bb8c8dec0f29170c0f2de1521f",
       "assumption_hash": "188a2035d31a9f92451781a23656ef15805dc2e30bbaa8aa2a96c14aa9b6d42a"
