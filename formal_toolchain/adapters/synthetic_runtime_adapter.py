@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from amc_py.amc import build_design_r_lo_map
 from amc_py.rl.actions import build_budget_action_space
 from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.invariant.safety_polytope import rebuild_expected_rows
 
 
 class SyntheticP0RuntimeAdapter:
@@ -29,11 +31,25 @@ class SyntheticP0RuntimeAdapter:
 
     def build_runtime_state_from_budget_vector(self, budget_by_task: Mapping[str, int]) -> dict[str, Any]:
         names = [str(task.name) for task in self.target.ordered_tasks]
+        budget_info = self.target.provenance["budget_by_task"]
         return {
             "budgets": {name: int(budget_by_task[name]) for name in names},
-            "initial_budgets": {name: int(self.target.provenance["budget_by_task"][name]["initial_runtime_budget"]) for name in names},
-            "floors": {name: int(self.target.provenance["budget_by_task"][name].get("budget_floor", 1)) for name in names},
-            "caps": {name: int(self.target.provenance["budget_by_task"][name]["budget_cap"]) for name in names},
+            "initial_budgets": {
+                name: int(budget_info[name]["initial_runtime_budget"])
+                for name in names
+            },
+            "floors": {
+                name: int(budget_info[name].get("budget_floor", 1))
+                for name in names
+            },
+            "caps": {
+                name: int(budget_info[name]["action_hard_upper"])
+                for name in names
+            },
+            "source_base_budgets": {
+                name: int(budget_info[name]["source_base_budget"])
+                for name in names
+            },
             "config": self.target.runtime_config,
             "tasks": self.target.ordered_tasks,
             "feature_names": self.target.feature_names,
@@ -67,7 +83,8 @@ class SyntheticP0RuntimeAdapter:
 
     def export_mask_contract(self):
         return {"action_ids": list(range(len(self.actions))), "shared_with_step": True,
-                "explicit_noop": False, "fallback": "implicit_none_when_no_valid_action"}
+                "explicit_noop": False, "implicit_noop_when_all_invalid": True,
+                "check_safety": True, "fallback": "implicit_none_when_no_valid_action"}
 
     def export_action_contract(self):
         return {"action_ids": [int(action.action_id) for action in self.actions],
@@ -78,6 +95,7 @@ class SyntheticP0RuntimeAdapter:
 
     def export_initial_state_contract(self):
         names = [str(task.name) for task in self.target.ordered_tasks]
+        budget_info = self.target.provenance["budget_by_task"]
         return {
             "status": "PASS",
             "current_time": 0,
@@ -87,7 +105,7 @@ class SyntheticP0RuntimeAdapter:
             "ready_jobs": [],
             "service_in_progress": False,
             "runtime_budgets": {
-                name: int(self.target.provenance["budget_by_task"][name]["initial_runtime_budget"])
+                name: int(budget_info[name]["initial_runtime_budget"])
                 for name in names
             },
             "quiescent": True,
@@ -103,4 +121,22 @@ class SyntheticP0RuntimeAdapter:
             "first_release_batch_defined": True,
             "no_service_before_boot_closure": True,
             "initial_runtime_budget_snapshot": dict(initial["runtime_budgets"]),
+        }
+
+    def export_budget_safety_polytope(self) -> dict[str, Any]:
+        design_r_lo = build_design_r_lo_map(self.target.ordered_tasks)
+        rows = rebuild_expected_rows(self.target.ordered_tasks, design_r_lo=design_r_lo, check_lo_tasks=True)
+        return {
+            "status": "PASS",
+            "schema_version": "budget_safety_polytope_v1",
+            "task_order": [str(task.name) for task in self.target.ordered_tasks],
+            "rows": rows,
+            "design_r_lo": {str(name): int(value) for name, value in design_r_lo.items()},
+            "check_lo_tasks": True,
+            "candidate_positive_lower": {
+                str(task.name): (int(task.c_lo) if task.criticality.value == "HI" else 1)
+                for task in self.target.ordered_tasks
+            },
+            "production_checker_type": "SyntheticP0RuntimeAdapter",
+            "check_safety": True,
         }

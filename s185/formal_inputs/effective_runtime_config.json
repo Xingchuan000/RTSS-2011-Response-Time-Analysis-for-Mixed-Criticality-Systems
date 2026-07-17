@@ -4,7 +4,7 @@
     "end_time": {
       "value": 8000000,
       "origin": "runtime_config",
-      "source_object": "RuntimeConfig",
+      "source_object": "SimpleNamespace",
       "final_origin": "runtime_config",
       "source_attribute": "end_time",
       "source_chain": [
@@ -14,7 +14,7 @@
     "jobs_per_task": {
       "value": 5,
       "origin": "runtime_config",
-      "source_object": "RuntimeConfig",
+      "source_object": "SimpleNamespace",
       "final_origin": "runtime_config",
       "source_attribute": "jobs_per_task",
       "source_chain": [
@@ -24,7 +24,7 @@
     "hyperperiod_limit": {
       "value": 100000,
       "origin": "runtime_config",
-      "source_object": "RuntimeConfig",
+      "source_object": "SimpleNamespace",
       "final_origin": "runtime_config",
       "source_attribute": "hyperperiod_limit",
       "source_chain": [
@@ -89,7 +89,7 @@
     "record_dropped_lo_releases": {
       "value": false,
       "origin": "runtime_config",
-      "source_object": "RuntimeConfig",
+      "source_object": "SimpleNamespace",
       "final_origin": "runtime_config",
       "source_attribute": "record_dropped_lo_releases",
       "source_chain": [
@@ -121,7 +121,7 @@
     "processor_overhead": {
       "value": 0,
       "origin": "runtime_config",
-      "source_object": "RuntimeConfig",
+      "source_object": "SimpleNamespace",
       "final_origin": "runtime_config",
       "source_attribute": "processor_overhead",
       "source_chain": [
@@ -233,6 +233,17 @@
       "source_object": "SimpleNamespace",
       "final_origin": "environment_wrapper",
       "source_attribute": "deploy_cap_mask_criticality",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "check_safety": {
+      "value": true,
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "check_safety",
       "source_chain": [
         "runtime_config",
         "environment_wrapper"

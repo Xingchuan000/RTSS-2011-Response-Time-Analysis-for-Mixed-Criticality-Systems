@@ -56,18 +56,11 @@ def _budget_metadata(bundle: Any, floor_ratio: float) -> dict[str, dict[str, int
         row = meta_by_name[str(task.name)]
         initial = int(row.initial_budget)
         floor = max(1, math.ceil(initial * float(floor_ratio)))
-        action_hard_upper = (
-            int(task.c_hi)
-            if row.criticality.value == "HI"
-            else int(task.deadline)
-        )
+        cap = int(row.base_c_hi if row.criticality.value == "HI" else row.base_c_lo)
         result[str(task.name)] = {
             "initial_runtime_budget": initial,
             "budget_floor": floor,
-            "action_hard_upper": action_hard_upper,
-            "source_base_budget": int(
-                row.base_c_hi if row.criticality.value == "HI" else row.base_c_lo
-            ),
+            "budget_cap": cap,
         }
     return result
 
@@ -140,7 +133,6 @@ def build_target(
         "enable_deploy_cap_mask": bool(environment.enable_deploy_cap_mask),
         "deploy_cap_mask_ratio": float(environment.deploy_cap_mask_ratio),
         "deploy_cap_mask_criticality": str(environment.deploy_cap_mask_criticality),
-        "check_safety": bool(environment.check_safety),
         "observation_mode": str(environment.feature_config.observation_mode),
     }
     runtime_view = SimpleNamespace(**runtime_values)
@@ -148,7 +140,6 @@ def build_target(
         "agent_period", "action_space", "budget_increase_ratio", "budget_decrease_ratio",
         "budget_floor_ratio", "forbid_decreasing_hi_budgets", "mask_detail_mode",
         "enable_deploy_cap_mask", "deploy_cap_mask_ratio", "deploy_cap_mask_criticality",
-        "check_safety",
     )
     visible = {name: getattr(environment, name) for name in visible_names}
     visible.update({

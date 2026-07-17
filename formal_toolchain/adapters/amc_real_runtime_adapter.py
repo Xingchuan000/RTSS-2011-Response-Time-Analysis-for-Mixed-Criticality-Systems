@@ -8,9 +8,21 @@ synthetic evaluator。动作 replay 使用独立 state 副本，避免 verifier 
 from __future__ import annotations
 
 import copy
+import math
 from typing import Any, Mapping, Sequence
 
 from formal_toolchain.core.hashing import sha256_object
+
+
+def _exact_int_from_float(value: float, label: str) -> int:
+    if not math.isfinite(value):
+        raise ValueError(f"{label} 不是有限数")
+    integer = int(value)
+    if float(integer) != float(value):
+        raise ValueError(f"{label} 不是精确整数")
+    if abs(integer) >= 2**53:
+        raise ValueError(f"{label} 超出 binary64 精确整数范围")
+    return integer
 
 
 class AMCRealRuntimeAdapter:
@@ -67,9 +79,15 @@ class AMCRealRuntimeAdapter:
 
     def valid_action_mask(self, runtime_state: Mapping[str, Any]):
         environment = runtime_state.get("environment")
-        if environment is None or not callable(getattr(environment, "valid_action_mask", None)):
+        if environment is None:
             raise RuntimeError("REAL_RUNTIME_MASK_REPLAY_NOT_IMPLEMENTED")
-        mask = tuple(bool(value) for value in environment.valid_action_mask())
+        formal_mask = getattr(environment, "formal_valid_action_mask", None)
+        if callable(formal_mask):
+            mask = tuple(bool(value) for value in formal_mask())
+        elif callable(getattr(environment, "valid_action_mask", None)):
+            mask = tuple(bool(value) for value in environment.valid_action_mask())
+        else:
+            raise RuntimeError("REAL_RUNTIME_MASK_REPLAY_NOT_IMPLEMENTED")
         details = tuple(getattr(environment, "_last_mask_details", ()))
         if len(details) != len(mask):
             raise RuntimeError("REAL_RUNTIME_MASK_DETAIL_LENGTH_INVALID")
@@ -113,15 +131,33 @@ class AMCRealRuntimeAdapter:
                 "preclosed_state_read": True}
 
     def export_mask_contract(self):
-        return {"action_ids": [int(row.action_id) if hasattr(row, "action_id") else int(row["action_id"]) for row in self.action_space],
-                "shared_with_step": callable(getattr(self.environment, "formal_valid_action_mask", None)),
-                "explicit_noop": False}
+        checker = None
+        if bool(getattr(self.environment, "check_safety", False)) and callable(getattr(self.environment, "_ensure_checker", None)):
+            checker = self.environment._ensure_checker()
+        return {
+            "action_ids": [int(row.action_id) if hasattr(row, "action_id") else int(row["action_id"]) for row in self.action_space],
+            "shared_with_step": callable(getattr(self.environment, "formal_valid_action_mask", None))
+            and callable(getattr(self.environment, "evaluate_budget_candidate", None)),
+            "explicit_noop": False,
+            "implicit_noop_when_all_invalid": True,
+            "check_safety": bool(getattr(self.environment, "check_safety", False)),
+            "safety_checker_type": None if checker is None else type(checker).__qualname__,
+            "candidate_reject_helper": "AmcBudgetEnv._budget_candidate_reject_reason",
+            "candidate_evaluator": "AmcBudgetEnv.evaluate_budget_candidate",
+            "selection": "ranked_first_valid",
+        }
 
     def export_action_contract(self):
         return {"action_definitions": [dict(row) if isinstance(row, Mapping) else {"action_id": int(row.action_id)} for row in self.action_space]}
 
     def export_source_binding_targets(self):
-        return {"adapter_kind": "REAL_AMC_RUNTIME", "environment_type": type(self.environment).__qualname__}
+        return {
+            "adapter_kind": "REAL_AMC_RUNTIME",
+            "environment_type": type(self.environment).__qualname__,
+            "mask_entrypoint": "AmcBudgetEnv.formal_valid_action_mask",
+            "step_entrypoint": "AmcBudgetEnv.step",
+            "candidate_evaluator": "AmcBudgetEnv.evaluate_budget_candidate",
+        }
 
     def export_initial_state_contract(self):
         from amc_py.event_runtime import EventRuntimeEngine
@@ -176,4 +212,55 @@ class AMCRealRuntimeAdapter:
             "running_job": None if running is None else str(running.task.name),
             "running_job_executed_time": None if running is None else int(getattr(running, "executed_time", 0)),
             "initial_runtime_budget_snapshot": dict(engine.runtime_budgets.budgets),
+        }
+
+    def export_budget_safety_polytope(self) -> dict[str, Any]:
+        environment = copy.deepcopy(self.environment)
+        environment.reset()
+
+        if not bool(getattr(environment, "check_safety", False)):
+            return {
+                "status": "UNRESOLVED",
+                "route": "UNRESOLVED",
+                "failure": {"code": "RUNTIME_SAFETY_CHECK_DISABLED"},
+            }
+
+        checker = environment._ensure_checker()
+        task_names = [str(task.name) for task in environment.ordered_tasks]
+        rows: list[dict[str, Any]] = []
+
+        for row_index, (task_name, constraint_name, rhs, coeff) in enumerate(checker._constraint_rows):
+            coefficients: dict[str, int] = {}
+            for name, value in zip(task_names, coeff):
+                integer = _exact_int_from_float(float(value), f"row[{row_index}].{name}")
+                if integer < 0:
+                    raise ValueError("P0 structural envelope 只支持非负系数")
+                if integer:
+                    coefficients[name] = integer
+
+            rows.append(
+                {
+                    "row_index": row_index,
+                    "analyzed_task": str(task_name),
+                    "constraint": str(constraint_name),
+                    "coefficients": coefficients,
+                    "rhs": _exact_int_from_float(float(rhs), f"row[{row_index}].rhs"),
+                }
+            )
+
+        return {
+            "status": "PASS",
+            "schema_version": "budget_safety_polytope_v1",
+            "task_order": task_names,
+            "rows": rows,
+            "design_r_lo": {
+                str(name): int(value) for name, value in checker.design_r_lo.items()
+            },
+            "check_lo_tasks": bool(checker.check_lo_tasks),
+            "candidate_positive_lower": {
+                str(task.name): (int(task.c_lo) if task.criticality.value == "HI" else 1)
+                for task in environment.ordered_tasks
+            },
+            "production_checker_type": type(checker).__qualname__,
+            "check_safety": True,
         }

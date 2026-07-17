@@ -43,6 +43,7 @@ from formal_toolchain.policy.actions import build_action_transition_table
 from formal_toolchain.policy.executable_policy import replay_deployed_policy
 from formal_toolchain.policy.mask_fallback import (
     build_mask_fallback_certificate,
+    build_parametric_mask_fallback_certificate,
     select_first_valid,
 )
 from formal_toolchain.policy.quantization import (
@@ -50,6 +51,7 @@ from formal_toolchain.policy.quantization import (
     replay_quantize,
     verify_against_production,
 )
+from formal_toolchain.policy.selected_regions import selected_action_regions_v2
 from formal_toolchain.policy.tree import validate_tree_and_leaf_partition
 from formal_toolchain.policy.tree_io import integer_tree_from_dict
 
@@ -164,6 +166,23 @@ def _canonical_fixture_checks(inputs: Mapping[str, Any], inventory: Mapping[str,
             "effective_config_hash": sha256_object(actual_config)}
 
 
+def _leaf_guards(tree: Any) -> dict[int, list[dict[str, Any]]]:
+    leaves = {leaf.node_id for leaf in tree.leaves}
+    nodes = {node.node_id: node for node in tree.nodes}
+    guards: dict[int, list[dict[str, Any]]] = {}
+
+    def walk(node_id: int, path: list[dict[str, Any]]) -> None:
+        if node_id in leaves:
+            guards[node_id] = list(path)
+            return
+        node = nodes[node_id]
+        walk(node.left_child, path + [{"feature_index": int(node.feature_index), "operator": "<=", "threshold": int(node.threshold_int)}])
+        walk(node.right_child, path + [{"feature_index": int(node.feature_index), "operator": ">", "threshold": int(node.threshold_int)}])
+
+    walk(tree.root_node_id, [])
+    return guards
+
+
 def _make_selected_cases(target: Any, tree: Any, fixed_data: Mapping[str, Any],
                          actions: tuple[Any, ...], domain: Mapping[str, Any],
                          inventory: Mapping[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -180,13 +199,6 @@ def _make_selected_cases(target: Any, tree: Any, fixed_data: Mapping[str, Any],
     noop = False
     for values in product(*domains):
         budgets = dict(zip(names, values))
-        state = {
-            "budgets": budgets,
-            "initial_budgets": {name: int(domain["tasks"][name]["initial"]) for name in names},
-            "floors": {name: int(domain["tasks"][name]["runtime_floor"]) for name in names},
-            "caps": {name: int(domain["tasks"][name]["runtime_deploy_cap"]) for name in names},
-            "config": target.runtime_config,
-        }
         adapter = target.runtime_adapter
         if adapter is None:
             raise ValueError("FORMAL_RUNTIME_ADAPTER_MISSING")
@@ -216,7 +228,7 @@ def _make_selected_cases(target: Any, tree: Any, fixed_data: Mapping[str, Any],
                     "mask": list(runtime["mask"]),
                     "mask_reasons": list(runtime["reasons"]),
                     "ranking": list(ranking),
-                    "runtime_state": state,
+                    "runtime_state": runtime_state,
                     "action_definitions": proof_safe(list(inventory["action_definitions"])),
                     "actual_tree_leaf_id": leaf_id,
                 })
@@ -318,7 +330,7 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
                     "tree_files": inventory["files"], "taskset": preflight["taskset"],
                     "effective_config": export_formal_target_config(target), "domain": domain,
                     "source_manifest": source_manifest, "registry_hash": registry_hash}
-    context_hash = semantic_context["hash"]
+    context_hash = invariant_context["hash"]
     domain["context_hash"] = context_hash
     # inventory 需要同时被 inspect_target JSON 输出和后续 builder 消费。
     # 这里保留 integer_tree.json 的原始字典形态，避免把运行时模型对象
@@ -326,76 +338,66 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
     inventory["tree"] = tree_data
     actions_table = build_action_transition_table(actions, target.ordered_tasks, domain["tasks"])
     transitions = build_transition_witness(domain, target.ordered_tasks)
-    candidate = synthesize_candidate_envelope(domain, actions, target.ordered_tasks,
-                                               context_hash=context_hash)
-    common = (check_common_transition_preservation(candidate, transitions=transitions)
-              if candidate.get("status") == "PASS" else
-              {"status": "UNRESOLVED", "route": "UNRESOLVED",
-               "failure": {"code": "CANDIDATE_ENVELOPE_NOT_PASS"}})
-    # deployed preservation 仍要求完整有限域覆盖。真实 s185 的域超过
-    # Phase L 明确允许的枚举上限时，保留 UNRESOLVED 并继续输出 candidate
-    # envelope/上下文；不能现场抽样或偷偷缩小域来制造 PASS。
-    state_count = 1
-    if isinstance(domain.get("tasks"), Mapping):
-        for row in domain["tasks"].values():
-            state_count *= len(row.get("finite_integer_domain", ()))
-    if state_count > 10000:
-        selected_cases = []
-        region_summary = {"status": "UNRESOLVED", "failure": {
-            "code": "DEPLOYED_FINITE_DOMAIN_TOO_LARGE", "state_count": state_count}}
-    else:
-        selected_cases, region_summary = _make_selected_cases(
-            target, tree, fixed_data, actions, domain, inventory,
-        )
-    deployed = (check_deployed_policy_preservation(
-        candidate, actions, target.ordered_tasks,
-        leaves=tuple(int(leaf.node_id) for leaf in tree.leaves),
-        selected_cases=selected_cases,
-    ) if candidate.get("status") == "PASS" else
-                {"status": "UNRESOLVED", "route": "UNRESOLVED",
-                 "failure": {"code": "CANDIDATE_ENVELOPE_NOT_PASS"}})
-    policy_states = []
+    adapter = target.runtime_adapter
+    if adapter is None:
+        raise ValueError("FORMAL_RUNTIME_ADAPTER_MISSING")
+    candidate = synthesize_candidate_envelope(
+        domain,
+        actions,
+        target.ordered_tasks,
+        context_hash=context_hash,
+        runtime_adapter=adapter,
+    )
+    common = (
+        check_common_transition_preservation(candidate, transitions=transitions)
+        if candidate.get("status") == "PASS"
+        else {"status": "UNRESOLVED", "route": "UNRESOLVED",
+              "failure": {"code": "CANDIDATE_ENVELOPE_NOT_PASS"}}
+    )
+    rankings = {
+        int(leaf.node_id): tuple(int(action_id) for action_id in leaf.action_ranking)
+        for leaf in tree.leaves
+    }
+    mask_contract = adapter.export_mask_contract()
+    mask_fallback = build_parametric_mask_fallback_certificate(
+        rankings=rankings,
+        action_dim=len(actions),
+        mask_contract=mask_contract,
+    )
+    regions = selected_action_regions_v2(_leaf_guards(tree), rankings)
+
     names = [str(task.name) for task in target.ordered_tasks]
-    for values in (
-        tuple(int(domain["tasks"][name]["initial"]) for name in names),
-        tuple(int(domain["tasks"][name]["runtime_deploy_cap"]) for name in names),
-    ):
-        policy_states.append({
-            "budgets": dict(zip(names, values)),
-            "initial_budgets": {name: int(domain["tasks"][name]["initial"]) for name in names},
-            "floors": {name: int(domain["tasks"][name]["runtime_floor"]) for name in names},
-            "caps": {name: int(domain["tasks"][name]["runtime_deploy_cap"]) for name in names},
-            "config": target.runtime_config,
-        })
-    executable = ([replay_deployed_policy(state, target, tree, fixed_data, actions=actions)
-                   for state in policy_states]
-                  if selected_cases else [])
-    mask_cases = []
-    rankings = []
-    masks = []
-    reasons = []
-    for state, policy in zip(policy_states, executable):
-        adapter = target.runtime_adapter
-        if adapter is None:
-            raise ValueError("FORMAL_RUNTIME_ADAPTER_MISSING")
-        runtime_state = adapter.build_runtime_state_from_budget_vector(state["budgets"])
-        runtime_mask, runtime_reasons = adapter.valid_action_mask(runtime_state)
-        mask_cases.append({"state": {"budgets": state["budgets"], "criticality": {name: getattr(task.criticality, "value", str(task.criticality)) for name, task in zip(names, target.ordered_tasks)}, "floor": state["floors"], "floors": state["floors"], "caps": state["caps"]},
-                           "action_definitions": proof_safe(inventory["action_definitions"]),
-                           "forbid_decreasing_hi_budgets": True})
-        rankings.append(list(policy["ranking"]))
-        masks.append(list(runtime_mask))
-        reasons.append(list(runtime_reasons))
-    if not executable:
-        mask_fallback = {"status": "UNRESOLVED", "route": "UNRESOLVED",
-                         "failure": {"code": "MASK_REPLAY_DOMAIN_NOT_ENUMERATED"}}
-    else:
-        mask_fallback = build_mask_fallback_certificate(
-            rankings, masks, action_dim=len(actions), runtime_reasons=reasons,
-            synthetic_cases=mask_cases,
-            runtime_mask_evaluator=lambda row, _definitions, _forbid: adapter.valid_action_mask(row),
-            formal_mask_evaluator=lambda row, _definitions, _forbid: adapter.valid_action_mask(row),
+    initial_vector = tuple(int(domain["tasks"][name]["initial"]) for name in names)
+    upper_vector = tuple(int(domain["tasks"][name]["action_hard_upper"]) for name in names)
+    mid_vector = tuple((int(domain["tasks"][name]["initial"]) + int(domain["tasks"][name]["action_hard_upper"])) // 2 for name in names)
+    sample_vectors: list[tuple[int, ...]] = []
+    for vector in (initial_vector, mid_vector, upper_vector):
+        if vector not in sample_vectors:
+            sample_vectors.append(vector)
+    policy_states = [
+        adapter.build_runtime_state_from_budget_vector(dict(zip(names, values)))
+        for values in sample_vectors
+    ]
+    executable = [replay_deployed_policy(state, target, tree, fixed_data, actions=actions)
+                  for state in policy_states]
+    regression_samples = {
+        "policy_states": policy_states,
+        "executable": executable,
+        "sample_count": len(policy_states),
+    }
+    deployed = (
+        check_deployed_policy_preservation(
+            candidate,
+            actions,
+            target.ordered_tasks,
+            mask_fallback_certificate=mask_fallback,
+            action_transition_certificate=actions_table,
+            mask_contract=mask_contract,
         )
+        if candidate.get("status") == "PASS" and common.get("status") == "PASS" and mask_fallback.get("status") == "PASS"
+        else {"status": "UNRESOLVED", "route": "UNRESOLVED",
+              "failure": {"code": "DEPLOYED_POLICY_PRESERVATION_UNRESOLVED"}}
+    )
     evidence: dict[str, Any] = {
         "PREFLIGHT": {"status": "PASS", "preflight": preflight, "fixture": fixture_check,
                       "inventory": inventory},
@@ -404,13 +406,15 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
         "QUANTIZATION": quantization,
         "ACTION": actions_table,
         "MASK": mask_fallback,
+        "SELECTED_REGIONS": regions,
         "EXECUTABLE": {"status": "PASS" if executable and all(item.get("status") == "PASS" for item in executable) else "UNRESOLVED",
-                        "states": executable, "region_summary": region_summary},
+                        "states": executable},
         "DOMAIN": domain,
         "CANDIDATE": candidate,
         "COMMON": common,
         "DEPLOYED": deployed,
         "TRANSITIONS": transitions,
+        "regression_samples": regression_samples,
     }
     evidence["P0_RUNTIME_EVIDENCE"] = build_p0_runtime_evidence(
         target=target,
@@ -472,8 +476,7 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
               "tree": tree, "fixed_data": fixed_data, "actions": actions,
               "domain": domain, "context_body": context_body, "context_hash": context_hash,
               "contexts": contexts,
-              "evidence": evidence, "selected_cases": selected_cases,
-              "region_summary": region_summary}
+              "evidence": evidence, "regression_samples": regression_samples}
     if include_reference:
         from formal_toolchain.reference.protected_hi import protected_hi_safety_corollary
         from formal_toolchain.reference.recurring_hi import build_recurring_hi_instances

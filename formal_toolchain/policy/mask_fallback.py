@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from formal_toolchain.core.hashing import sha256_object
+
 
 def evaluate_synthetic_mask(state: Mapping[str, Any], action_definitions: Sequence[Mapping[str, Any]],
                             *, forbid_decreasing_hi_budgets: bool = True) -> tuple[tuple[bool, ...], tuple[str, ...]]:
@@ -78,3 +80,68 @@ def build_mask_fallback_certificate(rankings: Sequence[Sequence[int]], masks: Se
             "cases": [{"ranking": list(r), "mask": list(m), "selected_action": a, "reject_reasons": list(reason)}
                       for r, m, a, reason in zip(rankings, masks, selected, runtime_reasons)],
             "implicit_noop": any(item is None for item in selected), "selection": "first_valid"}
+
+
+def build_parametric_mask_fallback_certificate(
+    *,
+    rankings: Mapping[int, Sequence[int]],
+    action_dim: int,
+    mask_contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    expected_actions = tuple(range(action_dim))
+    leaves: list[dict[str, Any]] = []
+
+    if mask_contract.get("shared_with_step") is not True:
+        return {
+            "status": "UNRESOLVED",
+            "route": "UNRESOLVED",
+            "failure": {"code": "MASK_STEP_SHARED_SEMANTICS_UNVERIFIED"},
+        }
+
+    for leaf_id, ranking_value in sorted(rankings.items()):
+        ranking = tuple(int(value) for value in ranking_value)
+        if tuple(sorted(ranking)) != expected_actions:
+            return {
+                "status": "FAIL",
+                "route": "PROOF_BUNDLE_INVALID",
+                "failure": {
+                    "code": "RANKING_NOT_COMPLETE",
+                    "leaf_id": int(leaf_id),
+                },
+            }
+
+        regions = []
+        for position, action_id in enumerate(ranking):
+            regions.append({
+                "rank_position": position,
+                "selected_action": int(action_id),
+                "predicate": {
+                    "selected_valid": int(action_id),
+                    "preceding_invalid": list(ranking[:position]),
+                },
+            })
+        regions.append({
+            "rank_position": len(ranking),
+            "selected_action": None,
+            "predicate": {"all_invalid": list(ranking)},
+        })
+
+        leaves.append({
+            "leaf_id": int(leaf_id),
+            "ranking": list(ranking),
+            "regions": regions,
+            "coverage_rule": "first_true_or_none",
+            "pairwise_disjoint": True,
+            "total": True,
+        })
+
+    return {
+        "status": "PASS",
+        "schema_version": "mask_fallback_v2",
+        "selection": "ranked_first_valid",
+        "action_dim": action_dim,
+        "leaves": leaves,
+        "implicit_noop": True,
+        "universal_over_runtime_masks": True,
+        "mask_contract_hash": sha256_object(dict(mask_contract)),
+    }

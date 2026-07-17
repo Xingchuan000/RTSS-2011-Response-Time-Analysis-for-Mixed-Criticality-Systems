@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from amc_py.models import Criticality, Task
 from amc_py.runtime_models import RuntimeSemantics
+from formal_toolchain.adapters.synthetic_runtime_adapter import SyntheticP0RuntimeAdapter
 from formal_toolchain.adapters.target_factory import FormalTarget
 
 
@@ -48,13 +49,27 @@ def build_target(**_kwargs):
         "mask_detail_mode", "enable_deploy_cap_mask", "deploy_cap_mask_ratio",
         "deploy_cap_mask_criticality", "observation_mode")
     environment = SyntheticEnvironment(**{name: getattr(config, name) for name in visible})
-    return FormalTarget(
+    target = FormalTarget(
         ordered_tasks=tasks, runtime_config=config, environment=environment,
         policy=SimpleNamespace(name="synthetic_integer_tree"), scenario=SimpleNamespace(name="synthetic_p0"),
         action_definitions=action_definitions, feature_names=feature_names,
         provenance={"fixture": "synthetic_p0_v1", "taskset_seed": None,
-                    "budget_by_task": {"SYN_HI": {"initial_runtime_budget": 2, "budget_floor": 1, "budget_cap": 3},
-                                       "SYN_LO": {"initial_runtime_budget": 2, "budget_floor": 1, "budget_cap": 15}}})
+                    "budget_by_task": {
+                        "SYN_HI": {
+                            "initial_runtime_budget": 2,
+                            "budget_floor": 1,
+                            "action_hard_upper": 3,
+                            "source_base_budget": 2,
+                        },
+                        "SYN_LO": {
+                            "initial_runtime_budget": 2,
+                            "budget_floor": 1,
+                            "action_hard_upper": 15,
+                            "source_base_budget": 1,
+                        },
+                    }})
+    object.__setattr__(target, "runtime_adapter", SyntheticP0RuntimeAdapter(target))
+    return target
 
 
 __all__ = ["build_target"]

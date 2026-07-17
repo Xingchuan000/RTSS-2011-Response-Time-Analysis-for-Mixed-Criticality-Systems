@@ -40,13 +40,14 @@ from formal_toolchain.conformance.scheduler import check_scheduler_model
 from formal_toolchain.conformance.time_domain import build_budget_domain
 from formal_toolchain.adapters.batch_frozen_scenario import BatchFrozenExecutionScenario
 from formal_toolchain.adapters.synthetic_context import build_synthetic_context
-from formal_toolchain.adapters.synthetic_policy import build_runtime_adapter, build_transition_witness
+from formal_toolchain.adapters.synthetic_policy import build_transition_witness
+from formal_toolchain.adapters.synthetic_runtime_adapter import SyntheticP0RuntimeAdapter
 from formal_toolchain.core.registry import active_obligations_for_claim
 from formal_toolchain.verifier.artifact_verifier import verify_registry_certificate
 from formal_toolchain.invariant.candidate_envelope import synthesize_candidate_envelope
 from formal_toolchain.invariant.common_preservation import check_common_transition_preservation
 from formal_toolchain.invariant.deployed_preservation import check_deployed_policy_preservation
-from formal_toolchain.policy.mask_fallback import build_mask_fallback_certificate, evaluate_synthetic_mask, select_first_valid
+from formal_toolchain.policy.mask_fallback import build_parametric_mask_fallback_certificate, evaluate_synthetic_mask, select_first_valid
 from formal_toolchain.adapters.synthetic_runtime import evaluate_synthetic_runtime_mask
 from formal_toolchain.policy.quantization import deterministic_samples, replay_quantize
 from formal_toolchain.verifier.artifact_verifier import verify_certificate
@@ -145,12 +146,12 @@ def main(argv=None) -> int:
     actions = target_actions = build_budget_action_space(target.ordered_tasks, action_space=target.runtime_config.action_space,
         budget_increase_ratio=target.runtime_config.budget_increase_ratio,
         budget_decrease_ratio=target.runtime_config.budget_decrease_ratio)
-    runtime_adapter = build_runtime_adapter(target, actions)
+    runtime_adapter = SyntheticP0RuntimeAdapter(target)
     target_domain = build_budget_domain(target.ordered_tasks, target.provenance["budget_by_task"],
                                         runtime_config=target.runtime_config)
     target_domain["context_hash"] = ""  # 在 canonical context 生成后绑定
     action_table = build_action_transition_table(target_actions, target.ordered_tasks, target_domain["tasks"])
-    if action_table.get("status") != "PASS" or not action_table.get("rows"):
+    if action_table.get("status") != "PASS" or not action_table.get("actions"):
         raise RuntimeError("synthetic action transition table failed")
     target_domain["context_hash"] = "pending"
     context = build_synthetic_context(target, inventory, target_domain)
@@ -159,7 +160,7 @@ def main(argv=None) -> int:
     runtime_state = {"budgets": {task.name: task.c_hi for task in target.ordered_tasks},
                      "initial_budgets": {name: int(row["initial"]) for name, row in target_domain["tasks"].items()},
                      "floors": {name: int(row["runtime_floor"]) for name, row in target_domain["tasks"].items()},
-                     "caps": {name: int(row["runtime_deploy_cap"]) for name, row in target_domain["tasks"].items()},
+                     "caps": {name: int(row["action_hard_upper"]) for name, row in target_domain["tasks"].items()},
                      "config": target.runtime_config}
     policy_upper = replay_deployed_policy(runtime_state, target, tree, fixed_data, actions=actions)
     if policy_upper.get("status") != "PASS":
@@ -168,20 +169,32 @@ def main(argv=None) -> int:
     domain = build_budget_domain(envelope_tasks, target.provenance["budget_by_task"], runtime_config=target.runtime_config)
     domain["context_hash"] = context_hash
     actions = target_actions
-    candidate = synthesize_candidate_envelope(domain, actions, envelope_tasks, context_hash=context_hash)
+    candidate = synthesize_candidate_envelope(
+        domain, actions, envelope_tasks, context_hash=context_hash, runtime_adapter=runtime_adapter
+    )
     transitions = build_transition_witness(domain, envelope_tasks)
     common = check_common_transition_preservation(candidate, transitions=transitions)
-    finite_domains = [tuple(int(value) for value in row["finite_integer_domain"])
-                      for row in domain["tasks"].values()]
+    finite_domains = [
+        tuple(range(int(row["integer_interval"]["lower"]), int(row["integer_interval"]["upper"]) + 1))
+        for row in domain["tasks"].values()
+    ]
     rankings = {int(leaf.node_id): tuple(int(action_id) for action_id in leaf.action_ranking) for leaf in tree.leaves}
+    mask_contract = runtime_adapter.export_mask_contract()
+    mask_fallback = build_parametric_mask_fallback_certificate(
+        rankings=rankings,
+        action_dim=len(actions),
+        mask_contract=mask_contract,
+    )
     selected_rows = []
     for values in product(*finite_domains):
         state = {"budgets": {task.name: value for task, value in zip(envelope_tasks, values)},
                  "initial_budgets": {name: int(row["initial"]) for name, row in domain["tasks"].items()},
                  "floors": {name: int(row["runtime_floor"]) for name, row in domain["tasks"].items()},
-                 "caps": {name: int(row["runtime_deploy_cap"]) for name, row in domain["tasks"].items()},
+                 "caps": {name: int(row["action_hard_upper"]) for name, row in domain["tasks"].items()},
                  "config": target.runtime_config}
-        runtime = runtime_adapter["evaluate"](state)
+        observation = runtime_adapter.extract_observation(state)
+        valid_mask, mask_reasons = runtime_adapter.valid_action_mask(state)
+        runtime = {"observation": observation, "mask": valid_mask, "reasons": mask_reasons}
         for leaf, ranking in rankings.items():
             first = select_first_valid(ranking, runtime["mask"], action_dim=len(actions))
             for index, action in enumerate(actions):
@@ -190,7 +203,16 @@ def main(argv=None) -> int:
                     "ranking": ranking, "mask": runtime["mask"], "runtime_state": state,
                     "action_definitions": inventory["action_definitions"]})
     selected = tuple(selected_rows)
-    deployed = check_deployed_policy_preservation(candidate, actions, envelope_tasks, leaves=(0, 1), selected_cases=selected)
+    deployed = check_deployed_policy_preservation(
+        candidate,
+        actions,
+        envelope_tasks,
+        mask_fallback_certificate=mask_fallback,
+        action_transition_certificate=action_table,
+        mask_contract=mask_contract,
+        leaves=(0, 1),
+        selected_cases=selected,
+    )
     if any(item.get("status") != "PASS" for item in (candidate, common, deployed)):
         raise RuntimeError("envelope synthetic check failed")
     registry = load_registry(ROOT / "formal_toolchain/specs/obligation_registry.json")

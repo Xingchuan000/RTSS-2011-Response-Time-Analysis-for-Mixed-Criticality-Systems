@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from formal_toolchain.core.hashing import sha256_object
+
 
 def check_common_transition_preservation(candidate: Mapping[str, Any], *, transitions: Mapping[str, Any] | None = None) -> dict[str, Any]:
     if candidate.get("status") != "PASS":
@@ -67,6 +69,12 @@ def check_common_transition_preservation(candidate: Mapping[str, Any], *, transi
         if transition.get("budget_write") not in (None, False):
             return {"status": "FAIL", "route": "POLICY_CONTRACT_VIOLATION",
                     "failure": {"code": "NON_POLICY_BUDGET_WRITE", "transition": name}}
-    return {"status": "PASS", "schema_version": "common_transition_preservation_v1",
-            "active_release_budget_immutable": True, "controller_budget_write": False,
-            "invariant_checked": True}
+    return {
+        "status": "PASS",
+        "schema_version": "common_transition_preservation_v1",
+        "active_release_budget_immutable": True,
+        "controller_budget_write": False,
+        "invariant_checked": True,
+        "candidate_envelope_hash": sha256_object(dict(candidate)),
+        "safety_polytope_hash": candidate.get("safety_polytope_hash"),
+    }

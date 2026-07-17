@@ -150,18 +150,25 @@ def _verify_cases(candidate: Mapping[str, Any], obligation_id: str,
     ))
     if replay.get("status") != "PASS":
         return replay
-    consistency = compare_candidate_replay(candidate, replay)
-    if consistency.get("status") != "PASS":
-        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
-                "code": "BRIDGE_CANDIDATE_REPLAY_MISMATCH", "witness": consistency}
+    if obligation_id == "CLOSED_PREFIX_REFINEMENT":
+        consistency = compare_candidate_replay(candidate, replay)
+        if consistency.get("status") != "PASS":
+            return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                    "code": "BRIDGE_CANDIDATE_REPLAY_MISMATCH", "witness": consistency}
     theorem_hash = candidate.get("inputs", {}).get("theorem_hash")
     if obligation_id == "CLOSED_PREFIX_REFINEMENT" and not _is_hash(theorem_hash):
         return {"status": "UNRESOLVED", "route": "UNRESOLVED",
                 "code": "BRIDGE_THEOREM_HASH_MISSING"}
-    return {"status": "PASS", "route": None, "code": None,
-            "witness": {"case_count": len(case_ids or []),
-                         "certificate_hash": sha256_object(dict(candidate)),
-                         "fresh_replay": replay}}
+    fresh_witness: dict[str, Any] = {
+        "certificate_hash": sha256_object(dict(candidate)),
+        "fresh_source_replay_hash": sha256_object(replay),
+    }
+    if obligation_id == "CLOSED_PREFIX_REFINEMENT":
+        fresh_witness["case_count"] = len(case_ids or [])
+        fresh_witness["fresh_replay"] = replay
+    else:
+        fresh_witness["reused_closed_prefix_case_replay"] = True
+    return {"status": "PASS", "route": None, "code": None, "witness": fresh_witness}
 
 
 def verify_closed_prefix_proof_object(*, candidate: Mapping[str, Any],

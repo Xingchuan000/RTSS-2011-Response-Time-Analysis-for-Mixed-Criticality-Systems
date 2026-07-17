@@ -123,6 +123,19 @@ class CandidateBudgetUpdateDiagnosis:
     task_names: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class BudgetCandidateEvaluation:
+    """共享的候选预算评估结果。"""
+
+    action_id: int | None
+    accepted: bool
+    reject_reason: str | None
+    candidate_budgets: dict[str, int]
+    updates: dict[str, int]
+    safety_checked: bool
+    reject_diagnostics: tuple[dict[str, str | int | float], ...] = ()
+
+
 def _normalize_candidate_reject_reason(reason: str) -> str:
     """把带前缀细节的 reject reason 归一化到稳定类别。"""
 
@@ -667,6 +680,148 @@ class AmcBudgetEnv:
             if not report.accepted:
                 return report.reason
         return None
+
+    def evaluate_budget_candidate(
+        self,
+        *,
+        action: BudgetAction | None,
+        budget_before: dict[str, int] | None = None,
+        hi_pressure_threshold: float | None = None,
+        lo_pressure_threshold: float | None = None,
+    ) -> BudgetCandidateEvaluation:
+        """共享预算候选评估入口。
+
+        这个函数只服务于 canonical static 动作的 mask/step 共享语义：
+        - 先执行 action primitive 重放；
+        - 再执行 HI decrease、deploy cap、floor 与 safety checker；
+        - 最后返回统一评估结果，供 mask 和 step 共同消费。
+        """
+
+        if self._engine is None:
+            raise RuntimeError("环境尚未 reset")
+
+        before = dict(budget_before or self._engine.runtime_budgets.budgets)
+        if action is None or action.is_noop:
+            return BudgetCandidateEvaluation(
+                action_id=None if action is None else int(action.action_id),
+                accepted=True,
+                reject_reason=None,
+                candidate_budgets=dict(before),
+                updates={},
+                safety_checked=False,
+            )
+
+        if action.is_constraint_guided_pair or action.is_residual_ranked:
+            return BudgetCandidateEvaluation(
+                action_id=int(action.action_id),
+                accepted=False,
+                reject_reason="unsupported_action_type",
+                candidate_budgets=dict(before),
+                updates={},
+                safety_checked=False,
+            )
+
+        cap_reason = self._deploy_cap_increase_reject_reason(
+            increase_idx=action.increase_idx,
+            budget_before=before,
+        )
+        if cap_reason is not None:
+            return BudgetCandidateEvaluation(
+                action_id=int(action.action_id),
+                accepted=False,
+                reject_reason=cap_reason,
+                candidate_budgets=dict(before),
+                updates={},
+                safety_checked=False,
+            )
+
+        if action_violates_hi_decrease_guard(
+            action=action,
+            ordered_tasks=self.ordered_tasks,
+            forbid_decreasing_hi_budgets=self.forbid_decreasing_hi_budgets,
+        ):
+            return BudgetCandidateEvaluation(
+                action_id=int(action.action_id),
+                accepted=False,
+                reject_reason="decrease_hi_forbidden",
+                candidate_budgets=dict(before),
+                updates={},
+                safety_checked=False,
+            )
+
+        budget_state = self._engine.runtime_budgets.copy()
+        budget_state.budgets = dict(before)
+        updates = apply_budget_action_candidate(
+            action=action,
+            budget_state=budget_state,
+            ordered_tasks=self.ordered_tasks,
+        )
+        candidate_budgets = merge_budget_candidate(
+            budget_state,
+            updates,
+        )
+        residual_guard_reason = self._residual_safety_guard_reject_reason(
+            action=action,
+            budget_before=before,
+            candidate_budgets=candidate_budgets,
+            hi_pressure_threshold=float(
+                hi_pressure_threshold
+                if hi_pressure_threshold is not None
+                else self._reward_mode_config.reward_parameters.get("hi_mode_pressure_threshold", 0.8)
+            ),
+            lo_pressure_threshold=float(
+                lo_pressure_threshold
+                if lo_pressure_threshold is not None
+                else self._reward_mode_config.reward_parameters.get("lo_pressure_threshold", 0.8)
+            ),
+        )
+        if residual_guard_reason is not None:
+            return BudgetCandidateEvaluation(
+                action_id=int(action.action_id),
+                accepted=False,
+                reject_reason=residual_guard_reason,
+                candidate_budgets=dict(before),
+                updates={},
+                safety_checked=False,
+            )
+
+        floor_reject_reason = self._budget_floor_violation(updates=updates)
+        if floor_reject_reason is not None:
+            return BudgetCandidateEvaluation(
+                action_id=int(action.action_id),
+                accepted=False,
+                reject_reason=floor_reject_reason,
+                candidate_budgets=dict(before),
+                updates={},
+                safety_checked=False,
+            )
+
+        if self.check_safety:
+            report = self._ensure_checker().validate_candidate(candidate_budgets)
+            if not report.accepted:
+                return BudgetCandidateEvaluation(
+                    action_id=int(action.action_id),
+                    accepted=False,
+                    reject_reason=report.reason,
+                    candidate_budgets=dict(before),
+                    updates={},
+                    safety_checked=True,
+                    reject_diagnostics=report.diagnostics,
+                )
+
+        return BudgetCandidateEvaluation(
+            action_id=int(action.action_id),
+            accepted=True,
+            reject_reason=None,
+            candidate_budgets=dict(candidate_budgets),
+            updates=dict(updates),
+            safety_checked=self.check_safety,
+        )
+
+    def formal_valid_action_mask(self) -> tuple[bool, ...]:
+        """Verifier 绑定使用的显式 mask 入口。"""
+
+        return self.valid_action_mask()
 
     def _resolve_residual_safe_ranked_action(
         self,
@@ -2241,234 +2396,36 @@ class AmcBudgetEnv:
                         }
                     )
                 continue
-            # 阶段 1 语义：显式 noop 必须始终合法。
-            # 1) 不能再走“是否有效更新”的过滤；
-            # 2) 不能再走预算安全检查；
-            # 3) mask 详情里仍记录预算前后（相同）与 is_noop 标记，便于调试。
-            if action.is_noop:
-                mask.append(True)
-                if self.mask_detail_mode == "minimal":
-                    mask_details.append(
-                        {
-                            "action_id": action.action_id,
-                            "valid": True,
-                            "reject_reason": None,
-                            "is_noop": True,
-                        }
-                    )
-                else:
-                    mask_details.append(
-                        {
-                            "action_id": action.action_id,
-                            "valid": True,
-                            "reject_reason": None,
-                            "updates": {},
-                            "budget_before": budget_before,
-                            "candidate_budgets": dict(budget_before),
-                            "is_noop": True,
-                        }
-                    )
-                continue
-            # HI 预算保护（阶段 3 核心规则）：
-            # - 触发条件：action.decrease_indices 中存在任意 HI 任务；
-            # - 处理方式：直接 mask=False，并记录 reject_reason=decrease_hi_forbidden；
-            # - 语义边界：只约束 decrease，不限制 increase，因此“给 HI 任务加预算”仍然允许。
-            # 注意：显式 noop 已在前面提前放行，不受此规则影响。
-            if action_violates_hi_decrease_guard(
+            evaluation = self.evaluate_budget_candidate(
                 action=action,
-                ordered_tasks=self.ordered_tasks,
-                forbid_decreasing_hi_budgets=self.forbid_decreasing_hi_budgets,
-            ):
-                mask.append(False)
-                reject_reason_counts["decrease_hi_forbidden"] += 1
-                if self.mask_detail_mode == "minimal":
-                    mask_details.append(
-                        {
-                            "action_id": action.action_id,
-                            "valid": False,
-                            "reject_reason": "decrease_hi_forbidden",
-                            "is_noop": False,
-                        }
-                    )
-                else:
-                    mask_details.append(
-                        {
-                            "action_id": action.action_id,
-                            "valid": False,
-                            "reject_reason": "decrease_hi_forbidden",
-                            "updates": {},
-                            "budget_before": budget_before,
-                            "candidate_budgets": dict(budget_before),
-                            "is_noop": False,
-                        }
-                    )
-                continue
-            cap_reject_reason = self._deploy_cap_increase_reject_reason(
-                increase_idx=action.increase_idx,
                 budget_before=budget_before,
             )
-            if cap_reject_reason is not None:
-                mask.append(False)
-                reject_reason_counts["deploy_cap_increase_mask"] += 1
-                if self.mask_detail_mode == "minimal":
-                    mask_details.append(
-                        {
-                            "action_id": action.action_id,
-                            "valid": False,
-                            "reject_reason": cap_reject_reason,
-                            "is_noop": False,
-                        }
-                    )
-                else:
-                    mask_details.append(
-                        {
-                            "action_id": action.action_id,
-                            "valid": False,
-                            "reject_reason": cap_reject_reason,
-                            "updates": {},
-                            "budget_before": budget_before,
-                            "candidate_budgets": dict(budget_before),
-                            "is_noop": False,
-                        }
-                    )
-                continue
-            updates: dict[str, int] = {}
-            delta_pairs: list[tuple[int, float]] = []
-            reject_reason: str | None = None
-            if action.increase_idx is not None:
-                inc_idx = action.increase_idx
-                inc_name = self._task_names[inc_idx]
-                old_inc = int(budget_before[inc_name])
-                inc_value = math.ceil(old_inc * (1.0 + action.increase_ratio))
-                inc_value = min(inc_value, self._task_upper_bounds[inc_idx])
-                inc_value = max(1, inc_value)
-                updates[inc_name] = inc_value
-                if inc_value == old_inc:
-                    reject_reason = "no_effective_budget_change"
-                delta_pairs.append((inc_idx, float(inc_value - old_inc)))
-            for dec_idx in action.decrease_indices:
-                dec_name = self._task_names[dec_idx]
-                old_dec = int(budget_before[dec_name])
-                dec_value = math.floor(old_dec * (1.0 - action.decrease_ratio))
-                dec_value = max(1, dec_value)
-                updates[dec_name] = dec_value
-                if dec_value == old_dec:
-                    reject_reason = "no_effective_budget_change"
-                delta_pairs.append((dec_idx, float(dec_value - old_dec)))
-            if reject_reason is not None:
-                mask.append(False)
-                reject_reason_counts["no_effective_budget_change"] += 1
-                if self.mask_detail_mode == "minimal":
-                    mask_details.append(
-                        {
-                            "action_id": action.action_id,
-                            "valid": False,
-                            "reject_reason": "no_effective_budget_change",
-                            "is_noop": False,
-                        }
-                    )
-                else:
-                    candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
-                    mask_details.append(
-                        {
-                            "action_id": action.action_id,
-                            "valid": False,
-                            "reject_reason": "no_effective_budget_change",
-                            "updates": dict(updates),
-                            "budget_before": budget_before,
-                            "candidate_budgets": candidate_budgets,
-                            "is_noop": False,
-                        }
-                    )
-                continue
-            # budget floor 必须在 safety check 之前执行。
-            # 原因是它属于“动作可行性硬约束”，不是 reward 正则，也不是 safety checker 的线性约束。
-            # 因此一旦违反 floor，应直接把动作标记为 invalid，并保留带任务名的 reject_reason。
-            floor_reject_reason = self._budget_floor_violation(updates=updates)
-            if floor_reject_reason is not None:
-                mask.append(False)
-                reject_reason_counts["budget_floor_violation"] += 1
-                if self.mask_detail_mode == "minimal":
-                    mask_details.append(
-                        {
-                            "action_id": action.action_id,
-                            "valid": False,
-                            "reject_reason": floor_reject_reason,
-                            "is_noop": False,
-                        }
-                    )
-                else:
-                    candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
-                    mask_details.append(
-                        {
-                            "action_id": action.action_id,
-                            "valid": False,
-                            "reject_reason": floor_reject_reason,
-                            "updates": dict(updates),
-                            "budget_before": budget_before,
-                            "candidate_budgets": candidate_budgets,
-                            "is_noop": False,
-                        }
-                    )
-                continue
-            if not self.check_safety:
-                mask.append(True)
-                if self.mask_detail_mode == "minimal":
-                    mask_details.append(
-                        {
-                            "action_id": action.action_id,
-                            "valid": True,
-                            "reject_reason": None,
-                            "is_noop": False,
-                        }
-                    )
-                else:
-                    candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
-                    mask_details.append(
-                        {
-                            "action_id": action.action_id,
-                            "valid": True,
-                            "reject_reason": None,
-                            "updates": dict(updates),
-                            "budget_before": budget_before,
-                            "candidate_budgets": candidate_budgets,
-                            "is_noop": False,
-                        }
-                    )
-                continue
-            assert slack is not None
-            delta_lhs = np.zeros_like(slack)
-            for idx, delta in delta_pairs:
-                delta_lhs += self._safety_matrix_a[:, idx] * delta  # type: ignore[index]
-            accepted = bool(np.all(delta_lhs <= slack))
-            if not accepted:
-                reject_reason = "incremental_constraint_violation"
-                reject_reason_counts[reject_reason] += 1
-            mask.append(accepted)
+            mask.append(bool(evaluation.accepted))
+            reject_reason = evaluation.reject_reason
+            if not evaluation.accepted and reject_reason is not None:
+                reject_reason_counts[_normalize_candidate_reject_reason(reject_reason)] += 1
             if self.mask_detail_mode == "minimal":
                 mask_details.append(
                     {
                         "action_id": action.action_id,
-                        "valid": accepted,
+                        "valid": bool(evaluation.accepted),
                         "reject_reason": reject_reason,
-                        "is_noop": False,
+                        "is_noop": bool(action.is_noop),
                     }
                 )
             else:
-                candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
-                report = checker.validate_candidate(candidate_budgets)
                 mask_details.append(
                     {
                         "action_id": action.action_id,
-                        "valid": accepted,
-                        "reject_reason": None if accepted else reject_reason,
-                        "reject_diagnostics": list(report.diagnostics),
-                        "updates": dict(updates),
+                        "valid": bool(evaluation.accepted),
+                        "reject_reason": reject_reason,
+                        "updates": dict(evaluation.updates),
                         "budget_before": budget_before,
-                        "candidate_budgets": candidate_budgets,
-                        "is_noop": False,
+                        "candidate_budgets": dict(evaluation.candidate_budgets),
+                        "is_noop": bool(action.is_noop),
                     }
                 )
+            continue
         valid_action_count = sum(mask)
         masked_action_count = len(mask) - valid_action_count
         if valid_action_count == 0:
@@ -2925,73 +2882,28 @@ class AmcBudgetEnv:
                 elif is_safe_residual_action and reject_reason is not None:
                     reject_reason = f"safe_mask_step_mismatch:{reject_reason}"
             else:
-                # 运行时执行路径与 mask 路径做同样判定：
-                # 即便调用方绕过了 valid_action_mask（例如手工传 action_id），
-                # 这里也会拒绝 HI decrease 动作，确保系统级语义一致。
-                if action_violates_hi_decrease_guard(
+                evaluation = self.evaluate_budget_candidate(
                     action=action,
-                    ordered_tasks=self.ordered_tasks,
-                    forbid_decreasing_hi_budgets=self.forbid_decreasing_hi_budgets,
-                ):
-                    accepted = False
-                    reject_reason = "decrease_hi_forbidden"
-                    updates = {}
-                    candidate_budgets = dict(budget_before)
-                else:
-                    cap_reject_reason = self._deploy_cap_increase_reject_reason(
-                        increase_idx=action.increase_idx,
-                        budget_before=budget_before,
-                    )
-                    if cap_reject_reason is not None:
-                        accepted = False
-                        reject_reason = cap_reject_reason
-                        updates = {}
-                        candidate_budgets = dict(budget_before)
-                    else:
-                        updates = apply_budget_action_candidate(
-                            action=action,
-                            budget_state=self._engine.runtime_budgets,
-                            ordered_tasks=self.ordered_tasks,
-                        )
-                        candidate_budgets = merge_budget_candidate(self._engine.runtime_budgets, updates)
-                        residual_guard_reason = self._residual_safety_guard_reject_reason(
-                            action=action,
-                            budget_before=budget_before,
-                            candidate_budgets=candidate_budgets,
-                            hi_pressure_threshold=float(
-                                self._reward_mode_config.reward_parameters.get("hi_mode_pressure_threshold", 0.8)
-                            ),
-                            lo_pressure_threshold=float(
-                                self._reward_mode_config.reward_parameters.get("lo_pressure_threshold", 0.8)
-                            ),
-                        )
-                        if residual_guard_reason is not None:
-                            accepted = False
-                            reject_reason = residual_guard_reason
-                            updates = {}
-                            candidate_budgets = dict(budget_before)
-                            action_was_checked = True
-                            self._residual_guard_rejected_actions += 1
-                        else:
-                            # step() 的 floor 兜底与 mask 路径必须保持同一语义：
-                            # 即便调用方绕过了 valid_action_mask，这里也要拒绝任何会跌破 floor 的动作。
-                            floor_reject_reason = self._budget_floor_violation(updates=updates)
-                            if floor_reject_reason is not None:
-                                accepted = False
-                                reject_reason = floor_reject_reason
-                            elif self.check_safety:
-                                action_was_checked = True
-                                self._safety_checked_actions += 1
-                                report = self._ensure_checker().validate_candidate(candidate_budgets)
-                                accepted = report.accepted
-                                if not accepted:
-                                    reject_reason = report.reason
-                                    reject_diagnostics = report.diagnostics
-                                    self._safety_rejected_actions += 1
-                                else:
-                                    self._safety_accepted_actions += 1
-                            else:
-                                accepted = True
+                    budget_before=budget_before,
+                    hi_pressure_threshold=float(
+                        self._reward_mode_config.reward_parameters.get("hi_mode_pressure_threshold", 0.8)
+                    ),
+                    lo_pressure_threshold=float(
+                        self._reward_mode_config.reward_parameters.get("lo_pressure_threshold", 0.8)
+                    ),
+                )
+                accepted = evaluation.accepted
+                reject_reason = evaluation.reject_reason
+                updates = dict(evaluation.updates)
+                candidate_budgets = dict(evaluation.candidate_budgets)
+                action_was_checked = evaluation.safety_checked
+                reject_diagnostics = evaluation.reject_diagnostics
+                if action_was_checked:
+                    self._safety_checked_actions += 1
+                if action_was_checked and accepted:
+                    self._safety_accepted_actions += 1
+                elif action_was_checked and not accepted:
+                    self._safety_rejected_actions += 1
                 if accepted:
                     self._engine.apply_budget_updates(updates)
         else:

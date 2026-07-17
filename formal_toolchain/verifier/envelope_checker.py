@@ -6,6 +6,12 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.conformance.time_domain import build_budget_domain
+from formal_toolchain.invariant.safety_polytope import (
+    derive_componentwise_upper,
+    verify_production_rows,
+    vector_satisfies_rows,
+)
 
 
 @dataclass(frozen=True)
@@ -16,80 +22,144 @@ class VerifiedEnvelopeResult:
     certified_envelope: dict[str, Any] | None
 
 
+def _task_names(raw_inputs: Any) -> list[str]:
+    return [str(task.name) for task in raw_inputs.target.ordered_tasks]
+
+
+def _expected_candidate_from_math(raw_inputs: Any, invariant_context_hash: str) -> dict[str, Any]:
+    domain = build_budget_domain(
+        raw_inputs.target.ordered_tasks,
+        raw_inputs.target.provenance.get("budget_by_task"),
+        runtime_config=raw_inputs.target.runtime_config,
+    )
+    domain["context_hash"] = invariant_context_hash
+    adapter = raw_inputs.target.runtime_adapter
+    if adapter is None:
+        raise ValueError("FORMAL_RUNTIME_ADAPTER_MISSING")
+    production_polytope = adapter.export_budget_safety_polytope()
+    verified = verify_production_rows(production_polytope, raw_inputs.target.ordered_tasks)
+    if verified.get("status") != "PASS":
+        raise ValueError("SAFETY_POLYTOPE_PRODUCTION_MISMATCH")
+
+    names = _task_names(raw_inputs)
+    formal_lower = {name: int(domain["tasks"][name]["formal_lower"]) for name in names}
+    candidate_lower = {
+        name: int(domain["tasks"][name]["candidate_positive_lower"])
+        for name in names
+    }
+    hard_upper = {
+        name: int(domain["tasks"][name]["action_hard_upper"])
+        for name in names
+    }
+    derived = derive_componentwise_upper(
+        rows=verified["rows"],
+        task_order=names,
+        candidate_lower=candidate_lower,
+        action_hard_upper=hard_upper,
+    )
+    if derived.get("status") != "PASS":
+        raise ValueError("SAFETY_POLYTOPE_COMPONENTWISE_UPPER_FAILED")
+
+    initial = {name: int(domain["tasks"][name]["initial"]) for name in names}
+    if not vector_satisfies_rows(initial, verified["rows"]):
+        raise ValueError("INITIAL_BUDGET_OUTSIDE_SAFETY_POLYTOPE")
+
+    upper = dict(derived["upper"])
+    return {
+        "status": "PASS",
+        "schema_version": "candidate_envelope_v2",
+        "method": "single_action_safety_polytope_projection",
+        "context_hash": invariant_context_hash,
+        "lower": formal_lower,
+        "candidate_positive_lower": candidate_lower,
+        "upper": upper,
+        "active_release_budget_upper": dict(upper),
+        "action_hard_upper": hard_upper,
+        "safety_polytope_hash": verified["row_hash"],
+        "safety_polytope_rows": verified["rows"],
+        "coordinate_upper_witnesses": derived["witnesses"],
+        "initial_budget": initial,
+        "initial_budget_in_polytope": True,
+        "proof_rule": (
+            "mask_valid_non_noop_implies_candidate_in_polytope; "
+            "polytope_implies_componentwise_envelope"
+        ),
+    }
+
+
 def independently_verify_envelope(*, candidate_envelope: Mapping[str, Any], common_preservation: Mapping[str, Any],
                                   deployed_preservation: Mapping[str, Any], raw_inputs: Any,
                                   policy_regions: Any = None, common_transition_ir: Any = None,
                                   invariant_context_hash: str) -> VerifiedEnvelopeResult:
-    """重新检查 candidate 与两项 preservation，成功后才生成 trusted envelope。"""
-    # 先重算有限预算域，确认 candidate envelope 的数值确实来自当前
-    # verifier target；仅检查 status=PASS 会让任意 upper/lower 被放行。
+    """重新检查 candidate 与两项 preservation，成功后才生成 trusted envelope."""
     try:
-        from formal_toolchain.conformance.time_domain import build_budget_domain
-        domain = build_budget_domain(
-            raw_inputs.target.ordered_tasks,
-            raw_inputs.target.provenance.get("budget_by_task"),
-            runtime_config=raw_inputs.target.runtime_config,
-        )
-        expected_upper = {name: int(row["runtime_deploy_cap"])
-                          for name, row in domain["tasks"].items()}
-        expected_lower = {
-            name: (int(row["code_lower"])
-                   if str(getattr(next(task for task in raw_inputs.target.ordered_tasks
-                                     if str(task.name) == name).criticality,
-                              "value", next(task for task in raw_inputs.target.ordered_tasks
-                                             if str(task.name) == name).criticality)) == "HI"
-                   else 0)
-            for name, row in domain["tasks"].items()
-        }
-    except (KeyError, TypeError, ValueError, StopIteration):
-        return VerifiedEnvelopeResult("FAIL", "UNRESOLVED", "UNRESOLVED", None)
-    if (candidate_envelope.get("schema_version") != "candidate_envelope_v1"
-            or candidate_envelope.get("status") != "PASS"
-            or dict(candidate_envelope.get("upper", {})) != expected_upper
-            or dict(candidate_envelope.get("active_release_budget_upper", {})) != expected_upper
-            or dict(candidate_envelope.get("lower", {})) != expected_lower):
+        expected_candidate = _expected_candidate_from_math(raw_inputs, invariant_context_hash)
+    except (KeyError, TypeError, ValueError):
         return VerifiedEnvelopeResult("FAIL", "UNRESOLVED", "UNRESOLVED", None)
 
-    # preservation 证据还必须携带其约定的语义字段；status 本身不是
-    # preservation proof。字段缺失或被篡改时，fresh verifier 不生成 envelope。
-    if (common_preservation.get("status") != "PASS"
-            or common_preservation.get("schema_version") != "common_transition_preservation_v1"
-            or common_preservation.get("active_release_budget_immutable") is not True
-            or common_preservation.get("controller_budget_write") is not False
-            or common_preservation.get("invariant_checked") is not True):
-        return VerifiedEnvelopeResult("PASS", "FAIL", "UNRESOLVED", None)
-    deployed_fields = ("leaf_count", "budget_state_count", "selected_action_ids",
-                       "first_valid_positions", "noop_state_count", "witnesses")
-    if (deployed_preservation.get("status") != "PASS"
-            or deployed_preservation.get("schema_version") != "deployed_policy_preservation_v1"
-            or any(field not in deployed_preservation for field in deployed_fields)
-            or not isinstance(deployed_preservation.get("leaf_count"), int)
-            or not isinstance(deployed_preservation.get("budget_state_count"), int)
-            or not isinstance(deployed_preservation.get("selected_action_ids"), list)
-            or not isinstance(deployed_preservation.get("first_valid_positions"), list)
-            or len(deployed_preservation["selected_action_ids"]) != len(deployed_preservation["first_valid_positions"])
-            or not isinstance(deployed_preservation.get("noop_state_count"), int)
-            or not isinstance(deployed_preservation.get("witnesses"), list)
-            or deployed_preservation.get("implicit_noop_checked") is not True):
-        return VerifiedEnvelopeResult("PASS", "PASS", "FAIL", None)
-    upper = candidate_envelope.get("upper")
-    lower = candidate_envelope.get("lower")
-    active = candidate_envelope.get("active_release_budget_upper")
-    if not isinstance(upper, Mapping) or not isinstance(lower, Mapping) or not isinstance(active, Mapping) or dict(upper) != dict(active):
+    if sha256_object(dict(candidate_envelope)) != sha256_object(expected_candidate):
         return VerifiedEnvelopeResult("FAIL", "UNRESOLVED", "UNRESOLVED", None)
-    preservation = {"obligation_status": "PASS",
-                    "candidate_hash": sha256_object(dict(candidate_envelope)),
-                    "common_hash": sha256_object(dict(common_preservation)),
-                    "deployed_hash": sha256_object(dict(deployed_preservation)),
-                    "verified_by": "fresh_verifier"}
+
+    if (
+        common_preservation.get("status") != "PASS"
+        or common_preservation.get("schema_version") != "common_transition_preservation_v1"
+        or common_preservation.get("active_release_budget_immutable") is not True
+        or common_preservation.get("controller_budget_write") is not False
+        or common_preservation.get("invariant_checked") is not True
+        or common_preservation.get("candidate_envelope_hash") != sha256_object(expected_candidate)
+        or common_preservation.get("safety_polytope_hash") != expected_candidate.get("safety_polytope_hash")
+    ):
+        return VerifiedEnvelopeResult("PASS", "FAIL", "UNRESOLVED", None)
+
+    deployed_fields = {
+        "universal_state_quantification",
+        "state_enumeration_used",
+        "proof_rule",
+        "candidate_envelope_hash",
+        "mask_fallback_hash",
+        "action_transition_hash",
+        "safety_polytope_hash",
+        "permanently_masked_action_ids",
+        "action_witnesses",
+        "implicit_noop_checked",
+    }
+    if (
+        deployed_preservation.get("status") != "PASS"
+        or deployed_preservation.get("schema_version") != "deployed_policy_preservation_v2"
+        or not deployed_fields <= set(deployed_preservation)
+        or deployed_preservation.get("universal_state_quantification") is not True
+        or deployed_preservation.get("state_enumeration_used") is not False
+        or deployed_preservation.get("implicit_noop_checked") is not True
+        or deployed_preservation.get("candidate_envelope_hash") != sha256_object(expected_candidate)
+        or deployed_preservation.get("safety_polytope_hash") != expected_candidate.get("safety_polytope_hash")
+    ):
+        return VerifiedEnvelopeResult("PASS", "PASS", "FAIL", None)
+
+    preservation = {
+        "obligation_status": "PASS",
+        "candidate_hash": sha256_object(candidate_envelope),
+        "common_hash": sha256_object(common_preservation),
+        "deployed_hash": sha256_object(deployed_preservation),
+        "fresh_process": True,
+    }
     certified = {
-        "schema_version": "certified_envelope_v2", "status": "PASS",
-        "trust_level": "VERIFIED", "candidate_envelope_hash": preservation["candidate_hash"],
-        "common_preservation_certificate_hash": preservation["common_hash"],
-        "deployed_preservation_certificate_hash": preservation["deployed_hash"],
+        "schema_version": "certified_envelope_v3",
+        "status": "PASS",
+        "trust_level": "VERIFIED",
+        "method": expected_candidate.get("method"),
+        "safety_polytope_hash": expected_candidate.get("safety_polytope_hash"),
+        "coordinate_upper_witness_hash": sha256_object(expected_candidate.get("coordinate_upper_witnesses", {})),
+        "candidate_envelope_hash": sha256_object(candidate_envelope),
+        "action_transition_hash": deployed_preservation.get("action_transition_hash"),
+        "mask_fallback_hash": deployed_preservation.get("mask_fallback_hash"),
+        "common_preservation_certificate_hash": sha256_object(common_preservation),
+        "deployed_preservation_certificate_hash": sha256_object(deployed_preservation),
         "preservation_certificate_hash": sha256_object(preservation),
-        "preservation_certificate": preservation, "certificate_context_hash": invariant_context_hash,
-        "lower": dict(lower), "upper": dict(upper), "active_release_budget_upper": dict(active),
+        "preservation_certificate": preservation,
+        "certificate_context_hash": invariant_context_hash,
+        "lower": dict(expected_candidate["lower"]),
+        "upper": dict(expected_candidate["upper"]),
+        "active_release_budget_upper": dict(expected_candidate["active_release_budget_upper"]),
         "verified_by": "fresh_verifier",
     }
     certified["artifact_hash"] = sha256_object(certified)

@@ -16,7 +16,7 @@ REQUIRED_EFFECTIVE_FIELDS = frozenset({
     "capture_debug_events", "agent_period", "action_space", "budget_increase_ratio",
     "budget_decrease_ratio", "budget_floor_ratio", "forbid_decreasing_hi_budgets",
     "mask_detail_mode", "enable_deploy_cap_mask", "deploy_cap_mask_ratio",
-    "deploy_cap_mask_criticality", "observation_mode",
+    "deploy_cap_mask_criticality", "observation_mode", "check_safety",
 })
 
 
@@ -55,7 +55,8 @@ def export_effective_config(runtime_config: Any, environment: Any = None) -> dic
                                                 "mask_detail_mode", "budget_increase_ratio", "budget_decrease_ratio",
                                                 "budget_floor_ratio", "forbid_decreasing_hi_budgets",
                                                 "enable_deploy_cap_mask", "deploy_cap_mask_ratio",
-                                                "deploy_cap_mask_criticality", "capture_trace", "capture_debug_events"}:
+                                                "deploy_cap_mask_criticality", "capture_trace", "capture_debug_events",
+                                                "check_safety"}:
                     previous = records.get(name, {})
                     chain = list(previous.get("source_chain", ["runtime_config"])) + ["environment_wrapper"]
                     records[name] = {"value": value, "origin": "environment_wrapper", "source_object": type(environment).__name__,

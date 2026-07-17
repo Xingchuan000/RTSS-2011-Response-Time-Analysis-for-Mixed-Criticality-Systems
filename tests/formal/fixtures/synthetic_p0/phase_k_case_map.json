@@ -1,6 +1,6 @@
 {
   "schema_version": "phase_k_transition_path_map_v2_cfg_ir",
-  "source_hash": "effcae01e4d75e0fea2107194c7f273dc0e9521cb24e095602cc756ec1fb3588",
+  "source_hash": "304e050f67bb26efd21bfaab101e63bb626071fcdaeb65a8a7cf7bfac990cd0a",
   "paths": {
     "boot/preclosed_0": {
       "path_id": "boot/preclosed_0",

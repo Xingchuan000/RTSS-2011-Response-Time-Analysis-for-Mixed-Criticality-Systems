@@ -29,8 +29,21 @@ def _certify_envelope_from_verifier(candidate: Mapping[str, Any], common: Mappin
     preservation = {"obligation_status": "PASS", "candidate_hash": sha256_object(candidate),
                     "common_hash": sha256_object(common), "deployed_hash": sha256_object(deployed),
                     "fresh_process": True}
-    return {"status": "PASS", "schema_version": "certified_envelope_v1",
-            "candidate_envelope_hash": sha256_object(candidate), "context_hash": context_hash,
-            "preservation_certificate_hash": sha256_object(preservation),
-            "preservation_certificate": preservation, "lower": dict(candidate["lower"]),
-            "upper": dict(candidate["upper"]), "active_release_budget_upper": dict(candidate["active_release_budget_upper"])}
+    candidate_hash = sha256_object(candidate)
+    coordinate_upper_witness_hash = sha256_object(candidate.get("coordinate_upper_witnesses", {}))
+    return {
+        "status": "PASS",
+        "schema_version": "certified_envelope_v3",
+        "method": candidate.get("method"),
+        "safety_polytope_hash": candidate.get("safety_polytope_hash"),
+        "coordinate_upper_witness_hash": coordinate_upper_witness_hash,
+        "action_transition_hash": deployed.get("action_transition_hash"),
+        "mask_fallback_hash": deployed.get("mask_fallback_hash"),
+        "candidate_envelope_hash": candidate_hash,
+        "context_hash": context_hash,
+        "preservation_certificate_hash": sha256_object(preservation),
+        "preservation_certificate": preservation,
+        "lower": dict(candidate["lower"]),
+        "upper": dict(candidate["upper"]),
+        "active_release_budget_upper": dict(candidate["active_release_budget_upper"]),
+    }

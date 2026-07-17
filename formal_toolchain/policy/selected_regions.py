@@ -27,3 +27,18 @@ def selected_action_regions(guards: dict[int, Sequence[dict[str, Any]]], ranking
                                       "all_actions_invalid": list(ranking)},
                         "implicit_noop_predicate": True})
     return regions
+
+
+def selected_action_regions_v2(
+    guards: dict[int, Sequence[dict[str, Any]]],
+    rankings: dict[int, Sequence[int]],
+    valid_reasons: dict[int, Sequence[str]] | None = None,
+) -> dict[str, Any]:
+    regions = selected_action_regions(guards, rankings, valid_reasons)
+    return {
+        "status": "PASS",
+        "schema_version": "selected_action_regions_v2",
+        "universal_over_policy_inputs": True,
+        "regions": regions,
+        "state_enumeration_used": False,
+    }

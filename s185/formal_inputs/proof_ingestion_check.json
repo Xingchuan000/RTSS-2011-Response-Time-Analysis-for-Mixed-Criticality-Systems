@@ -1,0 +1,22 @@
+{
+  "schema_version": "s185_formal_inputs_ingestion_check_v1",
+  "authoritative_target_missing_resolved": true,
+  "seed_import_status": "PASS",
+  "target_factory_constructed": true,
+  "candidate_compiler_completed": true,
+  "full_verifier_completed_within_test_window": false,
+  "first_actual_blockers": [
+    {
+      "obligation": "BOOT_INITIALIZATION",
+      "status": "FAIL",
+      "code": "BOOT_INITIALIZATION_CONTRACT_FAILED",
+      "detail": "adapter reads state after environment.reset processed t=0 arrivals"
+    },
+    {
+      "obligation": "CANDIDATE_ENVELOPE",
+      "status": "UNRESOLVED",
+      "code": "FINITE_DOMAIN_TOO_LARGE",
+      "state_count": 5129622227014718695527589632000
+    }
+  ]
+}

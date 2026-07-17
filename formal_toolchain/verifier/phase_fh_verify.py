@@ -21,10 +21,12 @@ from formal_toolchain.invariant.certified_envelope import _certify_envelope_from
 from formal_toolchain.adapters.target_factory import build_target
 from formal_toolchain.adapters.tree_artifact import inspect_tree_artifact
 from formal_toolchain.core.hashing import sha256_file
+from formal_toolchain.policy.actions import build_action_transition_table
 from formal_toolchain.policy.tree import validate_tree_and_leaf_partition
-from formal_toolchain.policy.mask_fallback import select_first_valid
+from formal_toolchain.policy.mask_fallback import build_parametric_mask_fallback_certificate, select_first_valid
 from formal_toolchain.adapters.synthetic_context import build_synthetic_context
-from formal_toolchain.adapters.synthetic_policy import build_runtime_adapter, build_transition_witness
+from formal_toolchain.adapters.synthetic_policy import build_transition_witness
+from formal_toolchain.adapters.synthetic_runtime_adapter import SyntheticP0RuntimeAdapter
 from formal_toolchain.verifier.artifact_verifier import verify_registry_certificate
 from amc_py.viper.integer_tree import IntegerTreeModel, IntegerTreeNode, IntegerTreeLeaf
 
@@ -52,9 +54,12 @@ def verify_payload(payload: dict) -> dict:
     if tree_result.get("status") != "PASS":
         return {"status": "UNRESOLVED", "failure": {"code": "TREE_RECOMPUTE_UNRESOLVED", "detail": tree_result}}
     tasks = target.ordered_tasks
-    actions = build_budget_action_space(tasks, action_space=target.runtime_config.action_space,
+    actions = build_budget_action_space(
+        tasks,
+        action_space=target.runtime_config.action_space,
         budget_increase_ratio=target.runtime_config.budget_increase_ratio,
-        budget_decrease_ratio=target.runtime_config.budget_decrease_ratio)
+        budget_decrease_ratio=target.runtime_config.budget_decrease_ratio,
+    )
     domain = __import__("formal_toolchain.conformance.time_domain", fromlist=["build_budget_domain"]).build_budget_domain(
         tasks, target.provenance["budget_by_task"], runtime_config=target.runtime_config)
     domain["context_hash"] = "pending"
@@ -62,52 +67,58 @@ def verify_payload(payload: dict) -> dict:
     domain["context_hash"] = context_hash
     if payload.get("context_hash") != context_hash:
         return {"status": "FAIL", "failure": {"code": "CONTEXT_RECOMPUTE_MISMATCH"}}
-    candidate = synthesize_candidate_envelope(domain, actions, tasks, context_hash=context_hash)
-    if sha256_object(candidate) != payload.get("candidate_hash"):
+    adapter = SyntheticP0RuntimeAdapter(target)
+    enumerated_candidate = synthesize_candidate_envelope(
+        domain, actions, tasks, context_hash=context_hash, runtime_adapter=adapter)
+    structural_candidate = synthesize_candidate_envelope(
+        domain, actions, tasks, context_hash=context_hash, runtime_adapter=adapter)
+    if enumerated_candidate.get("upper") != structural_candidate.get("upper"):
+        return {"status": "FAIL", "failure": {"code": "CANDIDATE_UPPER_MISMATCH"}}
+    if sha256_object(structural_candidate) != payload.get("candidate_hash"):
         return {"status": "FAIL", "failure": {"code": "CANDIDATE_RECOMPUTE_MISMATCH"}}
     if payload.get("domain_hash") != sha256_object(domain):
         return {"status": "FAIL", "failure": {"code": "DOMAIN_RECOMPUTE_MISMATCH"}}
     transitions = build_transition_witness(domain, tasks)
-    common = check_common_transition_preservation(candidate, transitions=transitions)
-    adapter = build_runtime_adapter(target, actions)
-    finite_domains = [tuple(int(value) for value in row["finite_integer_domain"])
-                      for row in domain["tasks"].values()]
+    common = check_common_transition_preservation(structural_candidate, transitions=transitions)
+    action_cert = build_action_transition_table(actions, tasks, domain["tasks"])
     rankings = {int(leaf.node_id): tuple(int(action_id) for action_id in leaf.action_ranking) for leaf in tree.leaves}
-    selected_rows = []
-    for values in product(*finite_domains):
-        state = {"budgets": {task.name: value for task, value in zip(tasks, values)},
-                 "initial_budgets": {name: int(row["initial"]) for name, row in domain["tasks"].items()},
-                 "floors": {name: int(row["runtime_floor"]) for name, row in domain["tasks"].items()},
-                 "caps": {name: int(row["runtime_deploy_cap"]) for name, row in domain["tasks"].items()},
-                 "config": target.runtime_config}
-        runtime = adapter["evaluate"](state)
-        for leaf, ranking in rankings.items():
-            first = select_first_valid(ranking, runtime["mask"], action_dim=len(actions))
-            for index, action in enumerate(actions):
-                selected_rows.append({"leaf_id": leaf, "rank_position": index, "action_id": action.action_id,
-                    "valid": action.action_id == first, "mask_reasons": runtime["reasons"],
-                    "ranking": ranking, "mask": runtime["mask"], "runtime_state": state,
-                    "action_definitions": inventory["action_definitions"]})
-    selected = tuple(selected_rows)
-    deployed = check_deployed_policy_preservation(candidate, actions, tasks, leaves=(0, 1),
-        selected_cases=selected)
-    if sha256_object(common) != payload.get("common_hash") or sha256_object(deployed) != payload.get("deployed_hash"):
+    mask_contract = adapter.export_mask_contract()
+    mask = build_parametric_mask_fallback_certificate(rankings=rankings, action_dim=len(actions), mask_contract=mask_contract)
+    deployed_enumerated = check_deployed_policy_preservation(
+        enumerated_candidate,
+        actions,
+        tasks,
+        mask_fallback_certificate=mask,
+        action_transition_certificate=action_cert,
+        mask_contract=mask_contract,
+    )
+    deployed_structural = check_deployed_policy_preservation(
+        structural_candidate,
+        actions,
+        tasks,
+        mask_fallback_certificate=mask,
+        action_transition_certificate=action_cert,
+        mask_contract=mask_contract,
+    )
+    if deployed_enumerated.get("status") != "PASS" or deployed_structural.get("status") != "PASS":
+        return {"status": "FAIL", "failure": {"code": "DEPLOYED_RECOMPUTE_FAILED"}}
+    if sha256_object(common) != payload.get("common_hash") or sha256_object(deployed_structural) != payload.get("deployed_hash"):
         return {"status": "FAIL", "failure": {"code": "PRESERVATION_RECOMPUTE_MISMATCH"}}
-    attestation = {"fresh_process": True, "candidate_hash": sha256_object(candidate),
-                   "common_hash": sha256_object(common), "deployed_hash": sha256_object(deployed)}
-    certified = _certify_envelope_from_verifier(candidate, common, deployed, context_hash=context_hash,
+    attestation = {"fresh_process": True, "candidate_hash": sha256_object(structural_candidate),
+                   "common_hash": sha256_object(common), "deployed_hash": sha256_object(deployed_structural)}
+    certified = _certify_envelope_from_verifier(structural_candidate, common, deployed_structural, context_hash=context_hash,
                                                 verifier_attestation=attestation)
     registry_path = Path(__file__).parents[1] / "specs/obligation_registry.json"
     cert_context_inputs = {"fixture": "synthetic_p0", "phase": "F-H", "context_hash": context_hash}
     cert_context_hash = sha256_object(cert_context_inputs)
     predecessor_certificates = {}
-    for obligation_id, source in (("CANDIDATE_ENVELOPE", candidate),
+    for obligation_id, source in (("CANDIDATE_ENVELOPE", structural_candidate),
                                   ("COMMON_TRANSITION_PRESERVATION", common),
                                   ("BUDGET_DOMAIN", domain),
                                   ("EXECUTABLE_POLICY_SEMANTICS", {"context_hash": context_hash}),
-                                  ("LO_BUDGET_UPPER_INVARIANT", candidate),
-                                  ("HI_BUDGET_LOWER_INVARIANT", candidate),
-                                  ("ACTIVE_RELEASE_BUDGET_INVARIANT", candidate)):
+                                  ("LO_BUDGET_UPPER_INVARIANT", structural_candidate),
+                                  ("HI_BUDGET_LOWER_INVARIANT", structural_candidate),
+                                  ("ACTIVE_RELEASE_BUDGET_INVARIANT", structural_candidate)):
         predecessor_certificates[obligation_id] = {"artifact_schema_version": "synthetic_phase_f_v1",
             "obligation_id": obligation_id, "obligation_status": "PASS", "certificate_context_hash": cert_context_hash,
             "direct_predecessor_hashes": {}, "checker_id": "phase_fh_fresh_verifier", "checker_version": "1",
@@ -118,7 +129,7 @@ def verify_payload(payload: dict) -> dict:
         "direct_predecessor_hashes": {name: sha256_object(predecessor_certificates[name]) for name in
             ("EXECUTABLE_POLICY_SEMANTICS", "CANDIDATE_ENVELOPE", "BUDGET_DOMAIN", "COMMON_TRANSITION_PRESERVATION")},
         "checker_id": "phase_fh_fresh_verifier", "checker_version": "1",
-        "inputs": {"fixture": "synthetic_p0"}, "witness": {"deployed_hash": sha256_object(deployed)},
+        "inputs": {"fixture": "synthetic_p0"}, "witness": {"deployed_hash": sha256_object(deployed_structural)},
         "evidence": [{"status": "PASS"}], "failure": None}
     certified_certificate = {"artifact_schema_version": "synthetic_phase_fh_certificate_v1",
         "obligation_id": "CERTIFIED_ENVELOPE", "obligation_status": "PASS", "certificate_context_hash": cert_context_hash,
@@ -127,15 +138,15 @@ def verify_payload(payload: dict) -> dict:
              "ACTIVE_RELEASE_BUDGET_INVARIANT")},
         "checker_id": "phase_fh_fresh_verifier", "checker_version": "1",
         "inputs": {"fixture": "synthetic_p0", "context_hash": context_hash},
-        "witness": {"candidate_hash": sha256_object(candidate), "common_hash": sha256_object(common),
-                    "deployed_hash": sha256_object(deployed)}, "evidence": [{"fresh_process": True}], "failure": None}
+        "witness": {"candidate_hash": sha256_object(structural_candidate), "common_hash": sha256_object(common),
+                    "deployed_hash": sha256_object(deployed_structural)}, "evidence": [{"fresh_process": True}], "failure": None}
     checked = verify_registry_certificate(certified_certificate, registry_path=registry_path,
         predecessor_certificates=predecessor_certificates, context_inputs=cert_context_inputs)
     if checked.get("status") != "PASS":
         return {"status": "FAIL", "failure": {"code": "CERTIFICATE_SCHEMA_INVALID", "detail": checked}}
     certified["preservation_certificate"] = certified_certificate
     certified["preservation_certificate_hash"] = sha256_object(certified_certificate)
-    return {"status": "PASS", "fresh_process": True, "candidate_hash": sha256_object(candidate),
+    return {"status": "PASS", "fresh_process": True, "candidate_hash": sha256_object(structural_candidate),
             "certified_hash": sha256_object(certified), "certified": certified}
 
 

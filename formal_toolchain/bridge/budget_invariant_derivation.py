@@ -35,9 +35,12 @@ def _certificate_passed(value: Mapping[str, Any]) -> bool:
         return value.get("obligation_status") == "PASS"
     if value.get("schema_version") in (
         "candidate_envelope_v1",
+        "candidate_envelope_v2",
         "common_transition_preservation_v1",
         "deployed_policy_preservation_v1",
+        "deployed_policy_preservation_v2",
         "certified_envelope_v1",
+        "certified_envelope_v3",
     ):
         return value.get("status") == "PASS"
     if "z3_proof_result" in value:
@@ -158,12 +161,17 @@ def derive_budget_invariant_evidence(
     certified_certificate: Mapping[str, Any],
 ) -> dict[str, dict[str, Any]]:
     # ---- 校验输入 ----
-    _require_pass(candidate, name="CANDIDATE_ENVELOPE", schema_version="candidate_envelope_v1")
+    _require_pass(candidate, name="CANDIDATE_ENVELOPE")
+    if candidate.get("schema_version") not in {"candidate_envelope_v1", "candidate_envelope_v2"}:
+        raise ValueError("CANDIDATE_ENVELOPE_SCHEMA_MISMATCH: expected candidate_envelope_v1/v2")
     _require_pass(common, name="COMMON_TRANSITION_PRESERVATION",
                   schema_version="common_transition_preservation_v1")
-    _require_pass(deployed, name="DEPLOYED_POLICY_PRESERVATION",
-                  schema_version="deployed_policy_preservation_v1")
-    _require_pass(certified_envelope, name="CERTIFIED_ENVELOPE", schema_version="certified_envelope_v1")
+    _require_pass(deployed, name="DEPLOYED_POLICY_PRESERVATION")
+    if deployed.get("schema_version") not in {"deployed_policy_preservation_v1", "deployed_policy_preservation_v2"}:
+        raise ValueError("DEPLOYED_POLICY_PRESERVATION_SCHEMA_MISMATCH: expected v1/v2")
+    _require_pass(certified_envelope, name="CERTIFIED_ENVELOPE")
+    if certified_envelope.get("schema_version") not in {"certified_envelope_v1", "certified_envelope_v3"}:
+        raise ValueError("CERTIFIED_ENVELOPE_SCHEMA_MISMATCH: expected v1/v3")
 
     if not _certificate_passed(certified_certificate):
         raise ValueError("FH_ARTIFACT_PROVENANCE_MISMATCH: certified_certificate not PASS")

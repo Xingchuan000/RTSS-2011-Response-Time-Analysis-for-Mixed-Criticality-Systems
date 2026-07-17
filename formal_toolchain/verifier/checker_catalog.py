@@ -34,9 +34,13 @@ from formal_toolchain.invariant.certified_envelope import _certify_envelope_from
 from formal_toolchain.invariant.common_preservation import check_common_transition_preservation
 from formal_toolchain.invariant.deployed_preservation import check_deployed_policy_preservation
 from formal_toolchain.policy.actions import build_action_transition_table
-from formal_toolchain.policy.mask_fallback import build_mask_fallback_certificate, select_first_valid
+from formal_toolchain.policy.mask_fallback import (
+    build_mask_fallback_certificate,
+    build_parametric_mask_fallback_certificate,
+    select_first_valid,
+)
 from formal_toolchain.policy.quantization import deterministic_samples, replay_quantize, verify_against_production
-from formal_toolchain.policy.selected_regions import selected_action_regions
+from formal_toolchain.policy.selected_regions import selected_action_regions, selected_action_regions_v2
 from formal_toolchain.policy.tree import validate_tree_and_leaf_partition
 from formal_toolchain.policy.tree_io import integer_tree_from_dict
 from formal_toolchain.reference.rta_production import protected_hi_rta
@@ -88,6 +92,10 @@ def _finish(obligation_id: str, result: Mapping[str, Any], *, expected_context_h
     if status not in {"PASS", "FAIL", "UNRESOLVED"}:
         return _raw_inputs_result(obligation_id, code="SEMANTIC_CHECK_STATUS_INVALID")
     witness = dict(result.get("witness", result)) if isinstance(result, Mapping) else {}
+    # Diagnostic/production-safe canonicalization: fresh verifier witnesses may
+    # contain recipe/config floats. Proof objects require canonical decimal strings.
+    from formal_toolchain.verifier.replay_inputs import _proof_safe
+    witness = _proof_safe(witness)
     if expected_context_hash is not None:
         witness["fresh_context_hash"] = expected_context_hash
     if isinstance(candidate_evidence, Mapping):
@@ -196,7 +204,74 @@ def _candidate_envelope(raw_inputs: Any, *, context_hash: str | None) -> dict[st
     if context_hash is None:
         raise ValueError("CANDIDATE_CONTEXT_MISSING")
     domain["context_hash"] = context_hash
-    return synthesize_candidate_envelope(domain, actions, target.ordered_tasks, context_hash=context_hash)
+    adapter = _runtime_adapter(raw_inputs)
+    return synthesize_candidate_envelope(
+        domain,
+        actions,
+        target.ordered_tasks,
+        context_hash=context_hash,
+        runtime_adapter=adapter,
+    )
+
+
+def _fresh_structural_envelope_pipeline(
+    raw_inputs: Any,
+    *,
+    context_hash: str,
+) -> dict[str, Any]:
+    target = _target(raw_inputs)
+    tree = _tree_model(raw_inputs)
+    actions = _actions(raw_inputs)
+    domain = _domain(raw_inputs)
+    domain["context_hash"] = context_hash
+    adapter = _runtime_adapter(raw_inputs)
+
+    action_cert = build_action_transition_table(
+        actions, target.ordered_tasks, domain["tasks"]
+    )
+    candidate = synthesize_candidate_envelope(
+        domain,
+        actions,
+        target.ordered_tasks,
+        context_hash=context_hash,
+        runtime_adapter=adapter,
+    )
+    transitions = _transition_witness(raw_inputs, domain)
+    common = check_common_transition_preservation(
+        candidate,
+        transitions=transitions,
+    )
+
+    rankings = {
+        int(leaf.node_id): tuple(int(a) for a in leaf.action_ranking)
+        for leaf in tree.leaves
+    }
+    mask_contract = adapter.export_mask_contract()
+    mask = build_parametric_mask_fallback_certificate(
+        rankings=rankings,
+        action_dim=len(actions),
+        mask_contract=mask_contract,
+    )
+    regions = selected_action_regions_v2(_leaf_guards(tree), rankings)
+    deployed = check_deployed_policy_preservation(
+        candidate,
+        actions,
+        target.ordered_tasks,
+        mask_fallback_certificate=mask,
+        action_transition_certificate=action_cert,
+        mask_contract=mask_contract,
+    )
+    return {
+        "domain": domain,
+        "action": action_cert,
+        "candidate": candidate,
+        "common": common,
+        "mask": mask,
+        "regions": regions,
+        "deployed": deployed,
+        "mask_contract": mask_contract,
+        "transitions": transitions,
+    }
 
 
 def _transition_witness(raw_inputs: Any, domain: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -814,38 +889,10 @@ def _verify_mask_fallback(*, raw_inputs=None, candidate_evidence=None, expected_
     if raw_inputs is None:
         return _raw_inputs_result("MASK_FALLBACK", code="OBLIGATION_EVIDENCE_MISSING")
     try:
-        target = _target(raw_inputs)
-        tree = _tree_model(raw_inputs)
-        fixed_data = _fixed_point_config(raw_inputs)
-        actions = _actions(raw_inputs)
-        domain = _domain(raw_inputs)
-        samples = _policy_samples(raw_inputs, tree, fixed_data, actions, domain)
-        if samples.get("status") != "PASS":
-            return _finish("MASK_FALLBACK", samples, expected_context_hash=expected_context_hash, candidate_evidence=candidate_evidence)
-        adapter = _runtime_adapter(raw_inputs)
-        result = build_mask_fallback_certificate(
-            samples["rankings"], samples["masks"], action_dim=len(actions),
-            runtime_reasons=samples["reasons"], synthetic_cases=[
-                {
-                    "state": {
-                        "budgets": dict(state),
-                        "criticality": {str(task.name): str(getattr(task.criticality, "value", task.criticality)) for task in target.ordered_tasks},
-                        "floor": {str(task.name): int(domain["tasks"][str(task.name)]["runtime_floor"]) for task in target.ordered_tasks},
-                        "floors": {str(task.name): int(domain["tasks"][str(task.name)]["runtime_floor"]) for task in target.ordered_tasks},
-                        "caps": {str(task.name): int(domain["tasks"][str(task.name)]["runtime_deploy_cap"]) for task in target.ordered_tasks},
-                    },
-                    "action_definitions": list(_inventory(raw_inputs)["action_definitions"]),
-                    "forbid_decreasing_hi_budgets": True,
-                }
-                for state in samples["policy_states"]
-            ],
-            runtime_mask_evaluator=lambda state, definitions, forbid: adapter.valid_action_mask(
-                adapter.build_runtime_state_from_budget_vector(state["budgets"])
-            ),
-            formal_mask_evaluator=lambda state, definitions, forbid: adapter.valid_action_mask(
-                adapter.build_runtime_state_from_budget_vector(state["budgets"])
-            ),
-        )
+        context_hash = _expected_context(raw_inputs, "MASK_FALLBACK", expected_context_hash)
+        if context_hash is None:
+            return _raw_inputs_result("MASK_FALLBACK", code="CANDIDATE_CONTEXT_MISSING")
+        result = _fresh_structural_envelope_pipeline(raw_inputs, context_hash=context_hash)["mask"]
     except (KeyError, TypeError, ValueError) as exc:
         result = {"status": "FAIL", "route": "POLICY_CONTRACT_VIOLATION",
                   "failure": {"code": "MASK_FALLBACK_FAILED", "detail": str(exc)}}
@@ -856,20 +903,21 @@ def _verify_selected_action_regions(*, raw_inputs=None, candidate_evidence=None,
     if raw_inputs is None:
         return _raw_inputs_result("SELECTED_ACTION_REGIONS", code="OBLIGATION_EVIDENCE_MISSING")
     try:
+        context_hash = _expected_context(raw_inputs, "SELECTED_ACTION_REGIONS", expected_context_hash)
+        if context_hash is None:
+            return _raw_inputs_result("SELECTED_ACTION_REGIONS", code="CANDIDATE_CONTEXT_MISSING")
         tree = _tree_model(raw_inputs)
-        target = _target(raw_inputs)
-        fixed_data = _fixed_point_config(raw_inputs)
-        actions = _actions(raw_inputs)
-        domain = _domain(raw_inputs)
-        samples = _policy_samples(raw_inputs, tree, fixed_data, actions, domain)
-        if samples.get("status") != "PASS":
-            return _finish("SELECTED_ACTION_REGIONS", samples, expected_context_hash=expected_context_hash, candidate_evidence=candidate_evidence)
-        guards = _leaf_guards(tree)
-        ranking_map = {int(leaf.node_id): tuple(int(action_id) for action_id in leaf.action_ranking) for leaf in tree.leaves}
-        regions = selected_action_regions(guards, ranking_map)
-        result = {"status": "PASS", "schema_version": "selected_action_regions_v1",
-                  "regions": regions, "leaf_count": len(guards), "action_count": len(actions),
-                  "implicit_noop_region_count": sum(1 for region in regions if region.get("implicit_noop_predicate"))}
+        regions = _fresh_structural_envelope_pipeline(raw_inputs, context_hash=context_hash)["regions"]
+        result = {
+            "status": "PASS",
+            "schema_version": "selected_action_regions_v2",
+            "regions": regions["regions"],
+            "leaf_count": len(_leaf_guards(tree)),
+            "action_count": len(_actions(raw_inputs)),
+            "implicit_noop_region_count": sum(1 for region in regions["regions"] if region.get("implicit_noop_predicate")),
+            "universal_over_policy_inputs": True,
+            "state_enumeration_used": False,
+        }
     except (KeyError, TypeError, ValueError) as exc:
         result = {"status": "FAIL", "route": "POLICY_CONTRACT_VIOLATION",
                   "failure": {"code": "SELECTED_ACTION_REGIONS_FAILED", "detail": str(exc)}}
@@ -880,16 +928,45 @@ def _verify_executable_policy_semantics(*, raw_inputs=None, candidate_evidence=N
     if raw_inputs is None:
         return _raw_inputs_result("EXECUTABLE_POLICY_SEMANTICS", code="OBLIGATION_EVIDENCE_MISSING")
     try:
+        context_hash = _expected_context(raw_inputs, "EXECUTABLE_POLICY_SEMANTICS", expected_context_hash)
+        if context_hash is None:
+            return _raw_inputs_result("EXECUTABLE_POLICY_SEMANTICS", code="CANDIDATE_CONTEXT_MISSING")
+        pipeline = _fresh_structural_envelope_pipeline(raw_inputs, context_hash=context_hash)
+        target = _target(raw_inputs)
         tree = _tree_model(raw_inputs)
         fixed_data = _fixed_point_config(raw_inputs)
-        actions = _actions(raw_inputs)
-        domain = _domain(raw_inputs)
-        samples = _policy_samples(raw_inputs, tree, fixed_data, actions, domain)
-        if samples.get("status") != "PASS":
-            return _finish("EXECUTABLE_POLICY_SEMANTICS", samples, expected_context_hash=expected_context_hash, candidate_evidence=candidate_evidence)
-        result = {"status": "PASS", "schema_version": "executable_policy_semantics_v1",
-                  "states": samples["executable"], "selected_case_count": len(samples["selected_cases"]),
-                  "budget_domain_hash": sha256_object(domain)}
+        adapter = _runtime_adapter(raw_inputs)
+        names = [str(task.name) for task in target.ordered_tasks]
+        sample_vectors = [
+            tuple(int(pipeline["domain"]["tasks"][name]["initial"]) for name in names),
+            tuple(int(pipeline["domain"]["tasks"][name]["action_hard_upper"]) for name in names),
+        ]
+        policy_states = []
+        for vector in sample_vectors:
+            state = {
+                "budgets": dict(zip(names, vector)),
+                "initial_budgets": {name: int(pipeline["domain"]["tasks"][name]["initial"]) for name in names},
+                "floors": {name: int(pipeline["domain"]["tasks"][name]["runtime_floor"]) for name in names},
+                "caps": {name: int(pipeline["domain"]["tasks"][name]["action_hard_upper"]) for name in names},
+                "config": export_formal_target_config(target),
+            }
+            runtime_state = adapter.build_runtime_state_from_budget_vector(state["budgets"])
+            runtime_mask, _ = adapter.valid_action_mask(runtime_state)
+            observation = adapter.extract_observation(runtime_state)
+            quantized = tuple(replay_quantize(value, fixed_data)[0] for value in observation)
+            leaf_id = int(evaluate_integer_tree(tree, quantized).leaf_id)
+            policy_states.append({
+                "state": state,
+                "leaf_id": leaf_id,
+                "mask": list(runtime_mask),
+            })
+        result = {
+            "status": "PASS",
+            "schema_version": "executable_policy_semantics_v1",
+            "states": policy_states,
+            "selected_case_count": len(policy_states),
+            "budget_domain_hash": sha256_object(pipeline["domain"]),
+        }
     except (KeyError, TypeError, ValueError) as exc:
         result = {"status": "FAIL", "route": "POLICY_CONTRACT_VIOLATION",
                   "failure": {"code": "EXECUTABLE_POLICY_SEMANTICS_FAILED", "detail": str(exc)}}
@@ -903,12 +980,8 @@ def _verify_candidate_envelope(*, raw_inputs=None, candidate_evidence=None, expe
     if context_hash is None:
         return _raw_inputs_result("CANDIDATE_ENVELOPE", code="CANDIDATE_CONTEXT_MISSING")
     try:
-        target = _target(raw_inputs)
-        actions = _actions(raw_inputs)
-        domain = _domain(raw_inputs)
-        domain["context_hash"] = context_hash
-        candidate = synthesize_candidate_envelope(domain, actions, target.ordered_tasks, context_hash=context_hash)
-        result = candidate
+        pipeline = _fresh_structural_envelope_pipeline(raw_inputs, context_hash=context_hash)
+        result = pipeline["candidate"]
     except (KeyError, TypeError, ValueError) as exc:
         result = {"status": "FAIL", "route": "POLICY_CONTRACT_VIOLATION",
                   "failure": {"code": "CANDIDATE_ENVELOPE_FAILED", "detail": str(exc)}}
@@ -922,15 +995,8 @@ def _verify_common_transition_preservation(*, raw_inputs=None, candidate_evidenc
     if context_hash is None:
         return _raw_inputs_result("COMMON_TRANSITION_PRESERVATION", code="CANDIDATE_CONTEXT_MISSING")
     try:
-        target = _target(raw_inputs)
-        actions = _actions(raw_inputs)
-        domain = _domain(raw_inputs)
-        domain["context_hash"] = context_hash
-        candidate = synthesize_candidate_envelope(domain, actions, target.ordered_tasks, context_hash=context_hash)
-        if candidate.get("status") != "PASS":
-            result = candidate
-        else:
-            result = check_common_transition_preservation(candidate, transitions=_transition_witness(raw_inputs, domain))
+        pipeline = _fresh_structural_envelope_pipeline(raw_inputs, context_hash=context_hash)
+        result = pipeline["common"]
     except (KeyError, TypeError, ValueError) as exc:
         result = {"status": "FAIL", "route": "POLICY_CONTRACT_VIOLATION",
                   "failure": {"code": "COMMON_TRANSITION_PRESERVATION_FAILED", "detail": str(exc)}}
@@ -944,25 +1010,8 @@ def _verify_deployed_policy_preservation(*, raw_inputs=None, candidate_evidence=
     if context_hash is None:
         return _raw_inputs_result("DEPLOYED_POLICY_PRESERVATION", code="CANDIDATE_CONTEXT_MISSING")
     try:
-        target = _target(raw_inputs)
-        tree = _tree_model(raw_inputs)
-        fixed_data = _fixed_point_config(raw_inputs)
-        actions = _actions(raw_inputs)
-        domain = _domain(raw_inputs)
-        domain["context_hash"] = context_hash
-        candidate = synthesize_candidate_envelope(domain, actions, target.ordered_tasks, context_hash=context_hash)
-        if candidate.get("status") != "PASS":
-            result = candidate
-        else:
-            samples = _policy_samples(raw_inputs, tree, fixed_data, actions, domain)
-            if samples.get("status") != "PASS":
-                result = samples
-            else:
-                result = check_deployed_policy_preservation(
-                    candidate, actions, target.ordered_tasks,
-                    leaves=tuple(int(leaf.node_id) for leaf in tree.leaves),
-                    selected_cases=samples["selected_cases"],
-                )
+        pipeline = _fresh_structural_envelope_pipeline(raw_inputs, context_hash=context_hash)
+        result = pipeline["deployed"]
     except (KeyError, TypeError, ValueError) as exc:
         result = {"status": "FAIL", "route": "POLICY_CONTRACT_VIOLATION",
                   "failure": {"code": "DEPLOYED_POLICY_PRESERVATION_FAILED", "detail": str(exc)}}
@@ -976,36 +1025,28 @@ def _verify_certified_envelope(*, raw_inputs=None, candidate_evidence=None, expe
     if context_hash is None:
         return _raw_inputs_result("CERTIFIED_ENVELOPE", code="CANDIDATE_CONTEXT_MISSING")
     try:
-        target = _target(raw_inputs)
-        tree = _tree_model(raw_inputs)
-        fixed_data = _fixed_point_config(raw_inputs)
-        actions = _actions(raw_inputs)
-        domain = _domain(raw_inputs)
-        domain["context_hash"] = context_hash
-        candidate = synthesize_candidate_envelope(domain, actions, target.ordered_tasks, context_hash=context_hash)
-        if candidate.get("status") != "PASS":
-            result = candidate
+        pipeline = _fresh_structural_envelope_pipeline(raw_inputs, context_hash=context_hash)
+        candidate = pipeline["candidate"]
+        common = pipeline["common"]
+        deployed = pipeline["deployed"]
+        if any(item.get("status") != "PASS" for item in (candidate, common, deployed)):
+            result = {"status": "UNRESOLVED", "route": "UNRESOLVED",
+                      "failure": {"code": "CERTIFIED_ENVELOPE_PRECONDITION_FAILED",
+                                  "common": common, "deployed": deployed}}
         else:
-            transitions = _transition_witness(raw_inputs, domain)
-            common = check_common_transition_preservation(candidate, transitions=transitions)
-            samples = _policy_samples(raw_inputs, tree, fixed_data, actions, domain)
-            deployed = (check_deployed_policy_preservation(
-                candidate, actions, target.ordered_tasks,
-                leaves=tuple(int(leaf.node_id) for leaf in tree.leaves),
-                selected_cases=samples["selected_cases"],
-            ) if common.get("status") == "PASS" and samples.get("status") == "PASS"
-            else {"status": "UNRESOLVED", "route": "UNRESOLVED",
-                  "failure": {"code": "DEPLOYED_POLICY_PRESERVATION_UNRESOLVED"}})
-            if common.get("status") != "PASS" or deployed.get("status") != "PASS":
-                result = {"status": "UNRESOLVED", "route": "UNRESOLVED",
-                          "failure": {"code": "CERTIFIED_ENVELOPE_PRECONDITION_FAILED",
-                                      "common": common, "deployed": deployed}}
-            else:
-                attestation = {"fresh_process": True, "candidate_hash": sha256_object(candidate),
-                               "common_hash": sha256_object(common), "deployed_hash": sha256_object(deployed)}
-                result = _certify_envelope_from_verifier(candidate, common, deployed,
-                                                         context_hash=context_hash,
-                                                         verifier_attestation=attestation)
+            attestation = {
+                "fresh_process": True,
+                "candidate_hash": sha256_object(candidate),
+                "common_hash": sha256_object(common),
+                "deployed_hash": sha256_object(deployed),
+            }
+            result = _certify_envelope_from_verifier(
+                candidate,
+                common,
+                deployed,
+                context_hash=context_hash,
+                verifier_attestation=attestation,
+            )
     except (KeyError, TypeError, ValueError) as exc:
         result = {"status": "FAIL", "route": "POLICY_CONTRACT_VIOLATION",
                   "failure": {"code": "CERTIFIED_ENVELOPE_FAILED", "detail": str(exc)}}
@@ -1020,33 +1061,36 @@ def _verify_budget_invariant(obligation_id: str, *, raw_inputs=None, candidate_e
     if context_hash is None:
         return _raw_inputs_result(obligation_id, code="CANDIDATE_CONTEXT_MISSING")
     try:
-        target = _target(raw_inputs)
-        tree = _tree_model(raw_inputs)
-        fixed_data = _fixed_point_config(raw_inputs)
-        actions = _actions(raw_inputs)
-        domain = _domain(raw_inputs)
-        domain["context_hash"] = context_hash
-        candidate = synthesize_candidate_envelope(domain, actions, target.ordered_tasks, context_hash=context_hash)
-        transitions = _transition_witness(raw_inputs, domain)
-        common = check_common_transition_preservation(candidate, transitions=transitions)
-        samples = _policy_samples(raw_inputs, tree, fixed_data, actions, domain)
-        deployed = check_deployed_policy_preservation(
-            candidate, actions, target.ordered_tasks,
-            leaves=tuple(int(leaf.node_id) for leaf in tree.leaves),
-            selected_cases=samples["selected_cases"],
-        )
+        pipeline = _fresh_structural_envelope_pipeline(raw_inputs, context_hash=context_hash)
+        candidate = pipeline["candidate"]
+        common = pipeline["common"]
+        deployed = pipeline["deployed"]
         if any(item.get("status") != "PASS" for item in (candidate, common, deployed)):
             result = {"status": "UNRESOLVED", "route": "UNRESOLVED",
                       "failure": {"code": "BUDGET_INVARIANT_PRECONDITION_FAILED"}}
         else:
             cert = _certify_envelope_from_verifier(
-                candidate, common, deployed, context_hash=context_hash,
-                verifier_attestation={"fresh_process": True, "candidate_hash": sha256_object(candidate),
-                                      "common_hash": sha256_object(common), "deployed_hash": sha256_object(deployed)},
+                candidate,
+                common,
+                deployed,
+                context_hash=context_hash,
+                verifier_attestation={
+                    "fresh_process": True,
+                    "candidate_hash": sha256_object(candidate),
+                    "common_hash": sha256_object(common),
+                    "deployed_hash": sha256_object(deployed),
+                },
             )
-            reference_taskset = {"tasks": [{"name": str(task.name),
-                                            "criticality": str(getattr(task.criticality, "value", task.criticality))}
-                                           for task in target.ordered_tasks]}
+            target = _target(raw_inputs)
+            reference_taskset = {
+                "tasks": [
+                    {
+                        "name": str(task.name),
+                        "criticality": str(getattr(task.criticality, "value", task.criticality)),
+                    }
+                    for task in target.ordered_tasks
+                ]
+            }
             cert_certificate = {
                 "artifact_schema_version": "synthetic_phase_fh_certificate_v1",
                 "obligation_id": "CERTIFIED_ENVELOPE",

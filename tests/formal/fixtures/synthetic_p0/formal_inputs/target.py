@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from amc_py.models import Criticality, Task
 from amc_py.runtime_models import RuntimeSemantics
+from formal_toolchain.adapters.synthetic_runtime_adapter import SyntheticP0RuntimeAdapter
 from formal_toolchain.adapters.target_factory import FormalTarget
 
 
@@ -85,7 +86,7 @@ def build_target(**_kwargs):
             "hi_upper_bound": True,
             "normal_abnormal_boundary": True,
         }
-    return FormalTarget(
+    target = FormalTarget(
         ordered_tasks=tasks,
         runtime_config=config,
         environment=environment,
@@ -97,12 +98,29 @@ def build_target(**_kwargs):
             "fixture": "synthetic_p0",
             "taskset_seed": None,
             "budget_by_task": {
-                "SYN_HI_0": {"initial_runtime_budget": 1, "budget_floor": 1, "budget_cap": 2},
-                "SYN_LO": {"initial_runtime_budget": 2, "budget_floor": 2, "budget_cap": 2},
-                "SYN_HI_1": {"initial_runtime_budget": 2, "budget_floor": 2, "budget_cap": 3},
+                "SYN_HI_0": {
+                    "initial_runtime_budget": 1,
+                    "budget_floor": 1,
+                    "action_hard_upper": 2,
+                    "source_base_budget": 2,
+                },
+                "SYN_LO": {
+                    "initial_runtime_budget": 1,
+                    "budget_floor": 1,
+                    "action_hard_upper": 2,
+                    "source_base_budget": 1,
+                },
+                "SYN_HI_1": {
+                    "initial_runtime_budget": 2,
+                    "budget_floor": 2,
+                    "action_hard_upper": 3,
+                    "source_base_budget": 3,
+                },
             },
         },
     )
+    object.__setattr__(target, "runtime_adapter", SyntheticP0RuntimeAdapter(target))
+    return target
 
 
 __all__ = ["build_target"]

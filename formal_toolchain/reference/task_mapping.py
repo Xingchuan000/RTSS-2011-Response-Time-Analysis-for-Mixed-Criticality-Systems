@@ -73,8 +73,15 @@ def _certified_upper(envelope: Mapping[str, Any], task_name: str, *, allow_unver
     is_candidate_view = envelope.get("trust_level") == "CANDIDATE_UNVERIFIED" and envelope.get("not_a_certified_envelope") is True
     if is_candidate_view and not allow_unverified_candidate:
         raise ValueError("candidate envelope 不能作为 trusted reference 输入")
-    if not is_candidate_view and (envelope.get("schema_version") not in {"certified_envelope_v1", "certified_envelope_v2"} or envelope.get("status") != "PASS"):
-        raise ValueError("certified envelope 必须是 PASS 的 certified_envelope_v1 或 certified_envelope_v2")
+    if not is_candidate_view and (envelope.get("schema_version") not in {"certified_envelope_v1", "certified_envelope_v2", "certified_envelope_v3"} or envelope.get("status") != "PASS"):
+        raise ValueError("certified envelope 必须是 PASS 的 certified_envelope_v1/v2/v3")
+    if envelope.get("schema_version") == "certified_envelope_v3":
+        if envelope.get("method") != "single_action_safety_polytope_projection":
+            raise ValueError("certified envelope v3 method invalid")
+        required = ("safety_polytope_hash", "coordinate_upper_witness_hash",
+                    "action_transition_hash", "mask_fallback_hash")
+        if any(not isinstance(envelope.get(field), str) for field in required):
+            raise ValueError("certified envelope v3 缺少 structural binding")
     preservation = envelope.get("preservation_certificate")
     preservation_hash = envelope.get("preservation_certificate_hash")
     if is_candidate_view:

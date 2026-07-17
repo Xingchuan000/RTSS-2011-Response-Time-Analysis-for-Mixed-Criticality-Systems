@@ -33,10 +33,17 @@ def _integer_independent(value: Any, field: str) -> int:
 
 
 def _certified_upper(envelope: Mapping[str, Any], name: str) -> int:
-    if envelope.get("schema_version") not in {"certified_envelope_v1", "certified_envelope_v2"} or envelope.get("status") != "PASS":
+    if envelope.get("schema_version") not in {"certified_envelope_v1", "certified_envelope_v2", "certified_envelope_v3"} or envelope.get("status") != "PASS":
         raise ValueError("certified envelope status/schema invalid")
     if envelope.get("schema_version") == "certified_envelope_v2" and envelope.get("trust_level") not in {None, "VERIFIED"}:
         raise ValueError("certified envelope trust level invalid")
+    if envelope.get("schema_version") == "certified_envelope_v3":
+        if envelope.get("method") != "single_action_safety_polytope_projection":
+            raise ValueError("certified envelope method invalid")
+        required = ("safety_polytope_hash", "coordinate_upper_witness_hash",
+                    "action_transition_hash", "mask_fallback_hash")
+        if any(not isinstance(envelope.get(field), str) for field in required):
+            raise ValueError("certified envelope structural binding missing")
     preservation = envelope.get("preservation_certificate")
     if not isinstance(preservation, Mapping) or preservation.get("obligation_status") != "PASS":
         raise ValueError("preservation certificate invalid")

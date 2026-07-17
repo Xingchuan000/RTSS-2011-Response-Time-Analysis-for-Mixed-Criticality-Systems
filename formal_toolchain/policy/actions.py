@@ -10,6 +10,7 @@ from amc_py.budget_runtime import BudgetState
 from amc_py.rl.actions import apply_budget_action_candidate
 from amc_py.models import Criticality
 from amc_py.rl.actions import BudgetAction
+from formal_toolchain.core.hashing import sha256_object
 
 
 def replay_action(action: BudgetAction, budgets: Mapping[str, int], tasks: Sequence[Any]) -> dict[str, int]:
@@ -31,36 +32,94 @@ def replay_action(action: BudgetAction, budgets: Mapping[str, int], tasks: Seque
     return result
 
 
+def _affected_task_indices(action: BudgetAction) -> tuple[int, ...]:
+    indices: list[int] = []
+    if action.increase_idx is not None:
+        indices.append(int(action.increase_idx))
+    indices.extend(int(index) for index in action.decrease_indices)
+    return tuple(dict.fromkeys(indices))
+
+
 def build_action_transition_table(actions: Sequence[BudgetAction], tasks: Sequence[Any],
                                   budget_domain: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
-    rows = []
+    task_names = [str(task.name) for task in tasks]
+    initial = {name: int(budget_domain[name]["initial"]) for name in task_names}
+    summaries: list[dict[str, Any]] = []
     for action in actions:
         if action.is_constraint_guided_pair or action.is_residual_ranked:
-            raise ValueError("Phase G03 只接受已绑定的 s185 single action subset")
-        for task_name, info in budget_domain.items():
-            # s185 第一轮只激活 single action，因此让每个被选任务遍历完整
-            # finite domain；其它任务固定为已认证 initial，不用随机抽样代替穷举。
-            values = info.get("finite_integer_domain")
-            if not isinstance(values, list):
-                raise ValueError(f"{task_name} 缺少 finite integer domain")
-            for probe_value in values:
-                budgets = {name: int(row["initial"]) for name, row in budget_domain.items()}
-                budgets[task_name] = int(probe_value)
-                before = dict(budgets)
-                after = replay_action(action, budgets, tasks)
-                production_updates = apply_budget_action_candidate(
-                    action=action, budget_state=BudgetState(dict(budgets)), ordered_tasks=tasks)
-                if production_updates != after:
-                    return {"status": "FAIL", "route": "POLICY_CONTRACT_VIOLATION",
-                            "failure": {"code": "ACTION_TRANSITION_PRODUCTION_MISMATCH",
-                                        "action_id": action.action_id, "budget_before": before,
-                                        "formal": after, "production": production_updates}}
-                rows.append({"action_id": action.action_id, "probe_task": task_name,
-                         "budget_before": before, "updates": after,
-                         "increase_ratio_hex": float(action.increase_ratio).hex(),
-                         "decrease_ratio_hex": float(action.decrease_ratio).hex()})
-    return {"status": "PASS", "schema_version": "action_transition_table_v1",
-            "action_count": len(actions), "rows": rows, "semantic": "production_action_primitive"}
+            raise ValueError("Phase G03 structural backend 只接受 single action")
+
+        affected = _affected_task_indices(action)
+        if action.is_noop:
+            affected = ()
+        if len(affected) > 1:
+            raise ValueError("single backend 遇到多目标 action")
+
+        digest_rows: list[dict[str, Any]] = []
+        checked = 0
+        min_after: int | None = None
+        max_after: int | None = None
+        if not affected:
+            probes = [None]
+        else:
+            index = affected[0]
+            name = task_names[index]
+            interval = budget_domain[name]["integer_interval"]
+            probes = range(int(interval["lower"]), int(interval["upper"]) + 1)
+
+        for probe in probes:
+            budgets = dict(initial)
+            if affected:
+                name = task_names[affected[0]]
+                budgets[name] = int(probe)
+
+            formal = replay_action(action, budgets, tasks)
+            production = apply_budget_action_candidate(
+                action=action,
+                budget_state=BudgetState(dict(budgets)),
+                ordered_tasks=tasks,
+            )
+            if production != formal:
+                return {
+                    "status": "FAIL",
+                    "route": "POLICY_CONTRACT_VIOLATION",
+                    "failure": {
+                        "code": "ACTION_TRANSITION_PRODUCTION_MISMATCH",
+                        "action_id": int(action.action_id),
+                        "probe": probe,
+                        "formal": formal,
+                        "production": production,
+                    },
+                }
+
+            digest_rows.append({"before": probe, "updates": formal})
+            checked += 1
+            for value in formal.values():
+                min_after = value if min_after is None else min(min_after, value)
+                max_after = value if max_after is None else max(max_after, value)
+
+        summaries.append(
+            {
+                "action_id": int(action.action_id),
+                "affected_task_indices": list(affected),
+                "checked_value_count": checked,
+                "transition_digest": sha256_object(digest_rows),
+                "min_after": min_after,
+                "max_after": max_after,
+                "increase_ratio_hex": float(action.increase_ratio).hex(),
+                "decrease_ratio_hex": float(action.decrease_ratio).hex(),
+                "frame_condition": [
+                    name for idx, name in enumerate(task_names) if idx not in affected
+                ],
+            }
+        )
+    return {
+        "status": "PASS",
+        "schema_version": "action_transition_table_v2",
+        "action_count": len(actions),
+        "actions": summaries,
+        "semantic": "production_action_primitive_1d_complete_replay",
+    }
 
 
 def verify_action_against_production(action: BudgetAction, budgets: Mapping[str, int], tasks: Sequence[Any],

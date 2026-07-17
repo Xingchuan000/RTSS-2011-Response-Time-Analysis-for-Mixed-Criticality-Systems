@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -18,26 +19,44 @@ def build_budget_domain(tasks: Sequence[Any], metadata: Mapping[str, Mapping[str
     if metadata is None:
         return {"status": "UNRESOLVED", "route": "MODEL_CONFORMANCE_FAILED",
                 "failure": {"code": "BUDGET_PROVENANCE_MISSING"}}
-    metadata = metadata
     domains: dict[str, Any] = {}
     for task in tasks:
         info = metadata.get(str(task.name))
         if info is None:
             raise ValueError(f"缺少 {task.name} 的 budget provenance")
+        criticality = str(getattr(task.criticality, "value", task.criticality))
         initial = _int(info.get("initial_runtime_budget"), f"{task.name}.initial_runtime_budget", positive=True)
         floor = _int(info.get("budget_floor", 1), f"{task.name}.budget_floor")
-        upper = _int(info.get("budget_cap", task.c_hi), f"{task.name}.budget_cap", positive=True)
-        if floor < 0 or not floor <= initial <= upper or upper < task.c_hi:
+        action_hard_upper = _int(
+            info.get(
+                "action_hard_upper",
+                task.c_hi if criticality == "HI" else task.deadline,
+            ),
+            f"{task.name}.action_hard_upper",
+            positive=True,
+        )
+        if not floor <= initial <= action_hard_upper:
             raise ValueError(f"{task.name} 的有限预算域非法")
-        domains[str(task.name)] = {"initial": initial, "code_lower": task.c_lo,
-            "code_upper": task.c_hi, "runtime_floor": floor, "runtime_deploy_cap": upper,
-            # 证明域按计划覆盖 LO 的 0..U；runtime floor 作为单独约束保留，
-            # 不能把它偷偷当作 formal lower bound 从而放松/改变不变量。
-            "finite_integer_domain": list(range(task.c_lo if str(getattr(task.criticality, "value", task.criticality)) == "HI" else 0,
-                                                 upper + 1)),
-            "active_release_budget_domain": list(range(task.c_lo if str(getattr(task.criticality, "value", task.criticality)) == "HI" else 0,
-                                                       upper + 1)),
-            "provenance": dict(info)}
+        formal_lower = int(task.c_lo) if criticality == "HI" else 0
+        candidate_positive_lower = int(task.c_lo) if criticality == "HI" else 1
+        domains[str(task.name)] = {
+            "initial": initial,
+            "code_lower": int(task.c_lo),
+            "code_upper": int(task.c_hi),
+            "runtime_floor": floor,
+            "formal_lower": formal_lower,
+            "candidate_positive_lower": candidate_positive_lower,
+            "action_hard_upper": action_hard_upper,
+            "integer_interval": {
+                "lower": formal_lower,
+                "upper": action_hard_upper,
+            },
+            "active_release_budget_interval": {
+                "lower": formal_lower,
+                "upper": action_hard_upper,
+            },
+            "provenance": dict(info),
+        }
     if runtime_config is None:
         return {"status": "UNRESOLVED", "route": "MODEL_CONFORMANCE_FAILED",
                 "failure": {"code": "EFFECTIVE_RUNTIME_CONFIG_MISSING"}}
@@ -47,8 +66,20 @@ def build_budget_domain(tasks: Sequence[Any], metadata: Mapping[str, Mapping[str
                 "failure": {"code": "PROCESSOR_OVERHEAD_UNVERIFIED"}}
     if overhead != 0:
         raise ValueError("P0 不接受非零 processor overhead")
-    return {"status": "PASS", "schema_version": "budget_domain_v1", "integer_arithmetic": "python_unbounded_int",
+    return {"status": "PASS", "schema_version": "budget_domain_v2", "integer_arithmetic": "python_unbounded_int",
             "processor_overhead": 0, "tasks": domains}
+
+
+def materialize_finite_interval(
+    row: Mapping[str, Any], *, max_values: int
+) -> list[int] | None:
+    interval = row["integer_interval"]
+    lower = int(interval["lower"])
+    upper = int(interval["upper"])
+    count = upper - lower + 1
+    if count > max_values:
+        return None
+    return list(range(lower, upper + 1))
 
 
 def check_time_domain(tasks: Sequence[Any], *, overhead: int = 0,

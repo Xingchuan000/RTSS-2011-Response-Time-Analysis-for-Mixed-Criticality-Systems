@@ -15,14 +15,15 @@ def canonical_task(task: Any, *, priority_index: int, budget_info: Mapping[str, 
     info = dict(budget_info or {})
     initial = int(info.get("initial_runtime_budget", task.c_lo))
     floor = int(info.get("budget_floor", 1))
-    cap = int(info.get("budget_cap", task.c_hi))
+    action_hard_upper = int(info.get("action_hard_upper", task.c_hi))
+    source_base_budget = int(info.get("source_base_budget", task.c_hi))
     record = {"priority_index": int(priority_index), "name": str(task.name),
               "criticality": getattr(task.criticality, "value", str(task.criticality)),
               "period": int(task.period), "deadline": int(task.deadline),
               "code_c_lo": int(task.c_lo), "code_c_hi": int(task.c_hi),
               "initial_runtime_budget": initial, "budget_floor": floor,
-              "budget_cap": cap}
-    if not (floor <= initial <= cap and cap >= int(task.c_hi)):
+              "action_hard_upper": action_hard_upper, "source_base_budget": source_base_budget}
+    if not (floor <= initial <= action_hard_upper and action_hard_upper >= source_base_budget):
         raise ValueError(f"task {task.name} 的 budget 区间无效")
     return record
 
