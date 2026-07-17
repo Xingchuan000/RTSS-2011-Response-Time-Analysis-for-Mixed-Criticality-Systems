@@ -1,0 +1,59 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "SCHEDULER_MODEL",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.checker_catalog.SCHEDULER_MODEL",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "aea93568470ec8852316d69fd90df22b34bcfaebc8b4931c41511aa8cccea365",
+    "fresh_process": true
+  },
+  "witness": {
+    "status": "PASS",
+    "schema_version": "scheduler_model_conformance_v1",
+    "processor_count": 1,
+    "integer_tick": true,
+    "fully_preemptive": true,
+    "work_conserving": true,
+    "overhead": 0,
+    "tasks": [
+      {
+        "name": "SYN_HI_0",
+        "period": 20,
+        "deadline": 20,
+        "code_c_lo": 1,
+        "code_c_hi": 2
+      },
+      {
+        "name": "SYN_LO",
+        "period": 30,
+        "deadline": 2,
+        "code_c_lo": 1,
+        "code_c_hi": 1
+      },
+      {
+        "name": "SYN_HI_1",
+        "period": 50,
+        "deadline": 50,
+        "code_c_lo": 2,
+        "code_c_hi": 3
+      }
+    ],
+    "claims": [
+      "ready_nonempty_runs_highest_priority",
+      "tick_boundary_preemption"
+    ],
+    "fresh_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+    "candidate_status_compared": "PASS"
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "774cabc67b156fea1cbb9e4227422f3423e118cf11543037784676e8689b59e2"
+}

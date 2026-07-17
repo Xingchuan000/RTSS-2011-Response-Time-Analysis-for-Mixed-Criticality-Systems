@@ -62,13 +62,16 @@ def derive_feature_task_order(feature_names: Sequence[str]) -> list[str]:
             result.append(task_name)
     if any(count <= 0 for count in counts.values()):
         raise ValueError("feature task slot 不得为空")
-    # 合成 profile 的 global feature 必须全部位于 task feature 之后；混入 task
-    # block 后的 Txx 或出现不符合 G. 约定的尾部字段都拒绝。
+    # global feature 必须全部位于 task feature 之后；混入 task block 后的
+    # Txx 都拒绝。仓库现有真实 s185 provider 使用 ``global.`` 前缀，早期
+    # synthetic artifact 使用 ``G.`` 前缀；两者都必须完整位于固定尾部。
     task_positions = [index for index, name in enumerate(feature_names) if pattern.fullmatch(str(name))]
     if task_positions and task_positions != list(range(max(task_positions) + 1)):
         raise ValueError("task feature block 必须位于 global feature 之前")
-    if any(not str(name).startswith("G.") for name in feature_names[max(task_positions, default=-1) + 1:]):
-        raise ValueError("global feature 必须使用 G. 前缀并位于固定尾部")
+    global_features = feature_names[max(task_positions, default=-1) + 1:]
+    if any(not (str(name).startswith("G.") or str(name).startswith("global."))
+           for name in global_features):
+        raise ValueError("global feature 必须使用 G. 或 global. 前缀并位于固定尾部")
     if slots and (any(count != 10 for count in counts.values()) or
                   len(feature_names) - len(task_positions) != 8):
         raise ValueError("P0 feature profile 要求每个 task 10 个 feature、global 8 个 feature")

@@ -1,0 +1,254 @@
+{
+  "schema_version": "effective_runtime_config_v1",
+  "fields": {
+    "end_time": {
+      "value": 8000000,
+      "origin": "runtime_config",
+      "source_object": "RuntimeConfig",
+      "final_origin": "runtime_config",
+      "source_attribute": "end_time",
+      "source_chain": [
+        "runtime_config"
+      ]
+    },
+    "jobs_per_task": {
+      "value": 5,
+      "origin": "runtime_config",
+      "source_object": "RuntimeConfig",
+      "final_origin": "runtime_config",
+      "source_attribute": "jobs_per_task",
+      "source_chain": [
+        "runtime_config"
+      ]
+    },
+    "hyperperiod_limit": {
+      "value": 100000,
+      "origin": "runtime_config",
+      "source_object": "RuntimeConfig",
+      "final_origin": "runtime_config",
+      "source_attribute": "hyperperiod_limit",
+      "source_chain": [
+        "runtime_config"
+      ]
+    },
+    "capture_trace": {
+      "value": true,
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "capture_trace",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "capture_debug_events": {
+      "value": false,
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "capture_debug_events",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "stop_at_first_miss": {
+      "value": false,
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "stop_at_first_miss",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "drop_lo_jobs_on_hi_switch": {
+      "value": false,
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "drop_lo_jobs_on_hi_switch",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "semantics": {
+      "value": "C_AMC_SEM",
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "semantics",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "record_dropped_lo_releases": {
+      "value": false,
+      "origin": "runtime_config",
+      "source_object": "RuntimeConfig",
+      "final_origin": "runtime_config",
+      "source_attribute": "record_dropped_lo_releases",
+      "source_chain": [
+        "runtime_config"
+      ]
+    },
+    "c_amc_sem_lo_degradation_ratio": {
+      "value": "0.5",
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "c_amc_sem_lo_degradation_ratio",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "c_amc_sem_primary_on_switch_time": {
+      "value": true,
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "c_amc_sem_primary_on_switch_time",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "processor_overhead": {
+      "value": 0,
+      "origin": "runtime_config",
+      "source_object": "RuntimeConfig",
+      "final_origin": "runtime_config",
+      "source_attribute": "processor_overhead",
+      "source_chain": [
+        "runtime_config"
+      ]
+    },
+    "agent_period": {
+      "value": 25000,
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "agent_period",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "action_space": {
+      "value": "single",
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "action_space",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "budget_increase_ratio": {
+      "value": "0.02",
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "budget_increase_ratio",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "budget_decrease_ratio": {
+      "value": "0.02",
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "budget_decrease_ratio",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "budget_floor_ratio": {
+      "value": "0.90000000000000002",
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "budget_floor_ratio",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "forbid_decreasing_hi_budgets": {
+      "value": true,
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "forbid_decreasing_hi_budgets",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "mask_detail_mode": {
+      "value": "full",
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "mask_detail_mode",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "enable_deploy_cap_mask": {
+      "value": true,
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "enable_deploy_cap_mask",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "deploy_cap_mask_ratio": {
+      "value": "4",
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "deploy_cap_mask_ratio",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "deploy_cap_mask_criticality": {
+      "value": "lo",
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "deploy_cap_mask_criticality",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    },
+    "observation_mode": {
+      "value": "v11_full_10d",
+      "origin": "environment_wrapper",
+      "source_object": "SimpleNamespace",
+      "final_origin": "environment_wrapper",
+      "source_attribute": "observation_mode",
+      "source_chain": [
+        "runtime_config",
+        "environment_wrapper"
+      ]
+    }
+  },
+  "status": "PASS"
+}

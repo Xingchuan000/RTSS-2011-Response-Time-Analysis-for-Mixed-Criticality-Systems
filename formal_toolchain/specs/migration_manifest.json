@@ -1,7 +1,10 @@
 {
   "schema_version": "migration_manifest_v1",
   "registry_schema_version": "obligation_registry_v3",
-  "breaking_change_requires": ["schema_version", "migration_id"],
-  "migration_id": "phase-ijk-seventh-round-semantic-binding-v1",
-  "registry_fingerprint": "1e849a756defe14f9f254614c2bdca5901a37e8e6440438b4c573c9a55cc9a72"
+  "breaking_change_requires": [
+    "schema_version",
+    "migration_id"
+  ],
+  "migration_id": "r6-registry-route-and-verifier-sync",
+  "registry_fingerprint": "41802f94a031f99032f540d9ebb1c807632c8bf13473c7b8b07d9568253771de"
 }

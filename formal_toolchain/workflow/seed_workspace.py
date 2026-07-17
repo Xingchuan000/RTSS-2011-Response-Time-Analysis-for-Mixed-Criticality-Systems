@@ -10,6 +10,34 @@ from formal_toolchain.adapters.tree_artifact import REQUIRED_FILES
 from formal_toolchain.core.hashing import sha256_file
 
 from formal_toolchain.adapters.seed_directory import ALLOWED_VARIANTS
+from formal_toolchain.core.errors import UnresolvedInputError
+
+
+def normalize_target_manifest(data: dict[str, Any]) -> dict[str, Any]:
+    """把新旧 manifest 规范化为统一 target identity。"""
+
+    if data.get("schema_version") == "formal_target_manifest_v1":
+        required = {"target_id", "target_kind", "authoritative_input_mode"}
+        if not required <= set(data):
+            raise ValueError("formal_target_manifest 缺少 target identity 字段")
+        return dict(data)
+    if data.get("fixture_id") == "synthetic_p0" and data.get("fixture_kind") == "SYNTHETIC_P0":
+        return {"schema_version": "formal_target_manifest_v1", "target_id": "synthetic_p0",
+                "target_kind": "SYNTHETIC_P0", "taskset_seed": 0,
+                "authoritative_input_mode": "FROZEN_FORMAL_INPUTS",
+                "formal_inputs_version": "synthetic_p0_v1"}
+    raise ValueError("legacy target manifest 不受支持")
+
+
+def resolve_target_manifest(seed_dir: Path) -> tuple[Path, dict[str, Any]]:
+    """优先使用 formal_target_manifest，旧 synthetic fixture 仅兼容解析。"""
+
+    preferred = Path(seed_dir) / "formal_target_manifest.json"
+    legacy = Path(seed_dir) / "fixture_manifest.json"
+    path = preferred if preferred.is_file() else legacy
+    if not path.is_file():
+        raise ValueError("seed 缺少 formal_target_manifest.json")
+    return path, normalize_target_manifest(json.loads(path.read_text(encoding="utf-8")))
 
 
 def workspace_path(seed_dir: Path, output_dir: Path | None = None) -> Path:
@@ -60,13 +88,19 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
     # factory 仍按 recipe 从 code_root 重新导入，避免复制代码成为第二份实现。
     formal_inputs = seed_dir / "formal_inputs"
     if not formal_inputs.is_dir():
-        raise ValueError("canonical seed 缺少 formal_inputs 目录")
+        raise UnresolvedInputError(
+            "AUTHORITATIVE_TARGET_MISSING",
+            "canonical seed 缺少 authoritative formal_inputs 目录")
     copied_inputs = output_dir / "request" / "inputs" / "formal_inputs"
     shutil.copytree(formal_inputs, copied_inputs, symlinks=False)
-    fixture_manifest = seed_dir / "fixture_manifest.json"
-    if not fixture_manifest.is_file():
-        raise ValueError("canonical seed 缺少 fixture_manifest.json")
-    shutil.copy2(fixture_manifest, output_dir / "request" / "inputs" / "fixture_manifest.json")
+    # Phase K case map 是源码 AST/CFG 的权威绑定输入。只有 seed 自身提供
+    # 该文件时才复制；缺失时 compiler 必须保留 UNRESOLVED，不能现场猜测
+    # path 或把旧 map 当成当前源码的证明。
+    phase_k_case_map = seed_dir / "phase_k_case_map.json"
+    if phase_k_case_map.is_file():
+        shutil.copy2(phase_k_case_map, copied_inputs / phase_k_case_map.name)
+    manifest_path, target_manifest = resolve_target_manifest(seed_dir)
+    shutil.copy2(manifest_path, output_dir / "request" / "inputs" / "formal_target_manifest.json")
     recipe_path = Path(target_recipe) if target_recipe else formal_inputs / "target_recipe.json"
     if not recipe_path.is_file():
         raise ValueError("未找到 authoritative target recipe")
@@ -74,16 +108,23 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
     if not isinstance(recipe, dict) or not isinstance(recipe.get("factory"), str):
         raise ValueError("target_recipe.factory 非法")
     metadata = json.loads((source_variant / "metadata.json").read_text(encoding="utf-8"))
-    fixture = json.loads(fixture_manifest.read_text(encoding="utf-8"))
+    metadata_seed = metadata.get("taskset_seed")
+    declared_seed = target_manifest.get("taskset_seed", metadata_seed)
+    if declared_seed is None:
+        declared_seed = 0
+    if metadata_seed is not None and int(metadata_seed) != int(declared_seed):
+        raise ValueError("TARGET_SEED_IDENTITY_MISMATCH")
     request = {
-        "schema_version": "proof_request_v1",
+        "schema_version": "proof_request_v2",
         "profile": "P0",
         "primary_claim": "DEPLOYED_HI_SAFETY",
-        "taskset_seed": int(metadata.get("taskset_seed", 0) or 0),
-        "fixture_id": fixture.get("fixture_id"),
-        "fixture_kind": fixture.get("fixture_kind"),
+        "target_id": target_manifest["target_id"],
+        "target_kind": target_manifest["target_kind"],
+        "taskset_seed": int(declared_seed),
         "target_recipe": {"factory": recipe["factory"], "kwargs": dict(recipe.get("kwargs", {}))},
         "tree_artifact_dir": "request/inputs/tree_artifact",
+        "formal_inputs_dir": "request/inputs/formal_inputs",
+        "tree_variant": tree_variant,
         "source_root": ".",
         "expected_tree_file_sha256": sha256_file(copied_tree / "integer_tree.json"),
         "optional_claims": [],
@@ -97,10 +138,10 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
     (output_dir / "request" / "target_recipe.json").write_text(
         json.dumps(request["target_recipe"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     diagnostic = {"schema_version": "seed_import_diagnostic_v1", "status": "PASS",
-                  "fixture_id": fixture.get("fixture_id"), "fixture_kind": fixture.get("fixture_kind"),
+                  "target_id": target_manifest.get("target_id"), "target_kind": target_manifest.get("target_kind"),
                   "tree_variant": tree_variant, "source_root": "code_root",
                   "external_seed_paths_read": [], "hout_used": False}
     (output_dir / "seed_import_diagnostic.json").write_text(
         json.dumps(diagnostic, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return {"workspace": output_dir, "request": output_dir / "request" / "proof_request.json",
-            "fixture_id": fixture.get("fixture_id"), "fixture_kind": fixture.get("fixture_kind")}
+            "target_id": target_manifest.get("target_id"), "target_kind": target_manifest.get("target_kind")}

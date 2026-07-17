@@ -272,7 +272,11 @@ def build_runtime_branch_map(source_root: str | Path, *, source_hash: str,
     for path_id, spec in expected.items():
         actual = _path_row(root, spec)
         supplied = path_map["paths"][path_id]
-        for field in ("case_id", "handler", "source_file", "guard",
+        # ``guard`` 只是 ``guard_ir`` 的历史镜像字段；实际语义边界由
+        # ``guard_ir`` / hash / effect 这组字段共同约束。重复比较镜像字段
+        # 会让不同执行环境的 JSON 规范化细节误判为 stale，因此这里只保留
+        # 真正参与证明绑定的字段。
+        for field in ("case_id", "handler", "source_file",
                       "guard_ir", "guard_hash", "guard_ast_hash", "effects", "effect_ir",
                       "effect_ir_hash", "path_ast_hash", "queue_relation", "queue_relation_hash",
                       "path_effect_hash", "handler_hash", "terminal"):

@@ -1,0 +1,50 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "BATCH_CLOSURE",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+  "direct_predecessor_hashes": {
+    "BOOT_INITIALIZATION": "810afd5c875fe40b1704e37db6515416272e2cfe67f74cc4fcfc23cb639b2f6f"
+  },
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "BATCH_CLOSURE",
+    "evidence": {
+      "obligation_id": "BATCH_CLOSURE",
+      "status": "PASS",
+      "route": null,
+      "code": null,
+      "checker_input_hashes": {
+        "source_manifest_hash": "addd9057971b4d15a42880a023c95fd4054266c9677178565256c586c2462382",
+        "context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4"
+      },
+      "witness": {
+        "result": {
+          "status": "PASS",
+          "schema_version": "batch_closure_v1",
+          "phase_dag_acyclic": true,
+          "controller_invisible": true,
+          "post_closure": true,
+          "zero_time_stutter": false,
+          "time_progress": true,
+          "same_timestamp_batch_finite": true,
+          "batch_reaches_preclosed_state": true
+        }
+      }
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "2ae6f1f87672fa136f41f5a710aa401b8356d7924b4d6b89b04c4fa2eccccba9"
+}

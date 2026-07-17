@@ -1,0 +1,39 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "CLAIM_AGGREGATION",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "f5b07a14b674f5843c5be792f9a378dabbef161ec3f76fc25d17381b49b86b80",
+  "direct_predecessor_hashes": {
+    "REGISTRY_META_SCHEMA": "3255d36833c54b13de02b5203bab40182422d0d1cb7ccb02d39b40b19e8c9e6e"
+  },
+  "checker_id": "formal_toolchain.verifier.checker_catalog.CLAIM_AGGREGATION",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "2f5ebfb3c87d48a1028a1567ce9bbcb941c690457125870f489c0ec52aac9a90",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "evidence_key": "CLAIM_AGGREGATION",
+      "evidence": {
+        "obligation_id": "CLAIM_AGGREGATION",
+        "status": "UNRESOLVED",
+        "route": "UNRESOLVED",
+        "code": "CANDIDATE_EVIDENCE_BUILDER_NOT_IMPLEMENTED",
+        "checker_input_hashes": {},
+        "witness": {}
+      }
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "PREDECESSOR_NOT_PASS"
+  },
+  "artifact_hash": "8f0e810cc6be52612a28a2bf02dfc981b5be3894d1ecf2b06a0133dfe03a15f9"
+}

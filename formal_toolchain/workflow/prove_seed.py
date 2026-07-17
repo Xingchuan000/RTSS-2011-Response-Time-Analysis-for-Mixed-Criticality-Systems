@@ -10,6 +10,7 @@ from typing import Any
 
 from formal_toolchain.workflow.seed_workspace import freeze_seed_workspace
 from formal_toolchain.workflow.subprocess_runner import run_cli
+from formal_toolchain.core.errors import FormalWorkflowError
 
 
 EXIT_CODES = {"DEPLOYED_TREE_PROVED": 0, "MODEL_CONFORMANCE_FAILED": 10,
@@ -78,18 +79,26 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
                         summary = {**summary, "workflow_status": "FAILED", "internal_error": "REPORT_RENDER_FAILED"}
         _write(staging / "workflow_manifest.json", manifest)
         final_status = str(summary.get("result_status", "PROOF_BUNDLE_INVALID"))
+        request_data = json.loads(request.read_text(encoding="utf-8"))
+        target_kind = request_data.get("target_kind", "SYNTHETIC_P0")
         proof_result = {"workflow_schema_version": "prove_seed_workflow_v1",
-                        "taskset_seed": json.loads(request.read_text(encoding="utf-8")).get("taskset_seed"),
+                        "taskset_seed": request_data.get("taskset_seed"),
+                        "target_id": request_data.get("target_id"),
+                        "target_kind": target_kind,
                         "tree_variant": tree_variant, "profile": "P0",
                         "primary_claim": "DEPLOYED_HI_SAFETY",
                         "workflow_status": summary.get("workflow_status", "FAILED"),
                         "result_status": final_status,
+                        "failure_route": summary.get("failure_route"),
+                        "failure_code": summary.get("failure_code"),
+                        "violated_obligation_id": summary.get("violated_obligation_id"),
+                        "failure_message": summary.get("failure_message"),
                         "verified_summary": "verified/proof_summary.json" if (staging / "verified/proof_summary.json").is_file() else None,
                         "outer_bundle_root": summary.get("outer_bundle_root"),
                         "fixture_claim_result": summary.get("fixture_claim_result", final_status),
-                        "fixture_id": summary.get("fixture_id", imported.get("fixture_id")),
-                        "fixture_kind": summary.get("fixture_kind", imported.get("fixture_kind")),
-                        "real_seed_evaluation": "DEFERRED",
+                        "fixture_id": summary.get("fixture_id", summary.get("target_id")),
+                        "fixture_kind": summary.get("fixture_kind", summary.get("target_kind")),
+                        "real_seed_evaluation": "DEFERRED" if target_kind == "SYNTHETIC_P0" else "COMPLETED",
                         "exit_code": 70 if summary.get("internal_error") else EXIT_CODES.get(final_status, 70)}
         _write(staging / "proof_result.json", proof_result)
         if not (staging / "human_readable_report.md").is_file():
@@ -103,6 +112,8 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
         # 位置，不能被伪装成 UNRESOLVED。
         if isinstance(exc, FileExistsError):
             code, result_status, failure_code = 2, "PROOF_BUNDLE_INVALID", "OUTPUT_EXISTS"
+        elif isinstance(exc, FormalWorkflowError):
+            code, result_status, failure_code = exc.exit_code, exc.route, exc.code
         elif isinstance(exc, ValueError):
             code, result_status, failure_code = 20, "UNRESOLVED", "SEED_IMPORT_OR_PREFLIGHT_FAILED"
         else:

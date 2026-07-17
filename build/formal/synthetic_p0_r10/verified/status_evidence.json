@@ -1,0 +1,576 @@
+{
+  "ACTION_TRANSITION": {
+    "obligation_id": "ACTION_TRANSITION",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "19e8e9edfab7ef481e76564dd2f51223b79a4772d5bccd2bcc24d0cce994980e",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "ACTIVE_RELEASE_BUDGET_INVARIANT": {
+    "obligation_id": "ACTIVE_RELEASE_BUDGET_INVARIANT",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "e2733b5778dfe6bf6201ccd63e7c58772e8f1a22b4e559c768bbabaf9216907f",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "ARTIFACT_MANIFEST": {
+    "obligation_id": "ARTIFACT_MANIFEST",
+    "obligation_status": "PASS",
+    "certificate_hash": "c6759755117966d9cb09b2b6adff85de5babaa8f0a9ecc55adf16dc3c183a877",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "ASSURANCE_POLICY": {
+    "obligation_id": "ASSURANCE_POLICY",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "ae0efd5826e6a4bdcd451fe8a074e2518fa9e1ef4beb60609ff14ac1db998590",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "BATCH_CLOSURE": {
+    "obligation_id": "BATCH_CLOSURE",
+    "obligation_status": "PASS",
+    "certificate_hash": "1c6ddb7450646e52d9fecda41c3ec6d2dcd2a989a5ea53231ea8fef594da1695",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "BOOT_INITIALIZATION": {
+    "obligation_id": "BOOT_INITIALIZATION",
+    "obligation_status": "PASS",
+    "certificate_hash": "7312a66fc54b38fd2a6ea772853138bd6f076738532ae9f7cf72f161408f2ff9",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "BUDGET_DOMAIN": {
+    "obligation_id": "BUDGET_DOMAIN",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "91004ec6c77984198f7825590d938eccddb20c8d8f38801d5f9dda6bf328a13e",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "CANDIDATE_ENVELOPE": {
+    "obligation_id": "CANDIDATE_ENVELOPE",
+    "obligation_status": "PASS",
+    "certificate_hash": "ba47955930fc64bf0fc5ca889da7cad5bdfa9be9e40c5a1b3c671f27d9ec9f39",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "CANONICAL_SERIALIZATION": {
+    "obligation_id": "CANONICAL_SERIALIZATION",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "5116ddff375f641364e0d944294fe415fd4c906e615a7d451ce0f17516853b76",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "CASE1_INTEGER_DOMAIN": {
+    "obligation_id": "CASE1_INTEGER_DOMAIN",
+    "obligation_status": "PASS",
+    "certificate_hash": "0d35baeded8ad5c5a23987dc0f1a35b210606af5e36c591fed9a57a114dbd230",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "CASE2_INTEGER_DOMAIN": {
+    "obligation_id": "CASE2_INTEGER_DOMAIN",
+    "obligation_status": "PASS",
+    "certificate_hash": "c05fb554e12ea6025a70f33b40573836b292d358491d4225d89ff2941b3eddc9",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "CERTIFIED_ENVELOPE": {
+    "obligation_id": "CERTIFIED_ENVELOPE",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "1769f9488adea59dfddb05a48563f011c8721941723f0dee9af6a544be65f54d",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "CHECKER_VERSION": {
+    "obligation_id": "CHECKER_VERSION",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "0cb1fc2c67902bc42d5d8f7a64829580d8dbd04eb5cdd02a2c1bc43cf2e03092",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "CLAIM_AGGREGATION": {
+    "obligation_id": "CLAIM_AGGREGATION",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "8f0e810cc6be52612a28a2bf02dfc981b5be3894d1ecf2b06a0133dfe03a15f9",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "CLOSED_PREFIX_REFINEMENT": {
+    "obligation_id": "CLOSED_PREFIX_REFINEMENT",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "301f549593bfaab9aff76fc0d6c83a4ae2b6f00861cde05ecc2879966454ab81",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "CODE_REFERENCE_UPPER_BOUND_MAPPING": {
+    "obligation_id": "CODE_REFERENCE_UPPER_BOUND_MAPPING",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "2b2775da1b1438c2d2913335dcd02fcb8f7ac7f2d70591af83198084d6b564b9",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "COMMON_TRANSITION_PRESERVATION": {
+    "obligation_id": "COMMON_TRANSITION_PRESERVATION",
+    "obligation_status": "PASS",
+    "certificate_hash": "290c6f801b99ee41000dc585691f18d9b46436e42a0e449b69772c923f673703",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "COMPONENT_CONTEXT_INTEGRITY": {
+    "obligation_id": "COMPONENT_CONTEXT_INTEGRITY",
+    "obligation_status": "PASS",
+    "certificate_hash": "cc3421515d485169782ddaa76be6db7e05db5d4c4488caba95af30ced1703ddc",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "CONTEXT_SCHEMA": {
+    "obligation_id": "CONTEXT_SCHEMA",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "d4e7e980119097f530d6e5046502968cf32f884780ec840046122567ae59afd7",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "CONTROLLER_INVISIBILITY": {
+    "obligation_id": "CONTROLLER_INVISIBILITY",
+    "obligation_status": "PASS",
+    "certificate_hash": "0463fc3a4a9f3a39fe7070ba79ea264daf324cdd082fa285a26b6000423fa8f0",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "CONTROLLER_POSTCLOSURE": {
+    "obligation_id": "CONTROLLER_POSTCLOSURE",
+    "obligation_status": "PASS",
+    "certificate_hash": "27c32b8c550d3e69fff0515d96aa522a6b29afb828195655c55896c6e95ef17c",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "DEADLINE_BOUNDARY_ORDER": {
+    "obligation_id": "DEADLINE_BOUNDARY_ORDER",
+    "obligation_status": "PASS",
+    "certificate_hash": "1ea381dc1cc4dce03bb097a5effdbd42efaa0113da3c0ea379c7b751b05c6b9a",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "DEADLINE_OBSERVATION": {
+    "obligation_id": "DEADLINE_OBSERVATION",
+    "obligation_status": "PASS",
+    "certificate_hash": "1ccf7408d823693d2e93d6ff92f995d2ab67328fada05d65e35d0bd085ba729d",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "DEMAND_DOMINATION": {
+    "obligation_id": "DEMAND_DOMINATION",
+    "obligation_status": "PASS",
+    "certificate_hash": "a741c84e66b18045cd8c10ae68c6bfd68e85e227d38db8a6a2b6b7e6235d4fd9",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "DEMAND_ORACLE_BATCH_CONTRACT": {
+    "obligation_id": "DEMAND_ORACLE_BATCH_CONTRACT",
+    "obligation_status": "PASS",
+    "certificate_hash": "2c9db49cae648f45d7e3b4e1d20be8c13fb672e4df420aae446f37a91e75a25c",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "DEPENDENCY_LOCK": {
+    "obligation_id": "DEPENDENCY_LOCK",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "0df9bc469d5073b0c1a8a3f4b1b91d83e1caf64f150816299f1520584db715fb",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "DEPLOYED_POLICY_PRESERVATION": {
+    "obligation_id": "DEPLOYED_POLICY_PRESERVATION",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "50e4fcc2bdad7bdd546d163fd22767b3367d369a939828c7d31ebf5dd3c69ac5",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "DIRECT_PREDECESSOR_HASHES": {
+    "obligation_id": "DIRECT_PREDECESSOR_HASHES",
+    "obligation_status": "PASS",
+    "certificate_hash": "fb258bfe408ba64b8383dc761f57c9aa79c7ef5cff54510e0fb7118e8d236022",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "DISCRETE_TICK_EMBEDDING": {
+    "obligation_id": "DISCRETE_TICK_EMBEDDING",
+    "obligation_status": "FAIL",
+    "certificate_hash": "a56f57fa509e0d085d67f4a830cebca30f9cbb399397ffaca906d47545c394c0",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "EFFECTIVE_EVENT_ORDER": {
+    "obligation_id": "EFFECTIVE_EVENT_ORDER",
+    "obligation_status": "PASS",
+    "certificate_hash": "488829d0c28473fbf718d4af257b717e03d5ac87e7ee28587f47e9d5870e5031",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "EFFECTIVE_RUNTIME_CONFIG": {
+    "obligation_id": "EFFECTIVE_RUNTIME_CONFIG",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "1c4e0e9e27f607179a554952aa973292f496e5ac8f6a5fac3d5e5ab48eabf55a",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "EXECUTABLE_POLICY_SEMANTICS": {
+    "obligation_id": "EXECUTABLE_POLICY_SEMANTICS",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "3fec32a2aa4926934402f0356e5e6d00b36795ff961ebd945e1a90c9e2447295",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "FEATURE_QUANTIZATION": {
+    "obligation_id": "FEATURE_QUANTIZATION",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "7389f6ce83b69385ca2609dcd505648d1f18c8e084da60e4d9d23659f7f51adb",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "FEATURE_SCHEMA_CONSISTENCY": {
+    "obligation_id": "FEATURE_SCHEMA_CONSISTENCY",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "192ac276b8f175471de3f4b45e3326292d655ce52a831cf2eb6bfa18774a7a5d",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "FEATURE_TOTALITY": {
+    "obligation_id": "FEATURE_TOTALITY",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "690a85c5160fa85a5d76cb635e963f91515ee667ed3441abcfe7cae23a253cbf",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "HI_BAD_CLOSED_PREFIX_REFLECTION": {
+    "obligation_id": "HI_BAD_CLOSED_PREFIX_REFLECTION",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "5b814eb444b164fd3d4b5734ab0036d9ca4ebb9b928365ebce958d734ac90469",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "HI_BUDGET_LOWER_INVARIANT": {
+    "obligation_id": "HI_BUDGET_LOWER_INVARIANT",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "83b3a256f96dbf3b2d73abe4407dc959d7d8b68052b21c3361b01e41760b807b",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "HI_EXECUTION_CONTRACT": {
+    "obligation_id": "HI_EXECUTION_CONTRACT",
+    "obligation_status": "PASS",
+    "certificate_hash": "13156f138ac086244f486ccb322457c33f199c4546631d73ac049e8e6e17b6ed",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "HI_NONTRUNCATION": {
+    "obligation_id": "HI_NONTRUNCATION",
+    "obligation_status": "PASS",
+    "certificate_hash": "3972a3734216732e7dab2f15dced68c140dccb6d81caf7adc58554140a2db16c",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "IMMUTABLE_INPUT_HASH": {
+    "obligation_id": "IMMUTABLE_INPUT_HASH",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "96654791185afd09b522045effa54b2c1169a23ac28fabd9427ff1fe5620858c",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "INDEPENDENT_BUNDLE_VERIFICATION": {
+    "obligation_id": "INDEPENDENT_BUNDLE_VERIFICATION",
+    "obligation_status": "PASS",
+    "certificate_hash": "560f811db8c486ef95022d9ddd161cf7c46c0f0798fea581cc52790a275a558c",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "INHERITED_HI_DOMINATION": {
+    "obligation_id": "INHERITED_HI_DOMINATION",
+    "obligation_status": "PASS",
+    "certificate_hash": "5885c211e2c42079bc06f973b663eaff412fc63d43fa576d72d6e3d684841bed",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "INITIAL_QUIESCENCE": {
+    "obligation_id": "INITIAL_QUIESCENCE",
+    "obligation_status": "PASS",
+    "certificate_hash": "69cff1bda5e052a0444be89b3bef4da3595cec60f026f6c7c9528390e5e16b27",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "INTERFACE_COVERAGE": {
+    "obligation_id": "INTERFACE_COVERAGE",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "169711182e6347500c5556cdd2c2af2b93a9ae1dc53500bb6753dcb260cd73ff",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "LEAF_GUARD_PARTITION": {
+    "obligation_id": "LEAF_GUARD_PARTITION",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "42900b8c16bcb28ad439c721f22ce141a449ee99901c74a929a5008f17fbb19f",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "LO_BUDGET_UPPER_INVARIANT": {
+    "obligation_id": "LO_BUDGET_UPPER_INVARIANT",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "bd460dd17fdf3654e1ad311b640a097c21ecd4763d7791d8f9d2de0ef51ef10d",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "LO_MODE_RTA": {
+    "obligation_id": "LO_MODE_RTA",
+    "obligation_status": "PASS",
+    "certificate_hash": "c5da6caebd9a32ddec1267c3356f66f626b1d20e6f1b7b7943dc6704f98aa79d",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "MASK_FALLBACK": {
+    "obligation_id": "MASK_FALLBACK",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "45606e2429b329a412b2decc57424c763fbf7abd51821c339d9acbdaa80aa3c4",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "MIGRATION_MANIFEST": {
+    "obligation_id": "MIGRATION_MANIFEST",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "762b3055e02c1a3df1c5dfb1271a681af1a35e4796f441ee97101aaa0a684996",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "MODE_SEMANTICS_CONFORMANCE": {
+    "obligation_id": "MODE_SEMANTICS_CONFORMANCE",
+    "obligation_status": "PASS",
+    "certificate_hash": "e8f73bcbe9a98b818ab3eb30766bf63377a2504abf5a747f083dd3fdecb4b397",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "NO_OVERFLOW": {
+    "obligation_id": "NO_OVERFLOW",
+    "obligation_status": "PASS",
+    "certificate_hash": "a759c7f03df3fc30a036b6266e26304496f8c4ca85e806db522615b54b454b2f",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "OBLIGATION_REGISTRY": {
+    "obligation_id": "OBLIGATION_REGISTRY",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "0788a45e253f5775b31d1194a006ad5e36ae4567def07d1ce6f98b78f9be4149",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "OBSERVATION_EXTRACTION": {
+    "obligation_id": "OBSERVATION_EXTRACTION",
+    "obligation_status": "PASS",
+    "certificate_hash": "715f84e95be1d5c1e109848c7eb6f566e91beea3112b9339900b512f7a95ffcf",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "OUTER_BUNDLE_ROOT": {
+    "obligation_id": "OUTER_BUNDLE_ROOT",
+    "obligation_status": "PASS",
+    "certificate_hash": "fec2fbfce1b47564da09d1cc1984bdfb8079d94b40d70fc69982b3f8fdbd2b84",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "OVERHEAD_PROFILE": {
+    "obligation_id": "OVERHEAD_PROFILE",
+    "obligation_status": "PASS",
+    "certificate_hash": "bb6547b403d815b24eca1374c538658a551feefc3f34addbc9d93a019011c85e",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "P0_PROFILE_SCHEMA": {
+    "obligation_id": "P0_PROFILE_SCHEMA",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "a86b46ac6b3b58379dfc15a544c9981584e96ef79adb2a5d5c1bff0261163724",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "PER_HI_TASK_INDUCTIVE_WCRT": {
+    "obligation_id": "PER_HI_TASK_INDUCTIVE_WCRT",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "c7cefa6efa01a769917f4cc83b97b8166468ad579bb7d656c486366fdf88b22f",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "PHASE_DAG": {
+    "obligation_id": "PHASE_DAG",
+    "obligation_status": "PASS",
+    "certificate_hash": "516768643ae6979ce839101e4ad9118c4d21f1529afaae5b750a8df0caa9ead1",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "PROOF_REQUEST": {
+    "obligation_id": "PROOF_REQUEST",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "698a0bb02ee43f61699c0bfb343641f1fcbddf4a0cf190915863da51affd0fef",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "PROTECTED_HI_RTA_ARITHMETIC": {
+    "obligation_id": "PROTECTED_HI_RTA_ARITHMETIC",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "682d5f7401ee65fe749aa15c85a9379cd445e4df7537a3793960d539db7db458",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "PROTECTED_HI_SAFETY_COROLLARY": {
+    "obligation_id": "PROTECTED_HI_SAFETY_COROLLARY",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "80c9770734f76ff2275831fdb672ec621447f0180e52eb8a0fbd8ccd98bcd73b",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "REFERENCE_PREFIX_EXTENSION": {
+    "obligation_id": "REFERENCE_PREFIX_EXTENSION",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "56d3b6c4eb2056017980275b6f74f8126aaa102129c1e55053dce956e5fe3d24",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "REFERENCE_TASKSET": {
+    "obligation_id": "REFERENCE_TASKSET",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "7f9c3ec1d02a63029252d9ed89b2de922d19c68fc7c84b09c6a8be2c2584cff5",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "REGISTRY_META_SCHEMA": {
+    "obligation_id": "REGISTRY_META_SCHEMA",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "3255d36833c54b13de02b5203bab40182422d0d1cb7ccb02d39b40b19e8c9e6e",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "RELEASE_COUNT": {
+    "obligation_id": "RELEASE_COUNT",
+    "obligation_status": "PASS",
+    "certificate_hash": "7dc4c032cc7bda1b5bdd545f634ac5b233b137917c4409cb8f086902f12fb05a",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "RELEASE_FIXED_REMOVAL_MAPPING": {
+    "obligation_id": "RELEASE_FIXED_REMOVAL_MAPPING",
+    "obligation_status": "PASS",
+    "certificate_hash": "87b5351d9efa9b6138535a01b8100e22c3baec60e6575206c88c1f0271873d33",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "REMOVAL_COMPLETENESS": {
+    "obligation_id": "REMOVAL_COMPLETENESS",
+    "obligation_status": "PASS",
+    "certificate_hash": "28cabc867909e3993d16949d4e36e1248773fea9a1d3d6d9758ec3c62a6b9a4e",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "RUNTIME_ENVIRONMENT": {
+    "obligation_id": "RUNTIME_ENVIRONMENT",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "1ae19adee80d31330a319ada605f1b0ba4866bfd7e7d8e412d798b42620c6a70",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "SCHEDULER_MODEL": {
+    "obligation_id": "SCHEDULER_MODEL",
+    "obligation_status": "PASS",
+    "certificate_hash": "774cabc67b156fea1cbb9e4227422f3423e118cf11543037784676e8689b59e2",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "SELECTED_ACTION_REGIONS": {
+    "obligation_id": "SELECTED_ACTION_REGIONS",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "afe7515f5d74b3a77a40dcbe577975f4f28a48995a1b6f3bfc497ca6b06559b3",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "SEQUENCE_ALLOCATION": {
+    "obligation_id": "SEQUENCE_ALLOCATION",
+    "obligation_status": "PASS",
+    "certificate_hash": "77b54fbc69b8b428d6f094ef3f6a8a361ea960b33ffa3d23a2e01b8fa060659d",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "SOURCE_TREE_INTEGRITY": {
+    "obligation_id": "SOURCE_TREE_INTEGRITY",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "fb6acb4f7941d4d08fefb850245aa7800ead6e59b335df92f60ef0c471181ef5",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "STATUS_EVIDENCE": {
+    "obligation_id": "STATUS_EVIDENCE",
+    "obligation_status": "PASS",
+    "certificate_hash": "eaf9c94c24400b1dc8e3d50b1078370b3999269fc8137e12ad2d1499f670a0b7",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "STRICT_PRIORITY_ORDER": {
+    "obligation_id": "STRICT_PRIORITY_ORDER",
+    "obligation_status": "PASS",
+    "certificate_hash": "582e6b970279c88f71654c0171a20f6af905267ae40820b5a79d0b6809f03cbf",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "THEORY_LIBRARY_VERSION": {
+    "obligation_id": "THEORY_LIBRARY_VERSION",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "7592224061bf9d88536b2016623006c968cc0a39852fecc630d594e184150419",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "THEORY_MANIFEST": {
+    "obligation_id": "THEORY_MANIFEST",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "48e87f15b4448c7f0febfe6e10be80d0bef642882e9d534e698d04e25c677a2a",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "TIME_DOMAIN": {
+    "obligation_id": "TIME_DOMAIN",
+    "obligation_status": "PASS",
+    "certificate_hash": "32f8bef12f06aa8c8f5484b66cc59f5849259d35a58dc248e94d558356ca9336",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "TIME_PROGRESS": {
+    "obligation_id": "TIME_PROGRESS",
+    "obligation_status": "FAIL",
+    "certificate_hash": "d91f7296f08239e90a083dd254343675a88ba5f0ad775f87f5bd6c57c8cbf9ed",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "TREE_WELLFORMEDNESS": {
+    "obligation_id": "TREE_WELLFORMEDNESS",
+    "obligation_status": "UNRESOLVED",
+    "certificate_hash": "b3f653e4fca65972ff3aa347898097bcd76875c9b471d28b149ea50cb3f43634",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "WINDOW_MODE_NORMALIZATION": {
+    "obligation_id": "WINDOW_MODE_NORMALIZATION",
+    "obligation_status": "PASS",
+    "certificate_hash": "21dc1151bee6f5caeaf5c878866bd03aa501d5907a54045779da3335ee8adb83",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "WORST_CASE_START_TIME": {
+    "obligation_id": "WORST_CASE_START_TIME",
+    "obligation_status": "PASS",
+    "certificate_hash": "8c759f7420c02d269328bb823dcf0a33b599c79da414b192fc724c6c930cdd9d",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  },
+  "ZERO_RELATIVE_START": {
+    "obligation_id": "ZERO_RELATIVE_START",
+    "obligation_status": "PASS",
+    "certificate_hash": "f83a1a460bacd62143266b098193cf0305909e5e60f928a51e954aeed8ae3d66",
+    "verified": true,
+    "outer_bundle_root": "fd360664e240a5eec58c7228e0cd87d328ae954a2b9114b5a553815c6e295033"
+  }
+}

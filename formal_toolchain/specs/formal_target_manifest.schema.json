@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Formal target manifest v1",
+  "type": "object",
+  "required": ["schema_version", "target_id", "target_kind", "authoritative_input_mode"],
+  "properties": {
+    "schema_version": {"const": "formal_target_manifest_v1"},
+    "target_id": {"type": "string", "minLength": 1},
+    "target_kind": {"enum": ["SYNTHETIC_P0", "REAL_VIPER_SEED"]},
+    "taskset_seed": {"type": "integer"},
+    "authoritative_input_mode": {"const": "FROZEN_FORMAL_INPUTS"},
+    "formal_inputs_version": {"type": "string"},
+    "tree_variants": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}

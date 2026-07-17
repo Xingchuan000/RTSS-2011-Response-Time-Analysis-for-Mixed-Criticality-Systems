@@ -1,0 +1,11 @@
+{
+  "schema_version": "formal_target_manifest_v1",
+  "target_id": "s185",
+  "target_kind": "REAL_VIPER_SEED",
+  "taskset_seed": 185,
+  "tree_variants": [
+    "best_overall"
+  ],
+  "authoritative_input_mode": "FROZEN_FORMAL_INPUTS",
+  "formal_inputs_version": "s185_p0_v2"
+}

@@ -1,0 +1,7 @@
+{
+  "schema_version": "synthetic_target_recipe_v2",
+  "factory": "tests.formal.fixtures.synthetic_p0.formal_inputs.target:build_target",
+  "kwargs": {},
+  "fixture": "synthetic_p0",
+  "uses_real_seed": false
+}

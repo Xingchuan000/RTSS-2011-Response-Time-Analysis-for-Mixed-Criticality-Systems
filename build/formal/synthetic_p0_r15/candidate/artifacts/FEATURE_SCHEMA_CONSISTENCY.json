@@ -1,0 +1,126 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "FEATURE_SCHEMA_CONSISTENCY",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "1f029955400b7b43b054c9d85287e87909a1008c31a0aa4c9039695881913d82",
+  "direct_predecessor_hashes": {
+    "EXECUTABLE_POLICY_SEMANTICS": "8955186405af2fc504eb170c37948c6ded176a593a8dc36b86c62bf53f5c50b1"
+  },
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "FEATURE_SCHEMA_CONSISTENCY",
+    "evidence": {
+      "obligation_id": "FEATURE_SCHEMA_CONSISTENCY",
+      "status": "PASS",
+      "route": null,
+      "code": null,
+      "checker_input_hashes": {
+        "source_manifest_hash": "addd9057971b4d15a42880a023c95fd4054266c9677178565256c586c2462382",
+        "context_hash": "1f029955400b7b43b054c9d85287e87909a1008c31a0aa4c9039695881913d82"
+      },
+      "witness": {
+        "result": {
+          "status": "PASS",
+          "route": null,
+          "failure": null,
+          "target_feature_names": [
+            "T00.SYN_HI_0.budget_norm",
+            "T00.SYN_HI_0.recent_cost_norm",
+            "T00.SYN_HI_0.ema_cost_norm",
+            "T00.SYN_HI_0.max_cost_k_norm",
+            "T00.SYN_HI_0.overrun_ema",
+            "T00.SYN_HI_0.risk",
+            "T00.SYN_HI_0.surplus",
+            "T00.SYN_HI_0.criticality",
+            "T00.SYN_HI_0.priority_norm",
+            "T00.SYN_HI_0.util_budget",
+            "T01.SYN_LO.budget_norm",
+            "T01.SYN_LO.recent_cost_norm",
+            "T01.SYN_LO.ema_cost_norm",
+            "T01.SYN_LO.max_cost_k_norm",
+            "T01.SYN_LO.overrun_ema",
+            "T01.SYN_LO.risk",
+            "T01.SYN_LO.surplus",
+            "T01.SYN_LO.criticality",
+            "T01.SYN_LO.priority_norm",
+            "T01.SYN_LO.util_budget",
+            "T02.SYN_HI_1.budget_norm",
+            "T02.SYN_HI_1.recent_cost_norm",
+            "T02.SYN_HI_1.ema_cost_norm",
+            "T02.SYN_HI_1.max_cost_k_norm",
+            "T02.SYN_HI_1.overrun_ema",
+            "T02.SYN_HI_1.risk",
+            "T02.SYN_HI_1.surplus",
+            "T02.SYN_HI_1.criticality",
+            "T02.SYN_HI_1.priority_norm",
+            "T02.SYN_HI_1.util_budget",
+            "G.total_budget_util",
+            "G.hi_budget_util",
+            "G.lo_budget_util",
+            "G.recent_mode_change_rate",
+            "G.recent_lo_cancel_rate",
+            "G.recent_hi_overrun_rate",
+            "G.recent_lo_overrun_rate",
+            "G.safety_margin_min"
+          ],
+          "artifact_feature_names": [
+            "T00.SYN_HI_0.budget_norm",
+            "T00.SYN_HI_0.recent_cost_norm",
+            "T00.SYN_HI_0.ema_cost_norm",
+            "T00.SYN_HI_0.max_cost_k_norm",
+            "T00.SYN_HI_0.overrun_ema",
+            "T00.SYN_HI_0.risk",
+            "T00.SYN_HI_0.surplus",
+            "T00.SYN_HI_0.criticality",
+            "T00.SYN_HI_0.priority_norm",
+            "T00.SYN_HI_0.util_budget",
+            "T01.SYN_LO.budget_norm",
+            "T01.SYN_LO.recent_cost_norm",
+            "T01.SYN_LO.ema_cost_norm",
+            "T01.SYN_LO.max_cost_k_norm",
+            "T01.SYN_LO.overrun_ema",
+            "T01.SYN_LO.risk",
+            "T01.SYN_LO.surplus",
+            "T01.SYN_LO.criticality",
+            "T01.SYN_LO.priority_norm",
+            "T01.SYN_LO.util_budget",
+            "T02.SYN_HI_1.budget_norm",
+            "T02.SYN_HI_1.recent_cost_norm",
+            "T02.SYN_HI_1.ema_cost_norm",
+            "T02.SYN_HI_1.max_cost_k_norm",
+            "T02.SYN_HI_1.overrun_ema",
+            "T02.SYN_HI_1.risk",
+            "T02.SYN_HI_1.surplus",
+            "T02.SYN_HI_1.criticality",
+            "T02.SYN_HI_1.priority_norm",
+            "T02.SYN_HI_1.util_budget",
+            "G.total_budget_util",
+            "G.hi_budget_util",
+            "G.lo_budget_util",
+            "G.recent_mode_change_rate",
+            "G.recent_lo_cancel_rate",
+            "G.recent_hi_overrun_rate",
+            "G.recent_lo_overrun_rate",
+            "G.safety_margin_min"
+          ],
+          "used_feature_indices": []
+        },
+        "tree_present": true
+      }
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "4b7e20b71119fde49baa06a1ff4df70fb52d0f09a77d74bdc04158aadea18f5e"
+}

@@ -1,0 +1,29 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "DEADLINE_OBSERVATION",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.checker_catalog.DEADLINE_OBSERVATION",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "f95e51fcf1f7c09df101f8a5a4c69a0cc535254478b278f97b8b0d0756687a17",
+    "fresh_process": true
+  },
+  "witness": {
+    "status": "PASS",
+    "schema_version": "deadline_observation_v1",
+    "deadline_is_observation_only": true,
+    "completion_precedes_equal_deadline": true,
+    "fresh_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+    "candidate_status_compared": "PASS"
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "1ccf7408d823693d2e93d6ff92f995d2ab67328fada05d65e35d0bd085ba729d"
+}

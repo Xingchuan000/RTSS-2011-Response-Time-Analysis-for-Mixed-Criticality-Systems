@@ -1,0 +1,39 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "ASSURANCE_POLICY",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "f5b07a14b674f5843c5be792f9a378dabbef161ec3f76fc25d17381b49b86b80",
+  "direct_predecessor_hashes": {
+    "THEORY_LIBRARY_VERSION": "7592224061bf9d88536b2016623006c968cc0a39852fecc630d594e184150419"
+  },
+  "checker_id": "formal_toolchain.verifier.checker_catalog.ASSURANCE_POLICY",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "2c111a429620b5388733209c4925e834a699a2918a29492479bf4356ffbe5c2e",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "evidence_key": "ASSURANCE_POLICY",
+      "evidence": {
+        "obligation_id": "ASSURANCE_POLICY",
+        "status": "UNRESOLVED",
+        "route": "UNRESOLVED",
+        "code": "CANDIDATE_EVIDENCE_BUILDER_NOT_IMPLEMENTED",
+        "checker_input_hashes": {},
+        "witness": {}
+      }
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "PREDECESSOR_NOT_PASS"
+  },
+  "artifact_hash": "ae0efd5826e6a4bdcd451fe8a074e2518fa9e1ef4beb60609ff14ac1db998590"
+}

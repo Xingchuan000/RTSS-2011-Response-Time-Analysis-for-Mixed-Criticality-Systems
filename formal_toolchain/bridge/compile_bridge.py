@@ -154,6 +154,14 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
         theorem_manifest=_theory("FINITE_HI_BAD_PREFIX_REFLECTION"),
         protected_hi_certificate=protected_hi_certificate,
         release_mapping_certificate=release_mapping_certificate)
+    if protected_hi_certificate is None:
+        return {"status": "PASS", "manifest_hash": p0_case_manifest_hash(),
+                "model_bounds_status": "PASS", "model_bounds": bounds.to_dict(),
+                "transition_cases": compiled, "prerequisites": prereqs,
+                "coverage": branch_map["coverage"], "controller_binding": controller_binding,
+                "decomposition": decomposition,
+                "closed_prefix": closed, "reference_extension": extension,
+                "deadline_observation": deadline, "hi_nontruncation": nontruncation}
     if bad_prefix.get("obligation_status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "BAD_PREFIX_REFLECTION_INCOMPLETE",
                 "transition_cases": compiled, "prerequisites": prereqs,

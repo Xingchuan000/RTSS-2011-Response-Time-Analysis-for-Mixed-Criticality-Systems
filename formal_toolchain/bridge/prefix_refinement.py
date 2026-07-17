@@ -111,7 +111,10 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
                                   "release_mapping": release_mapping_certificate.get("artifact_hash", sha256_object(release_mapping_certificate)),
                                   **{f"case:{index}": case_artifact["artifact_hash"]
                                      for index, case_artifact in enumerate(transition_case_certificates)}},
-        witness={"case_ids": result["case_ids"], "coverage": coverage},
+        witness={"case_ids": result["case_ids"], "coverage": coverage,
+                 # verifier fresh replay 会逐 case 重建这些结果并比较 hash；
+                 # candidate 不能只传 case ID 让 verifier 相信其逻辑已执行。
+                 "transition_case_certificates": [dict(item) for item in transition_case_certificates]},
         checker_id="formal_toolchain.bridge.prefix_refinement", checker_version="phase-k-v1",
     ))
     return result

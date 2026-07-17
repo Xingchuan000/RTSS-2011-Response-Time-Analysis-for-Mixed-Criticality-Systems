@@ -1,0 +1,18 @@
+{
+  "workflow_schema_version": "prove_seed_workflow_v1",
+  "taskset_seed": 0,
+  "target_id": "synthetic_p0",
+  "target_kind": "SYNTHETIC_P0",
+  "tree_variant": "best_overall",
+  "profile": "P0",
+  "primary_claim": "DEPLOYED_HI_SAFETY",
+  "workflow_status": "FAILED",
+  "result_status": "PROOF_BUNDLE_INVALID",
+  "verified_summary": null,
+  "outer_bundle_root": null,
+  "fixture_claim_result": "PROOF_BUNDLE_INVALID",
+  "fixture_id": null,
+  "fixture_kind": null,
+  "real_seed_evaluation": "NOT_APPLICABLE",
+  "exit_code": 30
+}

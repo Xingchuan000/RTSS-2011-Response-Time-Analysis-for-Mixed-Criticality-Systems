@@ -15,6 +15,25 @@ class SyntheticEnvironment(SimpleNamespace):
     """显式列出计划要求的 wrapper 最终字段，不依赖隐式默认值。"""
 
 
+class SyntheticP0RuntimeAdapter:
+    """synthetic 仅用于测试；真实 seed 不得实例化此 adapter。"""
+
+    def extract_observation(self, runtime_state):
+        from formal_toolchain.adapters.synthetic_policy import observation_from_state
+        return observation_from_state(runtime_state, runtime_state["tasks"], runtime_state["feature_names"])
+
+    def valid_action_mask(self, runtime_state):
+        from formal_toolchain.adapters.synthetic_runtime import evaluate_synthetic_runtime_mask
+        result = evaluate_synthetic_runtime_mask(runtime_state, runtime_state["action_definitions"])
+        return tuple(result["mask"]), tuple(result["reasons"])
+
+    def apply_action(self, runtime_state, action_id):
+        return dict(runtime_state)
+
+    def common_transition_witnesses(self):
+        return ()
+
+
 def build_target(**_kwargs):
     tasks = (Task("SYN_HI", 10, 10, 2, 3, Criticality.HI),
              Task("SYN_LO", 15, 15, 2, 2, Criticality.LO))
@@ -61,5 +80,7 @@ def build_target(**_kwargs):
         action_definitions=action_definitions, feature_names=feature_names,
         provenance={"fixture": "synthetic_p0_v1", "taskset_seed": None,
                     "budget_by_task": {"SYN_HI": {"initial_runtime_budget": 2, "budget_floor": 1, "budget_cap": 3},
-                                       "SYN_LO": {"initial_runtime_budget": 2, "budget_floor": 1, "budget_cap": 2}}},
+                                       "SYN_LO": {"initial_runtime_budget": 2, "budget_floor": 1, "budget_cap": 2}},
+                    "adapter_kind": "SYNTHETIC_P0"},
+        runtime_adapter=SyntheticP0RuntimeAdapter(),
     )

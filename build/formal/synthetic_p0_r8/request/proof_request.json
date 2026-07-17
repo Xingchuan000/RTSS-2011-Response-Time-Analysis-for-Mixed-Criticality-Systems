@@ -1,0 +1,18 @@
+{
+  "schema_version": "proof_request_v2",
+  "profile": "P0",
+  "primary_claim": "DEPLOYED_HI_SAFETY",
+  "target_id": "synthetic_p0",
+  "target_kind": "SYNTHETIC_P0",
+  "taskset_seed": 0,
+  "target_recipe": {
+    "factory": "tests.formal.fixtures.synthetic_p0.formal_inputs.target:build_target",
+    "kwargs": {}
+  },
+  "tree_artifact_dir": "request/inputs/tree_artifact",
+  "formal_inputs_dir": "request/inputs/formal_inputs",
+  "tree_variant": "best_overall",
+  "source_root": ".",
+  "expected_tree_file_sha256": "95d136a538effa701e44eacb6d6b2c4c7d430e4b9c706ec037822cbf9685ca80",
+  "optional_claims": []
+}

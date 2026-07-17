@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 import re
 
 from .hashing import sha256_object
@@ -21,6 +21,84 @@ CONTEXT_FIELDS = {
     "bridge_context": ("reference_context", "bridge"),
     "bundle_context": ("bridge_context", "bundle_inputs"),
 }
+
+# 该表是 obligation 与证明上下文的唯一静态绑定。它故意不提供“未知义务
+# 默认使用 semantic_context”的分支：新增义务若没有明确归属，必须在
+# registry/context 评审中补齐，否则 verifier 只能返回 UNRESOLVED。
+OBLIGATION_CONTEXT_LAYERS: dict[str, str] = {
+    # bootstrap
+    "REGISTRY_META_SCHEMA": "bootstrap_context", "P0_PROFILE_SCHEMA": "bootstrap_context",
+    "THEORY_MANIFEST": "bootstrap_context", "THEORY_LIBRARY_VERSION": "bootstrap_context",
+    "ASSURANCE_POLICY": "bootstrap_context", "OBLIGATION_REGISTRY": "bootstrap_context",
+    "CLAIM_AGGREGATION": "bootstrap_context", "CONTEXT_SCHEMA": "bootstrap_context",
+    "CANONICAL_SERIALIZATION": "bootstrap_context", "INTERFACE_COVERAGE": "bootstrap_context",
+    "MIGRATION_MANIFEST": "bootstrap_context", "PROOF_REQUEST": "bootstrap_context",
+    # implementation
+    "SOURCE_TREE_INTEGRITY": "implementation_context", "RUNTIME_ENVIRONMENT": "implementation_context",
+    "DEPENDENCY_LOCK": "implementation_context", "CHECKER_VERSION": "implementation_context",
+    "IMMUTABLE_INPUT_HASH": "implementation_context",
+    # semantic
+    "EFFECTIVE_RUNTIME_CONFIG": "semantic_context", "SCHEDULER_MODEL": "semantic_context",
+    "STRICT_PRIORITY_ORDER": "semantic_context", "TIME_DOMAIN": "semantic_context",
+    "NO_OVERFLOW": "semantic_context", "OVERHEAD_PROFILE": "semantic_context",
+    "INITIAL_QUIESCENCE": "semantic_context", "BOOT_INITIALIZATION": "semantic_context",
+    "MODE_SEMANTICS_CONFORMANCE": "semantic_context", "DEMAND_ORACLE_BATCH_CONTRACT": "semantic_context",
+    "HI_EXECUTION_CONTRACT": "semantic_context", "REMOVAL_COMPLETENESS": "semantic_context",
+    "HI_NONTRUNCATION": "semantic_context", "DEADLINE_OBSERVATION": "semantic_context",
+    "EFFECTIVE_EVENT_ORDER": "semantic_context", "SEQUENCE_ALLOCATION": "semantic_context",
+    "PHASE_DAG": "semantic_context", "BATCH_CLOSURE": "semantic_context",
+    "DEADLINE_BOUNDARY_ORDER": "semantic_context", "CONTROLLER_INVISIBILITY": "semantic_context",
+    "CONTROLLER_POSTCLOSURE": "semantic_context", "TIME_PROGRESS": "semantic_context",
+    "WINDOW_MODE_NORMALIZATION": "semantic_context", "OBSERVATION_EXTRACTION": "semantic_context",
+    "FEATURE_TOTALITY": "semantic_context",
+    # policy
+    "FEATURE_SCHEMA_CONSISTENCY": "policy_context", "FEATURE_QUANTIZATION": "policy_context",
+    "TREE_WELLFORMEDNESS": "policy_context", "LEAF_GUARD_PARTITION": "policy_context",
+    "ACTION_TRANSITION": "policy_context", "MASK_FALLBACK": "policy_context",
+    "SELECTED_ACTION_REGIONS": "policy_context", "EXECUTABLE_POLICY_SEMANTICS": "policy_context",
+    # invariant
+    "CANDIDATE_ENVELOPE": "invariant_context", "BUDGET_DOMAIN": "invariant_context",
+    "LO_BUDGET_UPPER_INVARIANT": "invariant_context", "HI_BUDGET_LOWER_INVARIANT": "invariant_context",
+    "ACTIVE_RELEASE_BUDGET_INVARIANT": "invariant_context",
+    "COMMON_TRANSITION_PRESERVATION": "invariant_context", "DEPLOYED_POLICY_PRESERVATION": "invariant_context",
+    "CERTIFIED_ENVELOPE": "invariant_context",
+    # reference
+    "CODE_REFERENCE_UPPER_BOUND_MAPPING": "reference_context", "REFERENCE_TASKSET": "reference_context",
+    "DISCRETE_TICK_EMBEDDING": "reference_context", "RELEASE_COUNT": "reference_context",
+    "DEMAND_DOMINATION": "reference_context", "LO_MODE_RTA": "reference_context",
+    "WORST_CASE_START_TIME": "reference_context", "CASE1_INTEGER_DOMAIN": "reference_context",
+    "CASE2_INTEGER_DOMAIN": "reference_context", "ZERO_RELATIVE_START": "reference_context",
+    "INHERITED_HI_DOMINATION": "reference_context", "PROTECTED_HI_RTA_ARITHMETIC": "reference_context",
+    "PER_HI_TASK_INDUCTIVE_WCRT": "reference_context", "PROTECTED_HI_SAFETY_COROLLARY": "reference_context",
+    # bridge
+    "RELEASE_FIXED_REMOVAL_MAPPING": "bridge_context", "CLOSED_PREFIX_REFINEMENT": "bridge_context",
+    "REFERENCE_PREFIX_EXTENSION": "bridge_context", "HI_BAD_CLOSED_PREFIX_REFLECTION": "bridge_context",
+    # bundle/root mirrors
+    "ARTIFACT_MANIFEST": "bundle_context", "COMPONENT_CONTEXT_INTEGRITY": "bundle_context",
+    "DIRECT_PREDECESSOR_HASHES": "bundle_context", "STATUS_EVIDENCE": "bundle_context",
+    "OUTER_BUNDLE_ROOT": "bundle_context", "INDEPENDENT_BUNDLE_VERIFICATION": "bundle_context",
+    "CLAIM_AGGREGATION_RESULT": "bundle_context",
+}
+
+
+def context_layer_for_obligation(obligation_id: str) -> str:
+    """返回 obligation 的明确 context 层；未知 ID 直接报错而非猜测。"""
+
+    try:
+        return OBLIGATION_CONTEXT_LAYERS[obligation_id]
+    except KeyError as exc:
+        raise KeyError(f"obligation 未声明 context layer: {obligation_id}") from exc
+
+
+def expected_context_for_obligation(obligation_id: str,
+                                    contexts: Mapping[str, Mapping[str, Any]]) -> str:
+    """取出 verifier 对该义务重新计算的 context hash。"""
+
+    layer = context_layer_for_obligation(obligation_id)
+    context = contexts.get(layer)
+    if not isinstance(context, Mapping) or not isinstance(context.get("hash"), str):
+        raise ValueError(f"context layer 不完整: {layer}")
+    return str(context["hash"])
 
 
 def validate_context_contract(inputs: dict[str, Any]) -> None:
@@ -54,6 +132,56 @@ def validate_context_contract(inputs: dict[str, Any]) -> None:
         raise ValueError("bundle_inputs 不得包含下游 bundle 对象")
 
 
+def finalize_context(schema_version: str, preimage: Mapping[str, Any]) -> dict[str, Any]:
+    """对单层 context 使用 ``body → hash`` 两步算法。
+
+    hash 不会被放进自身 preimage；这使得 verifier 可以在不信任 candidate
+    的前提下，从同一组输入重算每一层。
+    """
+
+    body = {"schema_version": schema_version, "preimage": dict(preimage)}
+    return {**body, "hash": sha256_object(body)}
+
+
+def build_bootstrap_context(**inputs: Any) -> dict[str, Any]:
+    return finalize_context("bootstrap_context_v1", inputs)
+
+
+def build_implementation_context(*, bootstrap_context_hash: str, **inputs: Any) -> dict[str, Any]:
+    return finalize_context("implementation_context_v1",
+                            {"bootstrap_context_hash": bootstrap_context_hash, **inputs})
+
+
+def build_semantic_context(*, implementation_context_hash: str, **inputs: Any) -> dict[str, Any]:
+    return finalize_context("semantic_context_v1",
+                            {"implementation_context_hash": implementation_context_hash, **inputs})
+
+
+def build_policy_context(*, semantic_context_hash: str, **inputs: Any) -> dict[str, Any]:
+    return finalize_context("policy_context_v1",
+                            {"semantic_context_hash": semantic_context_hash, **inputs})
+
+
+def build_invariant_context(*, policy_context_hash: str, **inputs: Any) -> dict[str, Any]:
+    return finalize_context("invariant_context_v1",
+                            {"policy_context_hash": policy_context_hash, **inputs})
+
+
+def build_reference_context_layer(*, invariant_context_hash: str, **inputs: Any) -> dict[str, Any]:
+    return finalize_context("reference_context_v1",
+                            {"invariant_context_hash": invariant_context_hash, **inputs})
+
+
+def build_bridge_context(*, reference_context_hash: str, **inputs: Any) -> dict[str, Any]:
+    return finalize_context("bridge_context_v1",
+                            {"reference_context_hash": reference_context_hash, **inputs})
+
+
+def build_bundle_context(*, bridge_context_hash: str, **inputs: Any) -> dict[str, Any]:
+    return finalize_context("bundle_context_v1",
+                            {"bridge_context_hash": bridge_context_hash, **inputs})
+
+
 def build_contexts(inputs: dict[str, Any]) -> dict[str, dict[str, Any]]:
     if "candidate_envelope" not in inputs:
         raise ValueError("invariant_context 必须明确提供 candidate_envelope")
@@ -62,12 +190,12 @@ def build_contexts(inputs: dict[str, Any]) -> dict[str, dict[str, Any]]:
     validate_context_contract(inputs)
     contexts: dict[str, dict[str, Any]] = {}
     for name, fields in CONTEXT_FIELDS.items():
-        value: dict[str, Any] = {}
+        value: dict[str, Any] = {"schema_version": f"{name}_v1", "preimage": {}}
         for field in fields:
             if field.endswith("_context"):
-                value[field] = contexts[field]["hash"]
+                value["preimage"][field] = contexts[field]["hash"]
             elif field in inputs:
-                value[field] = inputs[field]
+                value["preimage"][field] = inputs[field]
         value["hash"] = sha256_object(value)
         contexts[name] = value
     return contexts

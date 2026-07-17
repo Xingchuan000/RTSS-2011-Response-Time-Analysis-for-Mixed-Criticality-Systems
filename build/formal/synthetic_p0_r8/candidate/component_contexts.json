@@ -1,0 +1,75 @@
+{
+  "bootstrap_context": {
+    "schema_version": "bootstrap_context_v1",
+    "preimage": {
+      "registry_hash": "2e4a0e1f966a6016db752931e5658846d49fa3c0b9f8189a1e24ffd6f7b2f11d",
+      "profile": "P0",
+      "claim": "DEPLOYED_HI_SAFETY"
+    },
+    "hash": "f5b07a14b674f5843c5be792f9a378dabbef161ec3f76fc25d17381b49b86b80"
+  },
+  "implementation_context": {
+    "schema_version": "implementation_context_v1",
+    "preimage": {
+      "bootstrap_context_hash": "f5b07a14b674f5843c5be792f9a378dabbef161ec3f76fc25d17381b49b86b80",
+      "source_manifest_hash": "897074ac1be33fff35f80310c94bb5c31baab5f5061b9fb6041e8d41ebe59d1b",
+      "runtime_config_hash": "fe3bf97fac64da12ca5cff53be6094621f285230efc29f1677837bc5c1cdfa64"
+    },
+    "hash": "8024fe7b4560e454309868defefefa2be31ea5f77f52f5ac7f0ab354b2ad1aa2"
+  },
+  "semantic_context": {
+    "schema_version": "semantic_context_v1",
+    "preimage": {
+      "implementation_context_hash": "8024fe7b4560e454309868defefefa2be31ea5f77f52f5ac7f0ab354b2ad1aa2",
+      "taskset_fingerprint": "6b73c2fd64346dc3dd5ef53e6991188d828c01c56fa66c840fdcfdcffa48db48",
+      "effective_runtime_config_hash": "fe3bf97fac64da12ca5cff53be6094621f285230efc29f1677837bc5c1cdfa64",
+      "budget_domain_hash": "8a3a83de5498664f89552d115f4fe826165a6a31106237aa5a2e51f02b713513"
+    },
+    "hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4"
+  },
+  "policy_context": {
+    "schema_version": "policy_context_v1",
+    "preimage": {
+      "semantic_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+      "tree_inventory_hash": "7535f6a4ad1cfe21975393687a7725dca2133e7f6ab7b0123151b51d3eec3059",
+      "fixed_point_config_hash": "f9d6b7d0eb2b978b60219a27554b0da473537dd9f01c8758144c074b958c00e0",
+      "feature_schema_hash": "146bed7681d004e765d04fc552ce229da39d903c80f97b90851605093583414c",
+      "action_schema_hash": "73b3f29d0c274da0380fa6ddbbf84f8128a8369689a465fe347982b521ed5e3d"
+    },
+    "hash": "1f029955400b7b43b054c9d85287e87909a1008c31a0aa4c9039695881913d82"
+  },
+  "invariant_context": {
+    "schema_version": "invariant_context_v1",
+    "preimage": {
+      "policy_context_hash": "1f029955400b7b43b054c9d85287e87909a1008c31a0aa4c9039695881913d82",
+      "domain_hash": "8a3a83de5498664f89552d115f4fe826165a6a31106237aa5a2e51f02b713513",
+      "action_transition_input_hash": "e06d3a162ab6af40428ff9e36d25579427e9ab9936baba7be620e6e8272e7fa8"
+    },
+    "hash": "35810c08007cf8561707c7819fbad7e58d42a402077ccbcb65c2430628b089e9"
+  },
+  "reference_context": {
+    "schema_version": "reference_context_v1",
+    "preimage": {
+      "invariant_context_hash": "35810c08007cf8561707c7819fbad7e58d42a402077ccbcb65c2430628b089e9",
+      "reference_input_mode": "FROZEN_FORMAL_INPUTS"
+    },
+    "hash": "6cc369fb09c47b073ada06755d65a70bb45f92bbbfd38413220888cb9babd6d8"
+  },
+  "bridge_context": {
+    "schema_version": "bridge_context_v1",
+    "preimage": {
+      "reference_context_hash": "6cc369fb09c47b073ada06755d65a70bb45f92bbbfd38413220888cb9babd6d8",
+      "source_manifest_hash": "897074ac1be33fff35f80310c94bb5c31baab5f5061b9fb6041e8d41ebe59d1b"
+    },
+    "hash": "551f445aeae03cdf4335a8bc81bb53eeb63d069e1d561992fa91487aa902f98d"
+  },
+  "bundle_context": {
+    "schema_version": "bundle_context_v1",
+    "preimage": {
+      "bridge_context_hash": "551f445aeae03cdf4335a8bc81bb53eeb63d069e1d561992fa91487aa902f98d",
+      "target_id": "synthetic_p0",
+      "claim": "DEPLOYED_HI_SAFETY"
+    },
+    "hash": "c7555e0c5bf3b3a47220568396a598340f1e24dd88b6eb1e0772d1cd99e9ed51"
+  }
+}

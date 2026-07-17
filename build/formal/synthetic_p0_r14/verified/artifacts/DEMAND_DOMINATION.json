@@ -1,0 +1,118 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "DEMAND_DOMINATION",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "6cc369fb09c47b073ada06755d65a70bb45f92bbbfd38413220888cb9babd6d8",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.checker_catalog.DEMAND_DOMINATION",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "e91c0d60542f85717a468008177213d70e34740f42aac9b94779338b701baa6c",
+    "fresh_process": true
+  },
+  "witness": {
+    "status": "PASS",
+    "route": null,
+    "failure": null,
+    "checks": [
+      {
+        "case": "CASE1",
+        "task": "SYN_HI_0",
+        "kind": "f",
+        "expected": 1,
+        "actual": 1,
+        "match": true
+      },
+      {
+        "case": "CASE1",
+        "task": "SYN_HI_1",
+        "kind": "f",
+        "expected": 7,
+        "actual": 7,
+        "match": true
+      },
+      {
+        "case": "CASE1",
+        "task": "SYN_HI_1",
+        "kind": "f",
+        "expected": 7,
+        "actual": 7,
+        "match": true
+      },
+      {
+        "case": "CASE1",
+        "task": "SYN_HI_1",
+        "kind": "f",
+        "expected": 7,
+        "actual": 7,
+        "match": true
+      },
+      {
+        "case": "CASE1",
+        "task": "SYN_HI_1",
+        "kind": "f",
+        "expected": 7,
+        "actual": 7,
+        "match": true
+      },
+      {
+        "case": "CASE1",
+        "task": "SYN_HI_1",
+        "kind": "f",
+        "expected": 7,
+        "actual": 7,
+        "match": true
+      },
+      {
+        "case": "CASE1",
+        "task": "SYN_HI_1",
+        "kind": "f",
+        "expected": 7,
+        "actual": 7,
+        "match": true
+      },
+      {
+        "case": "CASE2",
+        "task": "SYN_HI_1",
+        "kind": "f",
+        "expected": 8,
+        "actual": 8,
+        "match": true
+      },
+      {
+        "case": "CASE2",
+        "task": "SYN_HI_1",
+        "kind": "f",
+        "expected": 7,
+        "actual": 7,
+        "match": true
+      },
+      {
+        "case": "CASE2",
+        "task": "SYN_HI_1",
+        "kind": "f",
+        "expected": 6,
+        "actual": 6,
+        "match": true
+      },
+      {
+        "case": "CASE2",
+        "task": "SYN_HI_1",
+        "kind": "f",
+        "expected": 5,
+        "actual": 5,
+        "match": true
+      }
+    ],
+    "fresh_context_hash": "6cc369fb09c47b073ada06755d65a70bb45f92bbbfd38413220888cb9babd6d8",
+    "candidate_status_compared": "PASS"
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "a741c84e66b18045cd8c10ae68c6bfd68e85e227d38db8a6a2b6b7e6235d4fd9"
+}

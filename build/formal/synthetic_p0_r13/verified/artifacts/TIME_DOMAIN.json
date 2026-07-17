@@ -1,0 +1,30 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "TIME_DOMAIN",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.checker_catalog.TIME_DOMAIN",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "f4b5335a49aa9b0391821ff174cf9cf29efe8a23fa58eddd2a94150765243039",
+    "fresh_process": true
+  },
+  "witness": {
+    "status": "PASS",
+    "schema_version": "time_domain_v1",
+    "arithmetic": "mathematical_integer",
+    "python_integer_type": "unbounded",
+    "numpy_fixed_width_allowed": false,
+    "fresh_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+    "candidate_status_compared": "PASS"
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "32f8bef12f06aa8c8f5484b66cc59f5849259d35a58dc248e94d558356ca9336"
+}

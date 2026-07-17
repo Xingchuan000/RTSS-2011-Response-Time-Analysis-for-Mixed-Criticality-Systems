@@ -1,0 +1,58 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "CERTIFIED_ENVELOPE",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "35810c08007cf8561707c7819fbad7e58d42a402077ccbcb65c2430628b089e9",
+  "direct_predecessor_hashes": {
+    "DEPLOYED_POLICY_PRESERVATION": "50e4fcc2bdad7bdd546d163fd22767b3367d369a939828c7d31ebf5dd3c69ac5",
+    "LO_BUDGET_UPPER_INVARIANT": "bd460dd17fdf3654e1ad311b640a097c21ecd4763d7791d8f9d2de0ef51ef10d",
+    "HI_BUDGET_LOWER_INVARIANT": "83b3a256f96dbf3b2d73abe4407dc959d7d8b68052b21c3361b01e41760b807b",
+    "ACTIVE_RELEASE_BUDGET_INVARIANT": "e2733b5778dfe6bf6201ccd63e7c58772e8f1a22b4e559c768bbabaf9216907f"
+  },
+  "checker_id": "formal_toolchain.verifier.checker_catalog.CERTIFIED_ENVELOPE",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "c72d41b7f5b20b786f7a299c17aba268bd1acbd2f80c48aa03740c7e8350ac92",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "evidence_key": "CERTIFIED",
+      "evidence": {
+        "status": "CANDIDATE",
+        "schema_version": "candidate_envelope_view_v1",
+        "trust_level": "CANDIDATE_UNVERIFIED",
+        "not_a_certified_envelope": true,
+        "candidate_envelope_hash": "87487fe781772753687b58b05f3566d9f5006f30886a84308a1734dacc259aba",
+        "common_candidate_hash": "36e747a91f0687172d2a738d33cdfc62291125ab2fa5d6eb2c5bab78a72cbf7e",
+        "deployed_candidate_hash": "3918c84342b0bf437db63751a05367a61ea1dbe57177672ecdedf6a180a849db",
+        "lower": {
+          "SYN_HI_0": 1,
+          "SYN_LO": 0,
+          "SYN_HI_1": 2
+        },
+        "upper": {
+          "SYN_HI_0": 2,
+          "SYN_LO": 2,
+          "SYN_HI_1": 3
+        },
+        "active_release_budget_upper": {
+          "SYN_HI_0": 2,
+          "SYN_LO": 2,
+          "SYN_HI_1": 3
+        }
+      }
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "PREDECESSOR_NOT_PASS"
+  },
+  "artifact_hash": "1769f9488adea59dfddb05a48563f011c8721941723f0dee9af6a544be65f54d"
+}

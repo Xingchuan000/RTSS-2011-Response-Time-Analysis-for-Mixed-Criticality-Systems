@@ -64,16 +64,21 @@ def _integer(value: Any, field: str) -> int:
     return value
 
 
-def _certified_upper(envelope: Mapping[str, Any], task_name: str) -> int:
+def _certified_upper(envelope: Mapping[str, Any], task_name: str, *, allow_unverified_candidate: bool = False) -> int:
     """读取唯一可信的 ``B̄`` 来源，并验证 Phase H 认证边界。
 
     ``budget_by_task`` 里的字段只能作为 provenance 交叉检查，绝不能成为
     数值来源；否则调用方可以通过修改 provenance 绕过 Phase H 的上界。
     """
-    if envelope.get("schema_version") != "certified_envelope_v1" or envelope.get("status") != "PASS":
-        raise ValueError("certified envelope 必须是 PASS 的 certified_envelope_v1")
+    is_candidate_view = envelope.get("trust_level") == "CANDIDATE_UNVERIFIED" and envelope.get("not_a_certified_envelope") is True
+    if is_candidate_view and not allow_unverified_candidate:
+        raise ValueError("candidate envelope 不能作为 trusted reference 输入")
+    if not is_candidate_view and (envelope.get("schema_version") not in {"certified_envelope_v1", "certified_envelope_v2"} or envelope.get("status") != "PASS"):
+        raise ValueError("certified envelope 必须是 PASS 的 certified_envelope_v1 或 certified_envelope_v2")
     preservation = envelope.get("preservation_certificate")
     preservation_hash = envelope.get("preservation_certificate_hash")
+    if is_candidate_view:
+        return _integer(envelope["upper"][task_name], f"candidate_envelope.upper[{task_name}]")
     if not isinstance(preservation, Mapping) or preservation.get("obligation_status") != "PASS":
         raise ValueError("certified envelope 缺少 PASS preservation certificate")
     if sha256_object(dict(preservation)) != preservation_hash:
@@ -111,6 +116,7 @@ def build_reference_taskset(
     semantic_context_hash: str | None = None,
     effective_runtime_config_hash: str | None = None,
     source_context_hash: str | None = None,
+    allow_unverified_candidate: bool = False,
 ) -> ReferenceTaskset:
     """严格执行 I01/I02，保持输入顺序和所有时序参数不变。"""
     if not ordered_tasks:
@@ -144,7 +150,8 @@ def build_reference_taskset(
         # provenance.b_bar 都只是绑定检查，不能改变认证后的数值。
         if budget.get("certified_envelope_hash") != certified_envelope_hash:
             raise ValueError(f"task {name} 的 budget provenance 未绑定传入的 certified envelope")
-        b_bar = _certified_upper(certified_envelope, name)
+        b_bar = _certified_upper(certified_envelope, name,
+                                 allow_unverified_candidate=allow_unverified_candidate)
         if "b_bar" in budget and budget["b_bar"] != b_bar:
             raise ValueError(f"task {name} 的 provenance b_bar 与 certified upper 不一致")
         crit = getattr(task.criticality, "value", str(task.criticality))

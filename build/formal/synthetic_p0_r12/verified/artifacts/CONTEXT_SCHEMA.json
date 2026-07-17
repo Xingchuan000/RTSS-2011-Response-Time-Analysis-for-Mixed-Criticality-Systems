@@ -1,0 +1,39 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "CONTEXT_SCHEMA",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "f5b07a14b674f5843c5be792f9a378dabbef161ec3f76fc25d17381b49b86b80",
+  "direct_predecessor_hashes": {
+    "CANONICAL_SERIALIZATION": "5116ddff375f641364e0d944294fe415fd4c906e615a7d451ce0f17516853b76"
+  },
+  "checker_id": "formal_toolchain.verifier.checker_catalog.CONTEXT_SCHEMA",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "c62a7b0b2f78e64a4935cb00cd2827fe1bcb9e49d4d03d9623454ca2c1dbbf49",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "evidence_key": "CONTEXT_SCHEMA",
+      "evidence": {
+        "obligation_id": "CONTEXT_SCHEMA",
+        "status": "UNRESOLVED",
+        "route": "UNRESOLVED",
+        "code": "CANDIDATE_EVIDENCE_BUILDER_NOT_IMPLEMENTED",
+        "checker_input_hashes": {},
+        "witness": {}
+      }
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "PREDECESSOR_NOT_PASS"
+  },
+  "artifact_hash": "d4e7e980119097f530d6e5046502968cf32f884780ec840046122567ae59afd7"
+}

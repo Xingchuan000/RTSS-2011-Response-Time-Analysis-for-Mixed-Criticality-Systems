@@ -1,0 +1,45 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "DEMAND_ORACLE_BATCH_CONTRACT",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+  "direct_predecessor_hashes": {
+    "MODE_SEMANTICS_CONFORMANCE": "e8f73bcbe9a98b818ab3eb30766bf63377a2504abf5a747f083dd3fdecb4b397"
+  },
+  "checker_id": "formal_toolchain.verifier.checker_catalog.DEMAND_ORACLE_BATCH_CONTRACT",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "6ee10f1062e1a8f47ae07fedf1643132c5210b8ec7bd3ab60094a27e8be84243",
+    "fresh_process": true
+  },
+  "witness": {
+    "status": "PASS",
+    "route": null,
+    "failure": null,
+    "contract": {
+      "abnormal_hi_arrival_only_switch": true,
+      "same_batch_lo_classification": true,
+      "hi_mode_persists_until_idle": true,
+      "idle_recovery_iff_quiescent": true,
+      "entry_mode_boundary_identified": true,
+      "total": true,
+      "positive_integer_codomain": true,
+      "non_anticipating": true,
+      "batch_entry_frozen": true,
+      "key_stable_repeated_read": true,
+      "projection_order_idempotent": true,
+      "hi_upper_bound": true,
+      "normal_abnormal_boundary": true
+    },
+    "fresh_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+    "candidate_status_compared": "PASS"
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "2c9db49cae648f45d7e3b4e1d20be8c13fb672e4df420aae446f37a91e75a25c"
+}

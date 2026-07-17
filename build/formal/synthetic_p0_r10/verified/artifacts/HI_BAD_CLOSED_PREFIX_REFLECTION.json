@@ -1,0 +1,33 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "HI_BAD_CLOSED_PREFIX_REFLECTION",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "551f445aeae03cdf4335a8bc81bb53eeb63d069e1d561992fa91487aa902f98d",
+  "direct_predecessor_hashes": {
+    "CLOSED_PREFIX_REFINEMENT": "301f549593bfaab9aff76fc0d6c83a4ae2b6f00861cde05ecc2879966454ab81",
+    "REFERENCE_PREFIX_EXTENSION": "56d3b6c4eb2056017980275b6f74f8126aaa102129c1e55053dce956e5fe3d24",
+    "PROTECTED_HI_SAFETY_COROLLARY": "80c9770734f76ff2275831fdb672ec621447f0180e52eb8a0fbd8ccd98bcd73b"
+  },
+  "checker_id": "formal_toolchain.verifier.checker_catalog.HI_BAD_CLOSED_PREFIX_REFLECTION",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "9b1984f990b6618fbf3e7a25acaf85c7aa7f7daab4bebef44923d21bc1084672",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "not_run": "fresh verifier required"
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "PREDECESSOR_NOT_PASS"
+  },
+  "artifact_hash": "5b814eb444b164fd3d4b5734ab0036d9ca4ebb9b928365ebce958d734ac90469"
+}

@@ -8,9 +8,12 @@ from pathlib import Path
 def render_report(verified: Path, output: Path) -> None:
     summary = json.loads((verified / "proof_summary.json").read_text(encoding="utf-8"))
     root = summary.get("outer_bundle_root", "未生成")
-    lines = ["# Formal proof report", "", "## Input identity", "",
-             f"- fixture_id: `{summary.get('fixture_id', 'unknown')}`",
-             f"- fixture_kind: `{summary.get('fixture_kind', 'unknown')}`",
+    # 报告只投影 verified 目录中的结果，不把报告自身写入 context 或 root。
+    lines = ["# Formal proof report", "", "## Target identity", "",
+             f"- target_id: `{summary.get('target_id', summary.get('fixture_id', 'unknown'))}`",
+             f"- target_kind: `{summary.get('target_kind', summary.get('fixture_kind', 'unknown'))}`",
+             f"- taskset_seed: `{summary.get('taskset_seed', 'unknown')}`",
+             f"- tree_variant: `{summary.get('tree_variant', 'unknown')}`",
              f"- profile: `{summary.get('profile')}`",
              f"- primary claim: `{summary.get('primary_claim')}`", "",
              "## Claim result", "",
@@ -21,8 +24,16 @@ def render_report(verified: Path, output: Path) -> None:
              "## Obligation status", ""]
     for obligation_id, status in sorted(summary.get("obligation_statuses", {}).items()):
         lines.append(f"- `{obligation_id}`: `{status}`")
-    lines.extend(["", "## Real-seed status", "",
-                  f"- real_seed_evaluation: `{summary.get('real_seed_evaluation', 'DEFERRED')}`", ""])
+    lines.extend(["", "## Independent evidence", "",
+                  f"- rta_replay_verified: `{summary.get('rta_replay_verified', False)}`",
+                  f"- bridge_proof_verified: `{summary.get('bridge_proof_verified', False)}`",
+                  f"- claim_aggregation_source: `{summary.get('claim_aggregation_source', 'unknown')}`",
+                  "", "## Context and TCB", "",
+                  "- outer root 包含状态决定证据、active obligation 集合和 claim request；不包含本报告。",
+                  "- DEPLOYED_TREE_PROVED 仅相对于 TheoryManifest 中声明的 TCB 成立。",
+                  "- 没有 proof assistant proof object 时，不宣称所有数学定理已被机器证明。",
+                  "", "## Real-seed status", "",
+                  f"- real_seed_evaluation: `{summary.get('real_seed_evaluation', 'UNRESOLVED')}`", ""])
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines), encoding="utf-8")

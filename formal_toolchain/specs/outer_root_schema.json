@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Outer bundle root v3 preimage",
+  "type": "object",
+  "required": ["schema_version", "component_context_hashes", "verified_obligation_artifact_hashes", "status_evidence_hashes", "independent_verification_payload_hash", "active_obligation_set", "claim_request"],
+  "properties": {
+    "schema_version": {"const": "outer_bundle_root_v3"},
+    "component_context_hashes": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "verified_obligation_artifact_hashes": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "status_evidence_hashes": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "independent_verification_payload_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "active_obligation_set": {"type": "array", "items": {"type": "string"}},
+    "claim_request": {"type": "object"}
+  },
+  "additionalProperties": false
+}

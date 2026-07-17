@@ -1,0 +1,52 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "TIME_PROGRESS",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.checker_catalog.TIME_PROGRESS",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "dc4cb357924f87e594ccc469538c049d4d77b8649174ddd7f9ccfd88b0f7fc01",
+    "fresh_process": true
+  },
+  "witness": {
+    "status": "PASS",
+    "route": null,
+    "failure": null,
+    "binding": {
+      "status": "PASS",
+      "ready_branch": {
+        "kind": "ONE_SERVICE_TICK",
+        "strict_time_increase": true,
+        "evidence": {
+          "status": "PASS",
+          "route": null,
+          "function": "EventRuntimeEngine._advance_time",
+          "lineno": 676
+        }
+      },
+      "empty_ready_branch": {
+        "kind": "JUMP_TO_NEXT_EVENT",
+        "strict_time_increase": true,
+        "evidence": {
+          "status": "PASS",
+          "route": null,
+          "function": "EventRuntimeEngine.run_until",
+          "lineno": 1260
+        }
+      },
+      "zero_time_closure_finite": true
+    },
+    "fresh_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+    "candidate_status_compared": "PASS"
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "a7b1ccb71cbedf4771e4eba9ef075e4f9ed01b06eb0dc7162751e3c907b5c3b2"
+}

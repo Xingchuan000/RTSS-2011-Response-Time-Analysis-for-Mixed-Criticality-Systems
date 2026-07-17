@@ -48,7 +48,9 @@ def claim_dependency_closure(entries: list[Mapping[str, Any]], claim: str) -> se
     by_id = {str(item["id"]): item for item in entries
               if item.get("activation") == "active" and item.get("required") is True}
     roots = {item_id for item_id, item in by_id.items()
-             if claim in {str(value) for value in item.get("gates_claims", [])}}
+             if item_id != "CLAIM_AGGREGATION_RESULT"
+             and item.get("kind") != "derived_summary"
+             and claim in {str(value) for value in item.get("gates_claims", [])}}
     closure: set[str] = set()
     stack = sorted(roots, reverse=True)
     while stack:

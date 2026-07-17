@@ -1,0 +1,47 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "HI_EXECUTION_CONTRACT",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+  "direct_predecessor_hashes": {
+    "MODE_SEMANTICS_CONFORMANCE": "e93fdd1684a5273564a9f4e2a940fd3b80dc96320b12c570259d7f16ce9f7fae"
+  },
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "HI_EXECUTION_CONTRACT",
+    "evidence": {
+      "obligation_id": "HI_EXECUTION_CONTRACT",
+      "status": "PASS",
+      "route": null,
+      "code": null,
+      "checker_input_hashes": {
+        "source_manifest_hash": "addd9057971b4d15a42880a023c95fd4054266c9677178565256c586c2462382",
+        "context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4"
+      },
+      "witness": {
+        "result": {
+          "status": "PASS",
+          "schema_version": "hi_execution_contract_v1",
+          "source_binding_hash": "067526031b8fb821512d9787a4688000cb6a8c04ba8f97fedd5383a8246246c4",
+          "runtime_scenario_hash": "293d5f0960502f49ab1cd97df3d92acd89919a53076c7f47581ab110c00e26c6",
+          "hi_executes_actual_demand": true,
+          "hi_not_truncated_at_c_lo": true
+        }
+      }
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "e959ad3ed318c5a1e98bcc747e69fa6f96fad5cec825a5d927b0189fb16a4c0d"
+}

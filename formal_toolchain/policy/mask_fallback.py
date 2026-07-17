@@ -47,7 +47,8 @@ def select_first_valid(ranking: Sequence[int], valid_mask: Sequence[bool], *, ac
 def build_mask_fallback_certificate(rankings: Sequence[Sequence[int]], masks: Sequence[Sequence[bool]], *, action_dim: int,
                                     runtime_reasons: Sequence[Sequence[str]] | None = None,
                                     synthetic_cases: Sequence[Mapping[str, Any]] | None = None,
-                                    runtime_mask_evaluator: Any | None = None) -> dict[str, Any]:
+                                    runtime_mask_evaluator: Any | None = None,
+                                    formal_mask_evaluator: Any | None = None) -> dict[str, Any]:
     if (runtime_reasons is None or synthetic_cases is None or runtime_mask_evaluator is None or
         len(runtime_reasons) != len(masks) or len(synthetic_cases) != len(masks)):
         return {"status": "UNRESOLVED", "route": "POLICY_CONTRACT_VIOLATION",
@@ -62,8 +63,14 @@ def build_mask_fallback_certificate(rankings: Sequence[Sequence[int]], masks: Se
         if tuple(mask) != tuple(runtime_mask) or tuple(reasons) != tuple(runtime_reason):
             return {"status": "FAIL", "route": "POLICY_CONTRACT_VIOLATION",
                     "failure": {"code": "RUNTIME_MASK_EVIDENCE_MISMATCH"}}
-        formal_mask, formal_reasons = evaluate_synthetic_mask(case["state"], case["action_definitions"],
-                                                               forbid_decreasing_hi_budgets=case.get("forbid_decreasing_hi_budgets", True))
+        if formal_mask_evaluator is None:
+            formal_mask, formal_reasons = evaluate_synthetic_mask(
+                case["state"], case["action_definitions"],
+                forbid_decreasing_hi_budgets=case.get("forbid_decreasing_hi_budgets", True))
+        else:
+            formal_mask, formal_reasons = formal_mask_evaluator(
+                case["state"], case["action_definitions"],
+                case.get("forbid_decreasing_hi_budgets", True))
         if tuple(mask) != formal_mask or tuple(reasons) != formal_reasons:
             return {"status": "FAIL", "route": "POLICY_CONTRACT_VIOLATION",
                     "failure": {"code": "MASK_REASON_DIFFERENTIAL_MISMATCH"}}

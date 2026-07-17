@@ -1,0 +1,37 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "SOURCE_TREE_INTEGRITY",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "8024fe7b4560e454309868defefefa2be31ea5f77f52f5ac7f0ab354b2ad1aa2",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.checker_catalog.SOURCE_TREE_INTEGRITY",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "5e53373b851e61ff096d9f40a10242c69c28d6a3bcaab16701ff82d3150f77cc",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "evidence_key": "SOURCE_TREE_INTEGRITY",
+      "evidence": {
+        "obligation_id": "SOURCE_TREE_INTEGRITY",
+        "status": "UNRESOLVED",
+        "route": "UNRESOLVED",
+        "code": "CANDIDATE_EVIDENCE_BUILDER_NOT_IMPLEMENTED",
+        "checker_input_hashes": {},
+        "witness": {}
+      }
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "SEMANTIC_CHECKER_NOT_IMPLEMENTED"
+  },
+  "artifact_hash": "fb6acb4f7941d4d08fefb850245aa7800ead6e59b335df92f60ef0c471181ef5"
+}

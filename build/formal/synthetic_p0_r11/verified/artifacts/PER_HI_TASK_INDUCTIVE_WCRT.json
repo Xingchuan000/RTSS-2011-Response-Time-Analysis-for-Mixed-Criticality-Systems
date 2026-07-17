@@ -1,0 +1,33 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "PER_HI_TASK_INDUCTIVE_WCRT",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "6cc369fb09c47b073ada06755d65a70bb45f92bbbfd38413220888cb9babd6d8",
+  "direct_predecessor_hashes": {
+    "PROTECTED_HI_RTA_ARITHMETIC": "682d5f7401ee65fe749aa15c85a9379cd445e4df7537a3793960d539db7db458",
+    "DISCRETE_TICK_EMBEDDING": "a56f57fa509e0d085d67f4a830cebca30f9cbb399397ffaca906d47545c394c0",
+    "THEORY_LIBRARY_VERSION": "7592224061bf9d88536b2016623006c968cc0a39852fecc630d594e184150419"
+  },
+  "checker_id": "formal_toolchain.verifier.checker_catalog.PER_HI_TASK_INDUCTIVE_WCRT",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "8ef35500896cd7943014f20e1f9a1c26975e5650d0376764ddc9ccd887b1768b",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "not_run": "前驱 FAIL"
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "PREDECESSOR_NOT_PASS"
+  },
+  "artifact_hash": "c7cefa6efa01a769917f4cc83b97b8166468ad579bb7d656c486366fdf88b22f"
+}

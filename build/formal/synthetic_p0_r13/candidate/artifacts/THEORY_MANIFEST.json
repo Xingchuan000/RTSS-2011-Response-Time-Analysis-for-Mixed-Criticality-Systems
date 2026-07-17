@@ -1,0 +1,38 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "THEORY_MANIFEST",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "f5b07a14b674f5843c5be792f9a378dabbef161ec3f76fc25d17381b49b86b80",
+  "direct_predecessor_hashes": {
+    "THEORY_LIBRARY_VERSION": "ac836fc94925b1087a68a657f3807ef5fd2844f59d1ebe04c6e19d12d57aad58"
+  },
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "THEORY_MANIFEST",
+    "evidence": {
+      "obligation_id": "THEORY_MANIFEST",
+      "status": "UNRESOLVED",
+      "route": "UNRESOLVED",
+      "code": "CANDIDATE_EVIDENCE_BUILDER_NOT_IMPLEMENTED",
+      "checker_input_hashes": {},
+      "witness": {}
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "CANDIDATE_EVIDENCE_FAILED"
+  },
+  "artifact_hash": "9b1f0ed26cd2f4bb47bcebc0846c54988f4f04bbbc12f7da5ef9e461c68e857b"
+}

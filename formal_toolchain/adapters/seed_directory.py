@@ -48,8 +48,8 @@ def resolve_seed_directory(seed_dir: Path, tree_variant: str = "best_overall",
         return _diagnostic("TASKSET_SEED_INVALID", "artifact metadata.taskset_seed 必须是整数")
     if expected_seed is not None and declared_seed != expected_seed:
         return _diagnostic("TASKSET_SEED_MISMATCH", f"artifact metadata seed={declared_seed}，期望 {expected_seed}")
-    request = {"schema_version": "proof_request_v1", "profile": "P0",
-               "primary_claim": "DEPLOYED_HI_SAFETY", "taskset_seed": 185,
+    request = {"schema_version": "proof_request_v2", "profile": "P0",
+               "primary_claim": "DEPLOYED_HI_SAFETY", "taskset_seed": declared_seed,
                "target_recipe": target_recipe,
                "tree_artifact_dir": "tree_artifact",
                # canonical request 只能保存 workspace-relative 名称；CLI 参数中的

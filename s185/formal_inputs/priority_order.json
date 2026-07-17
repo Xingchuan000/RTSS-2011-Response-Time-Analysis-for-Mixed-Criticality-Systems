@@ -1,0 +1,17 @@
+{
+  "schema_version": "priority_order_v1",
+  "priority_order": [
+    "mc_lo_0",
+    "mc_hi_1",
+    "mc_hi_3",
+    "mc_hi_0",
+    "mc_hi_2",
+    "mc_hi_4",
+    "mc_hi_5",
+    "mc_lo_1",
+    "mc_lo_3",
+    "mc_lo_5",
+    "mc_lo_2",
+    "mc_lo_4"
+  ]
+}

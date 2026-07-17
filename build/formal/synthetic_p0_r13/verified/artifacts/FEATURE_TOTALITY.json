@@ -1,0 +1,47 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "FEATURE_TOTALITY",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+  "direct_predecessor_hashes": {
+    "EXECUTABLE_POLICY_SEMANTICS": "3fec32a2aa4926934402f0356e5e6d00b36795ff961ebd945e1a90c9e2447295"
+  },
+  "checker_id": "formal_toolchain.verifier.checker_catalog.FEATURE_TOTALITY",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "34ef8a8787a110d8a9661f114f31ebcd7eb69523977f503fa2ee208fd31a6888",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "evidence_key": "FEATURE_TOTALITY",
+      "evidence": {
+        "obligation_id": "FEATURE_TOTALITY",
+        "status": "PASS",
+        "route": null,
+        "code": null,
+        "checker_input_hashes": {
+          "source_manifest_hash": "addd9057971b4d15a42880a023c95fd4054266c9677178565256c586c2462382",
+          "context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4"
+        },
+        "witness": {
+          "result": {
+            "status": "PASS",
+            "failure": null
+          }
+        }
+      }
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "PREDECESSOR_NOT_PASS"
+  },
+  "artifact_hash": "690a85c5160fa85a5d76cb635e963f91515ee667ed3441abcfe7cae23a253cbf"
+}

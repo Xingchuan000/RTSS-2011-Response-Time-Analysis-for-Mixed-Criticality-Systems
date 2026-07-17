@@ -1,0 +1,1198 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "PROTECTED_HI_RTA_ARITHMETIC",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "6cc369fb09c47b073ada06755d65a70bb45f92bbbfd38413220888cb9babd6d8",
+  "direct_predecessor_hashes": {
+    "REFERENCE_TASKSET": "7f9c3ec1d02a63029252d9ed89b2de922d19c68fc7c84b09c6a8be2c2584cff5",
+    "LO_MODE_RTA": "c5da6caebd9a32ddec1267c3356f66f626b1d20e6f1b7b7943dc6704f98aa79d",
+    "WORST_CASE_START_TIME": "8c759f7420c02d269328bb823dcf0a33b599c79da414b192fc724c6c930cdd9d",
+    "CASE1_INTEGER_DOMAIN": "0d35baeded8ad5c5a23987dc0f1a35b210606af5e36c591fed9a57a114dbd230",
+    "CASE2_INTEGER_DOMAIN": "c05fb554e12ea6025a70f33b40573836b292d358491d4225d89ff2941b3eddc9",
+    "ZERO_RELATIVE_START": "f83a1a460bacd62143266b098193cf0305909e5e60f928a51e954aeed8ae3d66",
+    "INHERITED_HI_DOMINATION": "5885c211e2c42079bc06f973b663eaff412fc63d43fa576d72d6e3d684841bed",
+    "RELEASE_COUNT": "7dc4c032cc7bda1b5bdd545f634ac5b233b137917c4409cb8f086902f12fb05a",
+    "DEMAND_DOMINATION": "a741c84e66b18045cd8c10ae68c6bfd68e85e227d38db8a6a2b6b7e6235d4fd9"
+  },
+  "checker_id": "formal_toolchain.verifier.checker_catalog.PROTECTED_HI_RTA_ARITHMETIC",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "8c88c8b51b658a1e0cb11985694d22e110174627bdff237141f32ec8b88062f9",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "evidence_key": "RTA_COMPOSITE",
+      "evidence": {
+        "status": "PASS",
+        "production": {
+          "schema_version": "protected_hi_rta_v1",
+          "status": "PASS",
+          "route": "PASS",
+          "taskset": {
+            "schema_version": "reference_taskset_v1",
+            "tasks": [
+              {
+                "name": "SYN_HI_0",
+                "period": 20,
+                "deadline": 20,
+                "c_lo": 1,
+                "c_hi": 2,
+                "criticality": "HI",
+                "priority_index": 0,
+                "code_c_lo": 1,
+                "code_c_hi": 2,
+                "degraded_cost": null
+              },
+              {
+                "name": "SYN_LO",
+                "period": 30,
+                "deadline": 2,
+                "c_lo": 3,
+                "c_hi": 1,
+                "criticality": "LO",
+                "priority_index": 1,
+                "code_c_lo": 1,
+                "code_c_hi": 1,
+                "degraded_cost": 1
+              },
+              {
+                "name": "SYN_HI_1",
+                "period": 50,
+                "deadline": 50,
+                "c_lo": 2,
+                "c_hi": 3,
+                "criticality": "HI",
+                "priority_index": 2,
+                "code_c_lo": 2,
+                "code_c_hi": 3,
+                "degraded_cost": null
+              }
+            ],
+            "priority_order": [
+              "SYN_HI_0",
+              "SYN_LO",
+              "SYN_HI_1"
+            ],
+            "source_context_hash": "df8efb0b252b10318f464921e2d3850c3ad7593cceb233c2097b0726fe716c22",
+            "fingerprint": "a3c34f9cb357ae47ef1b6bf573068166309250e089ad819204fbb37df21fe8dc"
+          },
+          "tasks": [
+            {
+              "status": "PASS",
+              "task": {
+                "name": "SYN_HI_0",
+                "period": 20,
+                "deadline": 20,
+                "c_lo": 1,
+                "c_hi": 2,
+                "criticality": "HI",
+                "priority_index": 0,
+                "code_c_lo": 1,
+                "code_c_hi": 2,
+                "degraded_cost": null
+              },
+              "lo": {
+                "status": "PASS",
+                "r_lo": 1,
+                "trace": [
+                  {
+                    "iteration": 0,
+                    "r": 1,
+                    "release_counts": {},
+                    "interference": 0,
+                    "f": 1
+                  }
+                ],
+                "post_fixed": true
+              },
+              "start": {
+                "status": "PASS",
+                "w_lo": 0,
+                "trace": [
+                  {
+                    "iteration": 0,
+                    "w": 0,
+                    "release_counts": {},
+                    "next": 0
+                  }
+                ]
+              },
+              "case1": [
+                {
+                  "case": "CASE1",
+                  "start": 0,
+                  "response_for_deadline": 1,
+                  "absolute_response": 1,
+                  "trace": [
+                    {
+                      "iteration": 0,
+                      "r": 1,
+                      "start": 0,
+                      "il_terms": {},
+                      "ih_terms": {},
+                      "f": 1
+                    }
+                  ],
+                  "status": "PASS"
+                }
+              ],
+              "case2": [
+                {
+                  "case": "CASE2",
+                  "tag": "ZERO_RELATIVE_START",
+                  "start": 0,
+                  "response_for_deadline": 2,
+                  "relative_response": 2,
+                  "absolute_response": 2,
+                  "status": "PASS"
+                }
+              ],
+              "r_hi": 2,
+              "r_star": 2
+            },
+            {
+              "status": "PASS",
+              "task": {
+                "name": "SYN_HI_1",
+                "period": 50,
+                "deadline": 50,
+                "c_lo": 2,
+                "c_hi": 3,
+                "criticality": "HI",
+                "priority_index": 2,
+                "code_c_lo": 2,
+                "code_c_hi": 3,
+                "degraded_cost": null
+              },
+              "lo": {
+                "status": "PASS",
+                "r_lo": 6,
+                "trace": [
+                  {
+                    "iteration": 0,
+                    "r": 2,
+                    "release_counts": {
+                      "SYN_HI_0": 1,
+                      "SYN_LO": 1
+                    },
+                    "interference": 4,
+                    "f": 6
+                  },
+                  {
+                    "iteration": 1,
+                    "r": 6,
+                    "release_counts": {
+                      "SYN_HI_0": 1,
+                      "SYN_LO": 1
+                    },
+                    "interference": 4,
+                    "f": 6
+                  }
+                ],
+                "post_fixed": true
+              },
+              "start": {
+                "status": "PASS",
+                "w_lo": 4,
+                "trace": [
+                  {
+                    "iteration": 0,
+                    "w": 0,
+                    "release_counts": {
+                      "SYN_HI_0": 1,
+                      "SYN_LO": 1
+                    },
+                    "next": 4
+                  },
+                  {
+                    "iteration": 1,
+                    "w": 4,
+                    "release_counts": {
+                      "SYN_HI_0": 1,
+                      "SYN_LO": 1
+                    },
+                    "next": 4
+                  }
+                ]
+              },
+              "case1": [
+                {
+                  "case": "CASE1",
+                  "start": 0,
+                  "response_for_deadline": 7,
+                  "absolute_response": 7,
+                  "trace": [
+                    {
+                      "iteration": 0,
+                      "r": 2,
+                      "start": 0,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 7
+                    },
+                    {
+                      "iteration": 1,
+                      "r": 7,
+                      "start": 0,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 7
+                    }
+                  ],
+                  "status": "PASS"
+                },
+                {
+                  "case": "CASE1",
+                  "start": 1,
+                  "response_for_deadline": 7,
+                  "absolute_response": 7,
+                  "trace": [
+                    {
+                      "iteration": 0,
+                      "r": 2,
+                      "start": 1,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 7
+                    },
+                    {
+                      "iteration": 1,
+                      "r": 7,
+                      "start": 1,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 7
+                    }
+                  ],
+                  "status": "PASS"
+                },
+                {
+                  "case": "CASE1",
+                  "start": 2,
+                  "response_for_deadline": 7,
+                  "absolute_response": 7,
+                  "trace": [
+                    {
+                      "iteration": 0,
+                      "r": 2,
+                      "start": 2,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 1
+                      },
+                      "f": 6
+                    },
+                    {
+                      "iteration": 1,
+                      "r": 6,
+                      "start": 2,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 7
+                    },
+                    {
+                      "iteration": 2,
+                      "r": 7,
+                      "start": 2,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 7
+                    }
+                  ],
+                  "status": "PASS"
+                },
+                {
+                  "case": "CASE1",
+                  "start": 3,
+                  "response_for_deadline": 7,
+                  "absolute_response": 7,
+                  "trace": [
+                    {
+                      "iteration": 0,
+                      "r": 2,
+                      "start": 3,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 1
+                      },
+                      "f": 6
+                    },
+                    {
+                      "iteration": 1,
+                      "r": 6,
+                      "start": 3,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 7
+                    },
+                    {
+                      "iteration": 2,
+                      "r": 7,
+                      "start": 3,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 7
+                    }
+                  ],
+                  "status": "PASS"
+                },
+                {
+                  "case": "CASE1",
+                  "start": 4,
+                  "response_for_deadline": 7,
+                  "absolute_response": 7,
+                  "trace": [
+                    {
+                      "iteration": 0,
+                      "r": 2,
+                      "start": 4,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 1
+                      },
+                      "f": 6
+                    },
+                    {
+                      "iteration": 1,
+                      "r": 6,
+                      "start": 4,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 7
+                    },
+                    {
+                      "iteration": 2,
+                      "r": 7,
+                      "start": 4,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 7
+                    }
+                  ],
+                  "status": "PASS"
+                },
+                {
+                  "case": "CASE1",
+                  "start": 5,
+                  "response_for_deadline": 7,
+                  "absolute_response": 7,
+                  "trace": [
+                    {
+                      "iteration": 0,
+                      "r": 2,
+                      "start": 5,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 1
+                      },
+                      "f": 6
+                    },
+                    {
+                      "iteration": 1,
+                      "r": 6,
+                      "start": 5,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 7
+                    },
+                    {
+                      "iteration": 2,
+                      "r": 7,
+                      "start": 5,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 7
+                    }
+                  ],
+                  "status": "PASS"
+                }
+              ],
+              "case2": [
+                {
+                  "case": "CASE2",
+                  "start": 0,
+                  "response_for_deadline": 8,
+                  "absolute_response": 8,
+                  "relative_response": 8,
+                  "trace": [
+                    {
+                      "iteration": 0,
+                      "r": 3,
+                      "start": 0,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 8
+                    },
+                    {
+                      "iteration": 1,
+                      "r": 8,
+                      "start": 0,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 8
+                    }
+                  ],
+                  "status": "PASS"
+                },
+                {
+                  "case": "CASE2",
+                  "start": 1,
+                  "response_for_deadline": 7,
+                  "absolute_response": 8,
+                  "relative_response": 7,
+                  "trace": [
+                    {
+                      "iteration": 0,
+                      "r": 4,
+                      "start": 1,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 8
+                    },
+                    {
+                      "iteration": 1,
+                      "r": 8,
+                      "start": 1,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 8
+                    }
+                  ],
+                  "status": "PASS"
+                },
+                {
+                  "case": "CASE2",
+                  "start": 2,
+                  "response_for_deadline": 6,
+                  "absolute_response": 8,
+                  "relative_response": 6,
+                  "trace": [
+                    {
+                      "iteration": 0,
+                      "r": 5,
+                      "start": 2,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 8
+                    },
+                    {
+                      "iteration": 1,
+                      "r": 8,
+                      "start": 2,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 8
+                    }
+                  ],
+                  "status": "PASS"
+                },
+                {
+                  "case": "CASE2",
+                  "start": 3,
+                  "response_for_deadline": 5,
+                  "absolute_response": 8,
+                  "relative_response": 5,
+                  "trace": [
+                    {
+                      "iteration": 0,
+                      "r": 6,
+                      "start": 3,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 8
+                    },
+                    {
+                      "iteration": 1,
+                      "r": 8,
+                      "start": 3,
+                      "il_terms": {
+                        "SYN_LO": 3
+                      },
+                      "ih_terms": {
+                        "SYN_HI_0": 2
+                      },
+                      "f": 8
+                    }
+                  ],
+                  "status": "PASS"
+                }
+              ],
+              "r_hi": 8,
+              "r_star": 8
+            }
+          ],
+          "artifact_schema_version": "certificate_envelope_v1",
+          "obligation_id": "PROTECTED_HI_RTA_ARITHMETIC",
+          "obligation_status": "PASS",
+          "certificate_context_hash": "df8efb0b252b10318f464921e2d3850c3ad7593cceb233c2097b0726fe716c22",
+          "direct_predecessor_hashes": {},
+          "checker_id": "formal_toolchain.reference.rta_production",
+          "checker_version": "phase-j-v1",
+          "inputs": {
+            "taskset_fingerprint": "a3c34f9cb357ae47ef1b6bf573068166309250e089ad819204fbb37df21fe8dc"
+          },
+          "witness": {
+            "tasks": [
+              {
+                "status": "PASS",
+                "task": {
+                  "name": "SYN_HI_0",
+                  "period": 20,
+                  "deadline": 20,
+                  "c_lo": 1,
+                  "c_hi": 2,
+                  "criticality": "HI",
+                  "priority_index": 0,
+                  "code_c_lo": 1,
+                  "code_c_hi": 2,
+                  "degraded_cost": null
+                },
+                "lo": {
+                  "status": "PASS",
+                  "r_lo": 1,
+                  "trace": [
+                    {
+                      "iteration": 0,
+                      "r": 1,
+                      "release_counts": {},
+                      "interference": 0,
+                      "f": 1
+                    }
+                  ],
+                  "post_fixed": true
+                },
+                "start": {
+                  "status": "PASS",
+                  "w_lo": 0,
+                  "trace": [
+                    {
+                      "iteration": 0,
+                      "w": 0,
+                      "release_counts": {},
+                      "next": 0
+                    }
+                  ]
+                },
+                "case1": [
+                  {
+                    "case": "CASE1",
+                    "start": 0,
+                    "response_for_deadline": 1,
+                    "absolute_response": 1,
+                    "trace": [
+                      {
+                        "iteration": 0,
+                        "r": 1,
+                        "start": 0,
+                        "il_terms": {},
+                        "ih_terms": {},
+                        "f": 1
+                      }
+                    ],
+                    "status": "PASS"
+                  }
+                ],
+                "case2": [
+                  {
+                    "case": "CASE2",
+                    "tag": "ZERO_RELATIVE_START",
+                    "start": 0,
+                    "response_for_deadline": 2,
+                    "relative_response": 2,
+                    "absolute_response": 2,
+                    "status": "PASS"
+                  }
+                ],
+                "r_hi": 2,
+                "r_star": 2
+              },
+              {
+                "status": "PASS",
+                "task": {
+                  "name": "SYN_HI_1",
+                  "period": 50,
+                  "deadline": 50,
+                  "c_lo": 2,
+                  "c_hi": 3,
+                  "criticality": "HI",
+                  "priority_index": 2,
+                  "code_c_lo": 2,
+                  "code_c_hi": 3,
+                  "degraded_cost": null
+                },
+                "lo": {
+                  "status": "PASS",
+                  "r_lo": 6,
+                  "trace": [
+                    {
+                      "iteration": 0,
+                      "r": 2,
+                      "release_counts": {
+                        "SYN_HI_0": 1,
+                        "SYN_LO": 1
+                      },
+                      "interference": 4,
+                      "f": 6
+                    },
+                    {
+                      "iteration": 1,
+                      "r": 6,
+                      "release_counts": {
+                        "SYN_HI_0": 1,
+                        "SYN_LO": 1
+                      },
+                      "interference": 4,
+                      "f": 6
+                    }
+                  ],
+                  "post_fixed": true
+                },
+                "start": {
+                  "status": "PASS",
+                  "w_lo": 4,
+                  "trace": [
+                    {
+                      "iteration": 0,
+                      "w": 0,
+                      "release_counts": {
+                        "SYN_HI_0": 1,
+                        "SYN_LO": 1
+                      },
+                      "next": 4
+                    },
+                    {
+                      "iteration": 1,
+                      "w": 4,
+                      "release_counts": {
+                        "SYN_HI_0": 1,
+                        "SYN_LO": 1
+                      },
+                      "next": 4
+                    }
+                  ]
+                },
+                "case1": [
+                  {
+                    "case": "CASE1",
+                    "start": 0,
+                    "response_for_deadline": 7,
+                    "absolute_response": 7,
+                    "trace": [
+                      {
+                        "iteration": 0,
+                        "r": 2,
+                        "start": 0,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 7
+                      },
+                      {
+                        "iteration": 1,
+                        "r": 7,
+                        "start": 0,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 7
+                      }
+                    ],
+                    "status": "PASS"
+                  },
+                  {
+                    "case": "CASE1",
+                    "start": 1,
+                    "response_for_deadline": 7,
+                    "absolute_response": 7,
+                    "trace": [
+                      {
+                        "iteration": 0,
+                        "r": 2,
+                        "start": 1,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 7
+                      },
+                      {
+                        "iteration": 1,
+                        "r": 7,
+                        "start": 1,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 7
+                      }
+                    ],
+                    "status": "PASS"
+                  },
+                  {
+                    "case": "CASE1",
+                    "start": 2,
+                    "response_for_deadline": 7,
+                    "absolute_response": 7,
+                    "trace": [
+                      {
+                        "iteration": 0,
+                        "r": 2,
+                        "start": 2,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 1
+                        },
+                        "f": 6
+                      },
+                      {
+                        "iteration": 1,
+                        "r": 6,
+                        "start": 2,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 7
+                      },
+                      {
+                        "iteration": 2,
+                        "r": 7,
+                        "start": 2,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 7
+                      }
+                    ],
+                    "status": "PASS"
+                  },
+                  {
+                    "case": "CASE1",
+                    "start": 3,
+                    "response_for_deadline": 7,
+                    "absolute_response": 7,
+                    "trace": [
+                      {
+                        "iteration": 0,
+                        "r": 2,
+                        "start": 3,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 1
+                        },
+                        "f": 6
+                      },
+                      {
+                        "iteration": 1,
+                        "r": 6,
+                        "start": 3,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 7
+                      },
+                      {
+                        "iteration": 2,
+                        "r": 7,
+                        "start": 3,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 7
+                      }
+                    ],
+                    "status": "PASS"
+                  },
+                  {
+                    "case": "CASE1",
+                    "start": 4,
+                    "response_for_deadline": 7,
+                    "absolute_response": 7,
+                    "trace": [
+                      {
+                        "iteration": 0,
+                        "r": 2,
+                        "start": 4,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 1
+                        },
+                        "f": 6
+                      },
+                      {
+                        "iteration": 1,
+                        "r": 6,
+                        "start": 4,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 7
+                      },
+                      {
+                        "iteration": 2,
+                        "r": 7,
+                        "start": 4,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 7
+                      }
+                    ],
+                    "status": "PASS"
+                  },
+                  {
+                    "case": "CASE1",
+                    "start": 5,
+                    "response_for_deadline": 7,
+                    "absolute_response": 7,
+                    "trace": [
+                      {
+                        "iteration": 0,
+                        "r": 2,
+                        "start": 5,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 1
+                        },
+                        "f": 6
+                      },
+                      {
+                        "iteration": 1,
+                        "r": 6,
+                        "start": 5,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 7
+                      },
+                      {
+                        "iteration": 2,
+                        "r": 7,
+                        "start": 5,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 7
+                      }
+                    ],
+                    "status": "PASS"
+                  }
+                ],
+                "case2": [
+                  {
+                    "case": "CASE2",
+                    "start": 0,
+                    "response_for_deadline": 8,
+                    "absolute_response": 8,
+                    "relative_response": 8,
+                    "trace": [
+                      {
+                        "iteration": 0,
+                        "r": 3,
+                        "start": 0,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 8
+                      },
+                      {
+                        "iteration": 1,
+                        "r": 8,
+                        "start": 0,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 8
+                      }
+                    ],
+                    "status": "PASS"
+                  },
+                  {
+                    "case": "CASE2",
+                    "start": 1,
+                    "response_for_deadline": 7,
+                    "absolute_response": 8,
+                    "relative_response": 7,
+                    "trace": [
+                      {
+                        "iteration": 0,
+                        "r": 4,
+                        "start": 1,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 8
+                      },
+                      {
+                        "iteration": 1,
+                        "r": 8,
+                        "start": 1,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 8
+                      }
+                    ],
+                    "status": "PASS"
+                  },
+                  {
+                    "case": "CASE2",
+                    "start": 2,
+                    "response_for_deadline": 6,
+                    "absolute_response": 8,
+                    "relative_response": 6,
+                    "trace": [
+                      {
+                        "iteration": 0,
+                        "r": 5,
+                        "start": 2,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 8
+                      },
+                      {
+                        "iteration": 1,
+                        "r": 8,
+                        "start": 2,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 8
+                      }
+                    ],
+                    "status": "PASS"
+                  },
+                  {
+                    "case": "CASE2",
+                    "start": 3,
+                    "response_for_deadline": 5,
+                    "absolute_response": 8,
+                    "relative_response": 5,
+                    "trace": [
+                      {
+                        "iteration": 0,
+                        "r": 6,
+                        "start": 3,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 8
+                      },
+                      {
+                        "iteration": 1,
+                        "r": 8,
+                        "start": 3,
+                        "il_terms": {
+                          "SYN_LO": 3
+                        },
+                        "ih_terms": {
+                          "SYN_HI_0": 2
+                        },
+                        "f": 8
+                      }
+                    ],
+                    "status": "PASS"
+                  }
+                ],
+                "r_hi": 8,
+                "r_star": 8
+              }
+            ]
+          },
+          "evidence": [],
+          "failure": null,
+          "artifact_hash": "5500797b0c030fb8c7b539c8ba64ee15d54b384ce9622eee99fea4941da73915"
+        },
+        "replay": {
+          "schema_version": "rta_replay_v1",
+          "status": "PASS",
+          "checks": [
+            {
+              "task": "SYN_HI_0",
+              "lo_trace_match": true,
+              "start_trace_match": true,
+              "case1_trace_match": true,
+              "case2_trace_match": true,
+              "status": "PASS"
+            },
+            {
+              "task": "SYN_HI_1",
+              "lo_trace_match": true,
+              "start_trace_match": true,
+              "case1_trace_match": true,
+              "case2_trace_match": true,
+              "status": "PASS"
+            }
+          ],
+          "production_status_match": true
+        },
+        "consistency": {
+          "status": "PASS",
+          "mismatches": []
+        },
+        "production_hash": "0063158385adfa94c13f6d773eca87a0496145b3db4d522ba90145179e9ce6b3",
+        "replay_hash": "e2d5faf37c3459c26872aabea3f3b5ac03014774e5f39e768622a9f14858050b",
+        "consistency_hash": "366fdcc7bb4c554f467c0942e9b85c652f7c37b82a070e1c3878634586751c94"
+      }
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "PREDECESSOR_NOT_PASS"
+  },
+  "artifact_hash": "682d5f7401ee65fe749aa15c85a9379cd445e4df7537a3793960d539db7db458"
+}

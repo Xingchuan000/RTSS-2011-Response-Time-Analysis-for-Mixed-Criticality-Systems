@@ -1,0 +1,42 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "CLOSED_PREFIX_REFINEMENT",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "551f445aeae03cdf4335a8bc81bb53eeb63d069e1d561992fa91487aa902f98d",
+  "direct_predecessor_hashes": {
+    "SCHEDULER_MODEL": "aea93568470ec8852316d69fd90df22b34bcfaebc8b4931c41511aa8cccea365",
+    "MODE_SEMANTICS_CONFORMANCE": "e93fdd1684a5273564a9f4e2a940fd3b80dc96320b12c570259d7f16ce9f7fae",
+    "DEMAND_ORACLE_BATCH_CONTRACT": "6ee10f1062e1a8f47ae07fedf1643132c5210b8ec7bd3ab60094a27e8be84243",
+    "HI_EXECUTION_CONTRACT": "e959ad3ed318c5a1e98bcc747e69fa6f96fad5cec825a5d927b0189fb16a4c0d",
+    "REMOVAL_COMPLETENESS": "07c0f3dbfc766ae9d41701ca44cba6e7c59177840084245ec9ea64b419a9faf3",
+    "HI_NONTRUNCATION": "972110aaecdadee180e97135f5b5e66614c03d596476f20a867426839ccf81db",
+    "DEADLINE_OBSERVATION": "f95e51fcf1f7c09df101f8a5a4c69a0cc535254478b278f97b8b0d0756687a17",
+    "BATCH_CLOSURE": "2ae6f1f87672fa136f41f5a710aa401b8356d7924b4d6b89b04c4fa2eccccba9",
+    "CONTROLLER_POSTCLOSURE": "697abaab91b14d628bba0a54b9ddf820f7dba7dad60bc2554fcc18397d863615",
+    "TIME_PROGRESS": "dc4cb357924f87e594ccc469538c049d4d77b8649174ddd7f9ccfd88b0f7fc01",
+    "WINDOW_MODE_NORMALIZATION": "7f089791e1d388b06aa29a192b7e2321e8f6b7a72c6854dbe7e3dd5c554f9438",
+    "RELEASE_FIXED_REMOVAL_MAPPING": "ee95f1fe598cb0d6e029ddacb6246f64916a5a3814c3b3f0b2b5f034852d5549",
+    "CERTIFIED_ENVELOPE": "c72d41b7f5b20b786f7a299c17aba268bd1acbd2f80c48aa03740c7e8350ac92"
+  },
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "not_run": "fresh verifier required"
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "FRESH_VERIFIER_REQUIRED"
+  },
+  "artifact_hash": "2e30a05ea9869d948f94e12a91d6c7e8ecdd080bb303d3a908f4250145df0511"
+}

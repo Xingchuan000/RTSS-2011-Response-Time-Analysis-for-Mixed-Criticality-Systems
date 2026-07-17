@@ -1,0 +1,4380 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "CONTROLLER_POSTCLOSURE",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "CONTROLLER_POSTCLOSURE",
+    "evidence": {
+      "obligation_id": "CONTROLLER_POSTCLOSURE",
+      "status": "PASS",
+      "route": null,
+      "code": null,
+      "checker_input_hashes": {
+        "source_manifest_hash": "addd9057971b4d15a42880a023c95fd4054266c9677178565256c586c2462382",
+        "context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4"
+      },
+      "witness": {
+        "result": {
+          "status": "PASS",
+          "route": null,
+          "failure": null,
+          "controller_binding": {
+            "status": "PASS",
+            "schema_version": "controller_binding_v1",
+            "wrapper_source_hash": "62af6d339c266e588d600c68623a89b25e58acbc4b3c9ca29838ddb5a1159eb6",
+            "engine_source_hash": "3509bbe867e52d0344127bcab21ee9ddfc6243fb43956dd2d93246b5d64b4791",
+            "wrapper_calls": [
+              "engine.apply_budget_updates(updates)"
+            ],
+            "engine_ir": {
+              "status": "PASS",
+              "function": "EventRuntimeEngine.apply_budget_updates",
+              "lineno": 706,
+              "arguments": [
+                "self",
+                "updates"
+              ],
+              "body": [
+                {
+                  "kind": "expression",
+                  "value": {
+                    "kind": "constant",
+                    "value": "在当前时刻应用预算更新，并强制触发重调度。\n\n        这里显式调用 `_advance_time(self.state.current_time)` 不是多余操作。\n        `run_until()` 在 agent 决策边界返回后，当前时刻的 running job 可能刚好\n        持续执行到了该边界；如果这里直接改预算并强制重排，分段推进路径就会把\n        边界前最后一段执行量“吞掉”。统一走 `_advance_time()` 可以保证：\n        只要预算更新发生在某个逻辑时间点，更新前 CPU 已经执行过的时间一定先\n        结算完成。\n        "
+                  },
+                  "lineno": 707
+                },
+                {
+                  "kind": "expression",
+                  "value": {
+                    "kind": "call",
+                    "function": {
+                      "kind": "attribute",
+                      "owner": {
+                        "kind": "name",
+                        "id": "self",
+                        "ctx": "Load"
+                      },
+                      "attr": "_advance_time"
+                    },
+                    "args": [
+                      {
+                        "kind": "attribute",
+                        "owner": {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "name",
+                            "id": "self",
+                            "ctx": "Load"
+                          },
+                          "attr": "state"
+                        },
+                        "attr": "current_time"
+                      }
+                    ],
+                    "keywords": []
+                  },
+                  "lineno": 717
+                },
+                {
+                  "kind": "assign",
+                  "targets": [
+                    {
+                      "kind": "name",
+                      "id": "update_payload",
+                      "ctx": "Store"
+                    }
+                  ],
+                  "value": {
+                    "kind": "call",
+                    "function": {
+                      "kind": "name",
+                      "id": "dict",
+                      "ctx": "Load"
+                    },
+                    "args": [
+                      {
+                        "kind": "name",
+                        "id": "updates",
+                        "ctx": "Load"
+                      }
+                    ],
+                    "keywords": []
+                  },
+                  "lineno": 718
+                },
+                {
+                  "kind": "expression",
+                  "value": {
+                    "kind": "call",
+                    "function": {
+                      "kind": "attribute",
+                      "owner": {
+                        "kind": "attribute",
+                        "owner": {
+                          "kind": "name",
+                          "id": "self",
+                          "ctx": "Load"
+                        },
+                        "attr": "budget_state"
+                      },
+                      "attr": "apply_updates"
+                    },
+                    "args": [
+                      {
+                        "kind": "name",
+                        "id": "update_payload",
+                        "ctx": "Load"
+                      }
+                    ],
+                    "keywords": []
+                  },
+                  "lineno": 719
+                },
+                {
+                  "kind": "expression",
+                  "value": {
+                    "kind": "call",
+                    "function": {
+                      "kind": "attribute",
+                      "owner": {
+                        "kind": "attribute",
+                        "owner": {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "name",
+                            "id": "self",
+                            "ctx": "Load"
+                          },
+                          "attr": "result"
+                        },
+                        "attr": "budget_update_events"
+                      },
+                      "attr": "append"
+                    },
+                    "args": [
+                      {
+                        "kind": "call",
+                        "function": {
+                          "kind": "name",
+                          "id": "BudgetUpdateEvent",
+                          "ctx": "Load"
+                        },
+                        "args": [],
+                        "keywords": [
+                          {
+                            "name": "time",
+                            "value": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "self",
+                                  "ctx": "Load"
+                                },
+                                "attr": "state"
+                              },
+                              "attr": "current_time"
+                            }
+                          },
+                          {
+                            "name": "updates",
+                            "value": {
+                              "kind": "name",
+                              "id": "update_payload",
+                              "ctx": "Load"
+                            }
+                          }
+                        ]
+                      }
+                    ],
+                    "keywords": []
+                  },
+                  "lineno": 720
+                },
+                {
+                  "kind": "expression",
+                  "value": {
+                    "kind": "call",
+                    "function": {
+                      "kind": "attribute",
+                      "owner": {
+                        "kind": "name",
+                        "id": "self",
+                        "ctx": "Load"
+                      },
+                      "attr": "_append_debug_event"
+                    },
+                    "args": [
+                      {
+                        "kind": "constant",
+                        "value": "budget_update"
+                      }
+                    ],
+                    "keywords": [
+                      {
+                        "name": "updates",
+                        "value": {
+                          "kind": "name",
+                          "id": "update_payload",
+                          "ctx": "Load"
+                        }
+                      }
+                    ]
+                  },
+                  "lineno": 723
+                },
+                {
+                  "kind": "expression",
+                  "value": {
+                    "kind": "call",
+                    "function": {
+                      "kind": "attribute",
+                      "owner": {
+                        "kind": "name",
+                        "id": "self",
+                        "ctx": "Load"
+                      },
+                      "attr": "_reschedule"
+                    },
+                    "args": [
+                      {
+                        "kind": "attribute",
+                        "owner": {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "name",
+                            "id": "self",
+                            "ctx": "Load"
+                          },
+                          "attr": "state"
+                        },
+                        "attr": "current_time"
+                      }
+                    ],
+                    "keywords": [
+                      {
+                        "name": "force",
+                        "value": {
+                          "kind": "constant",
+                          "value": true
+                        }
+                      }
+                    ]
+                  },
+                  "lineno": 724
+                }
+              ]
+            },
+            "required_effects": [
+              "_advance_time",
+              "apply_updates",
+              "_reschedule"
+            ],
+            "missing": [],
+            "binding_hash": "aea1ca97e3b4339b19f70676c84c332522718dbdf2b3a4f9f9927dbb13c848b1"
+          },
+          "controller_fields": {
+            "witnesses": [
+              {
+                "status": "PASS",
+                "schema_version": "controller_binding_v1",
+                "wrapper_source_hash": "62af6d339c266e588d600c68623a89b25e58acbc4b3c9ca29838ddb5a1159eb6",
+                "engine_source_hash": "3509bbe867e52d0344127bcab21ee9ddfc6243fb43956dd2d93246b5d64b4791",
+                "wrapper_calls": [
+                  "engine.apply_budget_updates(updates)"
+                ],
+                "engine_ir": {
+                  "status": "PASS",
+                  "function": "EventRuntimeEngine.apply_budget_updates",
+                  "lineno": 706,
+                  "arguments": [
+                    "self",
+                    "updates"
+                  ],
+                  "body": [
+                    {
+                      "kind": "expression",
+                      "value": {
+                        "kind": "constant",
+                        "value": "在当前时刻应用预算更新，并强制触发重调度。\n\n        这里显式调用 `_advance_time(self.state.current_time)` 不是多余操作。\n        `run_until()` 在 agent 决策边界返回后，当前时刻的 running job 可能刚好\n        持续执行到了该边界；如果这里直接改预算并强制重排，分段推进路径就会把\n        边界前最后一段执行量“吞掉”。统一走 `_advance_time()` 可以保证：\n        只要预算更新发生在某个逻辑时间点，更新前 CPU 已经执行过的时间一定先\n        结算完成。\n        "
+                      },
+                      "lineno": 707
+                    },
+                    {
+                      "kind": "expression",
+                      "value": {
+                        "kind": "call",
+                        "function": {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "name",
+                            "id": "self",
+                            "ctx": "Load"
+                          },
+                          "attr": "_advance_time"
+                        },
+                        "args": [
+                          {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "self",
+                                "ctx": "Load"
+                              },
+                              "attr": "state"
+                            },
+                            "attr": "current_time"
+                          }
+                        ],
+                        "keywords": []
+                      },
+                      "lineno": 717
+                    },
+                    {
+                      "kind": "assign",
+                      "targets": [
+                        {
+                          "kind": "name",
+                          "id": "update_payload",
+                          "ctx": "Store"
+                        }
+                      ],
+                      "value": {
+                        "kind": "call",
+                        "function": {
+                          "kind": "name",
+                          "id": "dict",
+                          "ctx": "Load"
+                        },
+                        "args": [
+                          {
+                            "kind": "name",
+                            "id": "updates",
+                            "ctx": "Load"
+                          }
+                        ],
+                        "keywords": []
+                      },
+                      "lineno": 718
+                    },
+                    {
+                      "kind": "expression",
+                      "value": {
+                        "kind": "call",
+                        "function": {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "self",
+                              "ctx": "Load"
+                            },
+                            "attr": "budget_state"
+                          },
+                          "attr": "apply_updates"
+                        },
+                        "args": [
+                          {
+                            "kind": "name",
+                            "id": "update_payload",
+                            "ctx": "Load"
+                          }
+                        ],
+                        "keywords": []
+                      },
+                      "lineno": 719
+                    },
+                    {
+                      "kind": "expression",
+                      "value": {
+                        "kind": "call",
+                        "function": {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "self",
+                                "ctx": "Load"
+                              },
+                              "attr": "result"
+                            },
+                            "attr": "budget_update_events"
+                          },
+                          "attr": "append"
+                        },
+                        "args": [
+                          {
+                            "kind": "call",
+                            "function": {
+                              "kind": "name",
+                              "id": "BudgetUpdateEvent",
+                              "ctx": "Load"
+                            },
+                            "args": [],
+                            "keywords": [
+                              {
+                                "name": "time",
+                                "value": {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "self",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "state"
+                                  },
+                                  "attr": "current_time"
+                                }
+                              },
+                              {
+                                "name": "updates",
+                                "value": {
+                                  "kind": "name",
+                                  "id": "update_payload",
+                                  "ctx": "Load"
+                                }
+                              }
+                            ]
+                          }
+                        ],
+                        "keywords": []
+                      },
+                      "lineno": 720
+                    },
+                    {
+                      "kind": "expression",
+                      "value": {
+                        "kind": "call",
+                        "function": {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "name",
+                            "id": "self",
+                            "ctx": "Load"
+                          },
+                          "attr": "_append_debug_event"
+                        },
+                        "args": [
+                          {
+                            "kind": "constant",
+                            "value": "budget_update"
+                          }
+                        ],
+                        "keywords": [
+                          {
+                            "name": "updates",
+                            "value": {
+                              "kind": "name",
+                              "id": "update_payload",
+                              "ctx": "Load"
+                            }
+                          }
+                        ]
+                      },
+                      "lineno": 723
+                    },
+                    {
+                      "kind": "expression",
+                      "value": {
+                        "kind": "call",
+                        "function": {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "name",
+                            "id": "self",
+                            "ctx": "Load"
+                          },
+                          "attr": "_reschedule"
+                        },
+                        "args": [
+                          {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "self",
+                                "ctx": "Load"
+                              },
+                              "attr": "state"
+                            },
+                            "attr": "current_time"
+                          }
+                        ],
+                        "keywords": [
+                          {
+                            "name": "force",
+                            "value": {
+                              "kind": "constant",
+                              "value": true
+                            }
+                          }
+                        ]
+                      },
+                      "lineno": 724
+                    }
+                  ]
+                },
+                "required_effects": [
+                  "_advance_time",
+                  "apply_updates",
+                  "_reschedule"
+                ],
+                "missing": [],
+                "binding_hash": "aea1ca97e3b4339b19f70676c84c332522718dbdf2b3a4f9f9927dbb13c848b1"
+              },
+              {
+                "status": "PASS",
+                "event_type_priority": {
+                  "EventType.BUDGET_UPDATE": 0,
+                  "EventType.JOB_COMPLETION": 1,
+                  "EventType.RESPONSE_TIME_EXPIRY": 2,
+                  "EventType.BUDGET_OVERRUN": 3,
+                  "EventType.DEADLINE_CHECK": 4,
+                  "EventType.JOB_ARRIVAL": 5
+                },
+                "fifo_sequence": "EventQueue._counter",
+                "queue_methods": {
+                  "push": {
+                    "status": "PASS",
+                    "function": "EventQueue.push",
+                    "lineno": 82,
+                    "arguments": [
+                      "self",
+                      "event"
+                    ],
+                    "body": [
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "constant",
+                          "value": "压入一个新事件。"
+                        },
+                        "lineno": 83
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "order",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "name",
+                            "id": "next",
+                            "ctx": "Load"
+                          },
+                          "args": [
+                            {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "self",
+                                "ctx": "Load"
+                              },
+                              "attr": "_counter"
+                            }
+                          ],
+                          "keywords": []
+                        },
+                        "lineno": 85
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "type_priority",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "subscript",
+                          "value": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "self",
+                              "ctx": "Load"
+                            },
+                            "attr": "_TYPE_PRIORITY"
+                          },
+                          "slice": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "event",
+                              "ctx": "Load"
+                            },
+                            "attr": "event_type"
+                          }
+                        },
+                        "lineno": 86
+                      },
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "heapq",
+                              "ctx": "Load"
+                            },
+                            "attr": "heappush"
+                          },
+                          "args": [
+                            {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "self",
+                                "ctx": "Load"
+                              },
+                              "attr": "_heap"
+                            },
+                            {
+                              "kind": "tuple",
+                              "items": [
+                                {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "event",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "time"
+                                },
+                                {
+                                  "kind": "name",
+                                  "id": "type_priority",
+                                  "ctx": "Load"
+                                },
+                                {
+                                  "kind": "name",
+                                  "id": "order",
+                                  "ctx": "Load"
+                                },
+                                {
+                                  "kind": "name",
+                                  "id": "event",
+                                  "ctx": "Load"
+                                }
+                              ]
+                            }
+                          ],
+                          "keywords": []
+                        },
+                        "lineno": 87
+                      }
+                    ]
+                  },
+                  "pop": {
+                    "status": "PASS",
+                    "function": "EventQueue.pop",
+                    "lineno": 89,
+                    "arguments": [
+                      "self"
+                    ],
+                    "body": [
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "constant",
+                          "value": "弹出当前最早应处理的事件。"
+                        },
+                        "lineno": 90
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "tuple",
+                            "items": [
+                              {
+                                "kind": "name",
+                                "id": "_",
+                                "ctx": "Store"
+                              },
+                              {
+                                "kind": "name",
+                                "id": "_",
+                                "ctx": "Store"
+                              },
+                              {
+                                "kind": "name",
+                                "id": "_",
+                                "ctx": "Store"
+                              },
+                              {
+                                "kind": "name",
+                                "id": "event",
+                                "ctx": "Store"
+                              }
+                            ]
+                          }
+                        ],
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "heapq",
+                              "ctx": "Load"
+                            },
+                            "attr": "heappop"
+                          },
+                          "args": [
+                            {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "self",
+                                "ctx": "Load"
+                              },
+                              "attr": "_heap"
+                            }
+                          ],
+                          "keywords": []
+                        },
+                        "lineno": 92
+                      },
+                      {
+                        "kind": "return",
+                        "value": {
+                          "kind": "name",
+                          "id": "event",
+                          "ctx": "Load"
+                        },
+                        "lineno": 93
+                      }
+                    ]
+                  },
+                  "pop_all_matching": {
+                    "status": "PASS",
+                    "function": "EventQueue.pop_all_matching",
+                    "lineno": 102,
+                    "arguments": [
+                      "self"
+                    ],
+                    "body": [
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "constant",
+                          "value": "弹出所有“同一时刻 + 同一类型”的事件，便于批处理 simultaneous arrivals。"
+                        },
+                        "lineno": 103
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "matched_entries",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "list",
+                          "items": []
+                        },
+                        "lineno": 105
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "remaining_entries",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "list",
+                          "items": []
+                        },
+                        "lineno": 106
+                      },
+                      {
+                        "kind": "for",
+                        "target": {
+                          "kind": "name",
+                          "id": "entry",
+                          "ctx": "Store"
+                        },
+                        "iter": {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "name",
+                            "id": "self",
+                            "ctx": "Load"
+                          },
+                          "attr": "_heap"
+                        },
+                        "body": [
+                          {
+                            "kind": "assign",
+                            "targets": [
+                              {
+                                "kind": "name",
+                                "id": "event",
+                                "ctx": "Store"
+                              }
+                            ],
+                            "value": {
+                              "kind": "subscript",
+                              "value": {
+                                "kind": "name",
+                                "id": "entry",
+                                "ctx": "Load"
+                              },
+                              "slice": {
+                                "kind": "constant",
+                                "value": 3
+                              }
+                            },
+                            "lineno": 108
+                          },
+                          {
+                            "kind": "if",
+                            "test": {
+                              "kind": "boolop",
+                              "operator": "And",
+                              "values": [
+                                {
+                                  "kind": "compare",
+                                  "left": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "event",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "time"
+                                  },
+                                  "operators": [
+                                    "Eq"
+                                  ],
+                                  "comparators": [
+                                    {
+                                      "kind": "name",
+                                      "id": "time",
+                                      "ctx": "Load"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "kind": "compare",
+                                  "left": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "event",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "event_type"
+                                  },
+                                  "operators": [
+                                    "Is"
+                                  ],
+                                  "comparators": [
+                                    {
+                                      "kind": "name",
+                                      "id": "event_type",
+                                      "ctx": "Load"
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            "body": [
+                              {
+                                "kind": "expression",
+                                "value": {
+                                  "kind": "call",
+                                  "function": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "matched_entries",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "append"
+                                  },
+                                  "args": [
+                                    {
+                                      "kind": "name",
+                                      "id": "entry",
+                                      "ctx": "Load"
+                                    }
+                                  ],
+                                  "keywords": []
+                                },
+                                "lineno": 110
+                              }
+                            ],
+                            "orelse": [
+                              {
+                                "kind": "expression",
+                                "value": {
+                                  "kind": "call",
+                                  "function": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "remaining_entries",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "append"
+                                  },
+                                  "args": [
+                                    {
+                                      "kind": "name",
+                                      "id": "entry",
+                                      "ctx": "Load"
+                                    }
+                                  ],
+                                  "keywords": []
+                                },
+                                "lineno": 112
+                              }
+                            ],
+                            "lineno": 109
+                          }
+                        ],
+                        "lineno": 107
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "self",
+                              "ctx": "Load"
+                            },
+                            "attr": "_heap"
+                          }
+                        ],
+                        "value": {
+                          "kind": "name",
+                          "id": "remaining_entries",
+                          "ctx": "Load"
+                        },
+                        "lineno": 113
+                      },
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "heapq",
+                              "ctx": "Load"
+                            },
+                            "attr": "heapify"
+                          },
+                          "args": [
+                            {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "self",
+                                "ctx": "Load"
+                              },
+                              "attr": "_heap"
+                            }
+                          ],
+                          "keywords": []
+                        },
+                        "lineno": 114
+                      },
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "matched_entries",
+                              "ctx": "Load"
+                            },
+                            "attr": "sort"
+                          },
+                          "args": [],
+                          "keywords": [
+                            {
+                              "name": "key",
+                              "value": {
+                                "kind": "lambda",
+                                "arguments": [
+                                  "entry"
+                                ],
+                                "body": {
+                                  "kind": "tuple",
+                                  "items": [
+                                    {
+                                      "kind": "subscript",
+                                      "value": {
+                                        "kind": "name",
+                                        "id": "entry",
+                                        "ctx": "Load"
+                                      },
+                                      "slice": {
+                                        "kind": "constant",
+                                        "value": 0
+                                      }
+                                    },
+                                    {
+                                      "kind": "subscript",
+                                      "value": {
+                                        "kind": "name",
+                                        "id": "entry",
+                                        "ctx": "Load"
+                                      },
+                                      "slice": {
+                                        "kind": "constant",
+                                        "value": 1
+                                      }
+                                    },
+                                    {
+                                      "kind": "subscript",
+                                      "value": {
+                                        "kind": "name",
+                                        "id": "entry",
+                                        "ctx": "Load"
+                                      },
+                                      "slice": {
+                                        "kind": "constant",
+                                        "value": 2
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "lineno": 115
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "matched",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "list_comp",
+                          "element": {
+                            "kind": "subscript",
+                            "value": {
+                              "kind": "name",
+                              "id": "entry",
+                              "ctx": "Load"
+                            },
+                            "slice": {
+                              "kind": "constant",
+                              "value": 3
+                            }
+                          },
+                          "generators": [
+                            {
+                              "target": {
+                                "kind": "name",
+                                "id": "entry",
+                                "ctx": "Store"
+                              },
+                              "iter": {
+                                "kind": "name",
+                                "id": "matched_entries",
+                                "ctx": "Load"
+                              },
+                              "ifs": [],
+                              "is_async": false
+                            }
+                          ]
+                        },
+                        "lineno": 116
+                      },
+                      {
+                        "kind": "return",
+                        "value": {
+                          "kind": "name",
+                          "id": "matched",
+                          "ctx": "Load"
+                        },
+                        "lineno": 117
+                      }
+                    ]
+                  }
+                },
+                "arrival_batch": {
+                  "EventRuntimeEngine._maybe_enter_c_amc_sem_hi_mode_at_arrival": {
+                    "status": "PASS",
+                    "function": "EventRuntimeEngine._maybe_enter_c_amc_sem_hi_mode_at_arrival",
+                    "lineno": 779,
+                    "arguments": [
+                      "self",
+                      "events",
+                      "now"
+                    ],
+                    "body": [
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "constant",
+                          "value": "C-AMC-sem：HI abnormal job 在 release 时刻触发 LO->HI。"
+                        },
+                        "lineno": 784
+                      },
+                      {
+                        "kind": "if",
+                        "test": {
+                          "kind": "unary",
+                          "operator": "Not",
+                          "operand": {
+                            "kind": "call",
+                            "function": {
+                              "kind": "name",
+                              "id": "_is_c_amc_semantics",
+                              "ctx": "Load"
+                            },
+                            "args": [
+                              {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "self",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "config"
+                                },
+                                "attr": "semantics"
+                              }
+                            ],
+                            "keywords": []
+                          }
+                        },
+                        "body": [
+                          {
+                            "kind": "return",
+                            "value": {
+                              "kind": "constant",
+                              "value": false
+                            },
+                            "lineno": 787
+                          }
+                        ],
+                        "orelse": [],
+                        "lineno": 786
+                      },
+                      {
+                        "kind": "if",
+                        "test": {
+                          "kind": "compare",
+                          "left": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "self",
+                                "ctx": "Load"
+                              },
+                              "attr": "state"
+                            },
+                            "attr": "mode"
+                          },
+                          "operators": [
+                            "IsNot"
+                          ],
+                          "comparators": [
+                            {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "SystemMode",
+                                "ctx": "Load"
+                              },
+                              "attr": "LO"
+                            }
+                          ]
+                        },
+                        "body": [
+                          {
+                            "kind": "return",
+                            "value": {
+                              "kind": "constant",
+                              "value": false
+                            },
+                            "lineno": 789
+                          }
+                        ],
+                        "orelse": [],
+                        "lineno": 788
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "abnormal_arrivals",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "list",
+                          "items": []
+                        },
+                        "lineno": 791
+                      },
+                      {
+                        "kind": "for",
+                        "target": {
+                          "kind": "name",
+                          "id": "event",
+                          "ctx": "Store"
+                        },
+                        "iter": {
+                          "kind": "name",
+                          "id": "events",
+                          "ctx": "Load"
+                        },
+                        "body": [
+                          {
+                            "kind": "assert",
+                            "test": {
+                              "kind": "compare",
+                              "left": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "event",
+                                  "ctx": "Load"
+                                },
+                                "attr": "task_name"
+                              },
+                              "operators": [
+                                "IsNot"
+                              ],
+                              "comparators": [
+                                {
+                                  "kind": "constant",
+                                  "value": null
+                                }
+                              ]
+                            },
+                            "message": null,
+                            "lineno": 793
+                          },
+                          {
+                            "kind": "assert",
+                            "test": {
+                              "kind": "compare",
+                              "left": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "event",
+                                  "ctx": "Load"
+                                },
+                                "attr": "release_index"
+                              },
+                              "operators": [
+                                "IsNot"
+                              ],
+                              "comparators": [
+                                {
+                                  "kind": "constant",
+                                  "value": null
+                                }
+                              ]
+                            },
+                            "message": null,
+                            "lineno": 794
+                          },
+                          {
+                            "kind": "assign",
+                            "targets": [
+                              {
+                                "kind": "name",
+                                "id": "task",
+                                "ctx": "Store"
+                              }
+                            ],
+                            "value": {
+                              "kind": "subscript",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "self",
+                                  "ctx": "Load"
+                                },
+                                "attr": "task_map"
+                              },
+                              "slice": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "event",
+                                  "ctx": "Load"
+                                },
+                                "attr": "task_name"
+                              }
+                            },
+                            "lineno": 795
+                          },
+                          {
+                            "kind": "if",
+                            "test": {
+                              "kind": "compare",
+                              "left": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "task",
+                                  "ctx": "Load"
+                                },
+                                "attr": "criticality"
+                              },
+                              "operators": [
+                                "IsNot"
+                              ],
+                              "comparators": [
+                                {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "Criticality",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "HI"
+                                }
+                              ]
+                            },
+                            "body": [
+                              {
+                                "kind": "continue",
+                                "lineno": 797
+                              }
+                            ],
+                            "orelse": [],
+                            "lineno": 796
+                          },
+                          {
+                            "kind": "assign",
+                            "targets": [
+                              {
+                                "kind": "name",
+                                "id": "actual_cost",
+                                "ctx": "Store"
+                              }
+                            ],
+                            "value": {
+                              "kind": "call",
+                              "function": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "self",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "scenario"
+                                },
+                                "attr": "actual_cost_for"
+                              },
+                              "args": [
+                                {
+                                  "kind": "name",
+                                  "id": "task",
+                                  "ctx": "Load"
+                                },
+                                {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "event",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "release_index"
+                                }
+                              ],
+                              "keywords": []
+                            },
+                            "lineno": 798
+                          },
+                          {
+                            "kind": "if",
+                            "test": {
+                              "kind": "compare",
+                              "left": {
+                                "kind": "name",
+                                "id": "actual_cost",
+                                "ctx": "Load"
+                              },
+                              "operators": [
+                                "Gt"
+                              ],
+                              "comparators": [
+                                {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "task",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "c_lo"
+                                }
+                              ]
+                            },
+                            "body": [
+                              {
+                                "kind": "expression",
+                                "value": {
+                                  "kind": "call",
+                                  "function": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "abnormal_arrivals",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "append"
+                                  },
+                                  "args": [
+                                    {
+                                      "kind": "tuple",
+                                      "items": [
+                                        {
+                                          "kind": "name",
+                                          "id": "event",
+                                          "ctx": "Load"
+                                        },
+                                        {
+                                          "kind": "name",
+                                          "id": "task",
+                                          "ctx": "Load"
+                                        },
+                                        {
+                                          "kind": "name",
+                                          "id": "actual_cost",
+                                          "ctx": "Load"
+                                        }
+                                      ]
+                                    }
+                                  ],
+                                  "keywords": []
+                                },
+                                "lineno": 800
+                              }
+                            ],
+                            "orelse": [],
+                            "lineno": 799
+                          }
+                        ],
+                        "lineno": 792
+                      },
+                      {
+                        "kind": "if",
+                        "test": {
+                          "kind": "unary",
+                          "operator": "Not",
+                          "operand": {
+                            "kind": "name",
+                            "id": "abnormal_arrivals",
+                            "ctx": "Load"
+                          }
+                        },
+                        "body": [
+                          {
+                            "kind": "return",
+                            "value": {
+                              "kind": "constant",
+                              "value": false
+                            },
+                            "lineno": 803
+                          }
+                        ],
+                        "orelse": [],
+                        "lineno": 802
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "tuple",
+                            "items": [
+                              {
+                                "kind": "name",
+                                "id": "trigger_event",
+                                "ctx": "Store"
+                              },
+                              {
+                                "kind": "name",
+                                "id": "trigger_task",
+                                "ctx": "Store"
+                              },
+                              {
+                                "kind": "name",
+                                "id": "trigger_actual_cost",
+                                "ctx": "Store"
+                              }
+                            ]
+                          }
+                        ],
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "name",
+                            "id": "min",
+                            "ctx": "Load"
+                          },
+                          "args": [
+                            {
+                              "kind": "name",
+                              "id": "abnormal_arrivals",
+                              "ctx": "Load"
+                            }
+                          ],
+                          "keywords": [
+                            {
+                              "name": "key",
+                              "value": {
+                                "kind": "lambda",
+                                "arguments": [
+                                  "item"
+                                ],
+                                "body": {
+                                  "kind": "subscript",
+                                  "value": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "self",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "priority_map"
+                                  },
+                                  "slice": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "subscript",
+                                      "value": {
+                                        "kind": "name",
+                                        "id": "item",
+                                        "ctx": "Load"
+                                      },
+                                      "slice": {
+                                        "kind": "constant",
+                                        "value": 1
+                                      }
+                                    },
+                                    "attr": "name"
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "lineno": 807
+                      },
+                      {
+                        "kind": "assert",
+                        "test": {
+                          "kind": "compare",
+                          "left": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "trigger_event",
+                              "ctx": "Load"
+                            },
+                            "attr": "release_index"
+                          },
+                          "operators": [
+                            "IsNot"
+                          ],
+                          "comparators": [
+                            {
+                              "kind": "constant",
+                              "value": null
+                            }
+                          ]
+                        },
+                        "message": null,
+                        "lineno": 811
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "self",
+                                "ctx": "Load"
+                              },
+                              "attr": "state"
+                            },
+                            "attr": "mode"
+                          }
+                        ],
+                        "value": {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "name",
+                            "id": "SystemMode",
+                            "ctx": "Load"
+                          },
+                          "attr": "HI"
+                        },
+                        "lineno": 813
+                      },
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "self",
+                                  "ctx": "Load"
+                                },
+                                "attr": "result"
+                              },
+                              "attr": "mode_switches"
+                            },
+                            "attr": "append"
+                          },
+                          "args": [
+                            {
+                              "kind": "call",
+                              "function": {
+                                "kind": "name",
+                                "id": "ModeSwitchEvent",
+                                "ctx": "Load"
+                              },
+                              "args": [],
+                              "keywords": [
+                                {
+                                  "name": "switch_time",
+                                  "value": {
+                                    "kind": "name",
+                                    "id": "now",
+                                    "ctx": "Load"
+                                  }
+                                },
+                                {
+                                  "name": "triggering_task",
+                                  "value": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "trigger_task",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "name"
+                                  }
+                                },
+                                {
+                                  "name": "triggering_release_index",
+                                  "value": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "trigger_event",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "release_index"
+                                  }
+                                },
+                                {
+                                  "name": "executed_at_switch",
+                                  "value": {
+                                    "kind": "constant",
+                                    "value": 0
+                                  }
+                                },
+                                {
+                                  "name": "budget_at_switch",
+                                  "value": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "trigger_task",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "c_lo"
+                                  }
+                                },
+                                {
+                                  "name": "reason",
+                                  "value": {
+                                    "kind": "constant",
+                                    "value": "semi_clairvoyant_hi_abnormal_arrival"
+                                  }
+                                }
+                              ]
+                            }
+                          ],
+                          "keywords": []
+                        },
+                        "lineno": 814
+                      },
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "self",
+                              "ctx": "Load"
+                            },
+                            "attr": "_append_debug_event"
+                          },
+                          "args": [
+                            {
+                              "kind": "constant",
+                              "value": "c_amc_sem_mode_switch"
+                            }
+                          ],
+                          "keywords": [
+                            {
+                              "name": "triggering_task",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "trigger_task",
+                                  "ctx": "Load"
+                                },
+                                "attr": "name"
+                              }
+                            },
+                            {
+                              "name": "triggering_release_index",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "trigger_event",
+                                  "ctx": "Load"
+                                },
+                                "attr": "release_index"
+                              }
+                            },
+                            {
+                              "name": "trigger_actual_cost",
+                              "value": {
+                                "kind": "name",
+                                "id": "trigger_actual_cost",
+                                "ctx": "Load"
+                              }
+                            },
+                            {
+                              "name": "trigger_c_lo",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "trigger_task",
+                                  "ctx": "Load"
+                                },
+                                "attr": "c_lo"
+                              }
+                            }
+                          ]
+                        },
+                        "lineno": 824
+                      },
+                      {
+                        "kind": "return",
+                        "value": {
+                          "kind": "constant",
+                          "value": true
+                        },
+                        "lineno": 831
+                      }
+                    ]
+                  },
+                  "EventRuntimeEngine._process_job_arrival_batch": {
+                    "status": "PASS",
+                    "function": "EventRuntimeEngine._process_job_arrival_batch",
+                    "lineno": 967,
+                    "arguments": [
+                      "self",
+                      "first_event"
+                    ],
+                    "body": [
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "constant",
+                          "value": "把同一时刻的全部 arrival 取出后按优先级顺序处理。"
+                        },
+                        "lineno": 968
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "now",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "name",
+                            "id": "first_event",
+                            "ctx": "Load"
+                          },
+                          "attr": "time"
+                        },
+                        "lineno": 970
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "events",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "list",
+                          "items": [
+                            {
+                              "kind": "name",
+                              "id": "first_event",
+                              "ctx": "Load"
+                            }
+                          ]
+                        },
+                        "lineno": 971
+                      },
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "events",
+                              "ctx": "Load"
+                            },
+                            "attr": "extend"
+                          },
+                          "args": [
+                            {
+                              "kind": "call",
+                              "function": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "self",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "queue"
+                                },
+                                "attr": "pop_all_matching"
+                              },
+                              "args": [],
+                              "keywords": [
+                                {
+                                  "name": "time",
+                                  "value": {
+                                    "kind": "name",
+                                    "id": "now",
+                                    "ctx": "Load"
+                                  }
+                                },
+                                {
+                                  "name": "event_type",
+                                  "value": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "EventType",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "JOB_ARRIVAL"
+                                  }
+                                }
+                              ]
+                            }
+                          ],
+                          "keywords": []
+                        },
+                        "lineno": 972
+                      },
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "events",
+                              "ctx": "Load"
+                            },
+                            "attr": "sort"
+                          },
+                          "args": [],
+                          "keywords": [
+                            {
+                              "name": "key",
+                              "value": {
+                                "kind": "lambda",
+                                "arguments": [
+                                  "event"
+                                ],
+                                "body": {
+                                  "kind": "subscript",
+                                  "value": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "self",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "priority_map"
+                                  },
+                                  "slice": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "event",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "task_name"
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "lineno": 975
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "mode_before_batch",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "self",
+                              "ctx": "Load"
+                            },
+                            "attr": "state"
+                          },
+                          "attr": "mode"
+                        },
+                        "lineno": 978
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "switched_by_c_amc_sem_batch",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "self",
+                              "ctx": "Load"
+                            },
+                            "attr": "_maybe_enter_c_amc_sem_hi_mode_at_arrival"
+                          },
+                          "args": [
+                            {
+                              "kind": "name",
+                              "id": "events",
+                              "ctx": "Load"
+                            },
+                            {
+                              "kind": "name",
+                              "id": "now",
+                              "ctx": "Load"
+                            }
+                          ],
+                          "keywords": []
+                        },
+                        "lineno": 979
+                      },
+                      {
+                        "kind": "for",
+                        "target": {
+                          "kind": "name",
+                          "id": "arrival",
+                          "ctx": "Store"
+                        },
+                        "iter": {
+                          "kind": "name",
+                          "id": "events",
+                          "ctx": "Load"
+                        },
+                        "body": [
+                          {
+                            "kind": "assign",
+                            "targets": [
+                              {
+                                "kind": "name",
+                                "id": "release_mode",
+                                "ctx": "Store"
+                              }
+                            ],
+                            "value": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "self",
+                                  "ctx": "Load"
+                                },
+                                "attr": "state"
+                              },
+                              "attr": "mode"
+                            },
+                            "lineno": 981
+                          },
+                          {
+                            "kind": "if",
+                            "test": {
+                              "kind": "boolop",
+                              "operator": "And",
+                              "values": [
+                                {
+                                  "kind": "name",
+                                  "id": "switched_by_c_amc_sem_batch",
+                                  "ctx": "Load"
+                                },
+                                {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "self",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "config"
+                                  },
+                                  "attr": "c_amc_sem_primary_on_switch_time"
+                                },
+                                {
+                                  "kind": "compare",
+                                  "left": {
+                                    "kind": "name",
+                                    "id": "mode_before_batch",
+                                    "ctx": "Load"
+                                  },
+                                  "operators": [
+                                    "Is"
+                                  ],
+                                  "comparators": [
+                                    {
+                                      "kind": "attribute",
+                                      "owner": {
+                                        "kind": "name",
+                                        "id": "SystemMode",
+                                        "ctx": "Load"
+                                      },
+                                      "attr": "LO"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "kind": "compare",
+                                  "left": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "arrival",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "time"
+                                  },
+                                  "operators": [
+                                    "Eq"
+                                  ],
+                                  "comparators": [
+                                    {
+                                      "kind": "name",
+                                      "id": "now",
+                                      "ctx": "Load"
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            "body": [
+                              {
+                                "kind": "assign",
+                                "targets": [
+                                  {
+                                    "kind": "name",
+                                    "id": "release_mode",
+                                    "ctx": "Store"
+                                  }
+                                ],
+                                "value": {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "SystemMode",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "LO"
+                                },
+                                "lineno": 992
+                              }
+                            ],
+                            "orelse": [],
+                            "lineno": 986
+                          },
+                          {
+                            "kind": "expression",
+                            "value": {
+                              "kind": "call",
+                              "function": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "self",
+                                  "ctx": "Load"
+                                },
+                                "attr": "_process_single_arrival_in_priority_order"
+                              },
+                              "args": [
+                                {
+                                  "kind": "name",
+                                  "id": "arrival",
+                                  "ctx": "Load"
+                                }
+                              ],
+                              "keywords": [
+                                {
+                                  "name": "release_mode",
+                                  "value": {
+                                    "kind": "name",
+                                    "id": "release_mode",
+                                    "ctx": "Load"
+                                  }
+                                }
+                              ]
+                            },
+                            "lineno": 993
+                          }
+                        ],
+                        "lineno": 980
+                      },
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "self",
+                              "ctx": "Load"
+                            },
+                            "attr": "_reschedule"
+                          },
+                          "args": [
+                            {
+                              "kind": "name",
+                              "id": "now",
+                              "ctx": "Load"
+                            }
+                          ],
+                          "keywords": []
+                        },
+                        "lineno": 994
+                      },
+                      {
+                        "kind": "return",
+                        "value": {
+                          "kind": "constant",
+                          "value": true
+                        },
+                        "lineno": 995
+                      }
+                    ]
+                  },
+                  "EventRuntimeEngine._process_single_arrival_in_priority_order": {
+                    "status": "PASS",
+                    "function": "EventRuntimeEngine._process_single_arrival_in_priority_order",
+                    "lineno": 848,
+                    "arguments": [
+                      "self",
+                      "event"
+                    ],
+                    "body": [
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "constant",
+                          "value": "按优先级顺序处理同一时刻的单个 arrival。"
+                        },
+                        "lineno": 854
+                      },
+                      {
+                        "kind": "assert",
+                        "test": {
+                          "kind": "compare",
+                          "left": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "event",
+                              "ctx": "Load"
+                            },
+                            "attr": "task_name"
+                          },
+                          "operators": [
+                            "IsNot"
+                          ],
+                          "comparators": [
+                            {
+                              "kind": "constant",
+                              "value": null
+                            }
+                          ]
+                        },
+                        "message": null,
+                        "lineno": 856
+                      },
+                      {
+                        "kind": "assert",
+                        "test": {
+                          "kind": "compare",
+                          "left": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "event",
+                              "ctx": "Load"
+                            },
+                            "attr": "release_index"
+                          },
+                          "operators": [
+                            "IsNot"
+                          ],
+                          "comparators": [
+                            {
+                              "kind": "constant",
+                              "value": null
+                            }
+                          ]
+                        },
+                        "message": null,
+                        "lineno": 857
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "task",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "subscript",
+                          "value": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "self",
+                              "ctx": "Load"
+                            },
+                            "attr": "task_map"
+                          },
+                          "slice": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "event",
+                              "ctx": "Load"
+                            },
+                            "attr": "task_name"
+                          }
+                        },
+                        "lineno": 858
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "now",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "name",
+                            "id": "event",
+                            "ctx": "Load"
+                          },
+                          "attr": "time"
+                        },
+                        "lineno": 859
+                      },
+                      {
+                        "kind": "if",
+                        "test": {
+                          "kind": "compare",
+                          "left": {
+                            "kind": "name",
+                            "id": "release_mode",
+                            "ctx": "Load"
+                          },
+                          "operators": [
+                            "Is"
+                          ],
+                          "comparators": [
+                            {
+                              "kind": "constant",
+                              "value": null
+                            }
+                          ]
+                        },
+                        "body": [
+                          {
+                            "kind": "assign",
+                            "targets": [
+                              {
+                                "kind": "name",
+                                "id": "release_mode",
+                                "ctx": "Store"
+                              }
+                            ],
+                            "value": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "self",
+                                  "ctx": "Load"
+                                },
+                                "attr": "state"
+                              },
+                              "attr": "mode"
+                            },
+                            "lineno": 861
+                          }
+                        ],
+                        "orelse": [],
+                        "lineno": 860
+                      },
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "self",
+                              "ctx": "Load"
+                            },
+                            "attr": "_schedule_next_release"
+                          },
+                          "args": [
+                            {
+                              "kind": "name",
+                              "id": "task",
+                              "ctx": "Load"
+                            },
+                            {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "event",
+                                "ctx": "Load"
+                              },
+                              "attr": "release_index"
+                            }
+                          ],
+                          "keywords": []
+                        },
+                        "lineno": 865
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "runtime_budget_at_release",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "self",
+                                "ctx": "Load"
+                              },
+                              "attr": "budget_state"
+                            },
+                            "attr": "budget_of"
+                          },
+                          "args": [
+                            {
+                              "kind": "name",
+                              "id": "task",
+                              "ctx": "Load"
+                            }
+                          ],
+                          "keywords": []
+                        },
+                        "lineno": 867
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "actual_cost_override",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "constant",
+                          "value": null
+                        },
+                        "lineno": 868
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "is_degraded",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "constant",
+                          "value": false
+                        },
+                        "lineno": 874
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "service_quality_if_completed",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "constant",
+                          "value": "1"
+                        },
+                        "lineno": 875
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "original_actual_cost",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "constant",
+                          "value": null
+                        },
+                        "lineno": 876
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "original_runtime_budget_at_release",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "name",
+                          "id": "runtime_budget_at_release",
+                          "ctx": "Load"
+                        },
+                        "lineno": 877
+                      },
+                      {
+                        "kind": "if",
+                        "test": {
+                          "kind": "compare",
+                          "left": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "task",
+                              "ctx": "Load"
+                            },
+                            "attr": "criticality"
+                          },
+                          "operators": [
+                            "Is"
+                          ],
+                          "comparators": [
+                            {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "Criticality",
+                                "ctx": "Load"
+                              },
+                              "attr": "HI"
+                            }
+                          ]
+                        },
+                        "body": [
+                          {
+                            "kind": "if",
+                            "test": {
+                              "kind": "call",
+                              "function": {
+                                "kind": "name",
+                                "id": "_is_c_amc_semantics",
+                                "ctx": "Load"
+                              },
+                              "args": [
+                                {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "self",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "config"
+                                  },
+                                  "attr": "semantics"
+                                }
+                              ],
+                              "keywords": []
+                            },
+                            "body": [
+                              {
+                                "kind": "assign",
+                                "targets": [
+                                  {
+                                    "kind": "name",
+                                    "id": "actual_cost_override",
+                                    "ctx": "Store"
+                                  }
+                                ],
+                                "value": {
+                                  "kind": "constant",
+                                  "value": null
+                                },
+                                "lineno": 887
+                              }
+                            ],
+                            "orelse": [],
+                            "lineno": 886
+                          }
+                        ],
+                        "orelse": [
+                          {
+                            "kind": "if",
+                            "test": {
+                              "kind": "compare",
+                              "left": {
+                                "kind": "name",
+                                "id": "release_mode",
+                                "ctx": "Load"
+                              },
+                              "operators": [
+                                "Is"
+                              ],
+                              "comparators": [
+                                {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "SystemMode",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "HI"
+                                }
+                              ]
+                            },
+                            "body": [
+                              {
+                                "kind": "if",
+                                "test": {
+                                  "kind": "call",
+                                  "function": {
+                                    "kind": "name",
+                                    "id": "_is_c_amc_semantics",
+                                    "ctx": "Load"
+                                  },
+                                  "args": [
+                                    {
+                                      "kind": "attribute",
+                                      "owner": {
+                                        "kind": "attribute",
+                                        "owner": {
+                                          "kind": "name",
+                                          "id": "self",
+                                          "ctx": "Load"
+                                        },
+                                        "attr": "config"
+                                      },
+                                      "attr": "semantics"
+                                    }
+                                  ],
+                                  "keywords": []
+                                },
+                                "body": [
+                                  {
+                                    "kind": "assign",
+                                    "targets": [
+                                      {
+                                        "kind": "name",
+                                        "id": "is_degraded",
+                                        "ctx": "Store"
+                                      }
+                                    ],
+                                    "value": {
+                                      "kind": "constant",
+                                      "value": true
+                                    },
+                                    "lineno": 893
+                                  },
+                                  {
+                                    "kind": "assign",
+                                    "targets": [
+                                      {
+                                        "kind": "name",
+                                        "id": "service_quality_if_completed",
+                                        "ctx": "Store"
+                                      }
+                                    ],
+                                    "value": {
+                                      "kind": "call",
+                                      "function": {
+                                        "kind": "name",
+                                        "id": "float",
+                                        "ctx": "Load"
+                                      },
+                                      "args": [
+                                        {
+                                          "kind": "attribute",
+                                          "owner": {
+                                            "kind": "attribute",
+                                            "owner": {
+                                              "kind": "name",
+                                              "id": "self",
+                                              "ctx": "Load"
+                                            },
+                                            "attr": "config"
+                                          },
+                                          "attr": "c_amc_sem_lo_degradation_ratio"
+                                        }
+                                      ],
+                                      "keywords": []
+                                    },
+                                    "lineno": 894
+                                  },
+                                  {
+                                    "kind": "assign",
+                                    "targets": [
+                                      {
+                                        "kind": "name",
+                                        "id": "original_actual_cost",
+                                        "ctx": "Store"
+                                      }
+                                    ],
+                                    "value": {
+                                      "kind": "call",
+                                      "function": {
+                                        "kind": "attribute",
+                                        "owner": {
+                                          "kind": "attribute",
+                                          "owner": {
+                                            "kind": "name",
+                                            "id": "self",
+                                            "ctx": "Load"
+                                          },
+                                          "attr": "scenario"
+                                        },
+                                        "attr": "actual_cost_for"
+                                      },
+                                      "args": [
+                                        {
+                                          "kind": "name",
+                                          "id": "task",
+                                          "ctx": "Load"
+                                        },
+                                        {
+                                          "kind": "attribute",
+                                          "owner": {
+                                            "kind": "name",
+                                            "id": "event",
+                                            "ctx": "Load"
+                                          },
+                                          "attr": "release_index"
+                                        }
+                                      ],
+                                      "keywords": []
+                                    },
+                                    "lineno": 895
+                                  },
+                                  {
+                                    "kind": "assign",
+                                    "targets": [
+                                      {
+                                        "kind": "name",
+                                        "id": "original_runtime_budget_at_release",
+                                        "ctx": "Store"
+                                      }
+                                    ],
+                                    "value": {
+                                      "kind": "call",
+                                      "function": {
+                                        "kind": "attribute",
+                                        "owner": {
+                                          "kind": "attribute",
+                                          "owner": {
+                                            "kind": "name",
+                                            "id": "self",
+                                            "ctx": "Load"
+                                          },
+                                          "attr": "budget_state"
+                                        },
+                                        "attr": "budget_of"
+                                      },
+                                      "args": [
+                                        {
+                                          "kind": "name",
+                                          "id": "task",
+                                          "ctx": "Load"
+                                        }
+                                      ],
+                                      "keywords": []
+                                    },
+                                    "lineno": 896
+                                  },
+                                  {
+                                    "kind": "assign",
+                                    "targets": [
+                                      {
+                                        "kind": "name",
+                                        "id": "runtime_budget_at_release",
+                                        "ctx": "Store"
+                                      }
+                                    ],
+                                    "value": {
+                                      "kind": "call",
+                                      "function": {
+                                        "kind": "name",
+                                        "id": "_c_amc_sem_degraded_lo_budget",
+                                        "ctx": "Load"
+                                      },
+                                      "args": [
+                                        {
+                                          "kind": "name",
+                                          "id": "task",
+                                          "ctx": "Load"
+                                        },
+                                        {
+                                          "kind": "attribute",
+                                          "owner": {
+                                            "kind": "name",
+                                            "id": "self",
+                                            "ctx": "Load"
+                                          },
+                                          "attr": "config"
+                                        }
+                                      ],
+                                      "keywords": []
+                                    },
+                                    "lineno": 897
+                                  },
+                                  {
+                                    "kind": "assign",
+                                    "targets": [
+                                      {
+                                        "kind": "name",
+                                        "id": "actual_cost_override",
+                                        "ctx": "Store"
+                                      }
+                                    ],
+                                    "value": {
+                                      "kind": "call",
+                                      "function": {
+                                        "kind": "name",
+                                        "id": "min",
+                                        "ctx": "Load"
+                                      },
+                                      "args": [
+                                        {
+                                          "kind": "name",
+                                          "id": "original_actual_cost",
+                                          "ctx": "Load"
+                                        },
+                                        {
+                                          "kind": "name",
+                                          "id": "runtime_budget_at_release",
+                                          "ctx": "Load"
+                                        }
+                                      ],
+                                      "keywords": []
+                                    },
+                                    "lineno": 901
+                                  },
+                                  {
+                                    "kind": "expression",
+                                    "value": {
+                                      "kind": "call",
+                                      "function": {
+                                        "kind": "attribute",
+                                        "owner": {
+                                          "kind": "name",
+                                          "id": "self",
+                                          "ctx": "Load"
+                                        },
+                                        "attr": "_append_debug_event"
+                                      },
+                                      "args": [
+                                        {
+                                          "kind": "constant",
+                                          "value": "c_amc_sem_degraded_lo_release"
+                                        }
+                                      ],
+                                      "keywords": [
+                                        {
+                                          "name": "task",
+                                          "value": {
+                                            "kind": "attribute",
+                                            "owner": {
+                                              "kind": "name",
+                                              "id": "task",
+                                              "ctx": "Load"
+                                            },
+                                            "attr": "name"
+                                          }
+                                        },
+                                        {
+                                          "name": "release_index",
+                                          "value": {
+                                            "kind": "attribute",
+                                            "owner": {
+                                              "kind": "name",
+                                              "id": "event",
+                                              "ctx": "Load"
+                                            },
+                                            "attr": "release_index"
+                                          }
+                                        },
+                                        {
+                                          "name": "original_actual_cost",
+                                          "value": {
+                                            "kind": "name",
+                                            "id": "original_actual_cost",
+                                            "ctx": "Load"
+                                          }
+                                        },
+                                        {
+                                          "name": "degraded_actual_cost",
+                                          "value": {
+                                            "kind": "name",
+                                            "id": "actual_cost_override",
+                                            "ctx": "Load"
+                                          }
+                                        },
+                                        {
+                                          "name": "degraded_budget",
+                                          "value": {
+                                            "kind": "name",
+                                            "id": "runtime_budget_at_release",
+                                            "ctx": "Load"
+                                          }
+                                        },
+                                        {
+                                          "name": "xf",
+                                          "value": {
+                                            "kind": "attribute",
+                                            "owner": {
+                                              "kind": "attribute",
+                                              "owner": {
+                                                "kind": "name",
+                                                "id": "self",
+                                                "ctx": "Load"
+                                              },
+                                              "attr": "config"
+                                            },
+                                            "attr": "c_amc_sem_lo_degradation_ratio"
+                                          }
+                                        }
+                                      ]
+                                    },
+                                    "lineno": 902
+                                  }
+                                ],
+                                "orelse": [
+                                  {
+                                    "kind": "expression",
+                                    "value": {
+                                      "kind": "call",
+                                      "function": {
+                                        "kind": "attribute",
+                                        "owner": {
+                                          "kind": "name",
+                                          "id": "self",
+                                          "ctx": "Load"
+                                        },
+                                        "attr": "_record_or_suppress_dropped_lo_release"
+                                      },
+                                      "args": [
+                                        {
+                                          "kind": "name",
+                                          "id": "task",
+                                          "ctx": "Load"
+                                        },
+                                        {
+                                          "kind": "attribute",
+                                          "owner": {
+                                            "kind": "name",
+                                            "id": "event",
+                                            "ctx": "Load"
+                                          },
+                                          "attr": "release_index"
+                                        },
+                                        {
+                                          "kind": "name",
+                                          "id": "now",
+                                          "ctx": "Load"
+                                        }
+                                      ],
+                                      "keywords": []
+                                    },
+                                    "lineno": 912
+                                  },
+                                  {
+                                    "kind": "return",
+                                    "value": null,
+                                    "lineno": 913
+                                  }
+                                ],
+                                "lineno": 889
+                              }
+                            ],
+                            "orelse": [],
+                            "lineno": 888
+                          }
+                        ],
+                        "lineno": 885
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "name",
+                            "id": "job",
+                            "ctx": "Store"
+                          }
+                        ],
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "name",
+                            "id": "_build_job",
+                            "ctx": "Load"
+                          },
+                          "args": [
+                            {
+                              "kind": "name",
+                              "id": "task",
+                              "ctx": "Load"
+                            },
+                            {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "event",
+                                "ctx": "Load"
+                              },
+                              "attr": "release_index"
+                            },
+                            {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "self",
+                                "ctx": "Load"
+                              },
+                              "attr": "scenario"
+                            }
+                          ],
+                          "keywords": [
+                            {
+                              "name": "runtime_budget_at_release",
+                              "value": {
+                                "kind": "name",
+                                "id": "runtime_budget_at_release",
+                                "ctx": "Load"
+                              }
+                            },
+                            {
+                              "name": "actual_cost_override",
+                              "value": {
+                                "kind": "name",
+                                "id": "actual_cost_override",
+                                "ctx": "Load"
+                              }
+                            },
+                            {
+                              "name": "released_in_mode",
+                              "value": {
+                                "kind": "name",
+                                "id": "release_mode",
+                                "ctx": "Load"
+                              }
+                            },
+                            {
+                              "name": "is_degraded",
+                              "value": {
+                                "kind": "name",
+                                "id": "is_degraded",
+                                "ctx": "Load"
+                              }
+                            },
+                            {
+                              "name": "service_quality_if_completed",
+                              "value": {
+                                "kind": "name",
+                                "id": "service_quality_if_completed",
+                                "ctx": "Load"
+                              }
+                            },
+                            {
+                              "name": "original_actual_cost",
+                              "value": {
+                                "kind": "name",
+                                "id": "original_actual_cost",
+                                "ctx": "Load"
+                              }
+                            },
+                            {
+                              "name": "original_runtime_budget_at_release",
+                              "value": {
+                                "kind": "name",
+                                "id": "original_runtime_budget_at_release",
+                                "ctx": "Load"
+                              }
+                            }
+                          ]
+                        },
+                        "lineno": 915
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "job",
+                              "ctx": "Load"
+                            },
+                            "attr": "busy_period_start"
+                          }
+                        ],
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "name",
+                            "id": "_compute_busy_period_start_for_new_job",
+                            "ctx": "Load"
+                          },
+                          "args": [],
+                          "keywords": [
+                            {
+                              "name": "active_jobs",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "self",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "state"
+                                },
+                                "attr": "active_jobs"
+                              }
+                            },
+                            {
+                              "name": "new_task",
+                              "value": {
+                                "kind": "name",
+                                "id": "task",
+                                "ctx": "Load"
+                              }
+                            },
+                            {
+                              "name": "priority_map",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "self",
+                                  "ctx": "Load"
+                                },
+                                "attr": "priority_map"
+                              }
+                            },
+                            {
+                              "name": "now",
+                              "value": {
+                                "kind": "name",
+                                "id": "now",
+                                "ctx": "Load"
+                              }
+                            }
+                          ]
+                        },
+                        "lineno": 927
+                      },
+                      {
+                        "kind": "if",
+                        "test": {
+                          "kind": "boolop",
+                          "operator": "And",
+                          "values": [
+                            {
+                              "kind": "call",
+                              "function": {
+                                "kind": "name",
+                                "id": "_is_response_based_semantics",
+                                "ctx": "Load"
+                              },
+                              "args": [
+                                {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "self",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "config"
+                                  },
+                                  "attr": "semantics"
+                                }
+                              ],
+                              "keywords": []
+                            },
+                            {
+                              "kind": "compare",
+                              "left": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "task",
+                                  "ctx": "Load"
+                                },
+                                "attr": "criticality"
+                              },
+                              "operators": [
+                                "Is"
+                              ],
+                              "comparators": [
+                                {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "Criticality",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "HI"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        "body": [
+                          {
+                            "kind": "assign",
+                            "targets": [
+                              {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "job",
+                                  "ctx": "Load"
+                                },
+                                "attr": "response_time_expiry"
+                              }
+                            ],
+                            "value": {
+                              "kind": "binop",
+                              "operator": "Add",
+                              "left": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "job",
+                                  "ctx": "Load"
+                                },
+                                "attr": "busy_period_start"
+                              },
+                              "right": {
+                                "kind": "subscript",
+                                "value": {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "self",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "design_r_lo"
+                                },
+                                "slice": {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "task",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "name"
+                                }
+                              }
+                            },
+                            "lineno": 934
+                          }
+                        ],
+                        "orelse": [],
+                        "lineno": 933
+                      },
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "self",
+                                  "ctx": "Load"
+                                },
+                                "attr": "state"
+                              },
+                              "attr": "active_jobs"
+                            },
+                            "attr": "append"
+                          },
+                          "args": [
+                            {
+                              "kind": "name",
+                              "id": "job",
+                              "ctx": "Load"
+                            }
+                          ],
+                          "keywords": []
+                        },
+                        "lineno": 936
+                      },
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "self",
+                                "ctx": "Load"
+                              },
+                              "attr": "all_jobs"
+                            },
+                            "attr": "append"
+                          },
+                          "args": [
+                            {
+                              "kind": "name",
+                              "id": "job",
+                              "ctx": "Load"
+                            }
+                          ],
+                          "keywords": []
+                        },
+                        "lineno": 937
+                      },
+                      {
+                        "kind": "assign",
+                        "targets": [
+                          {
+                            "kind": "subscript",
+                            "value": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "self",
+                                "ctx": "Load"
+                              },
+                              "attr": "jobs_by_key"
+                            },
+                            "slice": {
+                              "kind": "call",
+                              "function": {
+                                "kind": "name",
+                                "id": "_job_key",
+                                "ctx": "Load"
+                              },
+                              "args": [
+                                {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "task",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "name"
+                                },
+                                {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "event",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "release_index"
+                                }
+                              ],
+                              "keywords": []
+                            }
+                          }
+                        ],
+                        "value": {
+                          "kind": "name",
+                          "id": "job",
+                          "ctx": "Load"
+                        },
+                        "lineno": 938
+                      },
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "self",
+                              "ctx": "Load"
+                            },
+                            "attr": "_append_debug_event"
+                          },
+                          "args": [
+                            {
+                              "kind": "constant",
+                              "value": "job_arrival"
+                            }
+                          ],
+                          "keywords": [
+                            {
+                              "name": "task",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "job",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "task"
+                                },
+                                "attr": "name"
+                              }
+                            },
+                            {
+                              "name": "criticality",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "job",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "task"
+                                  },
+                                  "attr": "criticality"
+                                },
+                                "attr": "value"
+                              }
+                            },
+                            {
+                              "name": "release_index",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "job",
+                                  "ctx": "Load"
+                                },
+                                "attr": "release_index"
+                              }
+                            },
+                            {
+                              "name": "release_time",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "job",
+                                  "ctx": "Load"
+                                },
+                                "attr": "release_time"
+                              }
+                            },
+                            {
+                              "name": "absolute_deadline",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "job",
+                                  "ctx": "Load"
+                                },
+                                "attr": "absolute_deadline"
+                              }
+                            },
+                            {
+                              "name": "actual_cost",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "job",
+                                  "ctx": "Load"
+                                },
+                                "attr": "actual_cost"
+                              }
+                            },
+                            {
+                              "name": "runtime_budget_at_release",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "job",
+                                  "ctx": "Load"
+                                },
+                                "attr": "runtime_budget_at_release"
+                              }
+                            },
+                            {
+                              "name": "released_in_mode",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "job",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "released_in_mode"
+                                },
+                                "attr": "name"
+                              }
+                            },
+                            {
+                              "name": "is_degraded",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "job",
+                                  "ctx": "Load"
+                                },
+                                "attr": "is_degraded"
+                              }
+                            },
+                            {
+                              "name": "service_quality_if_completed",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "job",
+                                  "ctx": "Load"
+                                },
+                                "attr": "service_quality_if_completed"
+                              }
+                            },
+                            {
+                              "name": "original_actual_cost",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "job",
+                                  "ctx": "Load"
+                                },
+                                "attr": "original_actual_cost"
+                              }
+                            },
+                            {
+                              "name": "original_runtime_budget_at_release",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "job",
+                                  "ctx": "Load"
+                                },
+                                "attr": "original_runtime_budget_at_release"
+                              }
+                            },
+                            {
+                              "name": "busy_period_start",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "job",
+                                  "ctx": "Load"
+                                },
+                                "attr": "busy_period_start"
+                              }
+                            },
+                            {
+                              "name": "response_time_expiry",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "job",
+                                  "ctx": "Load"
+                                },
+                                "attr": "response_time_expiry"
+                              }
+                            }
+                          ]
+                        },
+                        "lineno": 939
+                      },
+                      {
+                        "kind": "expression",
+                        "value": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "self",
+                                "ctx": "Load"
+                              },
+                              "attr": "queue"
+                            },
+                            "attr": "push"
+                          },
+                          "args": [
+                            {
+                              "kind": "call",
+                              "function": {
+                                "kind": "name",
+                                "id": "Event",
+                                "ctx": "Load"
+                              },
+                              "args": [],
+                              "keywords": [
+                                {
+                                  "name": "time",
+                                  "value": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "job",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "absolute_deadline"
+                                  }
+                                },
+                                {
+                                  "name": "event_type",
+                                  "value": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "EventType",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "DEADLINE_CHECK"
+                                  }
+                                },
+                                {
+                                  "name": "task_name",
+                                  "value": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "attribute",
+                                      "owner": {
+                                        "kind": "name",
+                                        "id": "job",
+                                        "ctx": "Load"
+                                      },
+                                      "attr": "task"
+                                    },
+                                    "attr": "name"
+                                  }
+                                },
+                                {
+                                  "name": "release_index",
+                                  "value": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "job",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "release_index"
+                                  }
+                                }
+                              ]
+                            }
+                          ],
+                          "keywords": []
+                        },
+                        "lineno": 956
+                      },
+                      {
+                        "kind": "if",
+                        "test": {
+                          "kind": "boolop",
+                          "operator": "And",
+                          "values": [
+                            {
+                              "kind": "call",
+                              "function": {
+                                "kind": "name",
+                                "id": "_is_response_based_semantics",
+                                "ctx": "Load"
+                              },
+                              "args": [
+                                {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "attribute",
+                                    "owner": {
+                                      "kind": "name",
+                                      "id": "self",
+                                      "ctx": "Load"
+                                    },
+                                    "attr": "config"
+                                  },
+                                  "attr": "semantics"
+                                }
+                              ],
+                              "keywords": []
+                            },
+                            {
+                              "kind": "compare",
+                              "left": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "task",
+                                  "ctx": "Load"
+                                },
+                                "attr": "criticality"
+                              },
+                              "operators": [
+                                "Is"
+                              ],
+                              "comparators": [
+                                {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "Criticality",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "HI"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        "body": [
+                          {
+                            "kind": "expression",
+                            "value": {
+                              "kind": "call",
+                              "function": {
+                                "kind": "name",
+                                "id": "_schedule_response_time_expiry_for_hi_job",
+                                "ctx": "Load"
+                              },
+                              "args": [
+                                {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "self",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "state"
+                                },
+                                {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "self",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "queue"
+                                },
+                                {
+                                  "kind": "name",
+                                  "id": "job",
+                                  "ctx": "Load"
+                                },
+                                {
+                                  "kind": "name",
+                                  "id": "now",
+                                  "ctx": "Load"
+                                }
+                              ],
+                              "keywords": []
+                            },
+                            "lineno": 965
+                          }
+                        ],
+                        "orelse": [],
+                        "lineno": 964
+                      }
+                    ]
+                  }
+                },
+                "semantics": {
+                  "verified": true,
+                  "abnormal_scan_before_job_construction": true,
+                  "single_switch_per_batch": true,
+                  "mode_before_batch_preserved": true,
+                  "primary_on_switch_time": true
+                }
+              },
+              {
+                "status": "PASS",
+                "target": {
+                  "status": "PASS",
+                  "function": "_maybe_recover_to_lo",
+                  "lineno": 201,
+                  "arguments": [
+                    "state",
+                    "result",
+                    "now",
+                    "cfg"
+                  ],
+                  "body": [
+                    {
+                      "kind": "expression",
+                      "value": {
+                        "kind": "constant",
+                        "value": "对使用 idle recovery 的语义，在系统空闲时恢复到 LO 模式。"
+                      },
+                      "lineno": 207
+                    },
+                    {
+                      "kind": "if",
+                      "test": {
+                        "kind": "unary",
+                        "operator": "Not",
+                        "operand": {
+                          "kind": "call",
+                          "function": {
+                            "kind": "name",
+                            "id": "_uses_idle_recovery",
+                            "ctx": "Load"
+                          },
+                          "args": [
+                            {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "cfg",
+                                "ctx": "Load"
+                              },
+                              "attr": "semantics"
+                            }
+                          ],
+                          "keywords": []
+                        }
+                      },
+                      "body": [
+                        {
+                          "kind": "return",
+                          "value": null,
+                          "lineno": 210
+                        }
+                      ],
+                      "orelse": [],
+                      "lineno": 209
+                    },
+                    {
+                      "kind": "if",
+                      "test": {
+                        "kind": "boolop",
+                        "operator": "And",
+                        "values": [
+                          {
+                            "kind": "compare",
+                            "left": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "state",
+                                "ctx": "Load"
+                              },
+                              "attr": "mode"
+                            },
+                            "operators": [
+                              "Is"
+                            ],
+                            "comparators": [
+                              {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "SystemMode",
+                                  "ctx": "Load"
+                                },
+                                "attr": "HI"
+                              }
+                            ]
+                          },
+                          {
+                            "kind": "unary",
+                            "operator": "Not",
+                            "operand": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "state",
+                                "ctx": "Load"
+                              },
+                              "attr": "active_jobs"
+                            }
+                          },
+                          {
+                            "kind": "compare",
+                            "left": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "state",
+                                "ctx": "Load"
+                              },
+                              "attr": "running_job"
+                            },
+                            "operators": [
+                              "Is"
+                            ],
+                            "comparators": [
+                              {
+                                "kind": "constant",
+                                "value": null
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      "body": [
+                        {
+                          "kind": "assign",
+                          "targets": [
+                            {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "state",
+                                "ctx": "Load"
+                              },
+                              "attr": "mode"
+                            }
+                          ],
+                          "value": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "SystemMode",
+                              "ctx": "Load"
+                            },
+                            "attr": "LO"
+                          },
+                          "lineno": 212
+                        },
+                        {
+                          "kind": "expression",
+                          "value": {
+                            "kind": "call",
+                            "function": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "name",
+                                  "id": "result",
+                                  "ctx": "Load"
+                                },
+                                "attr": "mode_recoveries"
+                              },
+                              "attr": "append"
+                            },
+                            "args": [
+                              {
+                                "kind": "call",
+                                "function": {
+                                  "kind": "name",
+                                  "id": "ModeRecoveryEvent",
+                                  "ctx": "Load"
+                                },
+                                "args": [],
+                                "keywords": [
+                                  {
+                                    "name": "recovery_time",
+                                    "value": {
+                                      "kind": "name",
+                                      "id": "now",
+                                      "ctx": "Load"
+                                    }
+                                  },
+                                  {
+                                    "name": "reason",
+                                    "value": {
+                                      "kind": "constant",
+                                      "value": "idle"
+                                    }
+                                  }
+                                ]
+                              }
+                            ],
+                            "keywords": []
+                          },
+                          "lineno": 213
+                        }
+                      ],
+                      "orelse": [],
+                      "lineno": 211
+                    }
+                  ]
+                },
+                "contract": "recovery iff active/running are empty"
+              },
+              {
+                "status": "PASS",
+                "current_time": 0,
+                "mode": "LO",
+                "running_job": null,
+                "active_jobs": [],
+                "ready_jobs": [],
+                "service_in_progress": false,
+                "runtime_budgets": {
+                  "SYN_HI_0": 1,
+                  "SYN_LO": 2,
+                  "SYN_HI_1": 2
+                },
+                "quiescent": true
+              },
+              {
+                "status": "PASS",
+                "initial_state_hash": "06d4e5147743f266de9541ed66cadddc60be07cbc62000821e0e2a5aa8d37c97",
+                "boot_time": 0,
+                "mode_after_boot": "LO",
+                "first_release_batch_defined": true,
+                "no_service_before_boot_closure": true,
+                "initial_runtime_budget_snapshot": {
+                  "SYN_HI_0": 1,
+                  "SYN_LO": 2,
+                  "SYN_HI_1": 2
+                }
+              }
+            ],
+            "binding": {
+              "status": "PASS",
+              "schema_version": "controller_binding_v1",
+              "wrapper_source_hash": "62af6d339c266e588d600c68623a89b25e58acbc4b3c9ca29838ddb5a1159eb6",
+              "engine_source_hash": "3509bbe867e52d0344127bcab21ee9ddfc6243fb43956dd2d93246b5d64b4791",
+              "wrapper_calls": [
+                "engine.apply_budget_updates(updates)"
+              ],
+              "engine_ir": {
+                "status": "PASS",
+                "function": "EventRuntimeEngine.apply_budget_updates",
+                "lineno": 706,
+                "arguments": [
+                  "self",
+                  "updates"
+                ],
+                "body": [
+                  {
+                    "kind": "expression",
+                    "value": {
+                      "kind": "constant",
+                      "value": "在当前时刻应用预算更新，并强制触发重调度。\n\n        这里显式调用 `_advance_time(self.state.current_time)` 不是多余操作。\n        `run_until()` 在 agent 决策边界返回后，当前时刻的 running job 可能刚好\n        持续执行到了该边界；如果这里直接改预算并强制重排，分段推进路径就会把\n        边界前最后一段执行量“吞掉”。统一走 `_advance_time()` 可以保证：\n        只要预算更新发生在某个逻辑时间点，更新前 CPU 已经执行过的时间一定先\n        结算完成。\n        "
+                    },
+                    "lineno": 707
+                  },
+                  {
+                    "kind": "expression",
+                    "value": {
+                      "kind": "call",
+                      "function": {
+                        "kind": "attribute",
+                        "owner": {
+                          "kind": "name",
+                          "id": "self",
+                          "ctx": "Load"
+                        },
+                        "attr": "_advance_time"
+                      },
+                      "args": [
+                        {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "self",
+                              "ctx": "Load"
+                            },
+                            "attr": "state"
+                          },
+                          "attr": "current_time"
+                        }
+                      ],
+                      "keywords": []
+                    },
+                    "lineno": 717
+                  },
+                  {
+                    "kind": "assign",
+                    "targets": [
+                      {
+                        "kind": "name",
+                        "id": "update_payload",
+                        "ctx": "Store"
+                      }
+                    ],
+                    "value": {
+                      "kind": "call",
+                      "function": {
+                        "kind": "name",
+                        "id": "dict",
+                        "ctx": "Load"
+                      },
+                      "args": [
+                        {
+                          "kind": "name",
+                          "id": "updates",
+                          "ctx": "Load"
+                        }
+                      ],
+                      "keywords": []
+                    },
+                    "lineno": 718
+                  },
+                  {
+                    "kind": "expression",
+                    "value": {
+                      "kind": "call",
+                      "function": {
+                        "kind": "attribute",
+                        "owner": {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "name",
+                            "id": "self",
+                            "ctx": "Load"
+                          },
+                          "attr": "budget_state"
+                        },
+                        "attr": "apply_updates"
+                      },
+                      "args": [
+                        {
+                          "kind": "name",
+                          "id": "update_payload",
+                          "ctx": "Load"
+                        }
+                      ],
+                      "keywords": []
+                    },
+                    "lineno": 719
+                  },
+                  {
+                    "kind": "expression",
+                    "value": {
+                      "kind": "call",
+                      "function": {
+                        "kind": "attribute",
+                        "owner": {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "self",
+                              "ctx": "Load"
+                            },
+                            "attr": "result"
+                          },
+                          "attr": "budget_update_events"
+                        },
+                        "attr": "append"
+                      },
+                      "args": [
+                        {
+                          "kind": "call",
+                          "function": {
+                            "kind": "name",
+                            "id": "BudgetUpdateEvent",
+                            "ctx": "Load"
+                          },
+                          "args": [],
+                          "keywords": [
+                            {
+                              "name": "time",
+                              "value": {
+                                "kind": "attribute",
+                                "owner": {
+                                  "kind": "attribute",
+                                  "owner": {
+                                    "kind": "name",
+                                    "id": "self",
+                                    "ctx": "Load"
+                                  },
+                                  "attr": "state"
+                                },
+                                "attr": "current_time"
+                              }
+                            },
+                            {
+                              "name": "updates",
+                              "value": {
+                                "kind": "name",
+                                "id": "update_payload",
+                                "ctx": "Load"
+                              }
+                            }
+                          ]
+                        }
+                      ],
+                      "keywords": []
+                    },
+                    "lineno": 720
+                  },
+                  {
+                    "kind": "expression",
+                    "value": {
+                      "kind": "call",
+                      "function": {
+                        "kind": "attribute",
+                        "owner": {
+                          "kind": "name",
+                          "id": "self",
+                          "ctx": "Load"
+                        },
+                        "attr": "_append_debug_event"
+                      },
+                      "args": [
+                        {
+                          "kind": "constant",
+                          "value": "budget_update"
+                        }
+                      ],
+                      "keywords": [
+                        {
+                          "name": "updates",
+                          "value": {
+                            "kind": "name",
+                            "id": "update_payload",
+                            "ctx": "Load"
+                          }
+                        }
+                      ]
+                    },
+                    "lineno": 723
+                  },
+                  {
+                    "kind": "expression",
+                    "value": {
+                      "kind": "call",
+                      "function": {
+                        "kind": "attribute",
+                        "owner": {
+                          "kind": "name",
+                          "id": "self",
+                          "ctx": "Load"
+                        },
+                        "attr": "_reschedule"
+                      },
+                      "args": [
+                        {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "self",
+                              "ctx": "Load"
+                            },
+                            "attr": "state"
+                          },
+                          "attr": "current_time"
+                        }
+                      ],
+                      "keywords": [
+                        {
+                          "name": "force",
+                          "value": {
+                            "kind": "constant",
+                            "value": true
+                          }
+                        }
+                      ]
+                    },
+                    "lineno": 724
+                  }
+                ]
+              },
+              "required_effects": [
+                "_advance_time",
+                "apply_updates",
+                "_reschedule"
+              ],
+              "missing": [],
+              "binding_hash": "aea1ca97e3b4339b19f70676c84c332522718dbdf2b3a4f9f9927dbb13c848b1"
+            },
+            "binding_hash": "7217fc9aafe26f380d26c694e2a0e96392a808b3ab0826dfcf554853bdfa68a6",
+            "sequence_allocation_deterministic": true,
+            "finite_token_height": true,
+            "ready_nonempty_advances_tick": true,
+            "ready_empty_jumps_next_event": true,
+            "zero_time_stutter_forbidden": true,
+            "active_release_budget_immutable": true,
+            "changes_active": false,
+            "changes_ready": false,
+            "changes_running": false,
+            "changes_current_service": false,
+            "changes_mode": false,
+            "changes_service": false
+          }
+        }
+      }
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "697abaab91b14d628bba0a54b9ddf820f7dba7dad60bc2554fcc18397d863615"
+}

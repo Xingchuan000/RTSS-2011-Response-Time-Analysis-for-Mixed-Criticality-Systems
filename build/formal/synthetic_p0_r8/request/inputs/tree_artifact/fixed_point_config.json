@@ -1,0 +1,1 @@
+{"config":{"scale":1000,"input_min":0.0,"input_max":1.0,"output_min":0,"output_max":1000,"rounding_mode":"half_up_nonnegative","schema_version":"fixed_point_v1"}}

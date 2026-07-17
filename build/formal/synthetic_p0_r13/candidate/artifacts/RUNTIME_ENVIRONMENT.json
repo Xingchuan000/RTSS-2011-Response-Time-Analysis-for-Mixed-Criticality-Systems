@@ -1,0 +1,36 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "RUNTIME_ENVIRONMENT",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "8024fe7b4560e454309868defefefa2be31ea5f77f52f5ac7f0ab354b2ad1aa2",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "RUNTIME_ENVIRONMENT",
+    "evidence": {
+      "obligation_id": "RUNTIME_ENVIRONMENT",
+      "status": "UNRESOLVED",
+      "route": "UNRESOLVED",
+      "code": "CANDIDATE_EVIDENCE_BUILDER_NOT_IMPLEMENTED",
+      "checker_input_hashes": {},
+      "witness": {}
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "CANDIDATE_EVIDENCE_FAILED"
+  },
+  "artifact_hash": "3943d71747e40501b2ace4d894bc8287fd8ce5ca85cf464d018a8ed71e92ca9e"
+}

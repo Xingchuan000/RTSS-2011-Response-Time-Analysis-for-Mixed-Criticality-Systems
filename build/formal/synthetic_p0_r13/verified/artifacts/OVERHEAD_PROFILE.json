@@ -1,0 +1,29 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "OVERHEAD_PROFILE",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.checker_catalog.OVERHEAD_PROFILE",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "2b11fb0df751a2e66168741aeaf31694d3eb0e87f556c244d3eeb3bd6235bd55",
+    "fresh_process": true
+  },
+  "witness": {
+    "status": "PASS",
+    "route": null,
+    "failure": null,
+    "overhead": 0,
+    "fresh_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+    "candidate_status_compared": "PASS"
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "bb6547b403d815b24eca1374c538658a551feefc3f34addbc9d93a019011c85e"
+}

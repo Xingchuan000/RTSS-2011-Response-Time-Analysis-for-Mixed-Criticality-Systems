@@ -39,7 +39,9 @@ def claim_dependency_closure(registry: list[dict[str, object]], claim: str) -> s
     if claim not in known_claims:
         raise ValueError(f"unknown claim: {claim}")
     roots = {str(item["id"]) for item in entries.values()
-             if claim in {str(value) for value in item.get("gates_claims", [])}}
+             if str(item.get("id")) != "CLAIM_AGGREGATION_RESULT"
+             and item.get("kind") != "derived_summary"
+             and claim in {str(value) for value in item.get("gates_claims", [])}}
     closure = set(roots)
     stack = list(roots)
     while stack:
@@ -54,14 +56,45 @@ def claim_dependency_closure(registry: list[dict[str, object]], claim: str) -> s
     return closure
 
 
-def aggregate_for_claim(*, claim: str, obligations: list[dict[str, object]],
+def aggregate_for_claim(*, claim: str, obligations: list[dict[str, object]] | None = None,
                         registry: list[dict[str, object]],
                         aggregation_spec: dict[str, object] | None = None,
-                        verified_status_evidence: dict[str, object] | None = None) -> str:
+                        verified_status_evidence: dict[str, object] | None = None,
+                        verified_certificates: dict[str, dict[str, object]] | None = None,
+                        verified_outer_root: str | None = None) -> str:
     """不接受调用方 gate set 的严格 aggregation API。"""
     try:
         closure = claim_dependency_closure(registry, claim)
     except ValueError:
+        return "PROOF_BUNDLE_INVALID"
+    # R07 新接口：root 已由 verifier 计算，aggregator 只验证传入的证书、
+    # status evidence 与 root 引用一致；它不再自行猜测另一套 root 算法。
+    if verified_certificates is not None:
+        if verified_outer_root is None or verified_status_evidence is None:
+            return "PROOF_BUNDLE_INVALID"
+        if set(verified_certificates) != closure or set(verified_status_evidence) != closure:
+            return "PROOF_BUNDLE_INVALID"
+        normalized: list[dict[str, object]] = []
+        for obligation_id in sorted(closure):
+            certificate = verified_certificates[obligation_id]
+            evidence = verified_status_evidence[obligation_id]
+            failure = certificate.get("failure") if isinstance(certificate.get("failure"), dict) else {}
+            from formal_toolchain.core.artifact import verify_obligation_certificate
+            if (not isinstance(certificate, dict) or not verify_obligation_certificate(certificate)
+                    or evidence.get("outer_bundle_root") != verified_outer_root
+                    or evidence.get("certificate_hash") != certificate.get("artifact_hash")
+                    or evidence.get("obligation_status") != certificate.get("obligation_status")
+                    or evidence.get("verified") is not True):
+                return "PROOF_BUNDLE_INVALID"
+            normalized.append({"id": obligation_id,
+                               "obligation_status": certificate.get("obligation_status"),
+                               "failure_route": failure.get("route"),
+                               "failure_code": failure.get("code")})
+        return aggregate(normalized, closure, registry=registry,
+                         aggregation_spec=aggregation_spec,
+                         _registry_derived_gate_set=True)
+
+    if obligations is None or verified_status_evidence is None:
         return "PROOF_BUNDLE_INVALID"
     supplied = {str(item.get("id")) for item in obligations}
     if len(supplied) != len(obligations) or supplied != closure:
@@ -141,7 +174,7 @@ def aggregate(obligations: list[dict[str, object]], claim_gates: set[str],
         if status not in allowed:
             return "PROOF_BUNDLE_INVALID"
         if status == "FAIL":
-            statuses.append(route_by_id.get(obligation_id, "PROOF_BUNDLE_INVALID"))
+            statuses.append(str(item.get("failure_route") or route_by_id.get(obligation_id, "PROOF_BUNDLE_INVALID")))
         elif status == "UNRESOLVED":
             statuses.append("UNRESOLVED")
         elif status == "NOT_APPLICABLE":

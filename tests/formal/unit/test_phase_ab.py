@@ -54,6 +54,6 @@ def test_registry_rejects_path_traversal():
             "id": "X", "profile": "P0", "kind": "obligation", "activation": "active",
             "required": True, "depends_on": [], "artifact": "../x.json",
             "artifact_schema": "certificates/x.json", "summary_path": "x",
-            "failure_route": "UNRESOLVED", "gates_claims": [],
+            "failure_route": "PROOF_BUNDLE_INVALID", "gates_claims": [],
             "status_evidence_rule": "certificate_status",
         }])

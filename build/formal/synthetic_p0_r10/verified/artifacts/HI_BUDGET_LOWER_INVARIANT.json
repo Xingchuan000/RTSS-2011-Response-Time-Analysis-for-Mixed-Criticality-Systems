@@ -1,0 +1,41 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "HI_BUDGET_LOWER_INVARIANT",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "35810c08007cf8561707c7819fbad7e58d42a402077ccbcb65c2430628b089e9",
+  "direct_predecessor_hashes": {
+    "CANDIDATE_ENVELOPE": "ba47955930fc64bf0fc5ca889da7cad5bdfa9be9e40c5a1b3c671f27d9ec9f39",
+    "COMMON_TRANSITION_PRESERVATION": "290c6f801b99ee41000dc585691f18d9b46436e42a0e449b69772c923f673703",
+    "DEPLOYED_POLICY_PRESERVATION": "50e4fcc2bdad7bdd546d163fd22767b3367d369a939828c7d31ebf5dd3c69ac5"
+  },
+  "checker_id": "formal_toolchain.verifier.checker_catalog.HI_BUDGET_LOWER_INVARIANT",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "edf9b62012b1c1f0bf7018f53a686b777c134dbe0d191695ff8a87d06109fbbe",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "evidence_key": "HI_BUDGET_LOWER_INVARIANT",
+      "evidence": {
+        "obligation_id": "HI_BUDGET_LOWER_INVARIANT",
+        "status": "UNRESOLVED",
+        "route": "UNRESOLVED",
+        "code": "CANDIDATE_EVIDENCE_BUILDER_NOT_IMPLEMENTED",
+        "checker_input_hashes": {},
+        "witness": {}
+      }
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "PREDECESSOR_NOT_PASS"
+  },
+  "artifact_hash": "83b3a256f96dbf3b2d73abe4407dc959d7d8b68052b21c3361b01e41760b807b"
+}

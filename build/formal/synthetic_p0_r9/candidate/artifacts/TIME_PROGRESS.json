@@ -1,0 +1,78 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "TIME_PROGRESS",
+  "obligation_status": "FAIL",
+  "certificate_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "TIME_PROGRESS",
+    "evidence": {
+      "obligation_id": "TIME_PROGRESS",
+      "status": "FAIL",
+      "route": "MODEL_CONFORMANCE_FAILED",
+      "code": "TIME_PROGRESS_CONTRACT_FAILED",
+      "checker_input_hashes": {
+        "source_manifest_hash": "addd9057971b4d15a42880a023c95fd4054266c9677178565256c586c2462382",
+        "context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4"
+      },
+      "witness": {
+        "result": {
+          "status": "FAIL",
+          "route": "MODEL_CONFORMANCE_FAILED",
+          "failure": {
+            "code": "TIME_PROGRESS_CONTRACT_FAILED"
+          },
+          "binding": {
+            "status": "UNRESOLVED",
+            "route": "UNRESOLVED",
+            "failure": {
+              "code": "TIME_PROGRESS_BINDING_UNRESOLVED",
+              "targets": [
+                "EventRuntimeEngine._schedule_running_job_events"
+              ]
+            },
+            "ready_branch": {
+              "kind": "ONE_SERVICE_TICK",
+              "strict_time_increase": true,
+              "evidence": {
+                "status": "PASS",
+                "route": null,
+                "function": "EventRuntimeEngine._advance_time",
+                "lineno": 676
+              }
+            },
+            "empty_ready_branch": {
+              "kind": "JUMP_TO_NEXT_EVENT",
+              "strict_time_increase": true,
+              "evidence": {
+                "status": "PASS",
+                "route": null,
+                "function": "EventRuntimeEngine.run_until",
+                "lineno": 1260
+              }
+            },
+            "zero_time_closure_finite": true
+          }
+        }
+      }
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": {
+    "route": "MODEL_CONFORMANCE_FAILED",
+    "code": "CANDIDATE_EVIDENCE_FAILED"
+  },
+  "artifact_hash": "c2b8ec7c35eee2e9472193b21d73750032df367a751591cbff7a521587e81e50"
+}

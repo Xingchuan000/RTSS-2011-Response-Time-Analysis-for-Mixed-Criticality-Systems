@@ -1,0 +1,193 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "EXECUTABLE_POLICY_SEMANTICS",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "1f029955400b7b43b054c9d85287e87909a1008c31a0aa4c9039695881913d82",
+  "direct_predecessor_hashes": {
+    "OBSERVATION_EXTRACTION": "715f84e95be1d5c1e109848c7eb6f566e91beea3112b9339900b512f7a95ffcf",
+    "FEATURE_QUANTIZATION": "7389f6ce83b69385ca2609dcd505648d1f18c8e084da60e4d9d23659f7f51adb",
+    "ACTION_TRANSITION": "19e8e9edfab7ef481e76564dd2f51223b79a4772d5bccd2bcc24d0cce994980e",
+    "MASK_FALLBACK": "45606e2429b329a412b2decc57424c763fbf7abd51821c339d9acbdaa80aa3c4"
+  },
+  "checker_id": "formal_toolchain.verifier.checker_catalog.EXECUTABLE_POLICY_SEMANTICS",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "8955186405af2fc504eb170c37948c6ded176a593a8dc36b86c62bf53f5c50b1",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "evidence_key": "EXECUTABLE",
+      "evidence": {
+        "status": "PASS",
+        "states": [
+          {
+            "status": "PASS",
+            "quantized": [
+              500,
+              500,
+              500,
+              500,
+              0,
+              0,
+              500,
+              1000,
+              0,
+              500,
+              1000,
+              1000,
+              1000,
+              1000,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1000,
+              667,
+              667,
+              667,
+              667,
+              0,
+              0,
+              333,
+              1000,
+              0,
+              667,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              500
+            ],
+            "leaf_id": 1,
+            "ranking": [
+              3,
+              2,
+              0,
+              1,
+              4,
+              5
+            ],
+            "selected_action": 2,
+            "mask": [
+              true,
+              false,
+              true,
+              false,
+              false,
+              false
+            ],
+            "mask_reasons": [
+              "accepted",
+              "no_effective_budget_change",
+              "accepted",
+              "decrease_hi_forbidden",
+              "budget_floor_violation",
+              "decrease_hi_forbidden"
+            ],
+            "implicit_noop": false,
+            "budget_after": {
+              "SYN_HI_1": 3
+            }
+          },
+          {
+            "status": "PASS",
+            "quantized": [
+              1000,
+              1000,
+              1000,
+              1000,
+              0,
+              0,
+              0,
+              1000,
+              0,
+              1000,
+              1000,
+              1000,
+              1000,
+              1000,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1000,
+              1000,
+              1000,
+              1000,
+              1000,
+              0,
+              0,
+              0,
+              1000,
+              0,
+              1000,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1000
+            ],
+            "leaf_id": 2,
+            "ranking": [
+              3,
+              4,
+              5,
+              0,
+              1,
+              2
+            ],
+            "selected_action": null,
+            "mask": [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            "mask_reasons": [
+              "no_effective_budget_change",
+              "no_effective_budget_change",
+              "no_effective_budget_change",
+              "decrease_hi_forbidden",
+              "budget_floor_violation",
+              "decrease_hi_forbidden"
+            ],
+            "implicit_noop": true,
+            "budget_after": null
+          }
+        ],
+        "region_summary": {
+          "fallback_success": true,
+          "implicit_noop": true,
+          "selected_action_ids": [
+            0,
+            1,
+            2
+          ],
+          "state_count": 12
+        }
+      }
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "PREDECESSOR_NOT_PASS"
+  },
+  "artifact_hash": "3fec32a2aa4926934402f0356e5e6d00b36795ff961ebd945e1a90c9e2447295"
+}

@@ -1,0 +1,37 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "PROOF_REQUEST",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "f5b07a14b674f5843c5be792f9a378dabbef161ec3f76fc25d17381b49b86b80",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.checker_catalog.PROOF_REQUEST",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "1b9e443e698c66e88be48646f413ab10d90f5810cc7fd9cb21f9d9887d37a9e9",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "evidence_key": "PROOF_REQUEST",
+      "evidence": {
+        "obligation_id": "PROOF_REQUEST",
+        "status": "UNRESOLVED",
+        "route": "UNRESOLVED",
+        "code": "CANDIDATE_EVIDENCE_BUILDER_NOT_IMPLEMENTED",
+        "checker_input_hashes": {},
+        "witness": {}
+      }
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "SEMANTIC_CHECKER_NOT_IMPLEMENTED"
+  },
+  "artifact_hash": "698a0bb02ee43f61699c0bfb343641f1fcbddf4a0cf190915863da51affd0fef"
+}

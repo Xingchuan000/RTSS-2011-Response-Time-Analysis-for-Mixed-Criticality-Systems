@@ -1,0 +1,24 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "STATUS_EVIDENCE",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "c7555e0c5bf3b3a47220568396a598340f1e24dd88b6eb1e0772d1cd99e9ed51",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.checker_catalog.STATUS_EVIDENCE",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": null,
+    "fresh_process": true
+  },
+  "witness": {
+    "status_entries_hash": "d7fec3798c1e00fbb69650e96fec025759f65cc0988859abd1aeb8dc504b5ba1"
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "c009fe8572ff86436c4a5ab567956ff738b58e3bb48359b378920e740c7769f5"
+}

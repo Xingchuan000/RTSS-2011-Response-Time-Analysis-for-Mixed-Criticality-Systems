@@ -17,9 +17,15 @@ def replay_deployed_policy(runtime_state: Mapping[str, Any], target: Any,
                            tree: IntegerTreeModel, config: dict[str, Any], *,
                            actions: Sequence[BudgetAction]) -> dict[str, Any]:
     """从 runtime state 完整重放 observation→tree→mask→action。"""
-    from formal_toolchain.adapters.synthetic_policy import build_runtime_adapter
-    adapter = build_runtime_adapter(target, actions)
-    evidence = adapter["evaluate"](runtime_state)
+    adapter = target.runtime_adapter
+    if adapter is None:
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED",
+                "failure": {"code": "FORMAL_RUNTIME_ADAPTER_MISSING"}}
+    evidence = {
+        "observation": tuple(adapter.extract_observation(runtime_state)),
+        "mask": tuple(adapter.valid_action_mask(runtime_state)[0]),
+        "reasons": tuple(adapter.valid_action_mask(runtime_state)[1]),
+    }
     observation = evidence["observation"]
     valid_mask = evidence["mask"]
     if len(observation) != tree.state_dim or len(valid_mask) != tree.action_dim:
@@ -29,7 +35,7 @@ def replay_deployed_policy(runtime_state: Mapping[str, Any], target: Any,
     selected = select_first_valid(evaluation.action_ranking, valid_mask, action_dim=tree.action_dim)
     after = None
     if selected is not None:
-        after = adapter["apply"](runtime_state, selected)
+            after = adapter.apply_action(runtime_state, selected)
     return {"status": "PASS", "quantized": quantized, "leaf_id": evaluation.leaf_id,
             "ranking": evaluation.action_ranking, "selected_action": selected,
             "mask": valid_mask, "mask_reasons": evidence["reasons"],

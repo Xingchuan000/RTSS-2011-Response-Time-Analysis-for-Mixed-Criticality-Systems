@@ -1,0 +1,64 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "CASE1_INTEGER_DOMAIN",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "6cc369fb09c47b073ada06755d65a70bb45f92bbbfd38413220888cb9babd6d8",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "CASE1_INTEGER_DOMAIN",
+    "evidence": {
+      "status": "PASS",
+      "route": null,
+      "failure": null,
+      "checks": [
+        {
+          "task": "SYN_HI_0",
+          "r_lo": 1,
+          "expected_starts": [
+            0
+          ],
+          "actual_starts": [
+            0
+          ],
+          "match": true
+        },
+        {
+          "task": "SYN_HI_1",
+          "r_lo": 6,
+          "expected_starts": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "actual_starts": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "match": true
+        }
+      ]
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "807f1d5b86a92b9421c1af084623fb93ab376eb463b313d7b63ec20587437a35"
+}

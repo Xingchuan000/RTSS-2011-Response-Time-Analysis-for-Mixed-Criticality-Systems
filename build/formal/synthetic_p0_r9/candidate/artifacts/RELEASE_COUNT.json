@@ -1,0 +1,97 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "RELEASE_COUNT",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "6cc369fb09c47b073ada06755d65a70bb45f92bbbfd38413220888cb9babd6d8",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "RELEASE_COUNT",
+    "evidence": {
+      "status": "PASS",
+      "route": null,
+      "failure": null,
+      "check_count": 8,
+      "checks": [
+        {
+          "kind": "LO_CEIL",
+          "task": "SYN_HI_1",
+          "interferer": "SYN_HI_0",
+          "expected": 1,
+          "actual": 1,
+          "match": true
+        },
+        {
+          "kind": "LO_CEIL",
+          "task": "SYN_HI_1",
+          "interferer": "SYN_LO",
+          "expected": 1,
+          "actual": 1,
+          "match": true
+        },
+        {
+          "kind": "LO_CEIL",
+          "task": "SYN_HI_1",
+          "interferer": "SYN_HI_0",
+          "expected": 1,
+          "actual": 1,
+          "match": true
+        },
+        {
+          "kind": "LO_CEIL",
+          "task": "SYN_HI_1",
+          "interferer": "SYN_LO",
+          "expected": 1,
+          "actual": 1,
+          "match": true
+        },
+        {
+          "kind": "START_FLOOR_PLUS_ONE",
+          "task": "SYN_HI_1",
+          "interferer": "SYN_HI_0",
+          "expected": 1,
+          "actual": 1,
+          "match": true
+        },
+        {
+          "kind": "START_FLOOR_PLUS_ONE",
+          "task": "SYN_HI_1",
+          "interferer": "SYN_LO",
+          "expected": 1,
+          "actual": 1,
+          "match": true
+        },
+        {
+          "kind": "START_FLOOR_PLUS_ONE",
+          "task": "SYN_HI_1",
+          "interferer": "SYN_HI_0",
+          "expected": 1,
+          "actual": 1,
+          "match": true
+        },
+        {
+          "kind": "START_FLOOR_PLUS_ONE",
+          "task": "SYN_HI_1",
+          "interferer": "SYN_LO",
+          "expected": 1,
+          "actual": 1,
+          "match": true
+        }
+      ]
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "084857fee2416b32a2ba4a34f73b27e92427480b509b5a08c72fb2a37dd29640"
+}

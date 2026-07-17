@@ -2,7 +2,7 @@
   "schema_version": "theory_manifest_v2",
   "library_version": "p0-theory-r3",
   "proof_schema_version": "common_certificate_v1",
-  "registry_fingerprint": "2e4a0e1f966a6016db752931e5658846d49fa3c0b9f8189a1e24ffd6f7b2f11d",
+  "registry_fingerprint": "41802f94a031f99032f540d9ebb1c807632c8bf13473c7b8b07d9568253771de",
   "proof_schema_compatible": [
     "proof_request_v1",
     "common_certificate_v1"

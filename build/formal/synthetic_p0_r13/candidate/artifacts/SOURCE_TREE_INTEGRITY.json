@@ -1,0 +1,36 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "SOURCE_TREE_INTEGRITY",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "8024fe7b4560e454309868defefefa2be31ea5f77f52f5ac7f0ab354b2ad1aa2",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "SOURCE_TREE_INTEGRITY",
+    "evidence": {
+      "obligation_id": "SOURCE_TREE_INTEGRITY",
+      "status": "UNRESOLVED",
+      "route": "UNRESOLVED",
+      "code": "CANDIDATE_EVIDENCE_BUILDER_NOT_IMPLEMENTED",
+      "checker_input_hashes": {},
+      "witness": {}
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "CANDIDATE_EVIDENCE_FAILED"
+  },
+  "artifact_hash": "5e53373b851e61ff096d9f40a10242c69c28d6a3bcaab16701ff82d3150f77cc"
+}

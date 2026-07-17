@@ -31,7 +31,11 @@ def inspect_tree_artifact(artifact_dir: Path, *, expected_state_dim: int = 128,
     if missing:
         raise ValueError(f"缺少必需 artifact: {', '.join(missing)}")
     manifest = _read(artifact_dir / "artifact_manifest.json")
-    files = manifest.get("files", manifest) if isinstance(manifest, dict) else {}
+    # 真实 s185 artifact 使用 provider 的 ``file_hashes`` 字段，synthetic
+    # fixture 使用 ``files``。两种已存在的 manifest schema 都是显式输入，
+    # 这里只做字段名兼容，不放宽文件集合或 hash 校验。
+    files = (manifest.get("files", manifest.get("file_hashes", manifest))
+             if isinstance(manifest, dict) else {})
     hashes: dict[str, str] = {}
     for name in REQUIRED_FILES:
         actual = sha256_file(artifact_dir / name)

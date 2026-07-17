@@ -1,0 +1,43 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "PHASE_DAG",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.checker_catalog.PHASE_DAG",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "05678f3fb2c1393fbf749cc819a01e8f23670bf3c293214a38923ae7016d3c0f",
+    "fresh_process": true
+  },
+  "witness": {
+    "status": "PASS",
+    "schema_version": "phase_dag_v1",
+    "edges": {
+      "arrival": [
+        "classify"
+      ],
+      "classify": [
+        "switch"
+      ],
+      "switch": [
+        "completion"
+      ],
+      "completion": [
+        "recovery"
+      ],
+      "recovery": []
+    },
+    "acyclic": true,
+    "fresh_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+    "candidate_status_compared": "PASS"
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "516768643ae6979ce839101e4ad9118c4d21f1529afaae5b750a8df0caa9ead1"
+}

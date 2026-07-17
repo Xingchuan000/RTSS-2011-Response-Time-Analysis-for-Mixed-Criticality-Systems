@@ -1,0 +1,61 @@
+{
+  "schema_version": "workflow_manifest_v1",
+  "commands": [
+    {
+      "module": "formal_toolchain.cli.inspect_target",
+      "argv": [
+        "/Users/x1ngchuan/miniconda3/envs/amc-repro/bin/python",
+        "-m",
+        "formal_toolchain.cli.inspect_target",
+        "--request",
+        "/Users/x1ngchuan/Documents/AMC/build/formal/.synthetic_p0_r9.staging/request/proof_request.json",
+        "--out",
+        "/Users/x1ngchuan/Documents/AMC/build/formal/.synthetic_p0_r9.staging/preflight"
+      ],
+      "cwd": ".",
+      "started_at": "2026-07-16T13:44:39.339426+00:00",
+      "ended_at": "2026-07-16T13:44:42.714998+00:00",
+      "returncode": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "module": "formal_toolchain.cli.compile_seed",
+      "argv": [
+        "/Users/x1ngchuan/miniconda3/envs/amc-repro/bin/python",
+        "-m",
+        "formal_toolchain.cli.compile_seed",
+        "--request",
+        "/Users/x1ngchuan/Documents/AMC/build/formal/.synthetic_p0_r9.staging/request/proof_request.json",
+        "--out",
+        "/Users/x1ngchuan/Documents/AMC/build/formal/.synthetic_p0_r9.staging/candidate"
+      ],
+      "cwd": ".",
+      "started_at": "2026-07-16T13:44:42.715373+00:00",
+      "ended_at": "2026-07-16T13:44:46.695435+00:00",
+      "returncode": 0,
+      "stdout_sha256": "8df14dace7fc27a8b47578f2b109b368946836c31652e60fabc9ed87f9a499e7",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "module": "formal_toolchain.cli.verify_bundle",
+      "argv": [
+        "/Users/x1ngchuan/miniconda3/envs/amc-repro/bin/python",
+        "-m",
+        "formal_toolchain.cli.verify_bundle",
+        "--request",
+        "/Users/x1ngchuan/Documents/AMC/build/formal/.synthetic_p0_r9.staging/request/proof_request.json",
+        "--bundle",
+        "/Users/x1ngchuan/Documents/AMC/build/formal/.synthetic_p0_r9.staging/candidate",
+        "--out",
+        "/Users/x1ngchuan/Documents/AMC/build/formal/.synthetic_p0_r9.staging/verified"
+      ],
+      "cwd": ".",
+      "started_at": "2026-07-16T13:44:46.695851+00:00",
+      "ended_at": "2026-07-16T13:44:51.415180+00:00",
+      "returncode": 70,
+      "stdout_sha256": "d2d80bd8bc6ef5205b85bf1f5aafa4df143c298a93245e7c942849a30e62d391",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

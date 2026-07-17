@@ -1,0 +1,102 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "BUDGET_DOMAIN",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "35810c08007cf8561707c7819fbad7e58d42a402077ccbcb65c2430628b089e9",
+  "direct_predecessor_hashes": {
+    "BOOT_INITIALIZATION": "7312a66fc54b38fd2a6ea772853138bd6f076738532ae9f7cf72f161408f2ff9"
+  },
+  "checker_id": "formal_toolchain.verifier.checker_catalog.BUDGET_DOMAIN",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "a4269f22571c1995d6b8664220d3dbf852b30635d226110b9259243675652c5f",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "evidence_key": "DOMAIN",
+      "evidence": {
+        "status": "PASS",
+        "schema_version": "budget_domain_v1",
+        "integer_arithmetic": "python_unbounded_int",
+        "processor_overhead": 0,
+        "tasks": {
+          "SYN_HI_0": {
+            "initial": 1,
+            "code_lower": 1,
+            "code_upper": 2,
+            "runtime_floor": 1,
+            "runtime_deploy_cap": 2,
+            "finite_integer_domain": [
+              1,
+              2
+            ],
+            "active_release_budget_domain": [
+              1,
+              2
+            ],
+            "provenance": {
+              "initial_runtime_budget": 1,
+              "budget_floor": 1,
+              "budget_cap": 2
+            }
+          },
+          "SYN_LO": {
+            "initial": 2,
+            "code_lower": 1,
+            "code_upper": 1,
+            "runtime_floor": 2,
+            "runtime_deploy_cap": 2,
+            "finite_integer_domain": [
+              0,
+              1,
+              2
+            ],
+            "active_release_budget_domain": [
+              0,
+              1,
+              2
+            ],
+            "provenance": {
+              "initial_runtime_budget": 2,
+              "budget_floor": 2,
+              "budget_cap": 2
+            }
+          },
+          "SYN_HI_1": {
+            "initial": 2,
+            "code_lower": 2,
+            "code_upper": 3,
+            "runtime_floor": 2,
+            "runtime_deploy_cap": 3,
+            "finite_integer_domain": [
+              2,
+              3
+            ],
+            "active_release_budget_domain": [
+              2,
+              3
+            ],
+            "provenance": {
+              "initial_runtime_budget": 2,
+              "budget_floor": 2,
+              "budget_cap": 3
+            }
+          }
+        },
+        "context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4"
+      }
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "SEMANTIC_CHECKER_NOT_IMPLEMENTED"
+  },
+  "artifact_hash": "91004ec6c77984198f7825590d938eccddb20c8d8f38801d5f9dda6bf328a13e"
+}

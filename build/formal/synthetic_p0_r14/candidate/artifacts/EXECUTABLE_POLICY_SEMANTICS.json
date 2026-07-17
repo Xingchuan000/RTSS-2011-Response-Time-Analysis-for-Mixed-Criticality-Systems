@@ -1,0 +1,189 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "EXECUTABLE_POLICY_SEMANTICS",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "1f029955400b7b43b054c9d85287e87909a1008c31a0aa4c9039695881913d82",
+  "direct_predecessor_hashes": {
+    "OBSERVATION_EXTRACTION": "49bf0b7ac1824f035346514267c4f9bc509cb0a29192f91b8d9b2f36fc2f5625",
+    "FEATURE_QUANTIZATION": "6890f655a6f2774b8bc12fbeca177c7b63e96345003697a8ac0492846e3a1af6",
+    "ACTION_TRANSITION": "2d1b6bef486d787b855be84e69d7bb6e2a1225f4ebd70d7505f328e4566570b2",
+    "MASK_FALLBACK": "2a94155f3f988674c1f39bbdd3664499aaf3af8de082083a51afaeaabe4a6d7c"
+  },
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "EXECUTABLE",
+    "evidence": {
+      "status": "PASS",
+      "states": [
+        {
+          "status": "PASS",
+          "quantized": [
+            500,
+            500,
+            500,
+            500,
+            0,
+            0,
+            500,
+            1000,
+            0,
+            500,
+            1000,
+            1000,
+            1000,
+            1000,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1000,
+            667,
+            667,
+            667,
+            667,
+            0,
+            0,
+            333,
+            1000,
+            0,
+            667,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            500
+          ],
+          "leaf_id": 1,
+          "ranking": [
+            3,
+            2,
+            0,
+            1,
+            4,
+            5
+          ],
+          "selected_action": 2,
+          "mask": [
+            true,
+            false,
+            true,
+            false,
+            false,
+            false
+          ],
+          "mask_reasons": [
+            "accepted",
+            "no_effective_budget_change",
+            "accepted",
+            "decrease_hi_forbidden",
+            "budget_floor_violation",
+            "decrease_hi_forbidden"
+          ],
+          "implicit_noop": false,
+          "budget_after": {
+            "SYN_HI_1": 3
+          }
+        },
+        {
+          "status": "PASS",
+          "quantized": [
+            1000,
+            1000,
+            1000,
+            1000,
+            0,
+            0,
+            0,
+            1000,
+            0,
+            1000,
+            1000,
+            1000,
+            1000,
+            1000,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1000,
+            1000,
+            1000,
+            1000,
+            1000,
+            0,
+            0,
+            0,
+            1000,
+            0,
+            1000,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1000
+          ],
+          "leaf_id": 2,
+          "ranking": [
+            3,
+            4,
+            5,
+            0,
+            1,
+            2
+          ],
+          "selected_action": null,
+          "mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "mask_reasons": [
+            "no_effective_budget_change",
+            "no_effective_budget_change",
+            "no_effective_budget_change",
+            "decrease_hi_forbidden",
+            "budget_floor_violation",
+            "decrease_hi_forbidden"
+          ],
+          "implicit_noop": true,
+          "budget_after": null
+        }
+      ],
+      "region_summary": {
+        "fallback_success": true,
+        "implicit_noop": true,
+        "selected_action_ids": [
+          0,
+          1,
+          2
+        ],
+        "state_count": 12
+      }
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "8955186405af2fc504eb170c37948c6ded176a593a8dc36b86c62bf53f5c50b1"
+}

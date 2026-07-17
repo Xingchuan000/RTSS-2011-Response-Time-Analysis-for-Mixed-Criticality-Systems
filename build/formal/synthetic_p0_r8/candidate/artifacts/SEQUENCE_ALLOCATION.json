@@ -1,0 +1,632 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "SEQUENCE_ALLOCATION",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "SEQUENCE_ALLOCATION",
+    "evidence": {
+      "obligation_id": "SEQUENCE_ALLOCATION",
+      "status": "PASS",
+      "route": null,
+      "code": null,
+      "checker_input_hashes": {
+        "source_manifest_hash": "addd9057971b4d15a42880a023c95fd4054266c9677178565256c586c2462382",
+        "context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4"
+      },
+      "witness": {
+        "result": {
+          "status": "PASS",
+          "route": null,
+          "failure": null,
+          "schema_version": "sequence_allocation_v1",
+          "fifo_sequence": "EventQueue._counter",
+          "queue_methods": {
+            "push": {
+              "status": "PASS",
+              "function": "EventQueue.push",
+              "lineno": 82,
+              "arguments": [
+                "self",
+                "event"
+              ],
+              "body": [
+                {
+                  "kind": "expression",
+                  "value": {
+                    "kind": "constant",
+                    "value": "压入一个新事件。"
+                  },
+                  "lineno": 83
+                },
+                {
+                  "kind": "assign",
+                  "targets": [
+                    {
+                      "kind": "name",
+                      "id": "order",
+                      "ctx": "Store"
+                    }
+                  ],
+                  "value": {
+                    "kind": "call",
+                    "function": {
+                      "kind": "name",
+                      "id": "next",
+                      "ctx": "Load"
+                    },
+                    "args": [
+                      {
+                        "kind": "attribute",
+                        "owner": {
+                          "kind": "name",
+                          "id": "self",
+                          "ctx": "Load"
+                        },
+                        "attr": "_counter"
+                      }
+                    ],
+                    "keywords": []
+                  },
+                  "lineno": 85
+                },
+                {
+                  "kind": "assign",
+                  "targets": [
+                    {
+                      "kind": "name",
+                      "id": "type_priority",
+                      "ctx": "Store"
+                    }
+                  ],
+                  "value": {
+                    "kind": "subscript",
+                    "value": {
+                      "kind": "attribute",
+                      "owner": {
+                        "kind": "name",
+                        "id": "self",
+                        "ctx": "Load"
+                      },
+                      "attr": "_TYPE_PRIORITY"
+                    },
+                    "slice": {
+                      "kind": "attribute",
+                      "owner": {
+                        "kind": "name",
+                        "id": "event",
+                        "ctx": "Load"
+                      },
+                      "attr": "event_type"
+                    }
+                  },
+                  "lineno": 86
+                },
+                {
+                  "kind": "expression",
+                  "value": {
+                    "kind": "call",
+                    "function": {
+                      "kind": "attribute",
+                      "owner": {
+                        "kind": "name",
+                        "id": "heapq",
+                        "ctx": "Load"
+                      },
+                      "attr": "heappush"
+                    },
+                    "args": [
+                      {
+                        "kind": "attribute",
+                        "owner": {
+                          "kind": "name",
+                          "id": "self",
+                          "ctx": "Load"
+                        },
+                        "attr": "_heap"
+                      },
+                      {
+                        "kind": "tuple",
+                        "items": [
+                          {
+                            "kind": "attribute",
+                            "owner": {
+                              "kind": "name",
+                              "id": "event",
+                              "ctx": "Load"
+                            },
+                            "attr": "time"
+                          },
+                          {
+                            "kind": "name",
+                            "id": "type_priority",
+                            "ctx": "Load"
+                          },
+                          {
+                            "kind": "name",
+                            "id": "order",
+                            "ctx": "Load"
+                          },
+                          {
+                            "kind": "name",
+                            "id": "event",
+                            "ctx": "Load"
+                          }
+                        ]
+                      }
+                    ],
+                    "keywords": []
+                  },
+                  "lineno": 87
+                }
+              ]
+            },
+            "pop": {
+              "status": "PASS",
+              "function": "EventQueue.pop",
+              "lineno": 89,
+              "arguments": [
+                "self"
+              ],
+              "body": [
+                {
+                  "kind": "expression",
+                  "value": {
+                    "kind": "constant",
+                    "value": "弹出当前最早应处理的事件。"
+                  },
+                  "lineno": 90
+                },
+                {
+                  "kind": "assign",
+                  "targets": [
+                    {
+                      "kind": "tuple",
+                      "items": [
+                        {
+                          "kind": "name",
+                          "id": "_",
+                          "ctx": "Store"
+                        },
+                        {
+                          "kind": "name",
+                          "id": "_",
+                          "ctx": "Store"
+                        },
+                        {
+                          "kind": "name",
+                          "id": "_",
+                          "ctx": "Store"
+                        },
+                        {
+                          "kind": "name",
+                          "id": "event",
+                          "ctx": "Store"
+                        }
+                      ]
+                    }
+                  ],
+                  "value": {
+                    "kind": "call",
+                    "function": {
+                      "kind": "attribute",
+                      "owner": {
+                        "kind": "name",
+                        "id": "heapq",
+                        "ctx": "Load"
+                      },
+                      "attr": "heappop"
+                    },
+                    "args": [
+                      {
+                        "kind": "attribute",
+                        "owner": {
+                          "kind": "name",
+                          "id": "self",
+                          "ctx": "Load"
+                        },
+                        "attr": "_heap"
+                      }
+                    ],
+                    "keywords": []
+                  },
+                  "lineno": 92
+                },
+                {
+                  "kind": "return",
+                  "value": {
+                    "kind": "name",
+                    "id": "event",
+                    "ctx": "Load"
+                  },
+                  "lineno": 93
+                }
+              ]
+            },
+            "pop_all_matching": {
+              "status": "PASS",
+              "function": "EventQueue.pop_all_matching",
+              "lineno": 102,
+              "arguments": [
+                "self"
+              ],
+              "body": [
+                {
+                  "kind": "expression",
+                  "value": {
+                    "kind": "constant",
+                    "value": "弹出所有“同一时刻 + 同一类型”的事件，便于批处理 simultaneous arrivals。"
+                  },
+                  "lineno": 103
+                },
+                {
+                  "kind": "assign",
+                  "targets": [
+                    {
+                      "kind": "name",
+                      "id": "matched_entries",
+                      "ctx": "Store"
+                    }
+                  ],
+                  "value": {
+                    "kind": "list",
+                    "items": []
+                  },
+                  "lineno": 105
+                },
+                {
+                  "kind": "assign",
+                  "targets": [
+                    {
+                      "kind": "name",
+                      "id": "remaining_entries",
+                      "ctx": "Store"
+                    }
+                  ],
+                  "value": {
+                    "kind": "list",
+                    "items": []
+                  },
+                  "lineno": 106
+                },
+                {
+                  "kind": "for",
+                  "target": {
+                    "kind": "name",
+                    "id": "entry",
+                    "ctx": "Store"
+                  },
+                  "iter": {
+                    "kind": "attribute",
+                    "owner": {
+                      "kind": "name",
+                      "id": "self",
+                      "ctx": "Load"
+                    },
+                    "attr": "_heap"
+                  },
+                  "body": [
+                    {
+                      "kind": "assign",
+                      "targets": [
+                        {
+                          "kind": "name",
+                          "id": "event",
+                          "ctx": "Store"
+                        }
+                      ],
+                      "value": {
+                        "kind": "subscript",
+                        "value": {
+                          "kind": "name",
+                          "id": "entry",
+                          "ctx": "Load"
+                        },
+                        "slice": {
+                          "kind": "constant",
+                          "value": 3
+                        }
+                      },
+                      "lineno": 108
+                    },
+                    {
+                      "kind": "if",
+                      "test": {
+                        "kind": "boolop",
+                        "operator": "And",
+                        "values": [
+                          {
+                            "kind": "compare",
+                            "left": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "event",
+                                "ctx": "Load"
+                              },
+                              "attr": "time"
+                            },
+                            "operators": [
+                              "Eq"
+                            ],
+                            "comparators": [
+                              {
+                                "kind": "name",
+                                "id": "time",
+                                "ctx": "Load"
+                              }
+                            ]
+                          },
+                          {
+                            "kind": "compare",
+                            "left": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "event",
+                                "ctx": "Load"
+                              },
+                              "attr": "event_type"
+                            },
+                            "operators": [
+                              "Is"
+                            ],
+                            "comparators": [
+                              {
+                                "kind": "name",
+                                "id": "event_type",
+                                "ctx": "Load"
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      "body": [
+                        {
+                          "kind": "expression",
+                          "value": {
+                            "kind": "call",
+                            "function": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "matched_entries",
+                                "ctx": "Load"
+                              },
+                              "attr": "append"
+                            },
+                            "args": [
+                              {
+                                "kind": "name",
+                                "id": "entry",
+                                "ctx": "Load"
+                              }
+                            ],
+                            "keywords": []
+                          },
+                          "lineno": 110
+                        }
+                      ],
+                      "orelse": [
+                        {
+                          "kind": "expression",
+                          "value": {
+                            "kind": "call",
+                            "function": {
+                              "kind": "attribute",
+                              "owner": {
+                                "kind": "name",
+                                "id": "remaining_entries",
+                                "ctx": "Load"
+                              },
+                              "attr": "append"
+                            },
+                            "args": [
+                              {
+                                "kind": "name",
+                                "id": "entry",
+                                "ctx": "Load"
+                              }
+                            ],
+                            "keywords": []
+                          },
+                          "lineno": 112
+                        }
+                      ],
+                      "lineno": 109
+                    }
+                  ],
+                  "lineno": 107
+                },
+                {
+                  "kind": "assign",
+                  "targets": [
+                    {
+                      "kind": "attribute",
+                      "owner": {
+                        "kind": "name",
+                        "id": "self",
+                        "ctx": "Load"
+                      },
+                      "attr": "_heap"
+                    }
+                  ],
+                  "value": {
+                    "kind": "name",
+                    "id": "remaining_entries",
+                    "ctx": "Load"
+                  },
+                  "lineno": 113
+                },
+                {
+                  "kind": "expression",
+                  "value": {
+                    "kind": "call",
+                    "function": {
+                      "kind": "attribute",
+                      "owner": {
+                        "kind": "name",
+                        "id": "heapq",
+                        "ctx": "Load"
+                      },
+                      "attr": "heapify"
+                    },
+                    "args": [
+                      {
+                        "kind": "attribute",
+                        "owner": {
+                          "kind": "name",
+                          "id": "self",
+                          "ctx": "Load"
+                        },
+                        "attr": "_heap"
+                      }
+                    ],
+                    "keywords": []
+                  },
+                  "lineno": 114
+                },
+                {
+                  "kind": "expression",
+                  "value": {
+                    "kind": "call",
+                    "function": {
+                      "kind": "attribute",
+                      "owner": {
+                        "kind": "name",
+                        "id": "matched_entries",
+                        "ctx": "Load"
+                      },
+                      "attr": "sort"
+                    },
+                    "args": [],
+                    "keywords": [
+                      {
+                        "name": "key",
+                        "value": {
+                          "kind": "lambda",
+                          "arguments": [
+                            "entry"
+                          ],
+                          "body": {
+                            "kind": "tuple",
+                            "items": [
+                              {
+                                "kind": "subscript",
+                                "value": {
+                                  "kind": "name",
+                                  "id": "entry",
+                                  "ctx": "Load"
+                                },
+                                "slice": {
+                                  "kind": "constant",
+                                  "value": 0
+                                }
+                              },
+                              {
+                                "kind": "subscript",
+                                "value": {
+                                  "kind": "name",
+                                  "id": "entry",
+                                  "ctx": "Load"
+                                },
+                                "slice": {
+                                  "kind": "constant",
+                                  "value": 1
+                                }
+                              },
+                              {
+                                "kind": "subscript",
+                                "value": {
+                                  "kind": "name",
+                                  "id": "entry",
+                                  "ctx": "Load"
+                                },
+                                "slice": {
+                                  "kind": "constant",
+                                  "value": 2
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "lineno": 115
+                },
+                {
+                  "kind": "assign",
+                  "targets": [
+                    {
+                      "kind": "name",
+                      "id": "matched",
+                      "ctx": "Store"
+                    }
+                  ],
+                  "value": {
+                    "kind": "list_comp",
+                    "element": {
+                      "kind": "subscript",
+                      "value": {
+                        "kind": "name",
+                        "id": "entry",
+                        "ctx": "Load"
+                      },
+                      "slice": {
+                        "kind": "constant",
+                        "value": 3
+                      }
+                    },
+                    "generators": [
+                      {
+                        "target": {
+                          "kind": "name",
+                          "id": "entry",
+                          "ctx": "Store"
+                        },
+                        "iter": {
+                          "kind": "name",
+                          "id": "matched_entries",
+                          "ctx": "Load"
+                        },
+                        "ifs": [],
+                        "is_async": false
+                      }
+                    ]
+                  },
+                  "lineno": 116
+                },
+                {
+                  "kind": "return",
+                  "value": {
+                    "kind": "name",
+                    "id": "matched",
+                    "ctx": "Load"
+                  },
+                  "lineno": 117
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "e5c12266b38336482b6f9c9b9d13a44813c8befa592aecd8112d0ea72eae5183"
+}

@@ -1,0 +1,58 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "CASE2_INTEGER_DOMAIN",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "6cc369fb09c47b073ada06755d65a70bb45f92bbbfd38413220888cb9babd6d8",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.checker_catalog.CASE2_INTEGER_DOMAIN",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "4493e5e1f7a6138a29856a9e52090ea78b393871a8a9170b29729122783f721b",
+    "fresh_process": true
+  },
+  "witness": {
+    "status": "PASS",
+    "route": null,
+    "failure": null,
+    "checks": [
+      {
+        "task": "SYN_HI_0",
+        "w_lo": 0,
+        "expected": [
+          "ZERO_RELATIVE_START"
+        ],
+        "actual": [
+          "ZERO_RELATIVE_START"
+        ],
+        "match": true
+      },
+      {
+        "task": "SYN_HI_1",
+        "w_lo": 4,
+        "expected": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "actual": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "match": true
+      }
+    ],
+    "fresh_context_hash": "6cc369fb09c47b073ada06755d65a70bb45f92bbbfd38413220888cb9babd6d8",
+    "candidate_status_compared": "PASS"
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "c05fb554e12ea6025a70f33b40573836b292d358491d4225d89ff2941b3eddc9"
+}

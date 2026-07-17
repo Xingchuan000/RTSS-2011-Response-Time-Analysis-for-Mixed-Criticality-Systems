@@ -1,0 +1,39 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "CODE_REFERENCE_UPPER_BOUND_MAPPING",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "6cc369fb09c47b073ada06755d65a70bb45f92bbbfd38413220888cb9babd6d8",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.checker_catalog.CODE_REFERENCE_UPPER_BOUND_MAPPING",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "b3b3a31b8972641047abb7b710604c9b83a0f31c3270978a4116e80f958b39bd",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "evidence_key": "MAPPING",
+      "evidence": {
+        "artifact_schema_version": "reference_mapping_diagnostic_v1",
+        "obligation_id": "CODE_REFERENCE_UPPER_BOUND_MAPPING",
+        "obligation_status": "FAIL",
+        "failure": {
+          "route": "MODEL_CONFORMANCE_FAILED",
+          "code": "REFERENCE_MAPPING_MISMATCH",
+          "message": "certified envelope status/schema invalid"
+        }
+      }
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "RTA_SUB_OBLIGATION_MISSING"
+  },
+  "artifact_hash": "2b2775da1b1438c2d2913335dcd02fcb8f7ac7f2d70591af83198084d6b564b9"
+}

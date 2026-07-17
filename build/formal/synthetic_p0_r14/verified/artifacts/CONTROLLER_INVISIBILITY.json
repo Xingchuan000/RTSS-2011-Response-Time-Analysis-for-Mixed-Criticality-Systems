@@ -1,0 +1,285 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "CONTROLLER_INVISIBILITY",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.checker_catalog.CONTROLLER_INVISIBILITY",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "ed638c91101ec525649bea6f484b6253f19763695556dc029050aa391898cfba",
+    "fresh_process": true
+  },
+  "witness": {
+    "status": "PASS",
+    "route": null,
+    "failure": null,
+    "controller_binding": {
+      "status": "PASS",
+      "schema_version": "controller_binding_v1",
+      "wrapper_source_hash": "62af6d339c266e588d600c68623a89b25e58acbc4b3c9ca29838ddb5a1159eb6",
+      "engine_source_hash": "3509bbe867e52d0344127bcab21ee9ddfc6243fb43956dd2d93246b5d64b4791",
+      "wrapper_calls": [
+        "engine.apply_budget_updates(updates)"
+      ],
+      "engine_ir": {
+        "status": "PASS",
+        "function": "EventRuntimeEngine.apply_budget_updates",
+        "lineno": 706,
+        "arguments": [
+          "self",
+          "updates"
+        ],
+        "body": [
+          {
+            "kind": "expression",
+            "value": {
+              "kind": "constant",
+              "value": "在当前时刻应用预算更新，并强制触发重调度。\n\n        这里显式调用 `_advance_time(self.state.current_time)` 不是多余操作。\n        `run_until()` 在 agent 决策边界返回后，当前时刻的 running job 可能刚好\n        持续执行到了该边界；如果这里直接改预算并强制重排，分段推进路径就会把\n        边界前最后一段执行量“吞掉”。统一走 `_advance_time()` 可以保证：\n        只要预算更新发生在某个逻辑时间点，更新前 CPU 已经执行过的时间一定先\n        结算完成。\n        "
+            },
+            "lineno": 707
+          },
+          {
+            "kind": "expression",
+            "value": {
+              "kind": "call",
+              "function": {
+                "kind": "attribute",
+                "owner": {
+                  "kind": "name",
+                  "id": "self",
+                  "ctx": "Load"
+                },
+                "attr": "_advance_time"
+              },
+              "args": [
+                {
+                  "kind": "attribute",
+                  "owner": {
+                    "kind": "attribute",
+                    "owner": {
+                      "kind": "name",
+                      "id": "self",
+                      "ctx": "Load"
+                    },
+                    "attr": "state"
+                  },
+                  "attr": "current_time"
+                }
+              ],
+              "keywords": []
+            },
+            "lineno": 717
+          },
+          {
+            "kind": "assign",
+            "targets": [
+              {
+                "kind": "name",
+                "id": "update_payload",
+                "ctx": "Store"
+              }
+            ],
+            "value": {
+              "kind": "call",
+              "function": {
+                "kind": "name",
+                "id": "dict",
+                "ctx": "Load"
+              },
+              "args": [
+                {
+                  "kind": "name",
+                  "id": "updates",
+                  "ctx": "Load"
+                }
+              ],
+              "keywords": []
+            },
+            "lineno": 718
+          },
+          {
+            "kind": "expression",
+            "value": {
+              "kind": "call",
+              "function": {
+                "kind": "attribute",
+                "owner": {
+                  "kind": "attribute",
+                  "owner": {
+                    "kind": "name",
+                    "id": "self",
+                    "ctx": "Load"
+                  },
+                  "attr": "budget_state"
+                },
+                "attr": "apply_updates"
+              },
+              "args": [
+                {
+                  "kind": "name",
+                  "id": "update_payload",
+                  "ctx": "Load"
+                }
+              ],
+              "keywords": []
+            },
+            "lineno": 719
+          },
+          {
+            "kind": "expression",
+            "value": {
+              "kind": "call",
+              "function": {
+                "kind": "attribute",
+                "owner": {
+                  "kind": "attribute",
+                  "owner": {
+                    "kind": "attribute",
+                    "owner": {
+                      "kind": "name",
+                      "id": "self",
+                      "ctx": "Load"
+                    },
+                    "attr": "result"
+                  },
+                  "attr": "budget_update_events"
+                },
+                "attr": "append"
+              },
+              "args": [
+                {
+                  "kind": "call",
+                  "function": {
+                    "kind": "name",
+                    "id": "BudgetUpdateEvent",
+                    "ctx": "Load"
+                  },
+                  "args": [],
+                  "keywords": [
+                    {
+                      "name": "time",
+                      "value": {
+                        "kind": "attribute",
+                        "owner": {
+                          "kind": "attribute",
+                          "owner": {
+                            "kind": "name",
+                            "id": "self",
+                            "ctx": "Load"
+                          },
+                          "attr": "state"
+                        },
+                        "attr": "current_time"
+                      }
+                    },
+                    {
+                      "name": "updates",
+                      "value": {
+                        "kind": "name",
+                        "id": "update_payload",
+                        "ctx": "Load"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "keywords": []
+            },
+            "lineno": 720
+          },
+          {
+            "kind": "expression",
+            "value": {
+              "kind": "call",
+              "function": {
+                "kind": "attribute",
+                "owner": {
+                  "kind": "name",
+                  "id": "self",
+                  "ctx": "Load"
+                },
+                "attr": "_append_debug_event"
+              },
+              "args": [
+                {
+                  "kind": "constant",
+                  "value": "budget_update"
+                }
+              ],
+              "keywords": [
+                {
+                  "name": "updates",
+                  "value": {
+                    "kind": "name",
+                    "id": "update_payload",
+                    "ctx": "Load"
+                  }
+                }
+              ]
+            },
+            "lineno": 723
+          },
+          {
+            "kind": "expression",
+            "value": {
+              "kind": "call",
+              "function": {
+                "kind": "attribute",
+                "owner": {
+                  "kind": "name",
+                  "id": "self",
+                  "ctx": "Load"
+                },
+                "attr": "_reschedule"
+              },
+              "args": [
+                {
+                  "kind": "attribute",
+                  "owner": {
+                    "kind": "attribute",
+                    "owner": {
+                      "kind": "name",
+                      "id": "self",
+                      "ctx": "Load"
+                    },
+                    "attr": "state"
+                  },
+                  "attr": "current_time"
+                }
+              ],
+              "keywords": [
+                {
+                  "name": "force",
+                  "value": {
+                    "kind": "constant",
+                    "value": true
+                  }
+                }
+              ]
+            },
+            "lineno": 724
+          }
+        ]
+      },
+      "required_effects": [
+        "_advance_time",
+        "apply_updates",
+        "_reschedule"
+      ],
+      "missing": [],
+      "binding_hash": "aea1ca97e3b4339b19f70676c84c332522718dbdf2b3a4f9f9927dbb13c848b1"
+    },
+    "projected_event": null,
+    "fresh_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+    "candidate_status_compared": "PASS"
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "0463fc3a4a9f3a39fe7070ba79ea264daf324cdd082fa285a26b6000423fa8f0"
+}

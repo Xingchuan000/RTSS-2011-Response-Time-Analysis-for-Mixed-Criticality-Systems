@@ -1,0 +1,24 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "DIRECT_PREDECESSOR_HASHES",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "c7555e0c5bf3b3a47220568396a598340f1e24dd88b6eb1e0772d1cd99e9ed51",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.checker_catalog.DIRECT_PREDECESSOR_HASHES",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": null,
+    "fresh_process": true
+  },
+  "witness": {
+    "certificate_count": 76
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "fb258bfe408ba64b8383dc761f57c9aa79c7ef5cff54510e0fb7118e8d236022"
+}

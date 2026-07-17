@@ -1,0 +1,33 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "HI_BAD_CLOSED_PREFIX_REFLECTION",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "551f445aeae03cdf4335a8bc81bb53eeb63d069e1d561992fa91487aa902f98d",
+  "direct_predecessor_hashes": {
+    "CLOSED_PREFIX_REFINEMENT": "269c3f60e3abec12c3862e4f18ffde36fa6d383b069a8950c2dab0a03dde84b2",
+    "REFERENCE_PREFIX_EXTENSION": "8eac89a99a9ea0c2e8d311f34b8791f32aca21ab50cf0e83d6b94965b359ef84",
+    "PROTECTED_HI_SAFETY_COROLLARY": "68d9581c1d3f73c7513435aacc50912df1c0bd65d6c709358504b63429a31351"
+  },
+  "checker_id": "formal_toolchain.verifier.checker_catalog.HI_BAD_CLOSED_PREFIX_REFLECTION",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "b6a9ac31eab7002d1adfd38b8f4cdd2031a686b7dc959a5e539b2d30edaf1138",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "not_run": "fresh verifier required"
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "PREDECESSOR_NOT_PASS"
+  },
+  "artifact_hash": "cf0ac28ec1dc842712a877e9b577fb05d161c1c04a38a2d3bd6b1f2c13580ed7"
+}

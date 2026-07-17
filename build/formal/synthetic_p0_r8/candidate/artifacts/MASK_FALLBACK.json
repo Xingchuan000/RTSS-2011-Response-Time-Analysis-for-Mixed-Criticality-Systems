@@ -1,0 +1,88 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "MASK_FALLBACK",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "1f029955400b7b43b054c9d85287e87909a1008c31a0aa4c9039695881913d82",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "MASK",
+    "evidence": {
+      "status": "PASS",
+      "schema_version": "mask_fallback_v1",
+      "action_dim": 6,
+      "cases": [
+        {
+          "ranking": [
+            3,
+            2,
+            0,
+            1,
+            4,
+            5
+          ],
+          "mask": [
+            true,
+            false,
+            true,
+            false,
+            false,
+            false
+          ],
+          "selected_action": 2,
+          "reject_reasons": [
+            "accepted",
+            "no_effective_budget_change",
+            "accepted",
+            "decrease_hi_forbidden",
+            "budget_floor_violation",
+            "decrease_hi_forbidden"
+          ]
+        },
+        {
+          "ranking": [
+            3,
+            4,
+            5,
+            0,
+            1,
+            2
+          ],
+          "mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "selected_action": null,
+          "reject_reasons": [
+            "no_effective_budget_change",
+            "no_effective_budget_change",
+            "no_effective_budget_change",
+            "decrease_hi_forbidden",
+            "budget_floor_violation",
+            "decrease_hi_forbidden"
+          ]
+        }
+      ],
+      "implicit_noop": true,
+      "selection": "first_valid"
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "2a94155f3f988674c1f39bbdd3664499aaf3af8de082083a51afaeaabe4a6d7c"
+}

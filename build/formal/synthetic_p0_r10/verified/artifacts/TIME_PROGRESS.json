@@ -1,0 +1,64 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "TIME_PROGRESS",
+  "obligation_status": "FAIL",
+  "certificate_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.checker_catalog.TIME_PROGRESS",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "c2b8ec7c35eee2e9472193b21d73750032df367a751591cbff7a521587e81e50",
+    "fresh_process": true
+  },
+  "witness": {
+    "status": "FAIL",
+    "route": "MODEL_CONFORMANCE_FAILED",
+    "failure": {
+      "code": "TIME_PROGRESS_CONTRACT_FAILED"
+    },
+    "binding": {
+      "status": "UNRESOLVED",
+      "route": "UNRESOLVED",
+      "failure": {
+        "code": "TIME_PROGRESS_BINDING_UNRESOLVED",
+        "targets": [
+          "EventRuntimeEngine._schedule_running_job_events"
+        ]
+      },
+      "ready_branch": {
+        "kind": "ONE_SERVICE_TICK",
+        "strict_time_increase": true,
+        "evidence": {
+          "status": "PASS",
+          "route": null,
+          "function": "EventRuntimeEngine._advance_time",
+          "lineno": 676
+        }
+      },
+      "empty_ready_branch": {
+        "kind": "JUMP_TO_NEXT_EVENT",
+        "strict_time_increase": true,
+        "evidence": {
+          "status": "PASS",
+          "route": null,
+          "function": "EventRuntimeEngine.run_until",
+          "lineno": 1260
+        }
+      },
+      "zero_time_closure_finite": true
+    },
+    "fresh_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+    "candidate_status_compared": "FAIL"
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "MODEL_CONFORMANCE_FAILED",
+    "code": "TIME_PROGRESS_CONTRACT_FAILED"
+  },
+  "artifact_hash": "d91f7296f08239e90a083dd254343675a88ba5f0ad775f87f5bd6c57c8cbf9ed"
+}

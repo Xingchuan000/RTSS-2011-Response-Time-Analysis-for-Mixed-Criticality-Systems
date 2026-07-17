@@ -1,0 +1,79 @@
+{
+  "schema_version": "workflow_manifest_v1",
+  "commands": [
+    {
+      "module": "formal_toolchain.cli.inspect_target",
+      "argv": [
+        "/Users/x1ngchuan/miniconda3/envs/amc-repro/bin/python",
+        "-m",
+        "formal_toolchain.cli.inspect_target",
+        "--request",
+        "/Users/x1ngchuan/Documents/AMC/build/formal/.synthetic_p0_r10.staging/request/proof_request.json",
+        "--out",
+        "/Users/x1ngchuan/Documents/AMC/build/formal/.synthetic_p0_r10.staging/preflight"
+      ],
+      "cwd": ".",
+      "started_at": "2026-07-16T13:45:46.512441+00:00",
+      "ended_at": "2026-07-16T13:45:50.109861+00:00",
+      "returncode": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "module": "formal_toolchain.cli.compile_seed",
+      "argv": [
+        "/Users/x1ngchuan/miniconda3/envs/amc-repro/bin/python",
+        "-m",
+        "formal_toolchain.cli.compile_seed",
+        "--request",
+        "/Users/x1ngchuan/Documents/AMC/build/formal/.synthetic_p0_r10.staging/request/proof_request.json",
+        "--out",
+        "/Users/x1ngchuan/Documents/AMC/build/formal/.synthetic_p0_r10.staging/candidate"
+      ],
+      "cwd": ".",
+      "started_at": "2026-07-16T13:45:50.110270+00:00",
+      "ended_at": "2026-07-16T13:45:54.308334+00:00",
+      "returncode": 0,
+      "stdout_sha256": "8df14dace7fc27a8b47578f2b109b368946836c31652e60fabc9ed87f9a499e7",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "module": "formal_toolchain.cli.verify_bundle",
+      "argv": [
+        "/Users/x1ngchuan/miniconda3/envs/amc-repro/bin/python",
+        "-m",
+        "formal_toolchain.cli.verify_bundle",
+        "--request",
+        "/Users/x1ngchuan/Documents/AMC/build/formal/.synthetic_p0_r10.staging/request/proof_request.json",
+        "--bundle",
+        "/Users/x1ngchuan/Documents/AMC/build/formal/.synthetic_p0_r10.staging/candidate",
+        "--out",
+        "/Users/x1ngchuan/Documents/AMC/build/formal/.synthetic_p0_r10.staging/verified"
+      ],
+      "cwd": ".",
+      "started_at": "2026-07-16T13:45:54.308739+00:00",
+      "ended_at": "2026-07-16T13:45:59.416957+00:00",
+      "returncode": 10,
+      "stdout_sha256": "c285046e3bf53938b511210fb256e68c91762cebdd7dd0880e6b1a4435b14df5",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "module": "formal_toolchain.cli.render_report",
+      "argv": [
+        "/Users/x1ngchuan/miniconda3/envs/amc-repro/bin/python",
+        "-m",
+        "formal_toolchain.cli.render_report",
+        "--verified",
+        "/Users/x1ngchuan/Documents/AMC/build/formal/.synthetic_p0_r10.staging/verified",
+        "--out",
+        "/Users/x1ngchuan/Documents/AMC/build/formal/.synthetic_p0_r10.staging/human_readable_report.md"
+      ],
+      "cwd": ".",
+      "started_at": "2026-07-16T13:45:59.417721+00:00",
+      "ended_at": "2026-07-16T13:45:59.450710+00:00",
+      "returncode": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

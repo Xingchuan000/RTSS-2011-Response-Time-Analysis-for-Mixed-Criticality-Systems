@@ -1,0 +1,37 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "THEORY_LIBRARY_VERSION",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "f5b07a14b674f5843c5be792f9a378dabbef161ec3f76fc25d17381b49b86b80",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.verifier.checker_catalog.THEORY_LIBRARY_VERSION",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "ac836fc94925b1087a68a657f3807ef5fd2844f59d1ebe04c6e19d12d57aad58",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "evidence_key": "THEORY_LIBRARY_VERSION",
+      "evidence": {
+        "obligation_id": "THEORY_LIBRARY_VERSION",
+        "status": "UNRESOLVED",
+        "route": "UNRESOLVED",
+        "code": "CANDIDATE_EVIDENCE_BUILDER_NOT_IMPLEMENTED",
+        "checker_input_hashes": {},
+        "witness": {}
+      }
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "SEMANTIC_CHECKER_NOT_IMPLEMENTED"
+  },
+  "artifact_hash": "7592224061bf9d88536b2016623006c968cc0a39852fecc630d594e184150419"
+}

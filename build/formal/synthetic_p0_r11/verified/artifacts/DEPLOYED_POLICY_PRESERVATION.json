@@ -1,0 +1,84 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "DEPLOYED_POLICY_PRESERVATION",
+  "obligation_status": "UNRESOLVED",
+  "certificate_context_hash": "35810c08007cf8561707c7819fbad7e58d42a402077ccbcb65c2430628b089e9",
+  "direct_predecessor_hashes": {
+    "EXECUTABLE_POLICY_SEMANTICS": "3fec32a2aa4926934402f0356e5e6d00b36795ff961ebd945e1a90c9e2447295",
+    "CANDIDATE_ENVELOPE": "ba47955930fc64bf0fc5ca889da7cad5bdfa9be9e40c5a1b3c671f27d9ec9f39",
+    "BUDGET_DOMAIN": "91004ec6c77984198f7825590d938eccddb20c8d8f38801d5f9dda6bf328a13e",
+    "COMMON_TRANSITION_PRESERVATION": "290c6f801b99ee41000dc585691f18d9b46436e42a0e449b69772c923f673703"
+  },
+  "checker_id": "formal_toolchain.verifier.checker_catalog.DEPLOYED_POLICY_PRESERVATION",
+  "checker_version": "r10-verifier-v1",
+  "inputs": {
+    "candidate_artifact_hash": "8ff713f539622b9a72977fba07bd86d95c8bb5ff3d38ffd9f77f8dbf2f22c4fb",
+    "fresh_process": true
+  },
+  "witness": {
+    "candidate_witness": {
+      "evidence_key": "DEPLOYED",
+      "evidence": {
+        "status": "PASS",
+        "schema_version": "deployed_policy_preservation_v1",
+        "leaf_count": 2,
+        "budget_state_count": 12,
+        "selected_action_ids": [
+          0,
+          1,
+          2
+        ],
+        "first_valid_positions": [
+          0,
+          1,
+          2
+        ],
+        "noop_state_count": 4,
+        "witnesses": [
+          {
+            "action_id": 0,
+            "checked": true,
+            "finite_domain_states": 12
+          },
+          {
+            "action_id": 1,
+            "checked": true,
+            "finite_domain_states": 12
+          },
+          {
+            "action_id": 2,
+            "checked": true,
+            "finite_domain_states": 12
+          },
+          {
+            "action_id": 3,
+            "checked": false,
+            "masked": true
+          },
+          {
+            "action_id": 4,
+            "checked": false,
+            "masked": true
+          },
+          {
+            "action_id": 5,
+            "checked": false,
+            "masked": true
+          }
+        ],
+        "implicit_noop_checked": true
+      }
+    }
+  },
+  "evidence": [
+    {
+      "fresh_process": true,
+      "candidate_replayed": true
+    }
+  ],
+  "failure": {
+    "route": "UNRESOLVED",
+    "code": "PREDECESSOR_NOT_PASS"
+  },
+  "artifact_hash": "50e4fcc2bdad7bdd546d163fd22767b3367d369a939828c7d31ebf5dd3c69ac5"
+}

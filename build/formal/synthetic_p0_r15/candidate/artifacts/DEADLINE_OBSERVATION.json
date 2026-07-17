@@ -1,0 +1,43 @@
+{
+  "artifact_schema_version": "certificate_envelope_v1",
+  "obligation_id": "DEADLINE_OBSERVATION",
+  "obligation_status": "PASS",
+  "certificate_context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4",
+  "direct_predecessor_hashes": {},
+  "checker_id": "formal_toolchain.compiler.compile",
+  "checker_version": "phase-l-v1",
+  "inputs": {
+    "profile": "P0",
+    "primary_claim": "DEPLOYED_HI_SAFETY",
+    "candidate": true
+  },
+  "witness": {
+    "evidence_key": "DEADLINE_OBSERVATION",
+    "evidence": {
+      "obligation_id": "DEADLINE_OBSERVATION",
+      "status": "PASS",
+      "route": null,
+      "code": null,
+      "checker_input_hashes": {
+        "source_manifest_hash": "addd9057971b4d15a42880a023c95fd4054266c9677178565256c586c2462382",
+        "context_hash": "3dc278e6fcb7fd292d5a917488af37497ad874bef017d0ff438ebc7a153e98a4"
+      },
+      "witness": {
+        "result": {
+          "status": "PASS",
+          "schema_version": "deadline_observation_v1",
+          "deadline_is_observation_only": true,
+          "completion_precedes_equal_deadline": true
+        }
+      }
+    }
+  },
+  "evidence": [
+    {
+      "candidate": true,
+      "fresh_verifier_required": false
+    }
+  ],
+  "failure": null,
+  "artifact_hash": "f95e51fcf1f7c09df101f8a5a4c69a0cc535254478b278f97b8b0d0756687a17"
+}
