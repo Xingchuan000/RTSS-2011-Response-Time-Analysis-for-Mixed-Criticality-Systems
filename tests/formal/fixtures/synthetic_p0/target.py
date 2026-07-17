@@ -40,6 +40,7 @@ def build_target(**_kwargs):
         forbid_decreasing_hi_budgets=True, mask_detail_mode="minimal",
         enable_deploy_cap_mask=False, deploy_cap_mask_ratio=1.0,
         deploy_cap_mask_criticality="lo", observation_mode="synthetic_v1",
+        check_safety=True,
         processor_overhead=0,
     )
     visible = ("semantics", "drop_lo_jobs_on_hi_switch", "c_amc_sem_lo_degradation_ratio",
@@ -47,7 +48,7 @@ def build_target(**_kwargs):
         "capture_debug_events", "agent_period", "action_space", "budget_increase_ratio",
         "budget_decrease_ratio", "budget_floor_ratio", "forbid_decreasing_hi_budgets",
         "mask_detail_mode", "enable_deploy_cap_mask", "deploy_cap_mask_ratio",
-        "deploy_cap_mask_criticality", "observation_mode")
+        "deploy_cap_mask_criticality", "observation_mode", "check_safety")
     environment = SyntheticEnvironment(**{name: getattr(config, name) for name in visible})
     target = FormalTarget(
         ordered_tasks=tasks, runtime_config=config, environment=environment,

@@ -143,7 +143,12 @@ def compile_request(request_path: Path, out_dir: Path) -> dict[str, Any]:
         "certificate_context_hash": context_hash,
         "active_obligation_ids": active,
         "obligation_statuses": {key: value["obligation_status"] for key, value in built.items()},
-        "real_seed_evaluation": "NOT_APPLICABLE" if computed and computed["request"].get("target_kind", "SYNTHETIC_P0") == "SYNTHETIC_P0" else "COMPLETED",
+        "real_seed_evaluation": (
+            "NOT_APPLICABLE"
+            if computed and computed["request"].get("target_kind") == "SYNTHETIC_P0"
+            else "COMPLETED" if computed and computed["request"].get("target_kind") is not None
+            else "UNRESOLVED"
+        ),
         "phase_k_candidate_status": "PASS" if phase_k_failure is None and computed is not None else "UNRESOLVED",
         "phase_k_candidate_failure": phase_k_failure,
     }

@@ -1,7 +1,9 @@
 {
-  "schema_version": "proof_request_v1",
+  "schema_version": "proof_request_v2",
   "profile": "P0",
   "primary_claim": "DEPLOYED_HI_SAFETY",
+  "target_id": "s185",
+  "target_kind": "REAL_VIPER_SEED",
   "taskset_seed": 185,
   "target_recipe": {
     "factory": "examples.formal.seed185.target:build_target",

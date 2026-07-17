@@ -1,1 +1,15 @@
-{"schema_version":"proof_request_v1","profile":"P0","claim":"DEPLOYED_HI_SAFETY","fixture":"synthetic_p0_v1","uses_real_seed":false}
+{
+  "schema_version": "proof_request_v2",
+  "profile": "P0",
+  "primary_claim": "DEPLOYED_HI_SAFETY",
+  "target_id": "synthetic_p0",
+  "target_kind": "SYNTHETIC_P0",
+  "taskset_seed": null,
+  "target_recipe": {
+    "factory": "tests.formal.fixtures.synthetic_p0.target:build_target",
+    "kwargs": {}
+  },
+  "tree_artifact_dir": "best_overall",
+  "source_root": "source_root",
+  "optional_claims": []
+}

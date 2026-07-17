@@ -1,15 +1,23 @@
 output/
 # experiment outputs
 outputs/
+build/
 *.pt
 *.pth
 *.ckpt
 *.zip
+.bak
+*.bak
+*.bak_*
 
 # macOS
 .DS_Store
+__MACOSX/
 
 # Python
 __pycache__/
 *.pyc
+*.pyo
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/

@@ -87,10 +87,12 @@ def load_request_inputs(request_path: Path, *, source_root: Path | None = None) 
 
     request_path = Path(request_path)
     request = _read(request_path)
-    if request.get("schema_version") not in {"proof_request_v1", "proof_request_v2"}:
+    if request.get("schema_version") != "proof_request_v2":
         raise ValueError("proof_request schema_version 不受支持")
-    if request.get("profile") != "P0" or request.get("primary_claim", request.get("claim")) != "DEPLOYED_HI_SAFETY":
+    if request.get("profile") != "P0" or request.get("primary_claim") != "DEPLOYED_HI_SAFETY":
         raise ValueError("第一轮只接受 P0/DEPLOYED_HI_SAFETY")
+    if request.get("target_kind") is None:
+        raise ValueError("TARGET_KIND_MISSING")
     workspace = workspace_for_request(request_path)
     artifact_dir = workspace / str(request["tree_artifact_dir"])
     if workspace not in artifact_dir.resolve().parents and artifact_dir.resolve() != workspace:
@@ -140,7 +142,10 @@ def _canonical_fixture_checks(inputs: Mapping[str, Any], inventory: Mapping[str,
     expected_priority = _read(priority_path)
     expected_config = _read(config_path)
     target = inputs["target"]
-    target_kind = str(inputs["request"].get("target_kind", "SYNTHETIC_P0"))
+    target_kind = inputs["request"].get("target_kind")
+    if target_kind is None:
+        raise ValueError("TARGET_KIND_MISSING")
+    target_kind = str(target_kind)
     if target_kind == "REAL_VIPER_SEED":
         # 真实 seed 必须提供自身的 runtime adapter；这里拒绝把 synthetic
         # adapter 偷换成 real target 的证明语义。

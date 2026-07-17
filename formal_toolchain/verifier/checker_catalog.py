@@ -54,7 +54,6 @@ from formal_toolchain.verifier.bootstrap_checks import (
     verify_source_manifest,
 )
 from formal_toolchain.verifier.theory_verifier import verify_theory_library
-from formal_toolchain.adapters.synthetic_runtime_adapter import SyntheticP0RuntimeAdapter
 from formal_toolchain.verifier.semantic_checkers import (
     verify_batch_closure, verify_boot_initialization, verify_case1_integer_domain,
     verify_case2_integer_domain, verify_closed_prefix_refinement, verify_code_reference_upper_bound_mapping,
@@ -184,7 +183,7 @@ def _runtime_adapter(raw_inputs: Any):
     target = _target(raw_inputs)
     adapter = _field(target, "runtime_adapter")
     if adapter is None:
-        adapter = SyntheticP0RuntimeAdapter(target)
+        raise ValueError("FORMAL_RUNTIME_ADAPTER_MISSING")
     return adapter
 
 
@@ -571,7 +570,7 @@ def _verify_proof_request_obligation(*, raw_inputs=None, candidate_evidence=None
         request = _read_json(request_path)
         if request != dict(raw.request):
             raise ValueError("proof request 与 verifier inputs 不一致")
-        if request.get("profile") != "P0" or request.get("primary_claim", request.get("claim")) != "DEPLOYED_HI_SAFETY":
+        if request.get("profile") != "P0" or request.get("primary_claim") != "DEPLOYED_HI_SAFETY":
             raise ValueError("proof request profile/claim mismatch")
         result = {"status": "PASS", "witness": {"proof_request": request}}
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:

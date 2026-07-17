@@ -73,10 +73,12 @@ def load_verifier_inputs(request_path: Path, *, source_root: Path) -> VerifierIn
     request_path = Path(request_path).resolve()
     request = _read(request_path)
     schema = request.get("schema_version")
-    if schema not in {"proof_request_v1", "proof_request_v2"}:
+    if schema != "proof_request_v2":
         raise ValueError("proof_request schema_version 不受支持")
-    if request.get("profile") != "P0" or request.get("primary_claim", request.get("claim")) != "DEPLOYED_HI_SAFETY":
+    if request.get("profile") != "P0" or request.get("primary_claim") != "DEPLOYED_HI_SAFETY":
         raise ValueError("第一轮只接受 P0/DEPLOYED_HI_SAFETY")
+    if request.get("target_kind") is None:
+        raise ValueError("TARGET_KIND_MISSING")
     workspace = _workspace_for_request(request_path)
     relative_artifact = str(request["tree_artifact_dir"])
     artifact_dir = (workspace / relative_artifact).resolve()

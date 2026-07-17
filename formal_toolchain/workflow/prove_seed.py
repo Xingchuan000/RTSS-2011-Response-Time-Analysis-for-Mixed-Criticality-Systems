@@ -80,7 +80,7 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
         _write(staging / "workflow_manifest.json", manifest)
         final_status = str(summary.get("result_status", "PROOF_BUNDLE_INVALID"))
         request_data = json.loads(request.read_text(encoding="utf-8"))
-        target_kind = request_data.get("target_kind", "SYNTHETIC_P0")
+        target_kind = request_data.get("target_kind")
         proof_result = {"workflow_schema_version": "prove_seed_workflow_v1",
                         "taskset_seed": request_data.get("taskset_seed"),
                         "target_id": request_data.get("target_id"),
@@ -98,7 +98,8 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
                         "fixture_claim_result": summary.get("fixture_claim_result", final_status),
                         "fixture_id": summary.get("fixture_id", summary.get("target_id")),
                         "fixture_kind": summary.get("fixture_kind", summary.get("target_kind")),
-                        "real_seed_evaluation": "DEFERRED" if target_kind == "SYNTHETIC_P0" else "COMPLETED",
+                        "real_seed_evaluation": "DEFERRED" if target_kind == "SYNTHETIC_P0"
+                        else "COMPLETED" if target_kind is not None else "UNRESOLVED",
                         "exit_code": 70 if summary.get("internal_error") else EXIT_CODES.get(final_status, 70)}
         _write(staging / "proof_result.json", proof_result)
         if not (staging / "human_readable_report.md").is_file():

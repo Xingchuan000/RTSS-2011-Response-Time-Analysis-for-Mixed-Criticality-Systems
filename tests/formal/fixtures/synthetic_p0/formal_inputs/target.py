@@ -56,6 +56,7 @@ def build_target(**_kwargs):
         deploy_cap_mask_ratio=1.0,
         deploy_cap_mask_criticality="lo",
         observation_mode="synthetic_v1",
+        check_safety=True,
         processor_overhead=0,
     )
     visible = (
@@ -64,7 +65,7 @@ def build_target(**_kwargs):
         "capture_debug_events", "agent_period", "action_space", "budget_increase_ratio",
         "budget_decrease_ratio", "budget_floor_ratio", "forbid_decreasing_hi_budgets",
         "mask_detail_mode", "enable_deploy_cap_mask", "deploy_cap_mask_ratio",
-        "deploy_cap_mask_criticality", "observation_mode", "processor_overhead",
+        "deploy_cap_mask_criticality", "observation_mode", "check_safety", "processor_overhead",
     )
     environment = SimpleNamespace(**{name: getattr(config, name) for name in visible})
     # synthetic fixture 的 scenario 直接提供正式合同，供 candidate/compiler

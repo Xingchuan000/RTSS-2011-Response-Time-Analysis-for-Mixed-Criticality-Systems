@@ -338,7 +338,7 @@ def _root_preimage(*, contexts: Mapping[str, Any], certificates: Mapping[str, Ma
         "independent_verification_payload_hash": independent_verification_payload_hash or sha256_object({"certificate_count": len(certificates)}),
         "active_obligation_set": list(active),
         "claim_request": {key: request.get(key) for key in (
-            "schema_version", "profile", "primary_claim", "claim", "target_id",
+            "schema_version", "profile", "primary_claim", "target_id",
             "target_kind", "taskset_seed", "tree_variant", "optional_claims")},
     }
 
@@ -803,9 +803,9 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
                "result_status": aggregation_status, "profile": "P0",
                "primary_claim": "DEPLOYED_HI_SAFETY", "certificate_context_hash": context_hash,
                "fixture_id": inputs.request.get("target_id"),
-               "fixture_kind": inputs.request.get("target_kind", "SYNTHETIC_P0"),
+               "fixture_kind": inputs.request.get("target_kind"),
                "target_id": inputs.request.get("target_id"),
-               "target_kind": inputs.request.get("target_kind", "SYNTHETIC_P0"),
+               "target_kind": inputs.request.get("target_kind"),
                "taskset_seed": inputs.request.get("taskset_seed"),
                "tree_variant": inputs.request.get("tree_variant"),
                "outer_bundle_root": root, "active_obligation_ids": active,
@@ -824,6 +824,7 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
                                              for key in ("CLOSED_PREFIX_REFINEMENT",
                                                          "REFERENCE_PREFIX_EXTENSION",
                                                          "HI_BAD_CLOSED_PREFIX_REFLECTION")),
-               "real_seed_evaluation": "DEFERRED" if inputs.request.get("target_kind") in (None, "SYNTHETIC_P0") else "COMPLETED"}
+               "real_seed_evaluation": "DEFERRED" if inputs.request.get("target_kind") == "SYNTHETIC_P0"
+               else "COMPLETED" if inputs.request.get("target_kind") is not None else "UNRESOLVED"}
     _write(out_dir / "proof_summary.json", summary)
     return summary
