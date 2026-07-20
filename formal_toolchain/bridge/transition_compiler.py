@@ -5,7 +5,10 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from .case_templates import compile_case_template
-from .effect_compiler import compile_effect_ir
+from .effect_compiler import (
+    build_phase_k_static_effect_bindings,
+    compile_effect_ir,
+)
 from .model_bounds import P0ModelBounds
 from .state_relation import p0_state_relation_schema_hash, p0_smt_relation_fields
 from .p0_case_manifest import require_case
@@ -172,8 +175,10 @@ def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
     if not isinstance(rows, list):
         return {"status": "UNRESOLVED", "failure": "TRANSITION_PATHS_REQUIRED"}
     static_guard_bindings = build_phase_k_static_guard_bindings(runtime_config)
+    static_effect_bindings = build_phase_k_static_effect_bindings(runtime_config)
     from formal_toolchain.core.hashing import sha256_object
     static_guard_bindings_hash = sha256_object(static_guard_bindings)
+    static_effect_bindings_hash = sha256_object(static_effect_bindings)
     proofs: list[TransitionCaseProof] = []
     for row in rows:
         try:
@@ -189,7 +194,8 @@ def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
             compiled_guard = compile_source_guards(
                 row["guard_ir"], static_guard_bindings=static_guard_bindings)
             compiled_effect = compile_effect_ir(
-                row["effect_ir"], bounds=bounds, guard_ir=row["guard_ir"])
+                row["effect_ir"], bounds=bounds, guard_ir=row["guard_ir"],
+                static_effect_bindings=static_effect_bindings)
             source_precondition = "(and " + template.precondition[5:-1] + " " + compiled_guard.formula + ")"
             concrete_delta = compiled_effect.to_smt()
             # queue summary 是 concrete 与 reference 共同的 timing projection；
@@ -294,6 +300,7 @@ def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
                 "consumed_effect_hashes": proof.consumed_effect_hashes,
                 "path_ast_hash": proof.path_ast_hash,
                 "static_guard_bindings_hash": static_guard_bindings_hash,
+                "static_effect_bindings_hash": static_effect_bindings_hash,
                 "queue_relation_hash": proof.queue_relation_hash},
         witness=proof.to_dict(), checker_id=__name__, checker_version="phase-k-v2",
         failure=None if proof.z3_proof_result == "PASS" else {"code": "Z3_CASE_UNRESOLVED"})
@@ -305,4 +312,6 @@ def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
             "state_relation_schema_hash": p0_state_relation_schema_hash(bounds),
             "model_bounds_hash": bounds.fingerprint,
             "static_guard_bindings": static_guard_bindings,
-            "static_guard_bindings_hash": static_guard_bindings_hash}
+            "static_guard_bindings_hash": static_guard_bindings_hash,
+            "static_effect_bindings": static_effect_bindings,
+            "static_effect_bindings_hash": static_effect_bindings_hash}

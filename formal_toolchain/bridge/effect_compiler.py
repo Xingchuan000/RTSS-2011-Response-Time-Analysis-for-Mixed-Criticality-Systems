@@ -13,6 +13,51 @@ from .model_bounds import P0ModelBounds
 from .state_relation import p0_smt_relation_fields
 
 
+_PHASE_K_STATIC_EFFECT_DEFAULTS: dict[str, bool] = {
+    "retroactive_release_budget_mutation": False,
+}
+
+
+def _runtime_config_value(runtime_config: Any | None, name: str, default: Any) -> Any:
+    """Read one immutable runtime-config value from object or exported mapping.
+
+    Formal replay normally receives the target runtime config object, while
+    some validation paths use the exported ``effective_runtime_config.json``
+    shape.  Both are accepted so the static effect binding is deterministic in
+    candidate compilation and fresh verification.
+    """
+    if runtime_config is None:
+        return default
+    if isinstance(runtime_config, Mapping):
+        fields = runtime_config.get("fields")
+        if isinstance(fields, Mapping) and name in fields:
+            field = fields[name]
+            if isinstance(field, Mapping) and "value" in field:
+                return field["value"]
+            return field
+        value = runtime_config.get(name, default)
+        if isinstance(value, Mapping) and "value" in value:
+            return value["value"]
+        return value
+    return getattr(runtime_config, name, default)
+
+
+def build_phase_k_static_effect_bindings(runtime_config: Any | None) -> dict[str, bool]:
+    """Bind experiment-only helper calls to immutable proof-request config.
+
+    The C3 helper is intentionally called unconditionally in runtime source to
+    keep the handler CFG stable.  Under the default/off profile it is a proven
+    no-op and must therefore be statically elided by Phase K.  Under the C3
+    profile the policy/invariant layer is required to reject the system before
+    the closed-prefix bridge is attempted; Phase K fails closed if invoked.
+    """
+    profile = str(_runtime_config_value(runtime_config, "nonvacuity_profile", "off"))
+    return {
+        "retroactive_release_budget_mutation":
+            profile == "c3_retroactive_release_budget",
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class CompiledConcreteEffect:
     equations: tuple[str, ...]
@@ -115,13 +160,18 @@ def compile_stale_token_noop(*, bounds: P0ModelBounds) -> str:
 
 
 def compile_effect_ir(effect_ir: list[Mapping[str, Any]], *, bounds: P0ModelBounds,
-                      guard_ir: list[Mapping[str, Any]] | None = None) -> CompiledConcreteEffect:
+                      guard_ir: list[Mapping[str, Any]] | None = None,
+                      static_effect_bindings: Mapping[str, bool] | None = None
+                      ) -> CompiledConcreteEffect:
     equations: list[str] = []
     consumed: list[str] = []
     push_count = 0
     push_kinds: list[str] = []
     pop_count = 0
     token_epoch_delta = 0
+    statically_elided: list[str] = []
+    bindings = dict(_PHASE_K_STATIC_EFFECT_DEFAULTS if static_effect_bindings is None
+                    else static_effect_bindings)
     for effect in effect_ir:
         kind, source, ast_hash = str(effect["kind"]), str(effect["source"]), str(effect["ast_hash"])
         compiled: list[str] | None = None
@@ -160,6 +210,23 @@ def compile_effect_ir(effect_ir: list[Mapping[str, Any]], *, bounds: P0ModelBoun
         elif "_invalidate_job_events" in source or "_schedule_running_job_events" in source:
             compiled = []
             token_epoch_delta += 1
+        elif "_apply_retroactive_release_budget_mutation" in source:
+            enabled = bindings.get("retroactive_release_budget_mutation")
+            if not isinstance(enabled, bool):
+                raise ValueError(
+                    "PHASE_K_STATIC_EFFECT_BINDING_REQUIRED:"
+                    "retroactive_release_budget_mutation"
+                )
+            if enabled:
+                # C3 deliberately changes already-released job snapshots.  The
+                # ACTIVE_RELEASE_BUDGET_INVARIANT checker must reject this
+                # profile before Phase K.  Never silently model it as identity.
+                raise ValueError(
+                    "NONVACUITY_C3_RETROACTIVE_EFFECT_REQUIRES_"
+                    "POLICY_CONTRACT_REJECTION"
+                )
+            compiled = []
+            statically_elided.append(ast_hash)
         elif "budget_state.apply_updates" in source or "runtime_budgets.apply_updates" in source:
             compiled = ["(= c_affected_task_budget_post (ite (> update_arity 0) release_budget c_affected_task_budget))"]
         elif "deadline_misses.append" in source:
@@ -296,13 +363,20 @@ def compile_effect_ir(effect_ir: list[Mapping[str, Any]], *, bounds: P0ModelBoun
         post_name = f"c_{field}_post"
         if not any(post_name in equation for equation in equations):
             equations.append(f"(= {post_name} c_{field})")
-    non_state = tuple(ast_hash for effect, ast_hash in zip(effect_ir, consumed)
-                      if not any(token in str(effect.get("source", "")) for token in (
-                          "active_jobs.append", "active_jobs.remove", "executed_time +=",
-                          "_update_running_progress", "queue.push", "queue.pop",
-                          "state.mode =", "state.running_job =", "_invalidate_job_events",
-                          "_schedule_running_job_events", "budget_state.apply_updates",
-                          "runtime_budgets.apply_updates", "deadline_misses.append")))
+    non_state_candidates = [
+        ast_hash for effect, ast_hash in zip(effect_ir, consumed)
+        if not any(token in str(effect.get("source", "")) for token in (
+            "active_jobs.append", "active_jobs.remove", "executed_time +=",
+            "_update_running_progress", "queue.push", "queue.pop",
+            "state.mode =", "state.running_job =", "_invalidate_job_events",
+            "_schedule_running_job_events", "budget_state.apply_updates",
+            "runtime_budgets.apply_updates", "deadline_misses.append",
+            "_apply_retroactive_release_budget_mutation"))
+    ]
+    for ast_hash in statically_elided:
+        if ast_hash not in non_state_candidates:
+            non_state_candidates.append(ast_hash)
+    non_state = tuple(non_state_candidates)
     queue_equations = tuple(equation for equation in equations
                             if "c_queue_" in equation and "_post" in equation)
     return CompiledConcreteEffect(tuple(equations), tuple(consumed), non_state, queue_equations)
