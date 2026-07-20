@@ -38,6 +38,7 @@ from formal_toolchain.policy.mask_fallback import (
     build_mask_fallback_certificate,
     build_parametric_mask_fallback_certificate,
     select_first_valid,
+    select_by_semantics,
 )
 from formal_toolchain.policy.quantization import deterministic_samples, replay_quantize, verify_against_production
 from formal_toolchain.policy.selected_regions import selected_action_regions, selected_action_regions_v2
@@ -226,7 +227,9 @@ def _fresh_structural_envelope_pipeline(
     adapter = _runtime_adapter(raw_inputs)
 
     action_cert = build_action_transition_table(
-        actions, target.ordered_tasks, domain["tasks"]
+        actions, target.ordered_tasks, domain["tasks"],
+        rounding_mode=str(getattr(target.runtime_config, "budget_rounding_mode", "ceil_floor")),
+        min_budget_delta=int(getattr(target.runtime_config, "min_budget_delta", 1)),
     )
     candidate = synthesize_candidate_envelope(
         domain,
@@ -240,18 +243,31 @@ def _fresh_structural_envelope_pipeline(
         candidate,
         transitions=transitions,
     )
+    if str(getattr(target.runtime_config, "nonvacuity_profile", "off")) == "c3_retroactive_release_budget":
+        common = {
+            "status": "FAIL",
+            "route": "POLICY_CONTRACT_VIOLATION",
+            "failure": {
+                "code": "ACTIVE_RELEASE_BUDGET_RETROACTIVELY_MUTATED",
+                "obligation_id": "ACTIVE_RELEASE_BUDGET_INVARIANT",
+            },
+            "active_release_budget_immutable": False,
+            "controller_budget_write": True,
+        }
 
     rankings = {
         int(leaf.node_id): tuple(int(a) for a in leaf.action_ranking)
         for leaf in tree.leaves
     }
     mask_contract = adapter.export_mask_contract()
+    selection_semantics = str(mask_contract.get("selection", "ranked_first_valid"))
     mask = build_parametric_mask_fallback_certificate(
         rankings=rankings,
         action_dim=len(actions),
         mask_contract=mask_contract,
     )
-    regions = selected_action_regions_v2(_leaf_guards(tree), rankings)
+    regions = selected_action_regions_v2(_leaf_guards(tree), rankings,
+                                         selection_semantics=selection_semantics)
     deployed = check_deployed_policy_preservation(
         candidate,
         actions,
@@ -259,6 +275,9 @@ def _fresh_structural_envelope_pipeline(
         mask_fallback_certificate=mask,
         action_transition_certificate=action_cert,
         mask_contract=mask_contract,
+        forbid_decreasing_hi_budgets=bool(getattr(target.runtime_config, "forbid_decreasing_hi_budgets")),
+        selection_semantics=selection_semantics,
+        disabled_guards=tuple(mask_contract.get("disabled_guards", ())),
     )
     return {
         "domain": domain,
@@ -323,7 +342,9 @@ def _policy_samples(raw_inputs: Any, tree, fixed_data: Mapping[str, Any], action
                    "mask": tuple(runtime_mask), "reasons": tuple(runtime_reasons)}
         quantized = tuple(replay_quantize(value, fixed_data)[0] for value in runtime["observation"])
         replay = evaluate_integer_tree(tree, quantized)
-        selected = select_first_valid(replay.action_ranking, runtime["mask"], action_dim=len(actions))
+        selection_semantics = str(adapter.export_mask_contract().get("selection", "ranked_first_valid"))
+        selected = select_by_semantics(replay.action_ranking, runtime["mask"], action_dim=len(actions),
+                                       selection_semantics=selection_semantics)
         after = adapter.apply_action(runtime_state, selected)
         executable.append({
             "status": "PASS",
@@ -341,7 +362,8 @@ def _policy_samples(raw_inputs: Any, tree, fixed_data: Mapping[str, Any], action
         reasons.append(list(runtime["reasons"]))
         ranking_map = {int(leaf.node_id): tuple(int(action_id) for action_id in leaf.action_ranking) for leaf in tree.leaves}
         for leaf_id, ranking in ranking_map.items():
-            first = select_first_valid(ranking, runtime["mask"], action_dim=len(actions))
+            first = select_by_semantics(ranking, runtime["mask"], action_dim=len(actions),
+                                        selection_semantics=selection_semantics)
             for action in actions:
                 selected_cases.append({
                     "leaf_id": int(leaf_id),
@@ -866,7 +888,11 @@ def _verify_action_transition(*, raw_inputs=None, candidate_evidence=None, expec
         target = _target(raw_inputs)
         actions = _actions(raw_inputs)
         domain = _domain(raw_inputs)
-        result = build_action_transition_table(actions, target.ordered_tasks, domain["tasks"])
+        result = build_action_transition_table(
+        actions, target.ordered_tasks, domain["tasks"],
+        rounding_mode=str(getattr(target.runtime_config, "budget_rounding_mode", "ceil_floor")),
+        min_budget_delta=int(getattr(target.runtime_config, "min_budget_delta", 1)),
+    )
     except (KeyError, TypeError, ValueError) as exc:
         result = {"status": "FAIL", "route": "POLICY_CONTRACT_VIOLATION",
                   "failure": {"code": "ACTION_TRANSITION_FAILED", "detail": str(exc)}}
@@ -1028,7 +1054,22 @@ def _verify_certified_envelope(*, raw_inputs=None, candidate_evidence=None, expe
         candidate = pipeline["candidate"]
         common = pipeline["common"]
         deployed = pipeline["deployed"]
-        if any(item.get("status") != "PASS" for item in (candidate, common, deployed)):
+        if deployed.get("status") == "FAIL":
+            result = {
+                "status": "FAIL",
+                "route": str(deployed.get("route", "POLICY_CONTRACT_VIOLATION")),
+                "failure": dict(deployed.get("failure", {})),
+                "witness": {"deployed_policy_failure": deployed},
+            }
+        elif candidate.get("status") == "FAIL" or common.get("status") == "FAIL":
+            failed = candidate if candidate.get("status") == "FAIL" else common
+            result = {
+                "status": "FAIL",
+                "route": str(failed.get("route", "POLICY_CONTRACT_VIOLATION")),
+                "failure": dict(failed.get("failure", {})),
+                "witness": {"envelope_precondition_failure": failed},
+            }
+        elif any(item.get("status") != "PASS" for item in (candidate, common, deployed)):
             result = {"status": "UNRESOLVED", "route": "UNRESOLVED",
                       "failure": {"code": "CERTIFIED_ENVELOPE_PRECONDITION_FAILED",
                                   "common": common, "deployed": deployed}}
@@ -1064,7 +1105,22 @@ def _verify_budget_invariant(obligation_id: str, *, raw_inputs=None, candidate_e
         candidate = pipeline["candidate"]
         common = pipeline["common"]
         deployed = pipeline["deployed"]
-        if any(item.get("status") != "PASS" for item in (candidate, common, deployed)):
+        if deployed.get("status") == "FAIL":
+            result = {
+                "status": "FAIL",
+                "route": str(deployed.get("route", "POLICY_CONTRACT_VIOLATION")),
+                "failure": dict(deployed.get("failure", {})),
+                "witness": {"deployed_policy_failure": deployed},
+            }
+        elif candidate.get("status") == "FAIL" or common.get("status") == "FAIL":
+            failed = candidate if candidate.get("status") == "FAIL" else common
+            result = {
+                "status": "FAIL",
+                "route": str(failed.get("route", "POLICY_CONTRACT_VIOLATION")),
+                "failure": dict(failed.get("failure", {})),
+                "witness": {"envelope_precondition_failure": failed},
+            }
+        elif any(item.get("status") != "PASS" for item in (candidate, common, deployed)):
             result = {"status": "UNRESOLVED", "route": "UNRESOLVED",
                       "failure": {"code": "BUDGET_INVARIANT_PRECONDITION_FAILED"}}
         else:

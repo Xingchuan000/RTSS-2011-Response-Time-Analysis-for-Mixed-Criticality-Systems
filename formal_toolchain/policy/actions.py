@@ -13,7 +13,10 @@ from amc_py.rl.actions import BudgetAction
 from formal_toolchain.core.hashing import sha256_object
 
 
-def replay_action(action: BudgetAction, budgets: Mapping[str, int], tasks: Sequence[Any]) -> dict[str, int]:
+def replay_action(
+    action: BudgetAction, budgets: Mapping[str, int], tasks: Sequence[Any],
+    *, rounding_mode: str = "ceil_floor", min_budget_delta: int = 1,
+) -> dict[str, int]:
     """独立按 CPython binary64、ceil/floor 和 P0 clamp 顺序重算动作。"""
     if action.is_constraint_guided_pair or action.is_residual_ranked:
         raise ValueError("动态动作不属于第一轮 single verifier 子集")
@@ -23,12 +26,17 @@ def replay_action(action: BudgetAction, budgets: Mapping[str, int], tasks: Seque
         return result
     if action.increase_idx is not None:
         task = tasks[action.increase_idx]; name = names[action.increase_idx]
-        value = math.ceil(int(budgets[name]) * (1.0 + float(action.increase_ratio)))
+        raw_value = int(budgets[name]) * (1.0 + float(action.increase_ratio))
+        value = math.ceil(raw_value) if rounding_mode == "ceil_floor" else int(round(raw_value))
+        value = max(value, int(budgets[name]) + int(min_budget_delta))
         cap = task.c_hi if task.criticality is Criticality.HI else task.deadline
         result[name] = max(1, min(value, cap))
     for index in action.decrease_indices:
         name = names[index]
-        result[name] = max(1, math.floor(int(budgets[name]) * (1.0 - float(action.decrease_ratio))))
+        raw_value = int(budgets[name]) * (1.0 - float(action.decrease_ratio))
+        value = math.floor(raw_value) if rounding_mode == "ceil_floor" else int(round(raw_value))
+        value = min(value, int(budgets[name]) - int(min_budget_delta))
+        result[name] = max(1, value)
     return result
 
 
@@ -40,8 +48,11 @@ def _affected_task_indices(action: BudgetAction) -> tuple[int, ...]:
     return tuple(dict.fromkeys(indices))
 
 
-def build_action_transition_table(actions: Sequence[BudgetAction], tasks: Sequence[Any],
-                                  budget_domain: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+def build_action_transition_table(
+    actions: Sequence[BudgetAction], tasks: Sequence[Any],
+    budget_domain: Mapping[str, Mapping[str, Any]],
+    *, rounding_mode: str = "ceil_floor", min_budget_delta: int = 1,
+) -> dict[str, Any]:
     task_names = [str(task.name) for task in tasks]
     initial = {name: int(budget_domain[name]["initial"]) for name in task_names}
     summaries: list[dict[str, Any]] = []
@@ -73,11 +84,16 @@ def build_action_transition_table(actions: Sequence[BudgetAction], tasks: Sequen
                 name = task_names[affected[0]]
                 budgets[name] = int(probe)
 
-            formal = replay_action(action, budgets, tasks)
+            formal = replay_action(
+                action, budgets, tasks, rounding_mode=rounding_mode,
+                min_budget_delta=min_budget_delta,
+            )
             production = apply_budget_action_candidate(
                 action=action,
                 budget_state=BudgetState(dict(budgets)),
                 ordered_tasks=tasks,
+                rounding_mode=rounding_mode,
+                min_budget_delta=min_budget_delta,
             )
             if production != formal:
                 return {
@@ -119,6 +135,8 @@ def build_action_transition_table(actions: Sequence[BudgetAction], tasks: Sequen
         "action_count": len(actions),
         "actions": summaries,
         "semantic": "production_action_primitive_1d_complete_replay",
+        "rounding_mode": rounding_mode,
+        "min_budget_delta": int(min_budget_delta),
     }
 
 

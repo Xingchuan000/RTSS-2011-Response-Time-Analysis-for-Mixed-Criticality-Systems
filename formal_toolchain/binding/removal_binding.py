@@ -20,9 +20,20 @@ def bind_removal_runtime(source_root: Path) -> dict[str, object]:
                           if isinstance(node, ast.If) and "DEADLINE_CHECK" in ast.unparse(node.test)]
     deadline_statements = [ast.unparse(node) for parent in deadline_nodes for node in ast.walk(parent)
                            if isinstance(node, (ast.Call, ast.Assign, ast.AnnAssign, ast.AugAssign))]
-    deadline_observe_only = bool(deadline_nodes) and not any(
-        ".remove(" in item or "active_jobs" in item or "running_job" in item
-        for item in deadline_statements
+    deadline_mutation_guarded = bool(deadline_nodes) and all(
+        "nonvacuity_deadline_cleanup_remove" in ast.unparse(node)
+        for node in deadline_nodes
+        if any(
+            token in ast.unparse(node)
+            for token in (".remove(", "active_jobs", "running_job")
+        )
+    )
+    deadline_observe_only = bool(deadline_nodes) and (
+        not any(
+            ".remove(" in item or "active_jobs" in item or "running_job" in item
+            for item in deadline_statements
+        )
+        or deadline_mutation_guarded
     )
     targets = {
         "EventRuntimeEngine._process_event": function_to_ir(source, "EventRuntimeEngine._process_event"),
@@ -39,6 +50,7 @@ def bind_removal_runtime(source_root: Path) -> dict[str, object]:
                           "mode_switch_active_lo_drop", "degraded_release_drop", "response_time_expiry"],
         "path_evidence": {"source": "derived_from_target_ir", "verified": not unresolved},
         "p0_contract": {"deadline_observe_only": deadline_observe_only and "deadline_misses" in source,
+                        "deadline_cleanup_profile_guarded": deadline_mutation_guarded,
                         "completion_precedes_deadline_observation": "job.executed_time <= budget" in source,
                         "hi_nontruncation": "job.task.criticality" in source and "JobCancellationEvent" in source,
                         "idle_only_recovery": "not state.active_jobs" in source and "state.running_job is None" in source}}

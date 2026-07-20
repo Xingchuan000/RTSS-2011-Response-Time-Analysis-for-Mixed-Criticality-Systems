@@ -341,7 +341,11 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
     # 这里保留 integer_tree.json 的原始字典形态，避免把运行时模型对象
     # 直接塞进 preflight 输出导致 fresh 进程无法序列化。
     inventory["tree"] = tree_data
-    actions_table = build_action_transition_table(actions, target.ordered_tasks, domain["tasks"])
+    actions_table = build_action_transition_table(
+        actions, target.ordered_tasks, domain["tasks"],
+        rounding_mode=str(getattr(target.runtime_config, "budget_rounding_mode", "ceil_floor")),
+        min_budget_delta=int(getattr(target.runtime_config, "min_budget_delta", 1)),
+    )
     transitions = build_transition_witness(domain, target.ordered_tasks)
     adapter = target.runtime_adapter
     if adapter is None:
@@ -359,17 +363,31 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
         else {"status": "UNRESOLVED", "route": "UNRESOLVED",
               "failure": {"code": "CANDIDATE_ENVELOPE_NOT_PASS"}}
     )
+    if str(getattr(target.runtime_config, "nonvacuity_profile", "off")) == "c3_retroactive_release_budget":
+        common = {
+            "status": "FAIL",
+            "route": "POLICY_CONTRACT_VIOLATION",
+            "failure": {
+                "code": "ACTIVE_RELEASE_BUDGET_RETROACTIVELY_MUTATED",
+                "obligation_id": "ACTIVE_RELEASE_BUDGET_INVARIANT",
+            },
+            "active_release_budget_immutable": False,
+            "controller_budget_write": True,
+        }
     rankings = {
         int(leaf.node_id): tuple(int(action_id) for action_id in leaf.action_ranking)
         for leaf in tree.leaves
     }
     mask_contract = adapter.export_mask_contract()
+    selection_semantics = str(mask_contract.get("selection", "ranked_first_valid"))
     mask_fallback = build_parametric_mask_fallback_certificate(
         rankings=rankings,
         action_dim=len(actions),
         mask_contract=mask_contract,
     )
-    regions = selected_action_regions_v2(_leaf_guards(tree), rankings)
+    regions = selected_action_regions_v2(
+        _leaf_guards(tree), rankings, selection_semantics=selection_semantics
+    )
 
     names = [str(task.name) for task in target.ordered_tasks]
     initial_vector = tuple(int(domain["tasks"][name]["initial"]) for name in names)
@@ -398,6 +416,11 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
             mask_fallback_certificate=mask_fallback,
             action_transition_certificate=actions_table,
             mask_contract=mask_contract,
+            forbid_decreasing_hi_budgets=bool(
+                getattr(target.runtime_config, "forbid_decreasing_hi_budgets")
+            ),
+            selection_semantics=selection_semantics,
+            disabled_guards=tuple(mask_contract.get("disabled_guards", ())),
         )
         if candidate.get("status") == "PASS" and common.get("status") == "PASS" and mask_fallback.get("status") == "PASS"
         else {"status": "UNRESOLVED", "route": "UNRESOLVED",

@@ -56,7 +56,10 @@ def _copy_tree_files(source: Path, destination: Path) -> None:
 
 def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
                           *, code_root: Path, target_recipe: Path | None = None,
-                          overwrite: bool = False) -> dict[str, Any]:
+                          overwrite: bool = False,
+                          nonvacuity_profile: str = "off",
+                          nonvacuity_params: dict[str, Any] | None = None,
+                          refresh_phase_k_map: bool = False) -> dict[str, Any]:
     """创建 canonical workspace，并输出机器无关的 proof request。"""
 
     seed_dir = Path(seed_dir).resolve()
@@ -97,7 +100,38 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
     # 该文件时才复制；缺失时 compiler 必须保留 UNRESOLVED，不能现场猜测
     # path 或把旧 map 当成当前源码的证明。
     phase_k_case_map = seed_dir / "phase_k_case_map.json"
-    if phase_k_case_map.is_file():
+    if refresh_phase_k_map:
+        from formal_toolchain.adapters.source_manifest import build_source_manifest
+        from formal_toolchain.bridge.p0_case_manifest import p0_case_manifest_hash
+        from formal_toolchain.bridge.runtime_branch_map import (
+            PATH_SPECS, _path_row, build_normal_runtime_path_coverage,
+        )
+        from formal_toolchain.core.hashing import sha256_object
+
+        source_hash = build_source_manifest(code_root)["semantic_hash"]
+        paths = {spec[0]: _path_row(code_root, spec) for spec in PATH_SPECS}
+        coverage = build_normal_runtime_path_coverage(code_root)
+        if coverage.get("status") != "PASS":
+            raise UnresolvedInputError(
+                "PHASE_K_MAP_REGENERATION_FAILED",
+                f"branch map coverage incomplete: {coverage}",
+            )
+        generated_map = {
+            "schema_version": "phase_k_transition_path_map_v2_cfg_ir",
+            "source_hash": source_hash,
+            "paths": paths,
+            "coverage": coverage,
+            "case_manifest_hash": p0_case_manifest_hash(),
+            "path_map_hash": sha256_object({
+                "paths": paths, "coverage": coverage["artifact_hash"]
+            }),
+            "generated_during_request_freeze": True,
+        }
+        (copied_inputs / "phase_k_case_map.json").write_text(
+            json.dumps(generated_map, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    elif phase_k_case_map.is_file():
         shutil.copy2(phase_k_case_map, copied_inputs / phase_k_case_map.name)
     manifest_path, target_manifest = resolve_target_manifest(seed_dir)
     shutil.copy2(manifest_path, output_dir / "request" / "inputs" / "formal_target_manifest.json")
@@ -114,6 +148,37 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
         declared_seed = 0
     if metadata_seed is not None and int(metadata_seed) != int(declared_seed):
         raise ValueError("TARGET_SEED_IDENTITY_MISMATCH")
+    recipe_kwargs = dict(recipe.get("kwargs", {}))
+    recipe_kwargs["nonvacuity_profile"] = str(nonvacuity_profile or "off")
+    recipe_kwargs["nonvacuity_params"] = dict(nonvacuity_params or {})
+
+    # The copied formal_inputs are historical inputs from the seed export.  A
+    # non-vacuity profile (and even the unified source revision with profile
+    # ``off``) must be bound to the effective runtime object constructed by the
+    # *current* target factory.  Refresh only the derived inputs in the request
+    # workspace; the source seed directory remains immutable.
+    from formal_toolchain.adapters.target_factory import build_target
+    from formal_toolchain.adapters.runtime_config import export_formal_target_config
+
+    frozen_target = build_target(recipe["factory"], recipe_kwargs)
+    effective_config = export_formal_target_config(frozen_target)
+    if effective_config.get("status") != "PASS":
+        raise UnresolvedInputError(
+            "EFFECTIVE_RUNTIME_CONFIG_REFRESH_FAILED",
+            json.dumps(effective_config, ensure_ascii=False, sort_keys=True),
+        )
+    (copied_inputs / "effective_runtime_config.json").write_text(
+        json.dumps(effective_config, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (copied_inputs / "action_definitions_canonical.json").write_text(
+        json.dumps({
+            "schema_version": "action_definitions_canonical_v1",
+            "action_definitions": [dict(row) for row in frozen_target.action_definitions],
+        }, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
     request = {
         "schema_version": "proof_request_v2",
         "profile": "P0",
@@ -121,13 +186,15 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
         "target_id": target_manifest["target_id"],
         "target_kind": target_manifest["target_kind"],
         "taskset_seed": int(declared_seed),
-        "target_recipe": {"factory": recipe["factory"], "kwargs": dict(recipe.get("kwargs", {}))},
+        "target_recipe": {"factory": recipe["factory"], "kwargs": recipe_kwargs},
         "tree_artifact_dir": "request/inputs/tree_artifact",
         "formal_inputs_dir": "request/inputs/formal_inputs",
         "tree_variant": tree_variant,
         "source_root": ".",
         "expected_tree_file_sha256": sha256_file(copied_tree / "integer_tree.json"),
         "optional_claims": [],
+        "nonvacuity_profile": str(nonvacuity_profile or "off"),
+        "nonvacuity_params": dict(nonvacuity_params or {}),
     }
     (output_dir / "request" / "proof_request.json").write_text(
         json.dumps(request, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -140,7 +207,12 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
     diagnostic = {"schema_version": "seed_import_diagnostic_v1", "status": "PASS",
                   "target_id": target_manifest.get("target_id"), "target_kind": target_manifest.get("target_kind"),
                   "tree_variant": tree_variant, "source_root": "code_root",
-                  "external_seed_paths_read": [], "hout_used": False}
+                  "external_seed_paths_read": [], "hout_used": False,
+                  "nonvacuity_profile": str(nonvacuity_profile or "off"),
+                  "nonvacuity_params": dict(nonvacuity_params or {}),
+                  "phase_k_map_refreshed": bool(refresh_phase_k_map),
+                  "effective_runtime_config_refreshed": True,
+                  "action_definitions_canonical_refreshed": True}
     (output_dir / "seed_import_diagnostic.json").write_text(
         json.dumps(diagnostic, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return {"workspace": output_dir, "request": output_dir / "request" / "proof_request.json",

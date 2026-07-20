@@ -197,6 +197,15 @@ class AmcBudgetEnv:
     include_explicit_noop: bool = False
     budget_floor_ratio: float = 0.0
     forbid_decreasing_hi_budgets: bool = False
+    # Non-vacuity experiment semantics. Defaults preserve the certified deployment.
+    policy_selection_semantics: Literal[
+        "ranked_first_valid", "raw_top1", "top1_or_noop", "first_valid_else_top1"
+    ] = "ranked_first_valid"
+    step_guard_semantics: Literal["checked", "unchecked_apply", "unchecked_if_invalid"] = "checked"
+    nonvacuity_profile: str = "off"
+    nonvacuity_disabled_guards: tuple[str, ...] = ()
+    budget_rounding_mode: Literal["ceil_floor", "nearest"] = "ceil_floor"
+    min_budget_delta: int = 1
     enable_deploy_cap_mask: bool = False
     deploy_cap_mask_ratio: float = 4.0
     deploy_cap_mask_criticality: Literal["lo", "all"] = "lo"
@@ -272,6 +281,14 @@ class AmcBudgetEnv:
             raise ValueError("deploy_cap_mask_ratio 必须大于 1.0")
         if self.deploy_cap_mask_criticality not in {"lo", "all"}:
             raise ValueError("deploy_cap_mask_criticality 必须是 'lo' 或 'all'")
+        if self.policy_selection_semantics not in {"ranked_first_valid", "raw_top1", "top1_or_noop", "first_valid_else_top1"}:
+            raise ValueError("UNSUPPORTED_POLICY_SELECTION_SEMANTICS")
+        if self.step_guard_semantics not in {"checked", "unchecked_apply", "unchecked_if_invalid"}:
+            raise ValueError("UNSUPPORTED_STEP_GUARD_SEMANTICS")
+        if self.budget_rounding_mode not in {"ceil_floor", "nearest"}:
+            raise ValueError("UNSUPPORTED_BUDGET_ROUNDING_MODE")
+        if self.min_budget_delta <= 0:
+            raise ValueError("min_budget_delta 必须为正整数")
         # 加载奖励模式配置（权重 + 公式）。
         # 这样 reward 计算方式可由配置文件驱动，而非写死在代码中。
         self._reward_mode_config = load_reward_mode_config(self.reward_mode)
@@ -307,6 +324,18 @@ class AmcBudgetEnv:
         # 记录环境初始预算，用于阶段 2 的预算变化归一化惩罚。
         self._initial_budgets = {task.name: task.c_lo for task in self.ordered_tasks}
         self._last_observation = None
+
+    def _guard_disabled(self, guard_id: str) -> bool:
+        return str(guard_id) in set(self.nonvacuity_disabled_guards)
+
+    def _apply_static_budget_action(self, *, action: BudgetAction, budget_state: BudgetState) -> dict[str, int]:
+        return apply_budget_action_candidate(
+            action=action,
+            budget_state=budget_state,
+            ordered_tasks=self.ordered_tasks,
+            rounding_mode=self.budget_rounding_mode,
+            min_budget_delta=self.min_budget_delta,
+        )
 
     def _reset_episode_task_counters(self) -> None:
         """重置 episode 级 task 统计计数器。
@@ -572,6 +601,8 @@ class AmcBudgetEnv:
             action=concrete,
             budget_state=budget_state,
             ordered_tasks=self.ordered_tasks,
+            rounding_mode=self.budget_rounding_mode,
+            min_budget_delta=self.min_budget_delta,
         )
         candidate_budgets = merge_budget_candidate(budget_state, updates)
         return (updates, candidate_budgets, None, concrete)
@@ -654,14 +685,18 @@ class AmcBudgetEnv:
         让 safe residual 的 resolver、mask、step 三条路径共用同一套语义，减少偏差。
         """
 
-        if action is not None and action_violates_hi_decrease_guard(
-            action=action,
-            ordered_tasks=self.ordered_tasks,
-            forbid_decreasing_hi_budgets=self.forbid_decreasing_hi_budgets,
+        if (
+            not self._guard_disabled("hi_decrease")
+            and action is not None
+            and action_violates_hi_decrease_guard(
+                action=action,
+                ordered_tasks=self.ordered_tasks,
+                forbid_decreasing_hi_budgets=self.forbid_decreasing_hi_budgets,
+            )
         ):
             return "decrease_hi_forbidden"
 
-        residual_guard_reason = self._residual_safety_guard_reject_reason(
+        residual_guard_reason = None if self._guard_disabled("residual_guard") else self._residual_safety_guard_reject_reason(
             action=action,
             budget_before=budget_before,
             candidate_budgets=candidate_budgets,
@@ -671,11 +706,11 @@ class AmcBudgetEnv:
         if residual_guard_reason is not None:
             return residual_guard_reason
 
-        floor_reject_reason = self._budget_floor_violation(updates=updates)
+        floor_reject_reason = None if self._guard_disabled("budget_floor") else self._budget_floor_violation(updates=updates)
         if floor_reject_reason is not None:
             return floor_reject_reason
 
-        if self.check_safety:
+        if self.check_safety and not self._guard_disabled("safety_checker"):
             report = self._ensure_checker().validate_candidate(candidate_budgets)
             if not report.accepted:
                 return report.reason
@@ -721,7 +756,7 @@ class AmcBudgetEnv:
                 safety_checked=False,
             )
 
-        cap_reason = self._deploy_cap_increase_reject_reason(
+        cap_reason = None if self._guard_disabled("deploy_cap") else self._deploy_cap_increase_reject_reason(
             increase_idx=action.increase_idx,
             budget_before=before,
         )
@@ -735,10 +770,13 @@ class AmcBudgetEnv:
                 safety_checked=False,
             )
 
-        if action_violates_hi_decrease_guard(
-            action=action,
-            ordered_tasks=self.ordered_tasks,
-            forbid_decreasing_hi_budgets=self.forbid_decreasing_hi_budgets,
+        if (
+            not self._guard_disabled("hi_decrease")
+            and action_violates_hi_decrease_guard(
+                action=action,
+                ordered_tasks=self.ordered_tasks,
+                forbid_decreasing_hi_budgets=self.forbid_decreasing_hi_budgets,
+            )
         ):
             return BudgetCandidateEvaluation(
                 action_id=int(action.action_id),
@@ -755,12 +793,14 @@ class AmcBudgetEnv:
             action=action,
             budget_state=budget_state,
             ordered_tasks=self.ordered_tasks,
+            rounding_mode=self.budget_rounding_mode,
+            min_budget_delta=self.min_budget_delta,
         )
         candidate_budgets = merge_budget_candidate(
             budget_state,
             updates,
         )
-        residual_guard_reason = self._residual_safety_guard_reject_reason(
+        residual_guard_reason = None if self._guard_disabled("residual_guard") else self._residual_safety_guard_reject_reason(
             action=action,
             budget_before=before,
             candidate_budgets=candidate_budgets,
@@ -785,7 +825,7 @@ class AmcBudgetEnv:
                 safety_checked=False,
             )
 
-        floor_reject_reason = self._budget_floor_violation(updates=updates)
+        floor_reject_reason = None if self._guard_disabled("budget_floor") else self._budget_floor_violation(updates=updates)
         if floor_reject_reason is not None:
             return BudgetCandidateEvaluation(
                 action_id=int(action.action_id),
@@ -796,7 +836,7 @@ class AmcBudgetEnv:
                 safety_checked=False,
             )
 
-        if self.check_safety:
+        if self.check_safety and not self._guard_disabled("safety_checker"):
             report = self._ensure_checker().validate_candidate(candidate_budgets)
             if not report.accepted:
                 return BudgetCandidateEvaluation(
@@ -815,7 +855,7 @@ class AmcBudgetEnv:
             reject_reason=None,
             candidate_budgets=dict(candidate_budgets),
             updates=dict(updates),
-            safety_checked=self.check_safety,
+            safety_checked=bool(self.check_safety and not self._guard_disabled("safety_checker")),
         )
 
     def formal_valid_action_mask(self) -> tuple[bool, ...]:
@@ -2882,30 +2922,49 @@ class AmcBudgetEnv:
                 elif is_safe_residual_action and reject_reason is not None:
                     reject_reason = f"safe_mask_step_mismatch:{reject_reason}"
             else:
-                evaluation = self.evaluate_budget_candidate(
-                    action=action,
-                    budget_before=budget_before,
-                    hi_pressure_threshold=float(
-                        self._reward_mode_config.reward_parameters.get("hi_mode_pressure_threshold", 0.8)
-                    ),
-                    lo_pressure_threshold=float(
-                        self._reward_mode_config.reward_parameters.get("lo_pressure_threshold", 0.8)
-                    ),
-                )
-                accepted = evaluation.accepted
-                reject_reason = evaluation.reject_reason
-                updates = dict(evaluation.updates)
-                candidate_budgets = dict(evaluation.candidate_budgets)
-                action_was_checked = evaluation.safety_checked
-                reject_diagnostics = evaluation.reject_diagnostics
-                if action_was_checked:
-                    self._safety_checked_actions += 1
-                if action_was_checked and accepted:
-                    self._safety_accepted_actions += 1
-                elif action_was_checked and not accepted:
-                    self._safety_rejected_actions += 1
-                if accepted:
+                selected_invalid = bool(action_id is not None and action_id < len(valid_mask) and not valid_mask[action_id])
+                if self.step_guard_semantics == "unchecked_apply" or (
+                    self.step_guard_semantics == "unchecked_if_invalid" and selected_invalid
+                ):
+                    # EXPERIMENT_ONLY_UNSAFE_MUTATION: apply the exact action primitive
+                    # without deploy mask, floor, or safety-candidate rejection.
+                    from amc_py.rl.actions import apply_budget_action_candidate
+                    updates = apply_budget_action_candidate(
+                        action=action,
+                        budget_state=self._engine.runtime_budgets,
+                        ordered_tasks=self.ordered_tasks,
+                    )
+                    candidate_budgets = dict(budget_before)
+                    candidate_budgets.update(updates)
+                    accepted = True
+                    reject_reason = None
+                    action_was_checked = False
                     self._engine.apply_budget_updates(updates)
+                else:
+                    evaluation = self.evaluate_budget_candidate(
+                        action=action,
+                        budget_before=budget_before,
+                        hi_pressure_threshold=float(
+                            self._reward_mode_config.reward_parameters.get("hi_mode_pressure_threshold", 0.8)
+                        ),
+                        lo_pressure_threshold=float(
+                            self._reward_mode_config.reward_parameters.get("lo_pressure_threshold", 0.8)
+                        ),
+                    )
+                    accepted = evaluation.accepted
+                    reject_reason = evaluation.reject_reason
+                    updates = dict(evaluation.updates)
+                    candidate_budgets = dict(evaluation.candidate_budgets)
+                    action_was_checked = evaluation.safety_checked
+                    reject_diagnostics = evaluation.reject_diagnostics
+                    if action_was_checked:
+                        self._safety_checked_actions += 1
+                    if action_was_checked and accepted:
+                        self._safety_accepted_actions += 1
+                    elif action_was_checked and not accepted:
+                        self._safety_rejected_actions += 1
+                    if accepted:
+                        self._engine.apply_budget_updates(updates)
         else:
             if self._mask_log:
                 valid_action_count = int(self._mask_log[-1]["valid_action_count"])

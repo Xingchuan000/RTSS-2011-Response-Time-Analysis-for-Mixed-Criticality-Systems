@@ -320,6 +320,30 @@ class IntegerTreeBudgetPolicy:
             "student_state_vector_int": state_int,
             "tree_runtime_policy_type": "integer_tree_ranked_valid_or_none",
         }
+        selection_semantics = str(self.metadata.get("nonvacuity_selection_semantics", "ranked_first_valid"))
+        if selection_semantics == "raw_top1":
+            base["tree_runtime_policy_type"] = "integer_tree_raw_top1_unchecked"
+            if valid_action_mask is not None:
+                if len(valid_action_mask) != len(self.action_definitions):
+                    raise ValueError("valid_action_mask 长度必须与 action_dim 一致")
+                base["tree_raw_top1_invalid"] = not bool(valid_action_mask[raw_top1])
+            if trace is not None:
+                base.update(trace)
+            return raw_top1, base
+        if selection_semantics == "top1_or_noop" and valid_action_mask is not None:
+            if len(valid_action_mask) != len(self.action_definitions):
+                raise ValueError("valid_action_mask 长度必须与 action_dim 一致")
+            raw_invalid = not bool(valid_action_mask[raw_top1])
+            base["tree_raw_top1_invalid"] = raw_invalid
+            base["tree_runtime_policy_type"] = "integer_tree_top1_or_noop"
+            if raw_invalid:
+                base.update({"tree_no_valid_action": True, "tree_selected_action_id": None, "tree_selected_rank": None})
+                if trace is not None:
+                    base.update(trace)
+                return None, base
+            if trace is not None:
+                base.update(trace)
+            return raw_top1, base
         if valid_action_mask is None:
             if trace is not None:
                 base.update(trace)
@@ -338,6 +362,17 @@ class IntegerTreeBudgetPolicy:
                 if trace is not None:
                     base.update(trace)
                 return candidate, base
+        if selection_semantics == "first_valid_else_top1":
+            base.update({
+                "tree_no_valid_action": True,
+                "tree_selected_action_id": raw_top1,
+                "tree_selected_rank": 0,
+                "tree_runtime_policy_type": "integer_tree_first_valid_else_top1",
+                "tree_all_invalid_forced_top1": True,
+            })
+            if trace is not None:
+                base.update(trace)
+            return raw_top1, base
         base.update({"tree_no_valid_action": True, "tree_selected_action_id": None, "tree_selected_rank": None})
         if trace is not None:
             base.update(trace)

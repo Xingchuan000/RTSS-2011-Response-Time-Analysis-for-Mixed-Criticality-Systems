@@ -565,8 +565,13 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
             witness = {"candidate_replayed": True}
         elif obligation_id == "DEPLOYED_POLICY_PRESERVATION":
             status = envelope_state.deployed_status
-            failure = None if status == "PASS" else {"route": "UNRESOLVED", "code": "DEPLOYED_PRESERVATION_INVALID"}
-            witness = {"candidate_replayed": True}
+            candidate_failure = (candidate.get("failure")
+                                 if isinstance(candidate.get("failure"), Mapping) else {})
+            failure = None if status == "PASS" else {
+                "route": str(candidate_failure.get("route", "POLICY_CONTRACT_VIOLATION")),
+                "code": str(candidate_failure.get("code", "DEPLOYED_PRESERVATION_INVALID")),
+            }
+            witness = {"candidate_replayed": True, "candidate_failure": candidate_failure}
         elif obligation_id == "CERTIFIED_ENVELOPE":
             status = "PASS" if envelope_state.certified_envelope is not None else "UNRESOLVED"
             failure = None if status == "PASS" else {"route": "UNRESOLVED", "code": "ENVELOPE_NOT_CERTIFIED"}
@@ -574,7 +579,7 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
         checker = checker_for(obligation_id)
         if checker is not None and obligation_id not in {
                 "CANDIDATE_ENVELOPE", "COMMON_TRANSITION_PRESERVATION",
-                "DEPLOYED_POLICY_PRESERVATION", "CERTIFIED_ENVELOPE"}:
+                "CERTIFIED_ENVELOPE"}:
             candidate_witness = candidate.get("witness", {})
             evidence_key = candidate_witness.get("evidence_key") if isinstance(candidate_witness, Mapping) else None
             raw_evidence = candidate_witness.get("evidence") if isinstance(candidate_witness, Mapping) else None

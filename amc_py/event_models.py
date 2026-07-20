@@ -73,17 +73,25 @@ class EventQueue:
         EventType.JOB_ARRIVAL: 5,
     }
 
-    def __init__(self) -> None:
-        """初始化空队列与全局递增序号。"""
+    def __init__(self, *, arrival_before_deadline: bool = False) -> None:
+        """初始化空队列与全局递增序号。
+
+        ``arrival_before_deadline`` is an opt-in non-vacuity mutation.  The
+        default keeps the production ordering exactly unchanged.
+        """
 
         self._heap: list[tuple[int, int, int, Event]] = []
         self._counter = itertools.count()
+        self._type_priority = dict(self._TYPE_PRIORITY)
+        if arrival_before_deadline:
+            self._type_priority[EventType.JOB_ARRIVAL] = 4
+            self._type_priority[EventType.DEADLINE_CHECK] = 5
 
     def push(self, event: Event) -> None:
         """压入一个新事件。"""
 
         order = next(self._counter)
-        type_priority = self._TYPE_PRIORITY[event.event_type]
+        type_priority = self._type_priority[event.event_type]
         heapq.heappush(self._heap, (event.time, type_priority, order, event))
 
     def pop(self) -> Event:

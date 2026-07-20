@@ -9,7 +9,7 @@ from amc_py.viper.integer_tree import IntegerTreeModel, evaluate_integer_tree
 from amc_py.models import Task
 from amc_py.rl.actions import BudgetAction
 from .quantization import replay_quantize
-from .mask_fallback import select_first_valid
+from .mask_fallback import select_by_semantics
 from .actions import replay_action
 
 
@@ -32,7 +32,9 @@ def replay_deployed_policy(runtime_state: Mapping[str, Any], target: Any,
         raise ValueError("runtime observation/mask 维度与 artifact 不一致")
     quantized = tuple(replay_quantize(value, config)[0] for value in observation)
     evaluation = evaluate_integer_tree(tree, quantized)
-    selected = select_first_valid(evaluation.action_ranking, valid_mask, action_dim=tree.action_dim)
+    selection_semantics = str(adapter.export_mask_contract().get("selection", "ranked_first_valid"))
+    selected = select_by_semantics(evaluation.action_ranking, valid_mask, action_dim=tree.action_dim,
+                                   selection_semantics=selection_semantics)
     after = None
     if selected is not None:
             after = adapter.apply_action(runtime_state, selected)

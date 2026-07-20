@@ -86,6 +86,7 @@ def _semantic_path_predicate(case_id: str):
         return exact((overrun, True),
                      ("self.state.valid_overrun_tokens.get(key) != event.token", False),
                      ("job is None or self.state.running_job is not job", False),
+                     ("self.config.nonvacuity_hi_budget_cap_truncate and job.task.criticality is Criticality.HI", False),
                      ("_is_response_based_semantics(self.config.semantics) and job.task.criticality is Criticality.HI", False),
                      ("budget is None", False), ("job.executed_time <= budget", False),
                      ("self.config.semantics in {RuntimeSemantics.AMC_PLUS, RuntimeSemantics.AMC_RA, RuntimeSemantics.AMC_RH, RuntimeSemantics.C_AMC_SEM} and job.task.criticality is Criticality.LO", True),
@@ -94,6 +95,7 @@ def _semantic_path_predicate(case_id: str):
         return exact((deadline, True), ("job is None", False), ("not job.finished()", False))
     if case_id == "DEADLINE_OBSERVATION_FIRST_HI_MISS":
         return exact((deadline, True), ("job is None", False), ("not job.finished()", True),
+                     ("self.config.nonvacuity_deadline_cleanup_remove", False),
                      ("self.config.stop_at_first_miss", False))
     if case_id == "IDLE_RECOVERY":
         return exact(("not _uses_idle_recovery(cfg.semantics)", False),

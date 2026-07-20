@@ -86,6 +86,14 @@ class RuntimeConfig:
     record_dropped_lo_releases: bool = False
     c_amc_sem_lo_degradation_ratio: float = 0.5
     c_amc_sem_primary_on_switch_time: bool = False
+    # Non-vacuity runtime mutations. All defaults preserve the production/P0 semantics.
+    nonvacuity_profile: str = "off"
+    nonvacuity_deadline_cleanup_remove: bool = False
+    nonvacuity_hi_budget_cap_truncate: bool = False
+    nonvacuity_arrival_before_deadline: bool = False
+    nonvacuity_controller_overhead_ticks: int = 0
+    nonvacuity_recover_without_quiescence: bool = False
+    nonvacuity_unstable_demand_reads: bool = False
 
     def __post_init__(self) -> None:
         # 基本的范围校验：避免在仿真过程中才报错，尽量把问题前置。
@@ -99,6 +107,8 @@ class RuntimeConfig:
             raise ValueError("c_amc_sem_lo_degradation_ratio must be in (0, 1]")
         if not isinstance(self.c_amc_sem_primary_on_switch_time, bool):
             raise TypeError("c_amc_sem_primary_on_switch_time must be bool")
+        if self.nonvacuity_controller_overhead_ticks < 0:
+            raise ValueError("nonvacuity_controller_overhead_ticks 必须为非负整数")
 
 
 @dataclass(slots=True)

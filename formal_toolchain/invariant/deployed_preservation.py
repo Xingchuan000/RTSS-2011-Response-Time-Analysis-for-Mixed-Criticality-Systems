@@ -20,6 +20,8 @@ def check_deployed_policy_preservation(
     leaves: Sequence[Any] = (),
     selected_cases: Sequence[Mapping[str, Any]] | None = None,
     forbid_decreasing_hi_budgets: bool = True,
+    selection_semantics: str = "ranked_first_valid",
+    disabled_guards: Sequence[str] = (),
 ) -> dict[str, Any]:
     if candidate.get("status") != "PASS":
         raise ValueError("deployed preservation 必须消费已通过 candidate envelope")
@@ -47,13 +49,64 @@ def check_deployed_policy_preservation(
         return dict(mask_fallback_certificate)
     if action_transition_certificate.get("status") != "PASS":
         return dict(action_transition_certificate)
+    disabled_guard_set = {str(value) for value in disabled_guards}
+    unsafe_selection = selection_semantics in {"raw_top1", "first_valid_else_top1"}
+    guard_ablation = bool(disabled_guard_set)
+    if unsafe_selection or guard_ablation:
+        transitions = {int(row["action_id"]): row for row in action_transition_certificate.get("actions", [])}
+        if unsafe_selection:
+            candidate_action_ids = sorted({int(leaf["ranking"][0]) for leaf in mask_fallback_certificate.get("leaves", [])})
+        else:
+            candidate_action_ids = sorted(transitions)
+        names = [str(task.name) for task in tasks]
+        violations = []
+        for action_id in candidate_action_ids:
+            action = actions[action_id]
+            row = transitions.get(action_id, {})
+            affected = list(row.get("affected_task_indices", []))
+            if not affected:
+                continue
+            idx = int(affected[0]); name = names[idx]
+            min_after = row.get("min_after"); max_after = row.get("max_after")
+            lower = int(candidate["lower"][name]); upper = int(candidate["upper"][name])
+            lower_bad = min_after is not None and int(min_after) < lower
+            upper_bad = max_after is not None and int(max_after) > upper
+            if lower_bad or upper_bad:
+                criticality = getattr(getattr(tasks[idx], "criticality", None), "value", str(getattr(tasks[idx], "criticality", "")))
+                violations.append({"action_id": action_id, "task": name, "criticality": criticality,
+                                   "min_after": min_after, "max_after": max_after,
+                                   "required_lower": lower, "required_upper": upper,
+                                   "lower_violation": lower_bad, "upper_violation": upper_bad})
+        if violations:
+            violations.sort(key=lambda row: (0 if row["criticality"] == "HI" and row["lower_violation"] else 1,
+                                             0 if row["action_id"] == 13 else 1, row["action_id"]))
+            witness = violations[0]
+            return {"status": "FAIL", "route": "POLICY_CONTRACT_VIOLATION",
+                    "failure": {
+                        "code": (
+                            "DISABLED_GUARD_BREAKS_ENVELOPE" if guard_ablation
+                            else "RAW_TOP1_UNCHECKED_BREAKS_ENVELOPE"
+                        ),
+                        **witness,
+                        "all_violation_count": len(violations),
+                        "disabled_guards": sorted(disabled_guard_set),
+                    }}
+        return {
+            "status": "PASS",
+            "schema_version": "deployed_policy_preservation_v2",
+            "selection_semantics": selection_semantics,
+            "candidate_action_ids": candidate_action_ids,
+            "disabled_guards": sorted(disabled_guard_set),
+            "guard_ablation_redundant_for_current_envelope": guard_ablation,
+            "implicit_noop_checked": selection_semantics == "top1_or_noop",
+        }
     if mask_contract.get("shared_with_step") is not True:
         return {
             "status": "UNRESOLVED",
             "route": "UNRESOLVED",
             "failure": {"code": "MASK_STEP_SHARED_SEMANTICS_UNVERIFIED"},
         }
-    if mask_contract.get("check_safety") is not True:
+    if mask_contract.get("check_safety") is not True and "safety_checker" not in disabled_guard_set:
         return {
             "status": "UNRESOLVED",
             "route": "UNRESOLVED",
@@ -74,10 +127,13 @@ def check_deployed_policy_preservation(
     for action in actions:
         action_id = int(action.action_id)
 
-        if action_violates_hi_decrease_guard(
-            action,
-            tasks,
-            forbid_decreasing_hi_budgets,
+        if (
+            "hi_decrease" not in disabled_guard_set
+            and action_violates_hi_decrease_guard(
+                action,
+                tasks,
+                forbid_decreasing_hi_budgets,
+            )
         ):
             permanently_masked.append(action_id)
             action_witnesses.append({

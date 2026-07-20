@@ -27,10 +27,26 @@ def _exact_int_from_float(value: float, label: str) -> int:
 
 class AMCRealRuntimeAdapter:
     def __init__(self, environment: Any, *, observation_extractor: Any = None,
-                 action_space: Sequence[Mapping[str, Any]] | None = None) -> None:
+                 action_space: Sequence[Mapping[str, Any]] | None = None,
+                 selection_semantics: str = "ranked_first_valid",
+                 step_guard_semantics: str = "checked",
+                 disabled_guards: Sequence[str] = (),
+                 rounding_mode: str = "ceil_floor",
+                 min_budget_delta: int = 1) -> None:
         self.environment = environment
         self.observation_extractor = observation_extractor
         self.action_space = tuple(action_space or tuple(getattr(environment, "_actions", ())))
+        self.selection_semantics = str(selection_semantics)
+        self.step_guard_semantics = str(step_guard_semantics)
+        self.disabled_guards = tuple(str(value) for value in disabled_guards)
+        self.rounding_mode = str(rounding_mode)
+        self.min_budget_delta = int(min_budget_delta)
+        if self.selection_semantics not in {
+            "ranked_first_valid", "raw_top1", "top1_or_noop", "first_valid_else_top1"
+        }:
+            raise ValueError("UNSUPPORTED_POLICY_SELECTION_SEMANTICS")
+        if self.step_guard_semantics not in {"checked", "unchecked_apply", "unchecked_if_invalid"}:
+            raise ValueError("UNSUPPORTED_STEP_GUARD_SEMANTICS")
 
     def build_runtime_state_from_budget_vector(self, budget_by_task: Mapping[str, int]) -> dict[str, Any]:
         """从真实环境复制出一个独立 state，并用实际 reset 初始化特征。
@@ -108,12 +124,21 @@ class AMCRealRuntimeAdapter:
             action=action,
             budget_state=BudgetState(budgets=dict(before), initial_budgets=dict(environment._initial_budgets)),
             ordered_tasks=environment.ordered_tasks,
+            rounding_mode=self.rounding_mode,
+            min_budget_delta=self.min_budget_delta,
         )
         after = dict(before)
         after.update(updates)
-        diagnosis = environment.diagnose_candidate_budget_update(new_budgets=after)
-        if not diagnosis.accepted:
-            raise RuntimeError("REAL_RUNTIME_ACTION_REJECTED_BY_ENVIRONMENT")
+        if self.step_guard_semantics == "checked":
+            diagnosis = environment.diagnose_candidate_budget_update(new_budgets=after)
+            if not diagnosis.accepted:
+                raise RuntimeError("REAL_RUNTIME_ACTION_REJECTED_BY_ENVIRONMENT")
+        elif self.step_guard_semantics == "unchecked_if_invalid":
+            mask = tuple(bool(value) for value in environment.formal_valid_action_mask())
+            if mask[int(action_id)]:
+                diagnosis = environment.diagnose_candidate_budget_update(new_budgets=after)
+                if not diagnosis.accepted:
+                    raise RuntimeError("REAL_RUNTIME_ACTION_REJECTED_BY_ENVIRONMENT")
         return after
 
     def common_transition_witnesses(self):
@@ -144,7 +169,11 @@ class AMCRealRuntimeAdapter:
             "safety_checker_type": None if checker is None else type(checker).__qualname__,
             "candidate_reject_helper": "AmcBudgetEnv._budget_candidate_reject_reason",
             "candidate_evaluator": "AmcBudgetEnv.evaluate_budget_candidate",
-            "selection": "ranked_first_valid",
+            "selection": self.selection_semantics,
+            "step_guard_semantics": self.step_guard_semantics,
+            "disabled_guards": list(self.disabled_guards),
+            "rounding_mode": self.rounding_mode,
+            "min_budget_delta": self.min_budget_delta,
         }
 
     def export_action_contract(self):

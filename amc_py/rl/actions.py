@@ -462,6 +462,8 @@ def apply_budget_action_candidate(
     action: BudgetAction,
     budget_state: BudgetState,
     ordered_tasks: Sequence[Task],
+    rounding_mode: str = "ceil_floor",
+    min_budget_delta: int = 1,
 ) -> dict[str, int]:
     """将动作转换为候选更新，不直接改写原 BudgetState。"""
 
@@ -471,6 +473,11 @@ def apply_budget_action_candidate(
     if action.is_noop:
         return {}
 
+    if rounding_mode not in {"ceil_floor", "nearest"}:
+        raise ValueError("UNSUPPORTED_BUDGET_ROUNDING_MODE")
+    if min_budget_delta <= 0:
+        raise ValueError("min_budget_delta 必须为正整数")
+
     task_names = [task.name for task in ordered_tasks]
     candidate: dict[str, int] = {}
 
@@ -478,7 +485,9 @@ def apply_budget_action_candidate(
         inc_name = task_names[action.increase_idx]
         old_inc = budget_state.budgets[inc_name]
         inc_task = ordered_tasks[action.increase_idx]
-        inc_value = math.ceil(old_inc * (1.0 + action.increase_ratio))
+        raw_inc = old_inc * (1.0 + action.increase_ratio)
+        inc_value = math.ceil(raw_inc) if rounding_mode == "ceil_floor" else int(round(raw_inc))
+        inc_value = max(inc_value, old_inc + int(min_budget_delta))
 
         if inc_task.criticality is Criticality.HI:
             upper_bound = inc_task.c_hi if inc_task.c_hi > 0 else inc_task.deadline
@@ -491,7 +500,9 @@ def apply_budget_action_candidate(
     for dec_idx in action.decrease_indices:
         dec_name = task_names[dec_idx]
         old_dec = budget_state.budgets[dec_name]
-        dec_value = math.floor(old_dec * (1.0 - action.decrease_ratio))
+        raw_dec = old_dec * (1.0 - action.decrease_ratio)
+        dec_value = math.floor(raw_dec) if rounding_mode == "ceil_floor" else int(round(raw_dec))
+        dec_value = min(dec_value, old_dec - int(min_budget_delta))
         candidate[dec_name] = max(1, dec_value)
 
     return candidate

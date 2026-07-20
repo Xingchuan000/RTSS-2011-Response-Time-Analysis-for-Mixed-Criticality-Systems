@@ -80,7 +80,11 @@ def verify_payload(payload: dict) -> dict:
         return {"status": "FAIL", "failure": {"code": "DOMAIN_RECOMPUTE_MISMATCH"}}
     transitions = build_transition_witness(domain, tasks)
     common = check_common_transition_preservation(structural_candidate, transitions=transitions)
-    action_cert = build_action_transition_table(actions, tasks, domain["tasks"])
+    action_cert = build_action_transition_table(
+        actions, tasks, domain["tasks"],
+        rounding_mode=str(getattr(target.runtime_config, "budget_rounding_mode", "ceil_floor")),
+        min_budget_delta=int(getattr(target.runtime_config, "min_budget_delta", 1)),
+    )
     rankings = {int(leaf.node_id): tuple(int(action_id) for action_id in leaf.action_ranking) for leaf in tree.leaves}
     mask_contract = adapter.export_mask_contract()
     mask = build_parametric_mask_fallback_certificate(rankings=rankings, action_dim=len(actions), mask_contract=mask_contract)
@@ -91,6 +95,9 @@ def verify_payload(payload: dict) -> dict:
         mask_fallback_certificate=mask,
         action_transition_certificate=action_cert,
         mask_contract=mask_contract,
+        forbid_decreasing_hi_budgets=bool(getattr(target.runtime_config, "forbid_decreasing_hi_budgets")),
+        selection_semantics=selection_semantics,
+        disabled_guards=tuple(mask_contract.get("disabled_guards", ())),
     )
     deployed_structural = check_deployed_policy_preservation(
         structural_candidate,
@@ -99,6 +106,9 @@ def verify_payload(payload: dict) -> dict:
         mask_fallback_certificate=mask,
         action_transition_certificate=action_cert,
         mask_contract=mask_contract,
+        forbid_decreasing_hi_budgets=bool(getattr(target.runtime_config, "forbid_decreasing_hi_budgets")),
+        selection_semantics=selection_semantics,
+        disabled_guards=tuple(mask_contract.get("disabled_guards", ())),
     )
     if deployed_enumerated.get("status") != "PASS" or deployed_structural.get("status") != "PASS":
         return {"status": "FAIL", "failure": {"code": "DEPLOYED_RECOMPUTE_FAILED"}}
