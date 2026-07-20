@@ -20,6 +20,7 @@ class BridgeReplayInputs:
     semantic_context_hash: str
     reference_context_hash: str
     bridge_context_hash: str
+    runtime_config: Any | None = None
 
 
 def _unresolved(code: str, **witness: Any) -> dict[str, Any]:
@@ -49,7 +50,8 @@ def replay_all_transition_cases(inputs: BridgeReplayInputs) -> dict[str, Any]:
     from formal_toolchain.bridge.transition_compiler import compile_and_prove_all_transition_cases
     bounds = derive_p0_model_bounds(inputs.reference_taskset)
     compiled = compile_and_prove_all_transition_cases(
-        branch_map, bridge_context_hash=inputs.bridge_context_hash, bounds=bounds)
+        branch_map, bridge_context_hash=inputs.bridge_context_hash, bounds=bounds,
+        runtime_config=inputs.runtime_config)
     if compiled.get("status") != "PASS":
         return {"status": compiled.get("status", "UNRESOLVED"), "route": "UNRESOLVED",
                 "code": "FRESH_TRANSITION_REPLAY_FAILED", "witness": compiled}

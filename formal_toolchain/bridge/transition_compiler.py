@@ -13,12 +13,64 @@ from .transition_cases import TransitionCaseProof, prove_smt2_case
 from formal_toolchain.core.artifact import obligation_certificate
 
 
-def _guard_formula(source: str) -> str:
+_PHASE_K_STATIC_GUARD_DEFAULTS: dict[str, bool] = {
+    "nonvacuity_deadline_cleanup_remove": False,
+    "nonvacuity_hi_budget_cap_truncate": False,
+    "nonvacuity_recover_without_quiescence": False,
+}
+
+
+def build_phase_k_static_guard_bindings(runtime_config: Any | None) -> dict[str, bool]:
+    """从 immutable effective runtime config 导出 Phase K 静态 guard。
+
+    非空洞性 profile 在一次 proof request 内不可变化，因此这些 guard
+    不是运行状态变量，应在 GuardIR 编译时折叠为布尔常量。直接调用旧
+    API 而未提供 config 时使用安全的 ``off`` 默认值，以保持现有测试和
+    工具调用兼容；正式 compile/replay 路径会显式传入 target config。
+    """
+    if runtime_config is None:
+        return dict(_PHASE_K_STATIC_GUARD_DEFAULTS)
+
+    def read(name: str) -> bool:
+        if isinstance(runtime_config, Mapping):
+            value = runtime_config.get(name, _PHASE_K_STATIC_GUARD_DEFAULTS[name])
+        else:
+            value = getattr(runtime_config, name, _PHASE_K_STATIC_GUARD_DEFAULTS[name])
+        if not isinstance(value, bool):
+            raise ValueError(f"PHASE_K_STATIC_GUARD_NOT_BOOL:{name}")
+        return value
+
+    return {name: read(name) for name in _PHASE_K_STATIC_GUARD_DEFAULTS}
+
+
+def _static_bool_formula(bindings: Mapping[str, bool], name: str) -> str:
+    if name not in bindings:
+        raise ValueError(f"PHASE_K_STATIC_GUARD_BINDING_REQUIRED:{name}")
+    value = bindings[name]
+    if not isinstance(value, bool):
+        raise ValueError(f"PHASE_K_STATIC_GUARD_NOT_BOOL:{name}")
+    return "true" if value else "false"
+
+
+def _guard_formula(source: str, *, static_guard_bindings: Mapping[str, bool] | None = None) -> str:
     """把一个真实源码 predicate 映射到有限 P0 的符号输入。
 
     这是源码 GuardIR 的唯一编译边界：每一个已提取 predicate 都必须在此
     明确落到符号公式；没有映射时直接失败，不能把 guard 静默跳过。
     """
+    bindings = dict(_PHASE_K_STATIC_GUARD_DEFAULTS if static_guard_bindings is None
+                    else static_guard_bindings)
+    if source == "self.config.nonvacuity_deadline_cleanup_remove":
+        return _static_bool_formula(bindings, "nonvacuity_deadline_cleanup_remove")
+    if source == ("self.config.nonvacuity_hi_budget_cap_truncate and "
+                  "job.task.criticality is Criticality.HI"):
+        enabled = _static_bool_formula(bindings, "nonvacuity_hi_budget_cap_truncate")
+        return f"(and {enabled} (= task_criticality 1))"
+    if source == ("cfg.nonvacuity_recover_without_quiescence and "
+                  "state.mode is SystemMode.HI"):
+        enabled = _static_bool_formula(bindings, "nonvacuity_recover_without_quiescence")
+        return f"(and {enabled} (= c_mode 1))"
+
     exact = {
         "not ordered_tasks": "(= ordered_tasks_empty 1)",
         "len(task_names) != len(set(task_names))": "(= task_names_duplicate 1)",
@@ -74,7 +126,8 @@ def _guard_formula(source: str) -> str:
     raise ValueError(f"UNSUPPORTED_SOURCE_GUARD:{source}")
 
 
-def compile_source_guards(guard_ir: list[Mapping[str, Any]]) -> "CompiledSourceGuard":
+def compile_source_guards(guard_ir: list[Mapping[str, Any]], *,
+                          static_guard_bindings: Mapping[str, bool] | None = None) -> "CompiledSourceGuard":
     """编译完整 GuardIR，并记录每个源码 guard 的 hash 消费情况。"""
     if not isinstance(guard_ir, list):
         raise ValueError("SOURCE_GUARD_IR_REQUIRED")
@@ -84,7 +137,7 @@ def compile_source_guards(guard_ir: list[Mapping[str, Any]]) -> "CompiledSourceG
         if not isinstance(item, Mapping):
             raise ValueError("INVALID_SOURCE_GUARD_IR")
         source = str(item.get("test_source", item.get("test", "")))
-        formula = _guard_formula(source)
+        formula = _guard_formula(source, static_guard_bindings=static_guard_bindings)
         polarity = bool(item.get("polarity", True))
         formulas.append(formula if polarity else f"(not {formula})")
         consumed.append(str(item["test_ast_hash"]))
@@ -109,7 +162,8 @@ def _compile_source_guard(row: Mapping[str, Any]) -> str:
 
 def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
                                            bridge_context_hash: str,
-                                           bounds: P0ModelBounds) -> dict[str, Any]:
+                                           bounds: P0ModelBounds,
+                                           runtime_config: Any | None = None) -> dict[str, Any]:
     if branch_map.get("status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "BRANCH_MAP_REQUIRED"}
     if not isinstance(bridge_context_hash, str) or len(bridge_context_hash) != 64:
@@ -117,6 +171,9 @@ def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
     rows = branch_map.get("paths")
     if not isinstance(rows, list):
         return {"status": "UNRESOLVED", "failure": "TRANSITION_PATHS_REQUIRED"}
+    static_guard_bindings = build_phase_k_static_guard_bindings(runtime_config)
+    from formal_toolchain.core.hashing import sha256_object
+    static_guard_bindings_hash = sha256_object(static_guard_bindings)
     proofs: list[TransitionCaseProof] = []
     for row in rows:
         try:
@@ -124,13 +181,13 @@ def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
                 raise ValueError("REAL_GUARD_EFFECT_IR_REQUIRED")
             if row.get("guard") != row.get("guard_ir"):
                 raise ValueError("GUARD_FIELD_MUST_BE_SOURCE_AST_IR")
-            from formal_toolchain.core.hashing import sha256_object
             if row.get("guard_ast_hash") != sha256_object(row["guard_ir"]):
                 raise ValueError("GUARD_AST_HASH_MISMATCH")
             if row.get("effect_ir_hash") != sha256_object(row["effect_ir"]):
                 raise ValueError("EFFECT_IR_HASH_MISMATCH")
             template = compile_case_template(row["case_id"], bounds=bounds)
-            compiled_guard = compile_source_guards(row["guard_ir"])
+            compiled_guard = compile_source_guards(
+                row["guard_ir"], static_guard_bindings=static_guard_bindings)
             compiled_effect = compile_effect_ir(
                 row["effect_ir"], bounds=bounds, guard_ir=row["guard_ir"])
             source_precondition = "(and " + template.precondition[5:-1] + " " + compiled_guard.formula + ")"
@@ -236,6 +293,7 @@ def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
                 "compiled_guard_hashes": proof.compiled_guard_hashes,
                 "consumed_effect_hashes": proof.consumed_effect_hashes,
                 "path_ast_hash": proof.path_ast_hash,
+                "static_guard_bindings_hash": static_guard_bindings_hash,
                 "queue_relation_hash": proof.queue_relation_hash},
         witness=proof.to_dict(), checker_id=__name__, checker_version="phase-k-v2",
         failure=None if proof.z3_proof_result == "PASS" else {"code": "Z3_CASE_UNRESOLVED"})
@@ -245,4 +303,6 @@ def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
             "branch_map_hash": branch_map["path_map_hash"], "source_hash": branch_map["source_hash"],
             "bridge_context_hash": bridge_context_hash,
             "state_relation_schema_hash": p0_state_relation_schema_hash(bounds),
-            "model_bounds_hash": bounds.fingerprint}
+            "model_bounds_hash": bounds.fingerprint,
+            "static_guard_bindings": static_guard_bindings,
+            "static_guard_bindings_hash": static_guard_bindings_hash}

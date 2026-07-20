@@ -239,7 +239,7 @@ def _fresh_bridge_proofs(*, inputs: Any, fresh_certificates: Mapping[str, Mappin
         bridge_context_hash=bridge_context_hash, model_bounds=model_bounds,
         concrete_base=concrete_base, reference_base=reference_base,
         upstream_certificates=upstream, release_mapping_certificate=release_mapping,
-        protected_hi_certificate=None,
+        protected_hi_certificate=None, runtime_config=inputs.target.runtime_config,
     )
     if bridge.get("status") != "PASS":
         return {}, {"route": "UNRESOLVED", "code": str(bridge.get("failure", "PHASE_K_UNRESOLVED"))}
@@ -291,7 +291,7 @@ def _fresh_bad_prefix_proof(*, inputs: Any, fresh_certificates: Mapping[str, Map
             "CERTIFIED_ENVELOPE",
         )},
         release_mapping_certificate=release_mapping,
-        protected_hi_certificate=protected_hi,
+        protected_hi_certificate=protected_hi, runtime_config=inputs.target.runtime_config,
     )
     if bridge.get("status") != "PASS" or "bad_prefix_reflection" not in bridge:
         return {}, {"route": "UNRESOLVED", "code": str(bridge.get("failure", "PHASE_K_UNRESOLVED"))}

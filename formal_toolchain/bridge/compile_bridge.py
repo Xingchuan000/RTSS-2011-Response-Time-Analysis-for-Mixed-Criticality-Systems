@@ -37,11 +37,13 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
                     reference_base: P0ReferenceState | None = None,
                     upstream_certificates: Mapping[str, Mapping[str, Any]] | None = None,
                     release_mapping_certificate: Mapping[str, Any] | None = None,
-                    protected_hi_certificate: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                    protected_hi_certificate: Mapping[str, Any] | None = None,
+                    runtime_config: Any | None = None) -> dict[str, Any]:
     """不读取外部 proof PASS 对象，只消费已绑定源码与参考 taskset。"""
     bounds = model_bounds or derive_p0_model_bounds(reference_taskset)
     compiled = compile_and_prove_all_transition_cases(
-        branch_map, bridge_context_hash=bridge_context_hash, bounds=bounds)
+        branch_map, bridge_context_hash=bridge_context_hash, bounds=bounds,
+        runtime_config=runtime_config)
     if compiled.get("status") != "PASS":
         return {"status": compiled.get("status", "UNRESOLVED"), "failure": "TRANSITION_COMPILATION_INCOMPLETE",
                 "transition_cases": compiled}

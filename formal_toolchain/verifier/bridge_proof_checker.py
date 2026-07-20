@@ -147,6 +147,7 @@ def _verify_cases(candidate: Mapping[str, Any], obligation_id: str,
         semantic_context_hash=str(raw_inputs.contexts["semantic_context"]["hash"]),
         reference_context_hash=str(raw_inputs.contexts["reference_context"]["hash"]),
         bridge_context_hash=bridge_context_hash,
+        runtime_config=raw_inputs.target.runtime_config,
     ))
     if replay.get("status") != "PASS":
         return replay
