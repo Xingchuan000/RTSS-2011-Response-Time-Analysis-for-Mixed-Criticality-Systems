@@ -1,19 +1,18 @@
 {
-  "assumption_hash": "e2a67bf64e98747f9855f7b87fe0555633acb45e9ab72cd5ab21677de03533a0",
+  "assumption_hash": "8e6c91b822f5b19b34ff6d99a2ac39c4daf56ba71c38653701159b8d9abc80f5",
   "assumptions": [
     "ReferenceModelConformance",
     "all-task schedulability",
     "finite bad prefix contradiction"
   ],
-  "assurance_level": "MACHINE_CHECKED_PROJECT_LEMMA",
+  "assurance_level": "PUBLISHED_THEORY_TCB",
   "conclusion": "deployed_hi_safety",
   "exact_statement": "The final deployed HI safety claim is the composition of model conformance, all-task schedulability, and finite bad-prefix contradiction.",
-  "proof_object": {
-    "path": "formal_toolchain/theory/proofs/FINAL_DEPLOYED_HI_SAFETY_COMPOSITION.thm",
-    "sha256": "a44ec7a90ae46e7f8212f405b0c2ec80e435761f71277688df744e53cf9b4513"
-  },
+  "premise_obligation_ids": [
+    "FINITE_BAD_PREFIX_CONTRADICTION"
+  ],
   "source_reference": "final claim composition lemma",
-  "statement_hash": "a67135eb62d2ab0a51aea65f051d41ed24ee48da4a7b922521d6c97a6e6b6cd6",
+  "statement_hash": "26bd2511da8b547ada4b3ea87c52a4efffaca5c830a2da8dbabf5eab105a8ed9",
   "theorem_id": "FINAL_DEPLOYED_HI_SAFETY_COMPOSITION",
   "version": "p0-theory-r4"
 }

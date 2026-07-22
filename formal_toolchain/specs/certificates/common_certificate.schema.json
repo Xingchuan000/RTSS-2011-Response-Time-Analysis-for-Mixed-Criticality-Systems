@@ -1,5 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://formal-toolchain/specs/certificates/common_certificate.schema.json",
   "title": "Common certificate envelope",
   "type": "object",
   "required": ["artifact_schema_version", "artifact_hash", "obligation_id", "obligation_status", "certificate_context_hash", "direct_predecessor_hashes", "checker_id", "checker_version", "inputs", "witness", "evidence", "failure"],

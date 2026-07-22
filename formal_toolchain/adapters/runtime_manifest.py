@@ -40,9 +40,41 @@ def build_runtime_environment_manifest() -> dict[str, Any]:
 
 
 def build_dependency_manifest() -> dict[str, Any]:
+    import sys
     names = ("numpy", "scikit-learn", "z3-solver", "jsonschema", "setuptools")
+    pv = sys.version_info
     return {"schema_version": "dependency_manifest_v1",
+            "python_version_info": f"{pv.major}.{pv.minor}.{pv.micro}",
             "packages": {name: _version(name) for name in names}}
+
+
+def _python_lock_matches(actual: str, locked: str) -> bool:
+    if locked.endswith(".x"):
+        parts = locked.rstrip("x").rstrip(".").split(".")
+        major = parts[0]
+        minor = parts[1] if len(parts) > 1 else "0"
+        spec_lower = f"{major}.{minor}"
+        spec_upper = f"{major}.{int(minor) + 1}"
+        try:
+            ver_parts = actual.split(".")
+            ver_major = int(ver_parts[0]) if len(ver_parts) > 0 else 0
+            ver_minor = int(ver_parts[1]) if len(ver_parts) > 1 else 0
+            low_major, low_minor = int(spec_lower.split(".")[0]), int(spec_lower.split(".")[1])
+            up_major, up_minor = int(spec_upper.split(".")[0]), int(spec_upper.split(".")[1])
+            if ver_major == low_major and low_minor <= ver_minor < up_minor:
+                return True
+            if ver_major > low_major and ver_major < up_major:
+                return True
+            return False
+        except (ValueError, IndexError):
+            return False
+    try:
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+        spec = SpecifierSet(f"=={locked}")
+        return Version(actual) in spec
+    except ImportError:
+        return actual.startswith(locked.rstrip(".x").rstrip("."))
 
 
 def build_checker_version_manifest(source_root: Path | None = None) -> dict[str, Any]:
@@ -60,8 +92,39 @@ def build_checker_version_manifest(source_root: Path | None = None) -> dict[str,
     return result
 
 
-def check_dependency_policy(manifest: dict[str, Any], required: tuple[str, ...] =
-                            ("numpy", "scikit-learn", "z3-solver", "jsonschema", "setuptools")) -> str:
-    """关键依赖缺失时只能返回 INVALID/UNRESOLVED，不能静默继续。"""
+def check_dependency_policy(
+    manifest: dict[str, Any],
+    lock: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """关键依赖缺失或版本不匹配时返回 FAIL，不能静默继续。
+
+    使用 proof_dependency_lock.json 中的精确版本约束。没有 lock 文件时
+    降级为只检查存在性（用于测试环境），但正式 verifier 必须提供 lock。
+    """
     packages = manifest.get("packages", {})
-    return "PASS" if all(packages.get(name) for name in required) else "UNRESOLVED"
+    if lock is not None:
+        expected = lock.get("packages", {})
+        mismatches = {}
+        for name, expected_version in expected.items():
+            actual = packages.get(name)
+            if actual != expected_version:
+                mismatches[name] = {"expected": expected_version, "actual": actual}
+        python_actual = manifest.get("python_version_info", "")
+        python_locked = lock.get("python", "")
+        if python_locked and not _python_lock_matches(python_actual, python_locked):
+            mismatches["python"] = {"expected": python_locked, "actual": python_actual}
+        if mismatches:
+            return {
+                "status": "FAIL",
+                "route": "PROOF_BUNDLE_INVALID",
+                "code": "PROOF_DEPENDENCY_LOCK_MISMATCH",
+                "mismatches": mismatches,
+            }
+        return {"status": "PASS", "locked_packages": expected,
+                "python_locked": python_locked, "python_actual": python_actual}
+    required = ("numpy", "scikit-learn", "z3-solver", "jsonschema", "setuptools")
+    missing = [name for name in required if not packages.get(name)]
+    if missing:
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                "code": "DEPENDENCY_LOCK_INCOMPLETE", "missing": missing}
+    return {"status": "PASS", "locked_packages": {name: packages.get(name) for name in required}}

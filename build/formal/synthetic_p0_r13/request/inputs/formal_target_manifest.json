@@ -1,9 +1,0 @@
-{
-  "schema_version": "synthetic_fixture_manifest_v1",
-  "fixture_id": "synthetic_p0",
-  "fixture_kind": "SYNTHETIC_P0",
-  "uses_real_seed": false,
-  "uses_hout": false,
-  "authoritative_target": "formal_inputs/target_recipe.json",
-  "variants": ["best_overall", "best_balanced"]
-}

@@ -40,9 +40,10 @@ from formal_toolchain.bridge.compile_bridge import compile_phase_k
 from formal_toolchain.bridge.early_stop_gate import build_early_stop_configuration_gate
 from formal_toolchain.bridge.model_bounds import derive_p0_model_bounds
 from formal_toolchain.bridge.p0_case_manifest import p0_case_manifest_hash
-from formal_toolchain.reference.rta_production import protected_hi_rta
+from formal_toolchain.reference.rta_production import all_task_reference_rta as protected_hi_rta
 from formal_toolchain.reference.rta_replay import replay_rta
 from formal_toolchain.reference.recurring_hi import build_recurring_hi_instances
+from formal_toolchain.theory.loader import TCB_BACKENDS, load_verified_theory_statement
 from formal_toolchain.reference.protected_hi import protected_hi_safety_corollary
 from formal_toolchain.reference.task_mapping import build_reference_taskset
 from formal_toolchain.verifier.reference_mapping_verifier import verify_reference_mapping
@@ -545,10 +546,18 @@ def main(argv: list[str] | None = None) -> int:
                                 "DEMAND_ORACLE_BATCH_CONTRACT", "HI_EXECUTION_CONTRACT",
                                 "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION", "DEADLINE_OBSERVATION",
                                 "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE", "CONTROLLER_POSTCLOSURE",
-                                "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION", "CERTIFIED_ENVELOPE")
+                                "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION", "CERTIFIED_ENVELOPE",
+                                "REFERENCE_TASKSET")
+                            upstream_context_hashes = {
+                                name: (reference.source_context_hash if name == "REFERENCE_TASKSET"
+                                       else inputs["semantic_context_hash"])
+                                for name in required_upstream
+                                if name != "CERTIFIED_ENVELOPE"
+                            }
+                            upstream_context_hashes["CERTIFIED_ENVELOPE"] = bridge_context_hash
                             upstream = {name: _context_bind(upstream_source[name],
                                                               obligation_id=name,
-                                                              context_hash=bridge_context_hash,
+                                                              context_hash=upstream_context_hashes[name],
                                                               source_registry=upstream_source)
                                         for name in required_upstream}
                             protected_bound = None
@@ -571,9 +580,27 @@ def main(argv: list[str] | None = None) -> int:
                                 obligation_id="RELEASE_FIXED_REMOVAL_MAPPING",
                                 context_hash=bridge_context_hash,
                             )
+                            prefix_theory = load_verified_theory_statement(
+                                ROOT / "formal_toolchain" / "theory", "REFERENCE_PREFIX_EXTENSION")
+                            prefix_backend = TCB_BACKENDS.get(prefix_theory["proof_object"]["backend"])
+                            if prefix_backend is None:
+                                raise ValueError("REFERENCE_PREFIX_BACKEND_MISSING")
+                            prefix_receipt = prefix_backend.verify(
+                                ROOT / "formal_toolchain" / "theory" / prefix_theory["proof_object"]["path"],
+                                theorem=prefix_theory)
+                            if prefix_receipt.get("status") != "PASS":
+                                raise ValueError("REFERENCE_PREFIX_THEOREM_BACKEND_FAILED")
+                            prefix_contexts = {
+                                "semantic_context": {"hash": inputs["semantic_context_hash"]},
+                                "reference_context": {"hash": reference.source_context_hash},
+                                "bridge_context": {"hash": bridge_context_hash},
+                            }
                             bridge = compile_phase_k(source_root=root, branch_map=branch_map,
                                                      reference_taskset=reference.to_dict(),
                                                      bridge_context_hash=bridge_context_hash,
+                                                     contexts=prefix_contexts,
+                                                     reference_prefix_theorem=prefix_theory,
+                                                     reference_prefix_proof_receipt=prefix_receipt,
                                                      model_bounds=model_bounds,
                                                      concrete_base=concrete_base,
                                                      reference_base=reference_base,

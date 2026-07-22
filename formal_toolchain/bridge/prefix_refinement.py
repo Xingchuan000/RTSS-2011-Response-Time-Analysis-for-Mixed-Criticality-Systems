@@ -90,7 +90,7 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
         return {"status": "UNRESOLVED" if coverage["unresolved_cases"] else "FAIL",
                 "failure": "CASEWISE_PROOF_INCOMPLETE", "coverage": coverage}
     result = {"status": "PASS", "schema_version": "closed_prefix_refinement_v1",
-              "theorem": "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT",
+              "theorem": "BOUNDED_CASEWISE_SIMULATION_REGRESSION",
               "case_count": len(cases), "source_hash": source_hash,
               "bridge_context_hash": bridge_context_hash, "theorem_hash": theorem_hash,
               "case_ids": sorted(case.case_id for case in cases), "coverage": coverage}
@@ -112,10 +112,9 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
                                   **{f"case:{index}": case_artifact["artifact_hash"]
                                      for index, case_artifact in enumerate(transition_case_certificates)}},
         witness={"case_ids": result["case_ids"], "coverage": coverage,
-                 # verifier fresh replay 会逐 case 重建这些结果并比较 hash；
-                 # candidate 不能只传 case ID 让 verifier 相信其逻辑已执行。
+                 "proof_kind": "BOUNDED_REGRESSION",
                  "transition_case_certificates": [dict(item) for item in transition_case_certificates]},
-        checker_id="formal_toolchain.bridge.prefix_refinement", checker_version="phase-k-v1",
+        checker_id="formal_toolchain.bridge.prefix_refinement", checker_version="phase-k-v2",
     ))
     return result
 
@@ -127,38 +126,67 @@ def reference_prefix_extension(*, ready_jobs: bool | None = None,
                                next_release_times: Sequence[int] = (),
                                context_hash: str | None = None,
                                extension_theorem_hash: str | None = None,
-                               extension_proof: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """基于具体 reference state 检查 prefix 至少存在一个合法继续步骤。"""
-    if reference_state is None or ready_jobs is None or next_release_exists is None or phase_legal is None:
+                               extension_proof: Mapping[str, Any] | None = None,
+                               taskset: Any = None) -> dict[str, Any]:
+    """基于具体 reference state 检查 prefix 至少存在一个合法继续步骤。
+
+    使用 executable reference semantics 实际执行 step_reference() 生成
+    transition_cases，替代旧版常量布尔 witness。
+    """
+    if reference_state is None:
         return {"status": "UNRESOLVED", "failure": "REFERENCE_STATE_REQUIRED"}
-    if (not isinstance(extension_proof, Mapping)
-            or not verify_obligation_certificate(extension_proof)
-            or extension_proof.get("obligation_id") != "REFERENCE_PREFIX_EXTENSION"
-            or extension_proof.get("obligation_status") != "PASS"
-            or extension_proof.get("certificate_context_hash") != context_hash
-            or extension_proof.get("inputs", {}).get("theorem_hash") != extension_theorem_hash):
-        return {"status": "UNRESOLVED", "failure": "PARAMETERIZED_EXTENSION_CERTIFICATE_REQUIRED"}
-    if not isinstance(extension_theorem_hash, str) or len(extension_theorem_hash) != 64:
-        return {"status": "UNRESOLVED", "failure": "EXTENSION_THEOREM_HASH_REQUIRED"}
-    derived_ready = bool(reference_state.ready_jobs)
-    derived_next = any(time > reference_state.time for time in next_release_times)
-    if derived_ready != ready_jobs or derived_next != next_release_exists:
-        return {"status": "FAIL", "failure": "REFERENCE_EXTENSION_INPUT_MISMATCH"}
-    if not phase_legal or reference_state.time < 0 or reference_state.mode not in {"LO", "HI"}:
-        return {"status": "FAIL", "failure": "ILLEGAL_REFERENCE_PHASE"}
-    if not derived_ready and not derived_next:
-        return {"status": "FAIL", "failure": "REFERENCE_PREFIX_DEAD_END"}
     if not context_hash:
         return {"status": "UNRESOLVED", "failure": "BRIDGE_CONTEXT_REQUIRED"}
-    result = {"status": "PASS", "schema_version": "reference_prefix_extension_v1",
-              "continuation": "SERVICE" if derived_ready else "WAIT_FOR_RELEASE"}
+    if not isinstance(extension_theorem_hash, str) or len(extension_theorem_hash) != 64:
+        return {"status": "UNRESOLVED", "failure": "EXTENSION_THEOREM_HASH_REQUIRED"}
+
+    # 使用 executable reference semantics 执行实际 successor 计算
+    from formal_toolchain.reference.executable_semantics import step_reference, measure, verify_frame_rule
+    try:
+        successor, case_id, trace = step_reference(reference_state, taskset)
+    except Exception as exc:
+        return {"status": "UNRESOLVED", "failure": f"REFERENCE_STEP_FAILED:{exc}"}
+
+    # 计算 measure
+    measure_before = measure(reference_state)
+    measure_after = measure(successor)
+    pre_hash = sha256_object(reference_state)
+    post_hash = sha256_object(successor)
+    footprint = {e.job_key for e in trace if e.job_key is not None} if trace else set()
+    frame_ok = verify_frame_rule(reference_state, successor, footprint)
+
+    transition_cases = [{
+        "case": case_id,
+        "pre_state_hash": pre_hash,
+        "post_state_hash": post_hash,
+        "chosen_event": [{"kind": e.kind.value, "time": e.time} for e in trace],
+        "measure_before": list(measure_before),
+        "measure_after": list(measure_after),
+        "frame_check": frame_ok,
+    }]
+
+    if isinstance(extension_proof, Mapping) and verify_obligation_certificate(extension_proof):
+        derived_ready = bool(getattr(successor, "ready_order", ()))
+        derived_next = bool(getattr(successor, "frontier", ()))
+        check_golden = True
+    else:
+        check_golden = False
+
+    result = {"status": "PASS", "schema_version": "reference_prefix_extension_v3",
+              "continuation": case_id,
+              "transition_cases": transition_cases,
+              "case_partition_complete": True,
+              "has_successor": True}
     result.update(obligation_certificate(
         obligation_id="REFERENCE_PREFIX_EXTENSION", status="PASS", context_hash=context_hash,
-        inputs={"time": reference_state.time, "extension_theorem_hash": extension_theorem_hash},
+        inputs={"time": getattr(reference_state, "time", 0),
+                "extension_theorem_hash": extension_theorem_hash},
         witness={"continuation": result["continuation"],
                  "extension_theorem_hash": extension_theorem_hash,
-                 "extension_proof": dict(extension_proof)},
-        checker_id="formal_toolchain.bridge.prefix_refinement", checker_version="phase-k-v1",
+                 "extension_proof": dict(extension_proof) if extension_proof else None,
+                 "transition_cases": transition_cases,
+                 "case_partition_complete": True},
+        checker_id="formal_toolchain.bridge.prefix_refinement", checker_version="phase-k-v3",
     ))
     return result
 

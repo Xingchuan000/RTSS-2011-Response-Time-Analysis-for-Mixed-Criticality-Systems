@@ -1,5 +1,5 @@
 {
-  "assumption_hash": "9c62ba9c1fb97935b13fc512a4f13c9d3181dc2871bdf9d442bdff9b9f859660",
+  "assumption_hash": "75540232218be43a90be8dedc432d5944ed7ec19bca7864bdb1500eb482df251",
   "assumptions": [
     "c_amc_sem_arrival_switch",
     "protected_hi_window",

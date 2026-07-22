@@ -5,6 +5,7 @@ from typing import Any
 
 from formal_toolchain.core.artifact import verify_obligation_certificate
 from formal_toolchain.core.contexts import expected_context_for_obligation
+from formal_toolchain.core.predecessor_contract import validate_verified_predecessor
 
 
 class PredecessorContractError(ValueError):
@@ -17,19 +18,12 @@ def require_verified_predecessor(
     obligation_id: str,
     contexts: Mapping[str, Mapping[str, Any]],
 ) -> Mapping[str, Any]:
-    cert = predecessors.get(obligation_id)
-    if not isinstance(cert, Mapping):
-        raise PredecessorContractError(f"missing predecessor: {obligation_id}")
-    if cert.get("obligation_id") != obligation_id:
-        raise PredecessorContractError(f"wrong predecessor id: {obligation_id}")
-    if cert.get("obligation_status") != "PASS":
-        raise PredecessorContractError(f"predecessor not PASS: {obligation_id}")
-    if not verify_obligation_certificate(cert):
-        raise PredecessorContractError(f"invalid predecessor hash: {obligation_id}")
-    expected = expected_context_for_obligation(obligation_id, contexts)
-    if cert.get("certificate_context_hash") != expected:
-        raise PredecessorContractError(f"predecessor context mismatch: {obligation_id}")
-    return cert
+    try:
+        return validate_verified_predecessor(
+            predecessors=predecessors, obligation_id=obligation_id, contexts=contexts,
+        )
+    except ValueError as exc:
+        raise PredecessorContractError(str(exc)) from exc
 
 
 def require_exact_predecessor_set(

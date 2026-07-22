@@ -30,7 +30,7 @@ def test_contexts_are_layered():
                                "bridge": {}, "bundle_inputs": {}})
     assert set(contexts) == {"bootstrap_context", "implementation_context", "semantic_context",
                              "policy_context", "invariant_context", "reference_context",
-                             "bridge_context", "bundle_context"}
+                             "bridge_context", "composition_context", "bundle_context"}
     assert len(contexts["bundle_context"]["hash"]) == 64
 
 

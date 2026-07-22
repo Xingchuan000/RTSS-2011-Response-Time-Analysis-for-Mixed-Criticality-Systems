@@ -10,6 +10,99 @@ from formal_toolchain.bridge.model_bounds import P0ModelBounds
 
 
 @dataclass(frozen=True, slots=True)
+class JobRelationRow:
+    concrete_key: tuple[str, int]
+    reference_key: tuple[str, int]
+    release_time_match: bool
+    deadline_match: bool
+    remaining_match: bool
+    priority_match: bool
+
+
+@dataclass(frozen=True, slots=True)
+class FiniteJobMap:
+    rows: tuple[JobRelationRow, ...]
+
+    def mapping_is_total_on_released(self, released_keys: set) -> bool:
+        concrete_mapped = {row.concrete_key for row in self.rows}
+        reference_mapped = {row.reference_key for row in self.rows}
+        if concrete_mapped != released_keys:
+            return False
+        if len(concrete_mapped) != len(self.rows):
+            return False
+        if len(reference_mapped) != len(self.rows):
+            return False
+        return True
+
+    def validate(self, concrete_released: set, reference_released: set) -> None:
+        c_keys = [row.concrete_key for row in self.rows]
+        r_keys = [row.reference_key for row in self.rows]
+        if len(c_keys) != len(set(c_keys)):
+            raise ValueError("CONCRETE_JOB_MAP_NOT_INJECTIVE")
+        if len(r_keys) != len(set(r_keys)):
+            raise ValueError("REFERENCE_JOB_MAP_NOT_INJECTIVE")
+        if set(c_keys) != set(concrete_released):
+            raise ValueError("CONCRETE_RELEASED_DOMAIN_NOT_TOTAL")
+        if set(r_keys) != set(reference_released):
+            raise ValueError("REFERENCE_RELEASED_DOMAIN_NOT_TOTAL")
+        for row in self.rows:
+            if not (row.release_time_match and row.deadline_match
+                    and row.remaining_match and row.priority_match):
+                raise ValueError(f"JOB_RELATION_ROW_MISMATCH:{row.concrete_key}")
+
+
+@dataclass(frozen=True, slots=True)
+class RelationResult:
+    pass_: bool
+    checks: dict[str, bool]
+
+
+def frontiers_isomorphic(concrete_frontier, reference_frontier) -> bool:
+    c_keys = tuple(e.logical_key() if hasattr(e, "logical_key") else e for e in concrete_frontier)
+    r_keys = tuple(e.logical_key() if hasattr(e, "logical_key") else e for e in reference_frontier)
+    return c_keys == r_keys
+
+
+def state_relation(concrete, reference, mapping: FiniteJobMap) -> RelationResult:
+    c_time = getattr(concrete, "time", None)
+    r_time = getattr(reference, "time", None)
+    c_mode = getattr(concrete, "mode", None)
+    r_mode = getattr(reference, "mode", None)
+
+    c_released = {r.job_key for r in getattr(concrete, "released_ledger", ())}
+    r_released = set(getattr(reference, "released", {}).keys()) if hasattr(reference, "released") else set()
+    c_terminal_records = {r.job_key for r in getattr(concrete, "terminal_ledger", ())}
+    r_terminal = set(getattr(reference, "terminal", {}).keys()) if hasattr(reference, "terminal") else set()
+    c_misses = {(m.job_key, m.miss_time) for m in getattr(concrete, "miss_ledger", ())}
+    r_misses = set(getattr(reference, "misses", ()))
+
+    def map_key_if_exists(key, mapping_rows):
+        for row in mapping_rows:
+            if row.concrete_key == key:
+                return row.reference_key
+        return None
+
+    checks = {
+        "time": c_time == r_time,
+        "mode": c_mode == r_mode,
+        "frontier": frontiers_isomorphic(
+            getattr(concrete, "effective_event_frontier", ()),
+            getattr(reference, "frontier", ()),
+        ),
+        "job_map_bijection": mapping.mapping_is_total_on_released(c_released),
+        "released_domain": c_released == r_released,
+        "terminal_domain": c_terminal_records <= r_released,
+        "miss_domain": c_misses <= {(m, 0) for m in c_released},
+        "ready_order": tuple(getattr(concrete, "ready_jobs", ())) == tuple(getattr(reference, "ready_order", ())),
+        "running": getattr(concrete, "running_job", None) == getattr(reference, "running", None) if False else (
+            map_key_if_exists(getattr(concrete, "running_job", None), mapping.rows)
+            == getattr(reference, "running", None)
+        ),
+    }
+    return RelationResult(pass_=all(checks.values()), checks=checks)
+
+
+@dataclass(frozen=True, slots=True)
 class P0Job:
     """P0 job：只保留 timing-relevant 字段。"""
     job_key: tuple[str, int]

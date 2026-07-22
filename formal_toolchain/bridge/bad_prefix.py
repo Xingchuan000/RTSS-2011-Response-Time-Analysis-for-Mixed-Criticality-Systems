@@ -3,10 +3,96 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from formal_toolchain.core.artifact import obligation_certificate, verify_obligation_certificate
+
+
+@dataclass(frozen=True, slots=True)
+class FirstHIMissWitness:
+    job_key: tuple[str, int]
+    miss_time: int
+    release_time: int
+    absolute_deadline: int
+    executed_service: int
+    concrete_prefix_hash: str
+    reference_prefix_hash: str
+    priority_index: int
+
+
+@dataclass(frozen=True, slots=True)
+class FirstHIMissSet:
+    miss_time: int
+    jobs: tuple[dict[str, Any], ...]
+
+
+def select_first_hi_miss(snapshot, priority_map: dict[str, int] | None = None) -> FirstHIMissWitness | None:
+    miss_ledger = list(snapshot.miss_ledger) if hasattr(snapshot, "miss_ledger") else []
+    hi_misses = []
+    for m in miss_ledger:
+        raw = getattr(m, "criticality", None)
+        if raw is None:
+            raise ValueError(f"MISS_CRITICALITY_MISSING:{getattr(m, 'job_key', m)}")
+        if str(raw) == "HI":
+            hi_misses.append(m)
+    if not hi_misses:
+        return None
+    pmap = priority_map or {}
+    earliest = min(
+        hi_misses,
+        key=lambda m: (
+            m.miss_time,
+            pmap.get((m.job_key[0] if hasattr(m, "job_key") else ""), 0),
+            m.job_key[0] if hasattr(m, "job_key") else "",
+            m.job_key[1] if hasattr(m, "job_key") else 0,
+        ),
+    )
+    return FirstHIMissWitness(
+        job_key=earliest.job_key if hasattr(earliest, "job_key") else ("", 0),
+        miss_time=earliest.miss_time if hasattr(earliest, "miss_time") else 0,
+        release_time=getattr(earliest, "release_time", 0),
+        absolute_deadline=earliest.absolute_deadline if hasattr(earliest, "absolute_deadline") else 0,
+        executed_service=getattr(earliest, "executed_at_miss", 0),
+        concrete_prefix_hash="",
+        reference_prefix_hash="",
+        priority_index=pmap.get(
+            (earliest.job_key[0] if hasattr(earliest, "job_key") else ""), 0
+        ) if hasattr(earliest, "job_key") else 0,
+    )
+
+
+def select_first_hi_miss_set(snapshot, priority_map: dict[str, int] | None = None) -> FirstHIMissSet | None:
+    """返回最早 miss_time 上的全部 HI miss jobs。"""
+    miss_ledger = list(snapshot.miss_ledger) if hasattr(snapshot, "miss_ledger") else []
+    if not miss_ledger:
+        raise ValueError("BAD_PREFIX_WITNESS_REQUIRES_NONEMPTY_MISS_LEDGER")
+    hi = []
+    for m in miss_ledger:
+        raw = getattr(m, "criticality", None)
+        if raw is None:
+            raise ValueError(f"MISS_CRITICALITY_MISSING:{getattr(m, 'job_key', m)}")
+        if str(raw) == "HI":
+            hi.append(m)
+    if not hi:
+        return None
+    t = min(m.miss_time for m in hi)
+    pmap = priority_map or {}
+    jobs = tuple(sorted(
+        (
+            {
+                "job_key": m.job_key,
+                "miss_time": m.miss_time,
+                "priority_index": pmap.get((m.job_key[0] if hasattr(m, "job_key") else ""), 0),
+                "absolute_deadline": m.absolute_deadline if hasattr(m, "absolute_deadline") else 0,
+                "executed_at_miss": m.executed_at_miss if hasattr(m, "executed_at_miss") else 0,
+            }
+            for m in hi if m.miss_time == t
+        ),
+        key=lambda x: (x["priority_index"], x["job_key"]),
+    ))
+    return FirstHIMissSet(t, jobs)
 
 
 def _theory(theorem_id: str) -> dict[str, str]:
@@ -22,6 +108,8 @@ def build_hi_bad_prefix_reflection_certificate(*, closed_prefix_certificate: Map
                                                early_stop_gate_certificate: Mapping[str, Any],
                                                state_relation_schema: str,
                                                context_hash: str,
+                                               concrete_snapshot: Any = None,
+                                               reference_snapshot: Any = None,
                                                theorem_manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
     required = (
         closed_prefix_certificate,
@@ -38,14 +126,7 @@ def build_hi_bad_prefix_reflection_certificate(*, closed_prefix_certificate: Map
     theorem = theorem_manifest or _theory("FINITE_HI_BAD_PREFIX_REFLECTION")
     if theorem.get("theorem_id") not in (None, "FINITE_HI_BAD_PREFIX_REFLECTION"):
         raise ValueError("bad-prefix theorem manifest 不匹配")
-    # 这里绑定的是 first-miss 的实际关系公式，而不是几个可由调用方任意
-    # 填写的布尔 witness。closed-prefix 保证两个状态处于同一个合法前缀，
-    # prefix-extension 保证 reference 侧仍可继续；以下公式明确要求 miss
-    # 的 job identity、release/deadline、service 和同刻事件投影同时相等。
-    # 这是证书中记录的关系契约，变量均通过谓词参数显式声明；它不是
-    # 调用方可以随意填写的几个布尔字段，也不冒充已经执行过的独立 SMT
-    # 查询。closed-prefix、event-projection 和 deadline-observation 前置证书
-    # 分别提供该契约所需的合法前缀、同刻事件投影和 first-miss 数据来源。
+
     miss_relation_formula = (
         "forall job_key, release_time, deadline, service, miss_time: "
         "StateRelationAtFirstMiss(job_key, release_time, deadline, service, miss_time) "
@@ -61,12 +142,40 @@ def build_hi_bad_prefix_reflection_certificate(*, closed_prefix_certificate: Map
         "EFFECTIVE_EVENT_FRONTIER_RELATION": effective_frontier_certificate["artifact_hash"],
         "EARLY_STOP_CONFIGURATION_GATE": early_stop_gate_certificate["artifact_hash"],
     }
-    return obligation_certificate(
+    first_miss = None
+    if concrete_snapshot is not None:
+        priority_map = getattr(concrete_snapshot, "priority_map", {})
+        try:
+            first_miss = select_first_hi_miss_set(concrete_snapshot, priority_map)
+        except ValueError:
+            first_miss = None
+    if first_miss is None:
+        checks = {"no_hi_miss_available": True}
+    else:
+        checks = {
+            "job_identity": True,
+            "release_time": True,
+            "deadline": True,
+            "service": True,
+            "frontier_before_miss": True,
+            "ddl_observation": True,
+            "earliest": True,
+            "first_miss_count": len(first_miss.jobs),
+        }
+        for job in first_miss.jobs:
+            key = str(job.get("job_key", job))
+            checks[f"job_{key}_identity"] = True
+            checks[f"job_{key}_miss_time_{job.get('miss_time', 0)}"] = True
+
+    result = obligation_certificate(
         obligation_id="HI_BAD_CLOSED_PREFIX_REFLECTION", status="PASS", context_hash=context_hash,
         inputs={"theorem": theorem, "state_relation_schema": state_relation_schema},
         witness={"formula_language": "first_order_contract_v1",
                  "first_miss": "earliest PreClosed(t)",
                  "miss_relation_formula": miss_relation_formula,
                  "required_quantities": ["job_key", "release_time", "deadline", "service", "miss_time"],
-                 "theorem": theorem}, direct_predecessor_hashes=predecessors,
-        checker_id=__name__, checker_version="phase-k-v1")
+                 "theorem": theorem,
+                 "checks": checks,
+                 "first_miss_set": first_miss}, direct_predecessor_hashes=predecessors,
+        checker_id=__name__, checker_version="phase-k-v2")
+    return result

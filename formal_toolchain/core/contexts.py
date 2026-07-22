@@ -67,7 +67,7 @@ OBLIGATION_CONTEXT_LAYERS: dict[str, str] = {
     "CODE_REFERENCE_UPPER_BOUND_MAPPING": "reference_context", "REFERENCE_TASKSET": "reference_context",
     "ALL_TASK_REFERENCE_RTA_ARITHMETIC": "reference_context",
     "BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION": "reference_context",
-    "REFERENCE_MODEL_CONFORMANCE": "reference_context",
+    "REFERENCE_SEMANTICS_CONTRACT": "reference_context", "REFERENCE_MODEL_CONFORMANCE": "reference_context",
     "REFERENCE_TASKSET_SCHEDULABLE": "reference_context",
     "REFERENCE_HI_SUBSET_SAFETY": "reference_context",
     "DISCRETE_TICK_EMBEDDING": "reference_context", "RELEASE_COUNT": "reference_context",
@@ -76,8 +76,8 @@ OBLIGATION_CONTEXT_LAYERS: dict[str, str] = {
     "CASE2_INTEGER_DOMAIN": "reference_context", "ZERO_RELATIVE_START": "reference_context",
     "INHERITED_HI_DOMINATION": "reference_context", "PROTECTED_HI_RTA_ARITHMETIC": "reference_context",
     "PER_HI_TASK_INDUCTIVE_WCRT": "reference_context", "PROTECTED_HI_SAFETY_COROLLARY": "reference_context",
-    "FINITE_BAD_PREFIX_CONTRADICTION": "reference_context",
-    "FINAL_CLAIM_COMPOSITION": "reference_context",
+    "FINITE_BAD_PREFIX_CONTRADICTION": "composition_context",
+    "FINAL_CLAIM_COMPOSITION": "composition_context",
     # bridge
     "RELEASE_FIXED_REMOVAL_MAPPING": "bridge_context", "CLOSED_PREFIX_REFINEMENT": "bridge_context",
     "REFERENCE_PREFIX_EXTENSION": "bridge_context", "HI_BAD_CLOSED_PREFIX_REFLECTION": "bridge_context",
@@ -128,6 +128,7 @@ def validate_context_contract(inputs: dict[str, Any]) -> None:
         raise ValueError("candidate_envelope 和 certified_envelope 必须是 object")
     required = {"bootstrap", "implementation", "semantic", "policy", "candidate_envelope",
                 "certified_envelope", "bridge", "bundle_inputs"}
+    has_composition = "composition_inputs" in inputs
     missing = sorted(required - set(inputs))
     if missing:
         raise ValueError(f"context 输入缺失: {missing}")
@@ -192,9 +193,14 @@ def build_bridge_context(*, reference_context_hash: str, **inputs: Any) -> dict[
                             {"reference_context_hash": reference_context_hash, **inputs})
 
 
-def build_bundle_context(*, bridge_context_hash: str, **inputs: Any) -> dict[str, Any]:
-    return finalize_context("bundle_context_v1",
+def build_composition_context(*, bridge_context_hash: str, **inputs: Any) -> dict[str, Any]:
+    return finalize_context("composition_context_v1",
                             {"bridge_context_hash": bridge_context_hash, **inputs})
+
+
+def build_bundle_context(*, composition_context_hash: str, **inputs: Any) -> dict[str, Any]:
+    return finalize_context("bundle_context_v2",
+                            {"composition_context_hash": composition_context_hash, **inputs})
 
 
 def build_contexts(inputs: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -213,14 +219,32 @@ def build_contexts(inputs: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 value["preimage"][field] = inputs[field]
         value["hash"] = sha256_object(value)
         contexts[name] = value
-    if "composition_inputs" not in inputs:
-        contexts.pop("composition_context", None)
     return contexts
 
 
 def context_mutation_scope(before: dict[str, dict[str, Any]], after: dict[str, dict[str, Any]]) -> set[str]:
     """返回 context hash 发生变化的层，供 B05 mutation matrix 使用。"""
     return {name for name in before if before[name].get("hash") != after.get(name, {}).get("hash")}
+
+
+def require_verified_predecessor(
+    *,
+    predecessor: Mapping[str, Any],
+    predecessor_entry: Mapping[str, Any],
+    contexts: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """跨层前驱验证：前驱的 certificate_context_hash 必须等于其 context layer 的 hash。"""
+    from formal_toolchain.core.artifact import verify_obligation_certificate
+    expected_hash = contexts[predecessor_entry["context_layer"]]["hash"]
+    if predecessor.get("certificate_context_hash") != expected_hash:
+        raise ValueError(
+            f"PREDECESSOR_CONTEXT_LAYER_MISMATCH: "
+            f"expected {expected_hash}, got {predecessor.get('certificate_context_hash')}"
+        )
+    if not verify_obligation_certificate(predecessor):
+        raise ValueError("PREDECESSOR_ARTIFACT_INVALID")
+    if predecessor.get("obligation_status") != "PASS":
+        raise ValueError("PREDECESSOR_NOT_PASS")
 
 
 def build_reference_context(*, semantic_context_hash: str,

@@ -9,13 +9,22 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/registry_meta_schema.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.REGISTRY_META_SCHEMA",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "bootstrap_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "registry_meta_schema_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "P0_PROFILE_SCHEMA",
@@ -25,13 +34,22 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/p0_profile_schema.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.P0_PROFILE_SCHEMA",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "bootstrap_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "p0_profile_schema_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "THEORY_MANIFEST",
@@ -43,13 +61,22 @@
         "THEORY_LIBRARY_VERSION"
       ],
       "artifact": "artifacts/theory_manifest.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.THEORY_MANIFEST",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "bootstrap_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "theory_manifest_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "THEORY_LIBRARY_VERSION",
@@ -59,13 +86,22 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/theory_library_version.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.THEORY_LIBRARY_VERSION",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "bootstrap_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "theory_library_version_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "ASSURANCE_POLICY",
@@ -83,7 +119,16 @@
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "bootstrap_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "assurance_policy_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "OBLIGATION_REGISTRY",
@@ -95,13 +140,22 @@
         "REGISTRY_META_SCHEMA"
       ],
       "artifact": "artifacts/obligation_registry.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.OBLIGATION_REGISTRY",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "bootstrap_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "obligation_registry_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "CLAIM_AGGREGATION",
@@ -113,13 +167,22 @@
         "REGISTRY_META_SCHEMA"
       ],
       "artifact": "artifacts/claim_aggregation.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CLAIM_AGGREGATION",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "bootstrap_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "claim_aggregation_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "CONTEXT_SCHEMA",
@@ -131,13 +194,22 @@
         "CANONICAL_SERIALIZATION"
       ],
       "artifact": "artifacts/context_schema.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CONTEXT_SCHEMA",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "bootstrap_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "context_schema_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "CANONICAL_SERIALIZATION",
@@ -147,13 +219,22 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/canonical_serialization.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CANONICAL_SERIALIZATION",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "bootstrap_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "canonical_serialization_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "INTERFACE_COVERAGE",
@@ -165,13 +246,22 @@
         "OBLIGATION_REGISTRY"
       ],
       "artifact": "artifacts/interface_coverage.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.INTERFACE_COVERAGE",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "bootstrap_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "interface_coverage_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "MIGRATION_MANIFEST",
@@ -181,13 +271,22 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/migration_manifest.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.MIGRATION_MANIFEST",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "bootstrap_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "migration_manifest_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "PROOF_REQUEST",
@@ -197,13 +296,22 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/proof_request.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.PROOF_REQUEST",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "bootstrap_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "proof_request_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "SOURCE_TREE_INTEGRITY",
@@ -219,7 +327,16 @@
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "implementation_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "source_tree_integrity_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "RUNTIME_ENVIRONMENT",
@@ -229,13 +346,22 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/runtime_environment.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.RUNTIME_ENVIRONMENT",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "implementation_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "runtime_environment_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "DEPENDENCY_LOCK",
@@ -245,13 +371,22 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/dependency_lock.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.DEPENDENCY_LOCK",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "implementation_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "dependency_lock_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "CHECKER_VERSION",
@@ -261,13 +396,22 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/checker_version.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CHECKER_VERSION",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "implementation_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "checker_version_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "IMMUTABLE_INPUT_HASH",
@@ -284,13 +428,22 @@
         "CANONICAL_SERIALIZATION"
       ],
       "artifact": "artifacts/immutable_input_hash.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.IMMUTABLE_INPUT_HASH",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "implementation_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "immutable_input_hash_v1"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "EFFECTIVE_RUNTIME_CONFIG",
@@ -300,13 +453,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/effective_runtime_config.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.EFFECTIVE_RUNTIME_CONFIG",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "effective_runtime_config_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "SCHEDULER_MODEL",
@@ -316,13 +476,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/scheduler_model.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.SCHEDULER_MODEL",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "scheduler_model_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "STRICT_PRIORITY_ORDER",
@@ -332,13 +499,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/strict_priority_order.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.STRICT_PRIORITY_ORDER",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "strict_priority_order_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "TIME_DOMAIN",
@@ -348,13 +522,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/time_domain.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.TIME_DOMAIN",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "time_domain_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "NO_OVERFLOW",
@@ -364,13 +545,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/no_overflow.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.NO_OVERFLOW",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "no_overflow_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "OVERHEAD_PROFILE",
@@ -380,13 +568,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/overhead_profile.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.OVERHEAD_PROFILE",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "overhead_profile_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "INITIAL_QUIESCENCE",
@@ -398,13 +593,20 @@
         "BOOT_INITIALIZATION"
       ],
       "artifact": "artifacts/initial_quiescence.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.INITIAL_QUIESCENCE",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "initial_quiescence_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "BOOT_INITIALIZATION",
@@ -414,13 +616,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/boot_initialization.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.BOOT_INITIALIZATION",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "boot_initialization_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "MODE_SEMANTICS_CONFORMANCE",
@@ -432,13 +641,20 @@
         "BOOT_INITIALIZATION"
       ],
       "artifact": "artifacts/mode_semantics_conformance.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.MODE_SEMANTICS_CONFORMANCE",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "mode_semantics_conformance_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "DEMAND_ORACLE_BATCH_CONTRACT",
@@ -450,13 +666,20 @@
         "MODE_SEMANTICS_CONFORMANCE"
       ],
       "artifact": "artifacts/demand_oracle_batch_contract.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.DEMAND_ORACLE_BATCH_CONTRACT",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "demand_oracle_batch_contract_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "HI_EXECUTION_CONTRACT",
@@ -468,13 +691,20 @@
         "MODE_SEMANTICS_CONFORMANCE"
       ],
       "artifact": "artifacts/hi_execution_contract.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.HI_EXECUTION_CONTRACT",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "hi_execution_contract_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "REMOVAL_COMPLETENESS",
@@ -484,13 +714,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/removal_completeness.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.REMOVAL_COMPLETENESS",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "removal_completeness_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "HI_NONTRUNCATION",
@@ -500,13 +737,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/hi_nontruncation.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.HI_NONTRUNCATION",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "hi_nontruncation_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "DEADLINE_OBSERVATION",
@@ -522,7 +766,14 @@
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "deadline_observation_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "EFFECTIVE_EVENT_ORDER",
@@ -534,13 +785,20 @@
         "BOOT_INITIALIZATION"
       ],
       "artifact": "artifacts/effective_event_order.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.EFFECTIVE_EVENT_ORDER",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "effective_event_order_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "SEQUENCE_ALLOCATION",
@@ -550,13 +808,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/sequence_allocation.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.SEQUENCE_ALLOCATION",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "sequence_allocation_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "PHASE_DAG",
@@ -566,13 +831,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/phase_dag.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.PHASE_DAG",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "phase_dag_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "BATCH_CLOSURE",
@@ -584,13 +856,20 @@
         "BOOT_INITIALIZATION"
       ],
       "artifact": "artifacts/batch_closure.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.BATCH_CLOSURE",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "batch_closure_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "DEADLINE_BOUNDARY_ORDER",
@@ -600,13 +879,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/deadline_boundary_order.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.DEADLINE_BOUNDARY_ORDER",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "deadline_boundary_order_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "CONTROLLER_INVISIBILITY",
@@ -614,15 +900,28 @@
       "kind": "obligation",
       "activation": "active",
       "required": true,
-      "depends_on": [],
+      "depends_on": [
+        "CONTROLLER_WRITE_SET",
+        "CONTROLLER_BOUNDARY",
+        "CONTROLLER_PATH_UNIQUENESS",
+        "UPDATE_PAYLOAD_TOTALITY",
+        "TOKEN_REFRESH_PROJECTION"
+      ],
       "artifact": "artifacts/controller_invisibility.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CONTROLLER_INVISIBILITY",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "controller_invisibility_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "CONTROLLER_POSTCLOSURE",
@@ -632,13 +931,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/controller_postclosure.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CONTROLLER_POSTCLOSURE",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "controller_postclosure_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "TIME_PROGRESS",
@@ -648,13 +954,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/time_progress.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.TIME_PROGRESS",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "time_progress_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "WINDOW_MODE_NORMALIZATION",
@@ -668,13 +981,20 @@
         "DEADLINE_BOUNDARY_ORDER"
       ],
       "artifact": "artifacts/window_mode_normalization.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.WINDOW_MODE_NORMALIZATION",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "window_mode_normalization_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "OBSERVATION_EXTRACTION",
@@ -690,7 +1010,14 @@
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "observation_extraction_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "FEATURE_SCHEMA_CONSISTENCY",
@@ -708,7 +1035,14 @@
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "policy_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "feature_schema_consistency_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "FEATURE_TOTALITY",
@@ -726,7 +1060,14 @@
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "feature_totality_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "FEATURE_QUANTIZATION",
@@ -742,7 +1083,14 @@
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "policy_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "feature_quantization_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "TREE_WELLFORMEDNESS",
@@ -760,7 +1108,14 @@
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "policy_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "tree_wellformedness_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "LEAF_GUARD_PARTITION",
@@ -772,13 +1127,20 @@
         "EXECUTABLE_POLICY_SEMANTICS"
       ],
       "artifact": "artifacts/leaf_guard_partition.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.LEAF_GUARD_PARTITION",
       "failure_route": "POLICY_CONTRACT_VIOLATION",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "policy_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "leaf_guard_partition_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "ACTION_TRANSITION",
@@ -794,7 +1156,14 @@
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "policy_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "action_transition_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "MASK_FALLBACK",
@@ -810,7 +1179,14 @@
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "policy_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "mask_fallback_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "SELECTED_ACTION_REGIONS",
@@ -828,7 +1204,14 @@
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "policy_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "selected_action_regions_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "EXECUTABLE_POLICY_SEMANTICS",
@@ -849,7 +1232,14 @@
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "policy_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "executable_policy_semantics_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "CANDIDATE_ENVELOPE",
@@ -859,13 +1249,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/candidate_envelope.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CANDIDATE_ENVELOPE",
       "failure_route": "POLICY_CONTRACT_VIOLATION",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "invariant_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "candidate_envelope_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "BUDGET_DOMAIN",
@@ -877,13 +1274,20 @@
         "BOOT_INITIALIZATION"
       ],
       "artifact": "artifacts/budget_domain.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.BUDGET_DOMAIN",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "invariant_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "budget_domain_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "LO_BUDGET_UPPER_INVARIANT",
@@ -897,13 +1301,20 @@
         "DEPLOYED_POLICY_PRESERVATION"
       ],
       "artifact": "artifacts/lo_budget_upper_invariant.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.LO_BUDGET_UPPER_INVARIANT",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "invariant_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "lo_budget_upper_invariant_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "HI_BUDGET_LOWER_INVARIANT",
@@ -917,13 +1328,20 @@
         "DEPLOYED_POLICY_PRESERVATION"
       ],
       "artifact": "artifacts/hi_budget_lower_invariant.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.HI_BUDGET_LOWER_INVARIANT",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "invariant_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "hi_budget_lower_invariant_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "ACTIVE_RELEASE_BUDGET_INVARIANT",
@@ -937,13 +1355,20 @@
         "DEPLOYED_POLICY_PRESERVATION"
       ],
       "artifact": "artifacts/active_release_budget_invariant.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.ACTIVE_RELEASE_BUDGET_INVARIANT",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "invariant_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "active_release_budget_invariant_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "COMMON_TRANSITION_PRESERVATION",
@@ -953,13 +1378,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/common_transition_preservation.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.COMMON_TRANSITION_PRESERVATION",
       "failure_route": "POLICY_CONTRACT_VIOLATION",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "invariant_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "common_transition_preservation_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "DEPLOYED_POLICY_PRESERVATION",
@@ -980,7 +1412,14 @@
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "invariant_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "deployed_policy_preservation_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "CERTIFIED_ENVELOPE",
@@ -995,13 +1434,20 @@
         "ACTIVE_RELEASE_BUDGET_INVARIANT"
       ],
       "artifact": "artifacts/certified_envelope.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CERTIFIED_ENVELOPE",
       "failure_route": "POLICY_CONTRACT_VIOLATION",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "invariant_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "certified_envelope_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "CODE_REFERENCE_UPPER_BOUND_MAPPING",
@@ -1011,13 +1457,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/code_reference_upper_bound_mapping.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CODE_REFERENCE_UPPER_BOUND_MAPPING",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "code_reference_upper_bound_mapping_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "REFERENCE_TASKSET",
@@ -1030,13 +1483,20 @@
         "CODE_REFERENCE_UPPER_BOUND_MAPPING"
       ],
       "artifact": "artifacts/reference_taskset.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.REFERENCE_TASKSET",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "reference_taskset_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "DISCRETE_TICK_EMBEDDING",
@@ -1046,13 +1506,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/discrete_tick_embedding.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.DISCRETE_TICK_EMBEDDING",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "discrete_tick_embedding_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "RELEASE_COUNT",
@@ -1062,13 +1529,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/release_count.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.RELEASE_COUNT",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "release_count_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "DEMAND_DOMINATION",
@@ -1078,13 +1552,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/demand_domination.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.DEMAND_DOMINATION",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "demand_domination_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "LO_MODE_RTA",
@@ -1094,13 +1575,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/lo_mode_rta.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.LO_MODE_RTA",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "lo_mode_rta_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "WORST_CASE_START_TIME",
@@ -1110,13 +1598,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/worst_case_start_time.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.WORST_CASE_START_TIME",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "worst_case_start_time_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "CASE1_INTEGER_DOMAIN",
@@ -1126,13 +1621,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/case1_integer_domain.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CASE1_INTEGER_DOMAIN",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "case1_integer_domain_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "CASE2_INTEGER_DOMAIN",
@@ -1142,13 +1644,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/case2_integer_domain.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CASE2_INTEGER_DOMAIN",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "case2_integer_domain_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "ZERO_RELATIVE_START",
@@ -1158,13 +1667,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/zero_relative_start.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.ZERO_RELATIVE_START",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "zero_relative_start_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "INHERITED_HI_DOMINATION",
@@ -1174,13 +1690,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/inherited_hi_domination.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.INHERITED_HI_DOMINATION",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "inherited_hi_domination_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "PROTECTED_HI_RTA_ARITHMETIC",
@@ -1200,11 +1723,20 @@
         "DEMAND_DOMINATION"
       ],
       "artifact": "artifacts/protected_hi_rta_arithmetic.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.PROTECTED_HI_RTA_ARITHMETIC",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "protected_hi_rta_arithmetic_legacy"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "PER_HI_TASK_INDUCTIVE_WCRT",
@@ -1218,11 +1750,20 @@
         "THEORY_LIBRARY_VERSION"
       ],
       "artifact": "artifacts/per_hi_task_inductive_wcrt.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.PER_HI_TASK_INDUCTIVE_WCRT",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "per_hi_task_inductive_wcrt_legacy"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "PROTECTED_HI_SAFETY_COROLLARY",
@@ -1238,11 +1779,20 @@
         "DISCRETE_TICK_EMBEDDING"
       ],
       "artifact": "artifacts/protected_hi_safety_corollary.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.PROTECTED_HI_SAFETY_COROLLARY",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "authorization_gate",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "protected_hi_safety_corollary_legacy"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "RELEASE_FIXED_REMOVAL_MAPPING",
@@ -1252,13 +1802,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/release_fixed_removal_mapping.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.RELEASE_FIXED_REMOVAL_MAPPING",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "bridge_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "release_fixed_removal_mapping_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "CLOSED_PREFIX_REFINEMENT",
@@ -1282,13 +1839,20 @@
         "CERTIFIED_ENVELOPE"
       ],
       "artifact": "artifacts/closed_prefix_refinement.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CLOSED_PREFIX_REFINEMENT",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "bridge_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "closed_prefix_refinement_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "REFERENCE_PREFIX_EXTENSION",
@@ -1297,16 +1861,25 @@
       "activation": "active",
       "required": true,
       "depends_on": [
-        "CLOSED_PREFIX_REFINEMENT"
+        "REFERENCE_TASKSET",
+        "TIME_PROGRESS",
+        "EFFECTIVE_EVENT_ORDER"
       ],
       "artifact": "artifacts/reference_prefix_extension.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/reference_prefix_extension.schema.json",
       "summary_path": "obligations.REFERENCE_PREFIX_EXTENSION",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "bridge_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "reference_prefix_extension_v4"
+      },
+      "authorization_for": []
     },
     {
       "id": "HI_BAD_CLOSED_PREFIX_REFLECTION",
@@ -1324,13 +1897,20 @@
         "EARLY_STOP_CONFIGURATION_GATE"
       ],
       "artifact": "artifacts/hi_bad_closed_prefix_reflection.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.HI_BAD_CLOSED_PREFIX_REFLECTION",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "bridge_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "hi_bad_closed_prefix_reflection_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "ARTIFACT_MANIFEST",
@@ -1340,13 +1920,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/artifact_manifest.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.ARTIFACT_MANIFEST",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "diagnostic",
+      "context_layer": "bundle_context",
+      "producer": {
+        "kind": "structural_verifier",
+        "id": "artifact_manifest_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "COMPONENT_CONTEXT_INTEGRITY",
@@ -1356,13 +1943,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/component_context_integrity.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.COMPONENT_CONTEXT_INTEGRITY",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "diagnostic",
+      "context_layer": "bundle_context",
+      "producer": {
+        "kind": "structural_verifier",
+        "id": "component_context_integrity_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "DIRECT_PREDECESSOR_HASHES",
@@ -1372,13 +1966,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/direct_predecessor_hashes.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.DIRECT_PREDECESSOR_HASHES",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "diagnostic",
+      "context_layer": "bundle_context",
+      "producer": {
+        "kind": "structural_verifier",
+        "id": "direct_predecessor_hashes_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "STATUS_EVIDENCE",
@@ -1388,13 +1989,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/status_evidence.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.STATUS_EVIDENCE",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "diagnostic",
+      "context_layer": "bundle_context",
+      "producer": {
+        "kind": "structural_verifier",
+        "id": "status_evidence_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "OUTER_BUNDLE_ROOT",
@@ -1404,13 +2012,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/outer_bundle_root.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.OUTER_BUNDLE_ROOT",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "diagnostic",
+      "context_layer": "bundle_context",
+      "producer": {
+        "kind": "structural_verifier",
+        "id": "outer_bundle_root_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "INDEPENDENT_BUNDLE_VERIFICATION",
@@ -1425,13 +2040,20 @@
         "STATUS_EVIDENCE"
       ],
       "artifact": "artifacts/independent_bundle_verification.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.INDEPENDENT_BUNDLE_VERIFICATION",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "diagnostic",
+      "context_layer": "bundle_context",
+      "producer": {
+        "kind": "structural_verifier",
+        "id": "independent_bundle_verification_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "CLAIM_AGGREGATION_RESULT",
@@ -1444,13 +2066,20 @@
         "OUTER_BUNDLE_ROOT"
       ],
       "artifact": "artifacts/claim_aggregation_result.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CLAIM_AGGREGATION_RESULT",
       "failure_route": "PROOF_BUNDLE_INVALID",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "diagnostic",
+      "context_layer": "bundle_context",
+      "producer": {
+        "kind": "structural_verifier",
+        "id": "claim_aggregation_result_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "EARLY_STOP_CLOSURE_COMPLETION",
@@ -1460,11 +2089,20 @@
       "required": false,
       "depends_on": [],
       "artifact": "artifacts/early_stop_closure_completion.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.EARLY_STOP_CLOSURE_COMPLETION",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [],
-      "status_evidence_rule": "not_applicable_when_inactive"
+      "status_evidence_rule": "not_applicable_when_inactive",
+      "proof_role": "authorization_gate",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "early_stop_closure_completion_legacy"
+      },
+      "authorization_for": [
+        "DEPLOYED_HI_SAFETY"
+      ]
     },
     {
       "id": "ALL_TASK_REFERENCE_RTA_ARITHMETIC",
@@ -1490,7 +2128,36 @@
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "all_task_reference_rta_arithmetic_v1"
+      },
+      "authorization_for": []
+    },
+    {
+      "id": "REFERENCE_SEMANTICS_CONTRACT",
+      "profile": "P0",
+      "kind": "obligation",
+      "activation": "active",
+      "required": true,
+      "depends_on": [
+        "REFERENCE_TASKSET",
+        "EFFECTIVE_RUNTIME_CONFIG",
+        "STRICT_PRIORITY_ORDER"
+      ],
+      "artifact": "artifacts/reference_semantics_contract.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
+      "summary_path": "obligations.REFERENCE_SEMANTICS_CONTRACT",
+      "failure_route": "MODEL_CONFORMANCE_FAILED",
+      "gates_claims": ["DEPLOYED_HI_SAFETY"],
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {"kind": "compiler_candidate", "id": "reference_semantics_contract_v1"},
+      "authorization_for": []
     },
     {
       "id": "REFERENCE_MODEL_CONFORMANCE",
@@ -1500,16 +2167,22 @@
       "required": true,
       "depends_on": [
         "REFERENCE_TASKSET",
+        "REFERENCE_SEMANTICS_CONTRACT",
         "SCHEDULER_MODEL",
+        "STRICT_PRIORITY_ORDER",
         "MODE_SEMANTICS_CONFORMANCE",
+        "EFFECTIVE_EVENT_ORDER",
+        "DEMAND_ORACLE_BATCH_CONTRACT",
         "BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION",
         "RELEASE_FIXED_REMOVAL_MAPPING",
+        "INITIAL_QUIESCENCE",
         "BOOT_INITIALIZATION",
         "CASE1_INTEGER_DOMAIN",
         "CASE2_INTEGER_DOMAIN",
         "ZERO_RELATIVE_START",
         "DISCRETE_TICK_EMBEDDING",
-        "REFERENCE_PREFIX_EXTENSION"
+        "REFERENCE_PREFIX_EXTENSION",
+        "TIME_PROGRESS"
       ],
       "artifact": "artifacts/reference_model_conformance.json",
       "artifact_schema": "certificates/reference_model_conformance.schema.json",
@@ -1518,7 +2191,14 @@
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "reference_model_conformance_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "REFERENCE_TASKSET_SCHEDULABLE",
@@ -1532,13 +2212,20 @@
         "THEORY_LIBRARY_VERSION"
       ],
       "artifact": "artifacts/reference_taskset_schedulable.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.REFERENCE_TASKSET_SCHEDULABLE",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "reference_taskset_schedulable_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "REFERENCE_HI_SUBSET_SAFETY",
@@ -1550,13 +2237,20 @@
         "REFERENCE_TASKSET_SCHEDULABLE"
       ],
       "artifact": "artifacts/reference_hi_subset_safety.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.REFERENCE_HI_SUBSET_SAFETY",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "reference_hi_subset_safety_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "FINITE_BAD_PREFIX_CONTRADICTION",
@@ -1569,13 +2263,20 @@
         "HI_BAD_CLOSED_PREFIX_REFLECTION"
       ],
       "artifact": "artifacts/finite_bad_prefix_contradiction.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.FINITE_BAD_PREFIX_CONTRADICTION",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "composition_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "finite_bad_prefix_contradiction_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "FINAL_CLAIM_COMPOSITION",
@@ -1584,19 +2285,23 @@
       "activation": "active",
       "required": true,
       "depends_on": [
-        "BUDGET_DOMAIN",
-        "REFERENCE_MODEL_CONFORMANCE",
-        "REFERENCE_TASKSET_SCHEDULABLE",
         "FINITE_BAD_PREFIX_CONTRADICTION"
       ],
       "artifact": "artifacts/final_claim_composition.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.FINAL_CLAIM_COMPOSITION",
       "failure_route": "REFERENCE_CERTIFICATE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_root",
+      "context_layer": "composition_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "final_claim_composition_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "EARLY_STOP_CONFIGURATION_GATE",
@@ -1606,13 +2311,20 @@
       "required": true,
       "depends_on": [],
       "artifact": "artifacts/early_stop_configuration_gate.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.EARLY_STOP_CONFIGURATION_GATE",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "bridge_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "early_stop_configuration_gate_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "EFFECTIVE_EVENT_FRONTIER_RELATION",
@@ -1620,15 +2332,26 @@
       "kind": "obligation",
       "activation": "active",
       "required": true,
-      "depends_on": [],
+      "depends_on": [
+        "TIME_PROGRESS",
+        "EFFECTIVE_EVENT_ORDER",
+        "RELEASE_FIXED_REMOVAL_MAPPING"
+      ],
       "artifact": "artifacts/effective_event_frontier_relation.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.EFFECTIVE_EVENT_FRONTIER_RELATION",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "bridge_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "effective_event_frontier_relation_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION",
@@ -1636,85 +2359,133 @@
       "kind": "obligation",
       "activation": "active",
       "required": true,
-      "depends_on": [],
+      "depends_on": [
+        "CERTIFIED_ENVELOPE",
+        "REFERENCE_TASKSET",
+        "ACTIVE_RELEASE_BUDGET_INVARIANT",
+        "CODE_REFERENCE_UPPER_BOUND_MAPPING",
+        "RELEASE_FIXED_REMOVAL_MAPPING"
+      ],
       "artifact": "artifacts/budget_envelope_to_reference_domination.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [
         "DEPLOYED_HI_SAFETY"
       ],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "budget_envelope_to_reference_domination_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "CONTROLLER_WRITE_SET",
       "profile": "P0",
       "kind": "obligation",
       "activation": "active",
-      "required": false,
+      "required": true,
       "depends_on": [],
       "artifact": "artifacts/controller_write_set.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CONTROLLER_WRITE_SET",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "fresh_verifier",
+        "id": "controller_write_set_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "CONTROLLER_BOUNDARY",
       "profile": "P0",
       "kind": "obligation",
       "activation": "active",
-      "required": false,
+      "required": true,
       "depends_on": [],
       "artifact": "artifacts/controller_boundary.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CONTROLLER_BOUNDARY",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "fresh_verifier",
+        "id": "controller_boundary_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "CONTROLLER_PATH_UNIQUENESS",
       "profile": "P0",
       "kind": "obligation",
       "activation": "active",
-      "required": false,
+      "required": true,
       "depends_on": [],
       "artifact": "artifacts/controller_path_uniqueness.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CONTROLLER_PATH_UNIQUENESS",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "fresh_verifier",
+        "id": "controller_path_uniqueness_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "TOKEN_REFRESH_PROJECTION",
       "profile": "P0",
       "kind": "obligation",
       "activation": "active",
-      "required": false,
+      "required": true,
       "depends_on": [],
       "artifact": "artifacts/token_refresh_projection.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.TOKEN_REFRESH_PROJECTION",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "fresh_verifier",
+        "id": "token_refresh_projection_v1"
+      },
+      "authorization_for": []
     },
     {
       "id": "UPDATE_PAYLOAD_TOTALITY",
       "profile": "P0",
       "kind": "obligation",
       "activation": "active",
-      "required": false,
+      "required": true,
       "depends_on": [],
       "artifact": "artifacts/update_payload_totality.json",
-      "artifact_schema": "certificates/common.schema.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.UPDATE_PAYLOAD_TOTALITY",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
       "gates_claims": [],
-      "status_evidence_rule": "certificate_status"
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "semantic_context",
+      "producer": {
+        "kind": "fresh_verifier",
+        "id": "update_payload_totality_v1"
+      },
+      "authorization_for": []
     }
   ]
 }

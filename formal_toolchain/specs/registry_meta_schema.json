@@ -2,15 +2,31 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Obligation registry entry",
   "type": "object",
-  "required": ["id", "profile", "kind", "activation", "required", "depends_on", "artifact", "artifact_schema", "summary_path", "failure_route", "gates_claims", "status_evidence_rule"],
+  "required": [
+    "id", "profile", "kind", "activation", "required", "depends_on",
+    "artifact", "artifact_schema", "summary_path", "failure_route",
+    "gates_claims", "status_evidence_rule",
+    "proof_role", "context_layer", "producer"
+  ],
   "properties": {
     "id": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+$"},
     "profile": {"enum": ["P0"]}, "kind": {"enum": ["obligation", "claim_gate"]},
     "activation": {"enum": ["active", "conditional", "deprecated"]}, "required": {"type": "boolean"},
     "depends_on": {"type": "array", "items": {"type": "string"}},
+    "proof_role": {"enum": ["mathematical_root", "mathematical_lemma", "authorization_gate", "diagnostic"]},
+    "context_layer": {"type": "string"},
+    "producer": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"enum": ["compiler_candidate", "fresh_verifier", "structural_verifier"]},
+        "id": {"type": "string"}
+      }
+    },
+    "authorization_for": {"type": "array", "items": {"type": "string"}},
     "artifact": {"type": "string"}, "artifact_schema": {"type": "string"},
     "summary_path": {"type": "string"}, "failure_route": {"type": "string"},
     "gates_claims": {"type": "array", "items": {"type": "string"}},
     "status_evidence_rule": {"enum": ["certificate_status", "not_applicable_when_inactive"]}
-  }, "additionalProperties": false
+  }
 }

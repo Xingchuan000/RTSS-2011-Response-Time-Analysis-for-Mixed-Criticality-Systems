@@ -1,14 +1,18 @@
 {
-  "assumption_hash": "c35e18d61885c496de00ad2cad77317b96b09823337bb9e654a37e7e24f2a0ca",
+  "assumption_hash": "98f8bd5f01675776b1ee5b1f625e6445af8bf09cd1c71152175cd569d6826a88",
   "assumptions": [
     "reference hi subset safety",
     "finite bad prefix reflection"
   ],
-  "assurance_level": "MACHINE_CHECKED_PROJECT_LEMMA",
+  "assurance_level": "PUBLISHED_THEORY_TCB",
   "conclusion": "no_deployed_hi_safety_counterexample",
   "exact_statement": "A finite bad prefix reflection together with reference HI subset safety yields a contradiction with the existence of a deployed HI safety counterexample.",
+  "premise_obligation_ids": [
+    "REFERENCE_HI_SUBSET_SAFETY",
+    "HI_BAD_CLOSED_PREFIX_REFLECTION"
+  ],
   "source_reference": "project lemma derived from bad-prefix layering",
-  "statement_hash": "906199413b1db4cd4196b9ca66c7468f61f7acabac619ee1176e58cc66129fbc",
+  "statement_hash": "2ae69fbce510f2fd1227e902490b6c8c6842324f681f807d2abfb8b989126e98",
   "theorem_id": "FINITE_BAD_PREFIX_CONTRADICTION",
   "version": "p0-theory-r4"
 }

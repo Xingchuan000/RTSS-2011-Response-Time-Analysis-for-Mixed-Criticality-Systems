@@ -18,8 +18,8 @@ from formal_toolchain.conformance.time_domain import build_budget_domain
 from formal_toolchain.adapters.runtime_config import export_formal_target_config
 from formal_toolchain.core.contexts import (
     build_bootstrap_context, build_bridge_context, build_bundle_context,
-    build_implementation_context, build_invariant_context, build_policy_context,
-    build_reference_context_layer, build_semantic_context,
+    build_composition_context, build_implementation_context, build_invariant_context,
+    build_policy_context, build_reference_context_layer, build_semantic_context,
 )
 from formal_toolchain.core.registry import load_registry, registry_fingerprint
 from formal_toolchain.core.hashing import sha256_file, sha256_object
@@ -126,12 +126,15 @@ def load_verifier_inputs(request_path: Path, *, source_root: Path) -> VerifierIn
         invariant_context_hash=invariant["hash"], reference_input_mode="FROZEN_FORMAL_INPUTS")
     bridge = build_bridge_context(reference_context_hash=reference["hash"],
                                   source_manifest_hash=source_manifest["semantic_hash"])
-    bundle = build_bundle_context(bridge_context_hash=bridge["hash"],
+    composition = build_composition_context(bridge_context_hash=bridge["hash"],
+                                            composition_mode="standard")
+    bundle = build_bundle_context(composition_context_hash=composition["hash"],
                                   target_id=request.get("target_id"), claim="DEPLOYED_HI_SAFETY")
     contexts = {"bootstrap_context": bootstrap, "implementation_context": implementation,
                 "semantic_context": semantic, "policy_context": policy,
                 "invariant_context": invariant, "reference_context": reference,
-                "bridge_context": bridge, "bundle_context": bundle}
+                "bridge_context": bridge, "composition_context": composition,
+                "bundle_context": bundle}
     return VerifierInputs(
         request=request, workspace=workspace, artifact_dir=artifact_dir,
         source_root=source_root, target=target, inventory=inventory,

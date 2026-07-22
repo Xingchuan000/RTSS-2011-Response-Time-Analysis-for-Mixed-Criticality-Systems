@@ -31,7 +31,8 @@ from formal_toolchain.conformance.time_domain import build_budget_domain
 from formal_toolchain.core.hashing import sha256_file, sha256_object
 from formal_toolchain.core.contexts import (
     build_bootstrap_context, build_bridge_context, build_bundle_context,
-    build_implementation_context, build_invariant_context, build_policy_context,
+    build_composition_context, build_implementation_context,
+    build_invariant_context, build_policy_context,
     build_reference_context_layer, build_semantic_context,
 )
 from formal_toolchain.core.registry import load_registry, registry_fingerprint
@@ -318,8 +319,12 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
     bridge_context = build_bridge_context(
         reference_context_hash=reference_context["hash"],
         source_manifest_hash=source_manifest["semantic_hash"])
-    bundle_context = build_bundle_context(
+    composition_context = build_composition_context(
         bridge_context_hash=bridge_context["hash"],
+        mathematical_root_id="FINAL_CLAIM_COMPOSITION",
+        claim="DEPLOYED_HI_SAFETY")
+    bundle_context = build_bundle_context(
+        composition_context_hash=composition_context["hash"],
         target_id=fixture_check.get("target_id"), claim="DEPLOYED_HI_SAFETY")
     contexts = {
         "bootstrap_context": bootstrap_context,
@@ -329,6 +334,7 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
         "invariant_context": invariant_context,
         "reference_context": reference_context,
         "bridge_context": bridge_context,
+        "composition_context": composition_context,
         "bundle_context": bundle_context,
     }
     context_body = {"contexts": contexts, "fixture": fixture_check,
@@ -458,7 +464,8 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
         FINITE_BAD_PREFIX_CONTRADICTION,
         FINAL_CLAIM_COMPOSITION,
         REFERENCE_HI_SUBSET_SAFETY,
-        REFERENCE_MODEL_CONFORMANCE,
+    REFERENCE_MODEL_CONFORMANCE,
+    REFERENCE_SEMANTICS_CONTRACT,
         REFERENCE_TASKSET_SCHEDULABLE,
     )
     registry_entries = load_registry(Path(__file__).parents[1] / "specs/obligation_registry.json")
@@ -483,6 +490,7 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
         "INHERITED_HI_DOMINATION",
         ALL_TASK_REFERENCE_RTA_ARITHMETIC,
         REFERENCE_MODEL_CONFORMANCE,
+        REFERENCE_SEMANTICS_CONTRACT,
         REFERENCE_TASKSET_SCHEDULABLE,
         REFERENCE_HI_SUBSET_SAFETY,
         FINITE_BAD_PREFIX_CONTRADICTION,

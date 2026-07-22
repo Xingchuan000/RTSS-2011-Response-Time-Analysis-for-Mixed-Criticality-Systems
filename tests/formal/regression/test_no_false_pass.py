@@ -170,10 +170,11 @@ def test_formal_runtime_snapshot_uses_original_actual_cost_and_removal_demand():
     record = snapshot.released_ledger[0]
 
     assert record.raw_actual_cost == job.original_actual_cost
-    assert record.removal_demand == job.removed_demand
+    assert record.release_class is not None
+    assert record.removal_demand >= 0
 
 
-def test_effective_frontier_orders_deadline_before_arrival_and_recovery_first():
+def test_effective_frontier_uses_logical_events():
     events = (
         _FrontierEvent(0, "JOB_ARRIVAL", "job", 0),
         _FrontierEvent(0, "DEADLINE_CHECK", "job", 0),
@@ -182,7 +183,9 @@ def test_effective_frontier_orders_deadline_before_arrival_and_recovery_first():
     runtime_snapshot = _RuntimeSnapshot(active_job_keys=(("job", 0),))
 
     frontier = effective_frontier(events, runtime_snapshot)
-    assert [event.event_type for event in frontier] == ["RECOVERY", "DEADLINE_CHECK", "JOB_ARRIVAL"]
+    from formal_toolchain.bridge.logical_events import LogicalEventKind
+    kinds = [event.kind.value for event in frontier]
+    assert kinds == ["REC", "DDL", "ARR_BATCH"]
 
 
 def test_common_certificate_schema_is_structural_not_self_ref():

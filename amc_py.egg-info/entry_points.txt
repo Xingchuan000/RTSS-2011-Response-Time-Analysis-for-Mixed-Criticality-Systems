@@ -1,0 +1,6 @@
+[console_scripts]
+amc-formal-compile = formal_toolchain.cli.compile_seed:main
+amc-formal-inspect = formal_toolchain.cli.inspect_target:main
+amc-formal-prove-seed = formal_toolchain.cli.prove_seed:main
+amc-formal-report = formal_toolchain.cli.render_report:main
+amc-formal-verify = formal_toolchain.cli.verify_bundle:main

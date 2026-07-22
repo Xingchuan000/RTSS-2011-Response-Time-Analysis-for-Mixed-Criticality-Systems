@@ -1,0 +1,20 @@
+{
+  "schema_version": "reference_model_conformance_contract_v1",
+  "conditions": [
+    {"condition_id": "FINITE_INDEPENDENT_PERIODIC_SUBLANGUAGE", "source_kind": "HYBRID", "predecessor_obligation_ids": ["REFERENCE_TASKSET"]},
+    {"condition_id": "CONSTRAINED_DEADLINES", "source_kind": "HYBRID", "predecessor_obligation_ids": ["REFERENCE_TASKSET"]},
+    {"condition_id": "SINGLE_PROCESSOR_PREEMPTIVE_FPPS", "source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["SCHEDULER_MODEL", "STRICT_PRIORITY_ORDER", "REFERENCE_SEMANTICS_CONTRACT"]},
+    {"condition_id": "NO_BLOCKING_SUSPENSION_NONPREEMPTIVE", "source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["SCHEDULER_MODEL"]},
+    {"condition_id": "FIXED_POSITIVE_INTEGER_EXECUTION", "source_kind": "HYBRID", "predecessor_obligation_ids": ["REFERENCE_TASKSET"]},
+    {"condition_id": "CRITICALITY_MONOTONE_EXECUTION", "source_kind": "HYBRID", "predecessor_obligation_ids": ["REFERENCE_TASKSET"]},
+    {"condition_id": "RELEASE_FIXED_DEMAND_DOMINATION", "source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["DEMAND_ORACLE_BATCH_CONTRACT", "BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION", "RELEASE_FIXED_REMOVAL_MAPPING"]},
+    {"condition_id": "ARRIVAL_CLASSIFICATION_UNIQUE_SWITCH", "source_kind": "HYBRID", "predecessor_obligation_ids": ["MODE_SEMANTICS_CONFORMANCE", "EFFECTIVE_EVENT_ORDER", "REFERENCE_SEMANTICS_CONTRACT"]},
+    {"condition_id": "QUIESCENT_LO_RECOVERY", "source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["MODE_SEMANTICS_CONFORMANCE", "EFFECTIVE_EVENT_ORDER", "REFERENCE_SEMANTICS_CONTRACT"]},
+    {"condition_id": "RELEASE_VERSION_SELECTION", "source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["MODE_SEMANTICS_CONFORMANCE", "RELEASE_FIXED_REMOVAL_MAPPING", "REFERENCE_SEMANTICS_CONTRACT"]},
+    {"condition_id": "STANDARD_EMPTY_LO_INITIALIZATION", "source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["INITIAL_QUIESCENCE", "BOOT_INITIALIZATION"]},
+    {"condition_id": "COMPLETE_INTEGER_SWITCH_DOMAINS", "source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["CASE1_INTEGER_DOMAIN", "CASE2_INTEGER_DOMAIN", "ZERO_RELATIVE_START"]},
+    {"condition_id": "DISCRETE_TICK_EMBEDDING", "source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["DISCRETE_TICK_EMBEDDING"]},
+    {"condition_id": "REFERENCE_PREFIX_EXTENSIBILITY", "source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["REFERENCE_TASKSET", "TIME_PROGRESS", "EFFECTIVE_EVENT_ORDER", "REFERENCE_PREFIX_EXTENSION"]}
+  ],
+  "contract_hash": "054ccfe8562f31053a23d1e659f3b92128d74ca5ed52c3d7cbe92549d91efac8"
+}

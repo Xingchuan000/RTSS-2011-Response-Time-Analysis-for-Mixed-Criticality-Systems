@@ -108,7 +108,7 @@ def _closed_candidate() -> dict[str, object]:
     }
 
 
-def test_prefix_extension_does_not_require_local_transition_cases(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_prefix_extension_requires_verified_global_predecessors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_case_map(tmp_path)
     monkeypatch.setattr(bridge_proof_checker, "verify_obligation_certificate", lambda candidate: True)
     monkeypatch.setattr(
@@ -128,13 +128,13 @@ def test_prefix_extension_does_not_require_local_transition_cases(tmp_path: Path
     result = bridge_proof_checker.verify_prefix_extension_proof_object(
         candidate=_prefix_candidate(),
         bridge_context_hash="c" * 64,
+        contexts=_raw_inputs(tmp_path).contexts,
+        predecessors={},
         raw_inputs=_raw_inputs(tmp_path),
         reference_taskset={"tasks": []},
     )
 
-    assert result["status"] == "PASS"
-    assert result["witness"]["reused_closed_prefix_case_replay"] is True
-    assert result["witness"]["certificate_hash"] == sha256_object(_prefix_candidate())
+    assert result["status"] != "PASS"
 
 
 def test_closed_prefix_still_requires_transition_case_replay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

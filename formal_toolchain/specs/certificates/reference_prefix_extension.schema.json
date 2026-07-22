@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "reference_prefix_extension_v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifact_schema_version", "obligation_id", "obligation_status", "certificate_context_hash", "direct_predecessor_hashes", "checker_id", "checker_version", "inputs", "witness", "evidence", "failure", "artifact_hash"],
+  "properties": {
+    "artifact_schema_version": {"const": "certificate_envelope_v2"},
+    "obligation_id": {"const": "REFERENCE_PREFIX_EXTENSION"},
+    "obligation_status": {"enum": ["PASS", "FAIL", "UNRESOLVED"]},
+    "certificate_context_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "direct_predecessor_hashes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["REFERENCE_TASKSET", "TIME_PROGRESS", "EFFECTIVE_EVENT_ORDER"],
+      "properties": {
+        "REFERENCE_TASKSET": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "TIME_PROGRESS": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "EFFECTIVE_EVENT_ORDER": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "checker_id": {"type": "string"},
+    "checker_version": {"type": "string"},
+    "inputs": {
+      "type": "object", "additionalProperties": false,
+      "required": ["theorem_id", "reference_taskset_fingerprint", "theorem_statement_hash", "theorem_assumption_hash", "theorem_proof_object_hash", "reference_state_source_hash", "executable_semantics_source_hash"],
+      "properties": {
+        "theorem_id": {"const": "REFERENCE_PREFIX_EXTENSION"},
+        "reference_taskset_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "theorem_statement_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "theorem_assumption_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "theorem_proof_object_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "reference_state_source_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "executable_semantics_source_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "witness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "closed_state_predicate", "case_ids", "backend_receipt_hash", "theorem_proof_receipt", "reference_context_hash", "predecessor_context_layers"],
+      "properties": {
+        "schema_version": {"const": "reference_prefix_extension_v4"},
+        "closed_state_predicate": {"const": "is_closed_reference_state"},
+        "case_ids": {"const": ["SAME_TIMESTAMP_CLOSURE", "READY_SERVICE_OR_EARLIER_BOUNDARY", "IDLE_JUMP_TO_MINIMUM_FUTURE_EVENT"]},
+        "backend_receipt_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "reference_context_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "predecessor_context_layers": {"type": "object", "additionalProperties": {"type": "string"}},
+        "theorem_proof_receipt": {
+          "type": "object", "additionalProperties": false,
+          "required": ["status", "backend_id", "proof_object_hash", "theorem_statement_hash", "theorem_assumption_hash", "source_bindings", "case_ids", "solver_obligations", "z3_version", "receipt_hash"],
+          "properties": {
+            "status": {"const": "PASS"},
+            "backend_id": {"const": "reference-prefix-extension-z3-v3"},
+            "proof_object_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "theorem_statement_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "theorem_assumption_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "source_bindings": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+            "case_ids": {"const": ["SAME_TIMESTAMP_CLOSURE", "READY_SERVICE_OR_EARLIER_BOUNDARY", "IDLE_JUMP_TO_MINIMUM_FUTURE_EVENT"]},
+            "solver_obligations": {"type": "object", "minProperties": 3},
+            "z3_version": {"type": "string"},
+            "receipt_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
+        }
+      }
+    },
+    "evidence": {"type": "array"},
+    "failure": {"type": ["object", "null"]},
+    "artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

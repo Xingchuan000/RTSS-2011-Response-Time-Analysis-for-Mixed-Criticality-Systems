@@ -458,6 +458,8 @@ def _candidate_status_checker(obligation_id: str) -> Checker:
         return _verify_effective_runtime_config_obligation
     if obligation_id == "REFERENCE_TASKSET":
         return _verify_reference_taskset_obligation
+    if obligation_id == "REFERENCE_SEMANTICS_CONTRACT":
+        return _verify_reference_semantics_contract
     if obligation_id == "ALL_TASK_REFERENCE_RTA_ARITHMETIC":
         return _verify_all_task_reference_rta_obligation
     if obligation_id == "REFERENCE_MODEL_CONFORMANCE":
@@ -596,7 +598,7 @@ def _verify_migration_manifest_obligation(*, raw_inputs=None, candidate_evidence
     registry = load_registry(_specs_root(raw) / "obligation_registry.json")
     migration = _read_json(_specs_root(raw) / "migration_manifest.json")
     result = verify_migration_manifest(
-        migration=migration, registry=registry, current_schema_version="obligation_registry_v4")
+        migration=migration, registry=registry, current_schema_version="obligation_registry_v5")
     return _finish("MIGRATION_MANIFEST", result, expected_context_hash=expected_context_hash,
                    candidate_evidence=candidate_evidence)
 
@@ -653,19 +655,37 @@ def _verify_runtime_environment_obligation(*, raw_inputs=None, candidate_evidenc
                    candidate_evidence=candidate_evidence)
 
 
+def _lock_path(raw_inputs: Any) -> Path | None:
+    try:
+        from pathlib import Path
+        specs = Path(str(raw_inputs.source_root)) / "formal_toolchain" / "specs"
+        lock = specs / "proof_dependency_lock.json"
+        if lock.is_file():
+            import json
+            return json.loads(lock.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return None
+
+
 def _verify_dependency_lock_obligation(*, raw_inputs=None, candidate_evidence=None,
-                                       expected_context_hash=None, **kwargs):
+                                        expected_context_hash=None, **kwargs):
     raw, error = _raw_inputs({"raw_inputs": raw_inputs, "evidence": kwargs.get("evidence"),
                               "candidate_evidence": candidate_evidence}, "DEPENDENCY_LOCK")
     if error:
         return error
     manifest = build_dependency_manifest()
-    status = check_dependency_policy(manifest)
-    result = {"status": "PASS" if status == "PASS" else "FAIL",
-              "route": None if status == "PASS" else "PROOF_BUNDLE_INVALID",
-              "failure": None if status == "PASS" else {"code": "DEPENDENCY_LOCK_INCOMPLETE"},
-              "witness": {"dependency_manifest": manifest}}
-    return _finish("DEPENDENCY_LOCK", result, expected_context_hash=expected_context_hash,
+    lock = _lock_path(raw) if raw is not None else None
+    result = check_dependency_policy(manifest, lock=lock)
+    status = "PASS" if result.get("status") == "PASS" else "FAIL"
+    failure = None if status == "PASS" else {
+        "code": result.get("code", "DEPENDENCY_LOCK_INCOMPLETE"),
+        "detail": {k: v for k, v in result.items() if k != "status"},
+    }
+    return _finish("DEPENDENCY_LOCK", {"status": status, "route": None if status == "PASS" else "PROOF_BUNDLE_INVALID",
+                                        "failure": failure,
+                                        "witness": {"dependency_manifest": manifest, "lock_check": result}},
+                   expected_context_hash=expected_context_hash,
                    candidate_evidence=candidate_evidence)
 
 
@@ -812,6 +832,38 @@ def _verify_reference_taskset_obligation(*, raw_inputs=None, candidate_evidence=
                    candidate_evidence=candidate_evidence)
 
 
+def _verify_reference_semantics_contract(*, raw_inputs=None, candidate_evidence=None,
+                                         expected_context_hash=None, fresh_reference=None,
+                                         verified_predecessors=None, **kwargs):
+    raw, error = _raw_inputs({"raw_inputs": raw_inputs, "evidence": kwargs.get("evidence"),
+                              "candidate_evidence": candidate_evidence}, "REFERENCE_SEMANTICS_CONTRACT")
+    if error:
+        return error
+    if fresh_reference is None:
+        return _raw_inputs_result("REFERENCE_SEMANTICS_CONTRACT", code="FRESH_REFERENCE_TASKSET_MISSING")
+    predecessors = verified_predecessors if isinstance(verified_predecessors, Mapping) else {}
+    required = {"REFERENCE_TASKSET", "EFFECTIVE_RUNTIME_CONFIG", "STRICT_PRIORITY_ORDER"}
+    if set(predecessors) & required != required:
+        return _raw_inputs_result("REFERENCE_SEMANTICS_CONTRACT", code="REFERENCE_SEMANTICS_PREDECESSORS_MISSING")
+    try:
+        from formal_toolchain.reference.semantics_contract import build_reference_semantics_contract_certificate
+        reference_taskset = fresh_reference.to_dict() if hasattr(fresh_reference, "to_dict") else fresh_reference
+        result = build_reference_semantics_contract_certificate(
+            reference_taskset=reference_taskset,
+            reference_taskset_certificate=predecessors["REFERENCE_TASKSET"],
+            effective_runtime_config_certificate=predecessors["EFFECTIVE_RUNTIME_CONFIG"],
+            strict_priority_certificate=predecessors["STRICT_PRIORITY_ORDER"],
+            contexts=raw.contexts,
+            context_hash=expected_context_hash or str(raw.contexts["reference_context"]["hash"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        result = {"status": "FAIL", "route": "MODEL_CONFORMANCE_FAILED",
+                  "failure": {"code": "REFERENCE_SEMANTICS_CONTRACT_FAILED", "detail": str(exc)}}
+    return _finish("REFERENCE_SEMANTICS_CONTRACT", result,
+                   expected_context_hash=expected_context_hash,
+                   candidate_evidence=candidate_evidence)
+
+
 def _verify_protected_hi_rta_obligation(*, raw_inputs=None, candidate_evidence=None,
                                         expected_context_hash=None, certified_envelope=None,
                                         fresh_reference=None, **kwargs):
@@ -828,7 +880,7 @@ def _verify_protected_hi_rta_obligation(*, raw_inputs=None, candidate_evidence=N
         replay = replay_all_task_rta(fresh_reference, production)
         if not verify_obligation_certificate(production):
             raise ValueError("protected_hi_rta certificate hash invalid")
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError, RuntimeError) as exc:
         result = {
             "status": "FAIL",
             "route": "PROOF_BUNDLE_INVALID",
@@ -946,26 +998,39 @@ def _verify_final_claim_composition(*, raw_inputs=None, candidate_evidence=None,
     if not isinstance(verified_predecessors, Mapping):
         return _raw_inputs_result("FINAL_CLAIM_COMPOSITION", code="VERIFIED_PREDECESSORS_MISSING")
 
-    required_ids = (
-        "BUDGET_DOMAIN",
-        "REFERENCE_MODEL_CONFORMANCE",
-        "REFERENCE_TASKSET_SCHEDULABLE",
-        "FINITE_BAD_PREFIX_CONTRADICTION",
+    from formal_toolchain.theory.loader import load_verified_theory_statement
+    from .predecessor_contract import require_verified_predecessor as rvp
+    from .predecessor_contract import require_exact_predecessor_set
+
+    theorem = load_verified_theory_statement(
+        __import__("pathlib").Path(__file__).resolve().parents[1] / "theory",
+        "FINAL_DEPLOYED_HI_SAFETY_COMPOSITION",
     )
-    missing = [obligation_id for obligation_id in required_ids
-               if obligation_id not in verified_predecessors]
-    if missing:
-        result = {
+    premise_obligation_ids = theorem.get("premise_obligation_ids")
+    if not isinstance(premise_obligation_ids, list) or not premise_obligation_ids:
+        return {
+            "status": "FAIL",
+            "route": "PROOF_BUNDLE_INVALID",
+            "code": "FINAL_THEOREM_MACHINE_PREMISES_MISSING",
+            "failure": {"code": "FINAL_THEOREM_MACHINE_PREMISES_MISSING"},
+        }
+
+    from .predecessor_contract import PredecessorContractError
+    contexts = getattr(raw, "contexts", {}) if raw is not None else {}
+    try:
+        require_exact_predecessor_set(predecessors=verified_predecessors, expected_ids=set(premise_obligation_ids))
+        for premise_id in premise_obligation_ids:
+            rvp(predecessors=verified_predecessors, obligation_id=premise_id, contexts=contexts)
+    except PredecessorContractError as exc:
+        return {
             "status": "FAIL",
             "route": "REFERENCE_CERTIFICATE_FAILED",
-            "code": "FINAL_CLAIM_PREMISES_MISSING",
-            "failure": {"code": "FINAL_CLAIM_PREMISES_MISSING", "missing": missing},
+            "code": "FINAL_CLAIM_THEOREM_PREMISE_FAILED",
+            "failure": {"code": "FINAL_CLAIM_THEOREM_PREMISE_FAILED", "detail": str(exc)},
         }
-        return _finish("FINAL_CLAIM_COMPOSITION", result,
-                       expected_context_hash=expected_context_hash, candidate_evidence=candidate_evidence)
 
     witness_rows = []
-    for obligation_id in required_ids:
+    for obligation_id in sorted(premise_obligation_ids):
         certificate = verified_predecessors[obligation_id]
         valid = (
             isinstance(certificate, Mapping)
@@ -991,7 +1056,9 @@ def _verify_final_claim_composition(*, raw_inputs=None, candidate_evidence=None,
         result = {
             "status": "PASS",
             "witness": {
-                "premise_ids": list(required_ids),
+                "theorem_id": theorem.get("theorem_id"),
+                "theorem_statement_hash": theorem.get("statement_hash"),
+                "premise_obligation_ids": sorted(premise_obligation_ids),
                 "premises": witness_rows,
                 "final_claim": "DEPLOYED_HI_SAFETY",
             },
@@ -1403,7 +1470,7 @@ VERIFIER_CHECKERS: dict[str, Checker] = {
     "DEPLOYED_POLICY_PRESERVATION": _verify_deployed_policy_preservation,
     "CERTIFIED_ENVELOPE": _verify_certified_envelope,
     "CODE_REFERENCE_UPPER_BOUND_MAPPING": verify_code_reference_upper_bound_mapping,
-    "REFERENCE_TASKSET": _candidate_status_checker("REFERENCE_TASKSET"),
+    "REFERENCE_TASKSET": _verify_reference_taskset_obligation,
     "DISCRETE_TICK_EMBEDDING": verify_discrete_tick_embedding,
     "RELEASE_COUNT": verify_release_count,
     "DEMAND_DOMINATION": verify_demand_domination,
@@ -1414,6 +1481,7 @@ VERIFIER_CHECKERS: dict[str, Checker] = {
     "ZERO_RELATIVE_START": verify_zero_relative_start,
     "INHERITED_HI_DOMINATION": verify_inherited_hi_domination,
     "ALL_TASK_REFERENCE_RTA_ARITHMETIC": _verify_all_task_reference_rta_obligation,
+    "REFERENCE_SEMANTICS_CONTRACT": _verify_reference_semantics_contract,
     "REFERENCE_MODEL_CONFORMANCE": lambda **kwargs: _verify_reference_model_conformance(**kwargs),
     "BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION": lambda **kwargs: verify_budget_to_reference_domination(**kwargs),
     "REFERENCE_TASKSET_SCHEDULABLE": lambda **kwargs: verify_reference_taskset_schedulable(**kwargs),

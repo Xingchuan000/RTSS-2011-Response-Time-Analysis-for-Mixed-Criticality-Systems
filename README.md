@@ -37,7 +37,7 @@ conda run -n amc-repro python -c "import amc_py; print('ok')"
 
 ```bash
 cd /Users/x1ngchuan/Documents/AMC
-python -m pip install -e .[dev]
+python -m pip install -e '.[dev,formal]'
 python -m pytest -q
 ```
 

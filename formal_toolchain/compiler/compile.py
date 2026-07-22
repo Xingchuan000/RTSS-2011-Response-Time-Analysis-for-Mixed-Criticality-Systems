@@ -10,13 +10,13 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from formal_toolchain.compiler.dag_runner import claim_dependency_closure, topological_order
+from formal_toolchain.compiler.dag_runner import topological_order
 from formal_toolchain.compiler.evidence_catalog import evidence_key_for
 from formal_toolchain.core.artifact import obligation_certificate
 from formal_toolchain.core.formal_checks import calculate_raw_evidence, proof_safe
 from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.core.contexts import expected_context_for_obligation
-from formal_toolchain.core.registry import load_registry
+from formal_toolchain.core.registry import load_registry, build_claim_closure
 
 
 def _write(path: Path, value: Any) -> None:
@@ -50,20 +50,22 @@ def _compile_phase_k_candidate(*, computed: Mapping[str, Any], built: Mapping[st
     return {}, "FRESH_VERIFIER_REQUIRED"
 
 
-def compile_request(request_path: Path, out_dir: Path) -> dict[str, Any]:
+def compile_request(request_path: Path, out_dir: Path, *, source_root: Path | None = None) -> dict[str, Any]:
     """执行 candidate DAG 并写出完整 candidate bundle。"""
 
+    source_root = Path(source_root).resolve(strict=True) if source_root is not None else Path(request_path).resolve().parent.parent.parent
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     registry_path = Path(__file__).parents[1] / "specs/obligation_registry.json"
     registry = load_registry(registry_path)
-    active = sorted(claim_dependency_closure(registry, "DEPLOYED_HI_SAFETY"))
+    closure = build_claim_closure(registry, "DEPLOYED_HI_SAFETY")
+    active = sorted(closure.candidate_artifacts)
     try:
         # candidate 可以生成 production/reference/RTA 的不受信任对象；它们
         # 仍必须在 fresh verifier 中重新 replay，不能把 candidate status 当
         # 成最终授权。Phase K bridge 则必须有独立 proof object，缺失时保留
         # UNRESOLVED。
-        computed = calculate_raw_evidence(request_path, source_root=Path.cwd(), include_reference=True)
+        computed = calculate_raw_evidence(request_path, source_root=source_root, include_reference=True)
         base_error: dict[str, Any] | None = None
     except Exception as exc:
         computed = None
@@ -123,8 +125,13 @@ def compile_request(request_path: Path, out_dir: Path) -> dict[str, Any]:
 
     phase_k_failure: str | None = "FRESH_VERIFIER_REQUIRED"
 
+    from formal_toolchain.core.registry import artifact_path_for
     for obligation_id, certificate in built.items():
-        _write(out_dir / "artifacts" / f"{obligation_id}.json", certificate)
+        entry = by_id.get(obligation_id)
+        if entry is not None:
+            _write(artifact_path_for(entry, out_dir), certificate)
+        else:
+            _write(out_dir / "artifacts" / f"{obligation_id}.json", certificate)
     if computed is not None:
         _write(out_dir / "candidate_inputs.json", {
             "context_hash": computed["context_hash"],

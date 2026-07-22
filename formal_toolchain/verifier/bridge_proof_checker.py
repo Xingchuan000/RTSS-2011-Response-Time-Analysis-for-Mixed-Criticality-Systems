@@ -1,9 +1,3 @@
-"""Phase I-K proof object 的 verifier-side checker。
-
-checker 只消费 candidate proof object，并对其 schema、context、源码 hash、
-case 集合和上游 hash 做检查；它不调用 compiler 的 proof generator。
-"""
-
 from __future__ import annotations
 
 import json
@@ -22,14 +16,10 @@ _THEORY_HASHES = json.loads(
 
 
 def _is_hash(value: Any) -> bool:
-    """判断 proof object 中的 hash 是否为规范的小写 SHA-256。"""
-
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
 def _verify_hash_map(value: Any) -> bool:
-    """验证 direct predecessor/hash map 的结构，不接受空字符串占位。"""
-
     return isinstance(value, Mapping) and all(
         isinstance(key, str) and _is_hash(item) for key, item in value.items()
     )
@@ -99,16 +89,44 @@ def _verify_cases(candidate: Mapping[str, Any], obligation_id: str,
             return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
                     "code": "BRIDGE_THEOREM_HASH_MISMATCH"}
     elif obligation_id == "REFERENCE_PREFIX_EXTENSION":
-        theorem = _THEORY_HASHES.get("REFERENCE_PREFIX_EXTENSION", {})
-        theorem_input = candidate.get("inputs", {}).get("theorem", {})
-        if (candidate.get("inputs", {}).get("theorem_id") != obligation_id
-                or theorem_input.get("theorem_id") != obligation_id
-                or theorem_input.get("statement_hash") != theorem.get("statement_hash")
-                or theorem_input.get("assumption_hash") != theorem.get("assumption_hash")
-                or not {"event_order", "time_progress"}
-                   <= set(candidate.get("direct_predecessor_hashes", {}))):
+        witness_schema = witness.get("schema_version", "")
+        if witness_schema in ("reference_prefix_extension_v2", "reference_prefix_extension_v3"):
             return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
-                    "code": "PREFIX_EXTENSION_THEOREM_MISMATCH"}
+                    "code": "PREFIX_EXTENSION_LEGACY_SCHEMA_REJECTED"}
+        if witness_schema != "reference_prefix_extension_v4":
+            return {"status": "UNRESOLVED", "route": "UNRESOLVED",
+                    "code": "PREFIX_EXTENSION_UNKNOWN_SCHEMA"}
+        expected_cases = {
+            "SAME_TIMESTAMP_CLOSURE",
+            "READY_SERVICE_OR_EARLIER_BOUNDARY",
+            "IDLE_JUMP_TO_MINIMUM_FUTURE_EVENT",
+        }
+        if set(witness.get("case_ids", [])) != expected_cases:
+            return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                    "code": "PREFIX_EXTENSION_CASE_IDS_MISMATCH"}
+        if not _is_hash(witness.get("backend_receipt_hash")):
+            return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                    "code": "PREFIX_EXTENSION_BACKEND_RECEIPT_MISSING"}
+        expected_predecessors = {
+            "REFERENCE_TASKSET", "TIME_PROGRESS", "EFFECTIVE_EVENT_ORDER",
+        }
+        if set(candidate.get("direct_predecessor_hashes", {})) != expected_predecessors:
+            return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                    "code": "PREFIX_EXTENSION_PREDECESSOR_SET_MISMATCH"}
+        if len(candidate.get("direct_predecessor_hashes", {})) != 3:
+            return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                    "code": "PREFIX_EXTENSION_PREDECESSOR_COUNT_MISMATCH"}
+        inputs = candidate.get("inputs", {})
+        theorem = _THEORY_HASHES.get("REFERENCE_PREFIX_EXTENSION", {})
+        if (inputs.get("theorem_statement_hash") != theorem.get("statement_hash")
+                or inputs.get("theorem_assumption_hash") != theorem.get("assumption_hash")):
+            return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                    "code": "PREFIX_EXTENSION_THEOREM_HASH_MISMATCH"}
+        for field in ("reference_taskset_fingerprint", "theorem_proof_object_hash",
+                      "reference_state_source_hash", "executable_semantics_source_hash"):
+            if not _is_hash(inputs.get(field, "")):
+                return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                        "code": f"PREFIX_EXTENSION_{field.upper()}_MISSING"}
     if obligation_id == "HI_BAD_CLOSED_PREFIX_REFLECTION":
         required = {"job_key", "release_time", "deadline", "service", "miss_time"}
         if not required <= set(witness.get("required_quantities", [])):
@@ -126,9 +144,6 @@ def _verify_cases(candidate: Mapping[str, Any], obligation_id: str,
                         "release_mapping"} <= set(candidate.get("direct_predecessor_hashes", {}))):
             return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
                     "code": "BAD_PREFIX_THEOREM_OR_SCHEMA_MISMATCH"}
-    # 结构字段通过后，必须消费当前源码的 fresh GuardIR/EffectIR/Z3 replay。
-    # 没有原始 verifier inputs 时保持 unresolved，不把 candidate case ID 当
-    # 成 transition 证明。
     if raw_inputs is None or not isinstance(reference_taskset, Mapping):
         return {"status": "UNRESOLVED", "route": "UNRESOLVED",
                 "code": "BRIDGE_REPLAY_INPUTS_MISSING"}
@@ -183,82 +198,62 @@ def verify_prefix_extension_proof_object(*, candidate: Mapping[str, Any],
     if failure:
         return failure
     theorem = _THEORY_HASHES.get("REFERENCE_PREFIX_EXTENSION", {})
-    theorem_input = candidate.get("inputs", {}).get("theorem", {})
-    if (candidate.get("inputs", {}).get("theorem_id") != "REFERENCE_PREFIX_EXTENSION"
-            or theorem_input.get("theorem_id") != "REFERENCE_PREFIX_EXTENSION"
-            or theorem_input.get("statement_hash") != theorem.get("statement_hash")
-            or theorem_input.get("assumption_hash") != theorem.get("assumption_hash")):
-        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "PREFIX_EXTENSION_THEOREM_MISMATCH"}
-    reference_taskset = kwargs.get("reference_taskset")
-    if not isinstance(reference_taskset, Mapping):
-        return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "REFERENCE_TASKSET_MISSING"}
-    tasks = reference_taskset.get("tasks", [])
-    if not isinstance(tasks, list):
-        return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "REFERENCE_TASKSET_MISSING"}
-    expected_witness = {
-        "schema_version": "reference_prefix_extension_v2",
-        "quantification": "FOR_ALL_FINITE_VALID_REFERENCE_PREFIXES",
-        "next_event_sources": [
-            "PERIODIC_RELEASE",
-            "DEADLINE",
-            "VALID_COMPLETION",
-            "VALID_OVERRUN",
-            "VALID_RESPONSE_EXPIRY",
-            "RECOVERY",
-            "CONTROLLER_BOUNDARY",
-        ],
-        "same_timestamp_phases": [
-            "RECOVERY",
-            "DEADLINE",
-            "ARRIVAL_BATCH_FREEZE",
-            "ARRIVAL",
-            "COMPLETION",
-            "OVERRUN",
-            "RESPONSE_EXPIRY",
-            "CONTROLLER_POSTCLOSURE",
-            "DISPATCH",
-        ],
-        "closure_rank": {
-            "measure": "(remaining_same_time_events, phase_rank, pending_token_refreshes)",
-            "well_founded_order": "LEXICOGRAPHIC_NATURAL",
-            "strict_decrease_cases": [
-                "READY_BRANCH_SERVICE_TICK",
-                "IDLE_BRANCH_JUMP",
-                "PERIODIC_RELEASE_SUCCESSOR",
-            ],
-        },
-        "ready_successor": {"rule": "ONE_SERVICE_TICK_OR_EARLIER_EFFECTIVE_EVENT"},
-        "idle_successor": {"rule": "JUMP_TO_MINIMUM_EFFECTIVE_FUTURE_EVENT"},
-        "periodic_release_successor": {"formula": "offset + k*period",
-                                       "least_k_rule": "floor((time-offset)/period)+1"},
-        "multiple_pending_jobs_supported": True,
-        "finite_prefix_job_map_total": True,
-        "horizon_independent": True,
-        "task_count": len(tasks),
-        "theorem": theorem,
-    }
     candidate_witness = candidate.get("witness")
     if not isinstance(candidate_witness, Mapping):
         return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "PREFIX_EXTENSION_WITNESS_MISSING"}
-    if candidate_witness.get("schema_version") is not None:
-        if candidate_witness.get("schema_version") != expected_witness["schema_version"]:
-            return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "PREFIX_EXTENSION_WITNESS_MISMATCH"}
-        for key in ("quantification", "next_event_sources", "same_timestamp_phases",
-                    "closure_rank", "ready_successor", "idle_successor",
-                    "periodic_release_successor", "multiple_pending_jobs_supported",
-                    "finite_prefix_job_map_total", "horizon_independent", "task_count"):
-            if candidate_witness.get(key) != expected_witness[key]:
-                return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "PREFIX_EXTENSION_WITNESS_MISMATCH"}
-    predecessor_keys = set(candidate.get("direct_predecessor_hashes", {}))
-    if predecessor_keys not in (
-        {"TIME_PROGRESS", "EFFECTIVE_EVENT_ORDER"},
-        {"time_progress", "event_order"},
-    ):
-        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "PREFIX_EXTENSION_PREDECESSOR_MISMATCH"}
+
+    sv = candidate_witness.get("schema_version", "")
+    if sv in ("reference_prefix_extension_v2", "reference_prefix_extension_v3"):
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                "code": "PREFIX_EXTENSION_LEGACY_SCHEMA_REJECTED"}
+    if sv == "reference_prefix_extension_v4":
+        expected_cases = {
+            "SAME_TIMESTAMP_CLOSURE",
+            "READY_SERVICE_OR_EARLIER_BOUNDARY",
+            "IDLE_JUMP_TO_MINIMUM_FUTURE_EVENT",
+        }
+        if set(candidate_witness.get("case_ids", [])) != expected_cases:
+            return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                    "code": "PREFIX_EXTENSION_CASE_IDS_MISMATCH"}
+        if not _is_hash(candidate_witness.get("backend_receipt_hash")):
+            return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                    "code": "PREFIX_EXTENSION_BACKEND_RECEIPT_MISSING"}
+        expected_predecessors = {
+            "REFERENCE_TASKSET", "TIME_PROGRESS", "EFFECTIVE_EVENT_ORDER",
+        }
+        if set(candidate.get("direct_predecessor_hashes", {})) != expected_predecessors:
+            return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                    "code": "PREFIX_EXTENSION_PREDECESSOR_SET_MISMATCH"}
+        if len(candidate.get("direct_predecessor_hashes", {})) != 3:
+            return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                    "code": "PREFIX_EXTENSION_PREDECESSOR_COUNT_MISMATCH"}
+        inputs = candidate.get("inputs", {})
+        for field in ("theorem_statement_hash", "theorem_assumption_hash",
+                      "theorem_proof_object_hash", "reference_taskset_fingerprint",
+                      "reference_state_source_hash", "executable_semantics_source_hash"):
+            if not _is_hash(inputs.get(field, "")):
+                return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                        "code": f"PREFIX_EXTENSION_{field.upper()}_MISSING"}
+        if (inputs.get("theorem_statement_hash") != theorem.get("statement_hash")
+                or inputs.get("theorem_assumption_hash") != theorem.get("assumption_hash")):
+            return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                    "code": "PREFIX_EXTENSION_THEOREM_HASH_MISMATCH"}
+
+        from formal_toolchain.core.hashing import sha256_file
+        ref_state_path = Path(__file__).resolve().parents[1] / "reference" / "reference_state.py"
+        exec_sem_path = Path(__file__).resolve().parents[1] / "reference" / "executable_semantics.py"
+        if inputs.get("reference_state_source_hash") != sha256_file(ref_state_path):
+            return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                    "code": "PREFIX_EXTENSION_REFERENCE_STATE_SOURCE_MISMATCH"}
+        if inputs.get("executable_semantics_source_hash") != sha256_file(exec_sem_path):
+            return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                    "code": "PREFIX_EXTENSION_EXECUTABLE_SEMANTICS_SOURCE_MISMATCH"}
+
     fresh_witness = {
         "certificate_hash": sha256_object(dict(candidate)),
-        "reused_closed_prefix_case_replay": True,
-        "task_count": len(tasks),
+        "schema_version": sv or "unknown",
+        "has_transition_cases": sv == "reference_prefix_extension_v4",
+        "reused_closed_prefix_case_replay": sv != "reference_prefix_extension_v4",
     }
     return {"status": "PASS", "route": None, "code": None, "witness": fresh_witness}
 
@@ -291,3 +286,46 @@ def verify_bad_prefix_proof_object(*, candidate: Mapping[str, Any],
     if set(candidate.get("direct_predecessor_hashes", {})) != expected_predecessors:
         return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "BAD_PREFIX_THEOREM_OR_SCHEMA_MISMATCH"}
     return {"status": "PASS", "route": None, "code": None, "witness": dict(candidate.get("witness", {}))}
+
+
+def verify_prefix_extension_proof_object(*, candidate: Mapping[str, Any],
+                                         bridge_context_hash: str,
+                                         contexts: Mapping[str, Mapping[str, Any]],
+                                         predecessors: Mapping[str, Mapping[str, Any]],
+                                         reference_taskset: Mapping[str, Any],
+                                         **_: Any) -> dict[str, Any]:
+    """Freshly rebuild and compare the complete prefix-extension certificate."""
+    failure = _base(candidate, "REFERENCE_PREFIX_EXTENSION", bridge_context_hash)
+    if failure:
+        return failure
+    from formal_toolchain.theory.loader import TCB_BACKENDS, load_verified_theory_statement
+    from formal_toolchain.bridge.prefix_extension import build_parameterized_prefix_extension_certificate
+    theory_dir = Path(__file__).resolve().parents[1] / "theory"
+    theorem = load_verified_theory_statement(theory_dir, "REFERENCE_PREFIX_EXTENSION")
+    if candidate.get("witness", {}).get("schema_version") in {"reference_prefix_extension_v2", "reference_prefix_extension_v3"}:
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "PREFIX_EXTENSION_LEGACY_SCHEMA_REJECTED"}
+    backend = TCB_BACKENDS.get(theorem.get("proof_object", {}).get("backend"))
+    if backend is None:
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "REFERENCE_PREFIX_BACKEND_MISSING"}
+    receipt = backend.verify(theory_dir / theorem["proof_object"]["path"], theorem=theorem)
+    if receipt.get("status") != "PASS":
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "REFERENCE_PREFIX_BACKEND_REJECTED", "backend_result": receipt}
+    expected_ids = {"REFERENCE_TASKSET", "TIME_PROGRESS", "EFFECTIVE_EVENT_ORDER"}
+    if set(predecessors) != expected_ids:
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "PREFIX_EXTENSION_PREDECESSOR_SET_MISMATCH"}
+    try:
+        rebuilt = build_parameterized_prefix_extension_certificate(
+            reference_taskset=reference_taskset,
+            reference_taskset_certificate=predecessors["REFERENCE_TASKSET"],
+            time_progress_certificate=predecessors["TIME_PROGRESS"],
+            event_order_certificate=predecessors["EFFECTIVE_EVENT_ORDER"],
+            contexts=contexts, context_hash=bridge_context_hash,
+            theorem_statement=theorem, theorem_proof_receipt=receipt,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "REFERENCE_PREFIX_REBUILD_FAILED", "failure": str(exc)}
+    if not verify_obligation_certificate(rebuilt):
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "REFERENCE_PREFIX_REBUILD_INVALID"}
+    if candidate.get("obligation_status") == "PASS" and candidate != rebuilt:
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "REFERENCE_PREFIX_REPLAY_MISMATCH"}
+    return {"status": "PASS", "route": None, "code": None, "witness": rebuilt.get("witness", {})}

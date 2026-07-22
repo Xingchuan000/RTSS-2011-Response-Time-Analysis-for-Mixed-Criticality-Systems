@@ -16,7 +16,9 @@ ALL_TASK_RTA_SCHEMA_VERSION = "all_task_rta_v3"
 
 
 def _task_row_payload(task: ReferenceTask, row: dict[str, Any]) -> dict[str, Any]:
+    status = row.get("status", "UNRESOLVED")
     return {
+        "status": status,
         "task": {
             "name": task.name,
             "priority_index": int(task.priority_index),
@@ -369,4 +371,7 @@ def all_task_reference_rta(taskset: ReferenceTaskset) -> dict[str, Any]:
 
 
 def protected_hi_rta(taskset: ReferenceTaskset) -> dict[str, Any]:
-    return all_task_reference_rta(taskset)
+    raise RuntimeError(
+        "protected_hi_rta is legacy-only and cannot authorize DEPLOYED_HI_SAFETY. "
+        "Use all_task_reference_rta() instead."
+    )

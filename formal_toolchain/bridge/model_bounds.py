@@ -13,6 +13,22 @@ from typing import Any, Mapping
 
 from formal_toolchain.core.hashing import sha256_object
 
+JobKey = tuple[str, int]
+TokenKind = str
+
+
+@dataclass(frozen=True, slots=True)
+class LocalTransitionFootprint:
+    """单个 handler transition 的有限局部影响域。
+
+    SMT 只对这个有限足迹做局部 relation preservation，全局 proof 由
+    Python/形式化 finite-map induction 完成，不依赖全局固定 job_slots。
+    """
+    affected_jobs: tuple[JobKey, ...]
+    created_jobs: tuple[JobKey, ...]
+    removed_jobs: tuple[JobKey, ...]
+    touched_tokens: tuple[TokenKind, ...]
+
 
 @dataclass(frozen=True, slots=True)
 class P0ModelBounds:

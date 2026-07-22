@@ -17,6 +17,12 @@ ALLOWED_LEVELS = frozenset({"DECLARED_AXIOM_TCB", "PUBLISHED_THEORY_TCB", "MACHI
 REQUIRED_FIELDS = frozenset({"theorem_id", "exact_statement", "assumptions", "conclusion",
                              "source_reference", "assurance_level", "version",
                              "statement_hash", "assumption_hash"})
+MACHINE_PREMISES = {
+    "C_AMC_SEM_ALL_TASK_SCHEDULABILITY_SUFFICIENCY": ["REFERENCE_MODEL_CONFORMANCE", "ALL_TASK_REFERENCE_RTA_ARITHMETIC"],
+    "REFERENCE_HI_SUBSET_SAFETY_FROM_TASKSET_SCHEDULABILITY": ["REFERENCE_TASKSET_SCHEDULABLE"],
+    "FINITE_BAD_PREFIX_CONTRADICTION": ["REFERENCE_HI_SUBSET_SAFETY", "HI_BAD_CLOSED_PREFIX_REFLECTION"],
+    "FINAL_DEPLOYED_HI_SAFETY_COMPOSITION": ["FINITE_BAD_PREFIX_CONTRADICTION"],
+}
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -28,7 +34,9 @@ def _load(path: Path) -> dict[str, Any]:
 
 
 def verify_theory_library(theory_dir: Path) -> dict[str, Any]:
-    """校验 manifest、每个 theorem 的两类 hash 以及必需 theorem 集合。"""
+    """校验 manifest、每个 theorem 的两类 hash、必需 theorem 集合以及 proof object 加载。"""
+    from formal_toolchain.theory.loader import verify_theory_library as loader_verify
+
     manifest = _load(theory_dir / "theory_manifest.json")
     policy = _load(theory_dir / "assurance_policy.json")
     policy_levels = set(policy.get("allowed_levels", []))
@@ -57,25 +65,31 @@ def verify_theory_library(theory_dir: Path) -> dict[str, Any]:
     for obj in objects:
         if REQUIRED_FIELDS - obj.keys():
             raise ValueError(f"{obj.get('theorem_id')} 缺少 theorem 字段")
+        if obj["theorem_id"] in MACHINE_PREMISES and obj.get("premise_obligation_ids") != MACHINE_PREMISES[obj["theorem_id"]]:
+            raise ValueError(f"{obj['theorem_id']} premise_obligation_ids 缺失或不一致")
         if obj["assurance_level"] not in policy_levels:
             raise ValueError(f"{obj['theorem_id']} assurance level 非法")
         if not str(obj["exact_statement"]).strip() or not str(obj["conclusion"]).strip() or not str(obj["source_reference"]).strip():
             raise ValueError(f"{obj['theorem_id']} 的 statement/conclusion/source_reference 不能为空")
         if not isinstance(obj["assumptions"], list) or not obj["assumptions"]:
             raise ValueError(f"{obj['theorem_id']} assumptions 必须是非空列表")
-        if obj["assurance_level"] == "MACHINE_FORMALIZED_KERNEL":
+        if obj["assurance_level"] == "MACHINE_CHECKED_PROJECT_LEMMA":
             proof_object = obj.get("proof_object")
-            if not isinstance(proof_object, dict) or not proof_object.get("path") or not proof_object.get("sha256"):
-                raise ValueError(f"{obj['theorem_id']} 缺少 proof_object")
+            if not isinstance(proof_object, dict):
+                raise ValueError(f"{obj['theorem_id']} MACHINE_CHECKED_PROJECT_LEMMA 缺少 proof_object")
+            if not isinstance(proof_object.get("path"), str) or not proof_object.get("path").strip():
+                raise ValueError(f"{obj['theorem_id']} proof_object.path 缺失")
+            if not isinstance(proof_object.get("sha256"), str) or len(proof_object.get("sha256", "")) != 64:
+                raise ValueError(f"{obj['theorem_id']} proof_object.sha256 不是 64 位 hash")
+            if not isinstance(proof_object.get("backend"), str) or not proof_object.get("backend").strip():
+                raise ValueError(f"{obj['theorem_id']} proof_object.backend 缺失")
         statement = {key: obj[key] for key in ("theorem_id", "exact_statement", "conclusion", "source_reference", "assurance_level", "version")}
-        assumptions = {"theorem_id": obj["theorem_id"], "assumptions": obj["assumptions"], "version": obj["version"]}
+        assumptions = {"theorem_id": obj["theorem_id"], "assumptions": obj["assumptions"],
+                       "premise_obligation_ids": obj.get("premise_obligation_ids", []), "version": obj["version"]}
         if obj["statement_hash"] != sha256_object(statement):
             raise ValueError(f"{obj['theorem_id']} statement_hash 不匹配")
         if obj["assumption_hash"] != sha256_object(assumptions):
             raise ValueError(f"{obj['theorem_id']} assumption_hash 不匹配")
-        # 防止把实例结论伪装成通用理论输入。
-        # 通用术语如 priority、taskset 不构成实例结论；只拒绝带实例值/字段的
-        # 形式，例如 ``seed 185``、``taskset_seed`` 或具体 artifact 字段。
         forbidden = (r"\bseed\s*\d+", "taskset_seed", "priority_order",
                      "integer_tree.json", "candidate_envelope:", "runtime_config:")
         text = json.dumps(obj, ensure_ascii=False).lower()
@@ -88,6 +102,10 @@ def verify_theory_library(theory_dir: Path) -> dict[str, Any]:
             raise ValueError(f"{obj['theorem_id']} 与 theory/hashes.json 不一致")
     if not registry_available:
         raise ValueError("theory manifest 校验缺少当前 Registry")
+    # 使用 loader 执行 proof object 加载和验证
+    loader_result = loader_verify(theory_dir)
+    if loader_result["status"] != "PASS":
+        raise ValueError(f"theory proof object 加载失败: {loader_result.get('code')}: {loader_result.get('message')}")
     return {"status": "PASS", "library_version": manifest.get("library_version"),
             "theorem_count": len(objects), "theorem_ids": sorted(ids)}
 

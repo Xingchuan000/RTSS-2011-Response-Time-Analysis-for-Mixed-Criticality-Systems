@@ -144,7 +144,7 @@ def verify_payload(payload: dict) -> dict:
         inputs={"fixture": "synthetic_p0"},
         witness={"deployed_hash": sha256_object(deployed_structural)},
         evidence=[{"status": "PASS"}],
-        direct_predecessor_hashes={name: sha256_object(predecessor_certificates[name]) for name in
+        direct_predecessor_hashes={name: predecessor_certificates[name]["artifact_hash"] for name in
             ("EXECUTABLE_POLICY_SEMANTICS", "CANDIDATE_ENVELOPE", "BUDGET_DOMAIN", "COMMON_TRANSITION_PRESERVATION")},
         checker_id="phase_fh_fresh_verifier", checker_version="1",
     )
@@ -154,7 +154,7 @@ def verify_payload(payload: dict) -> dict:
         witness={"candidate_hash": sha256_object(structural_candidate), "common_hash": sha256_object(common),
                  "deployed_hash": sha256_object(deployed_structural)},
         evidence=[{"fresh_process": True}],
-        direct_predecessor_hashes={name: sha256_object(predecessor_certificates[name]) for name in
+        direct_predecessor_hashes={name: predecessor_certificates[name]["artifact_hash"] for name in
             ("DEPLOYED_POLICY_PRESERVATION", "LO_BUDGET_UPPER_INVARIANT", "HI_BUDGET_LOWER_INVARIANT",
              "ACTIVE_RELEASE_BUDGET_INVARIANT")},
         checker_id="phase_fh_fresh_verifier", checker_version="1",

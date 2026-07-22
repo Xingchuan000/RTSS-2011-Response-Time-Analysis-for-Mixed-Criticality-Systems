@@ -11,15 +11,26 @@ from formal_toolchain.core.schema_loader import load_schema
 from formal_toolchain.core.registry import load_registry
 
 
+def _build_schema_registry(schema_root: Path):
+    """Build a referencing.Registry from all schema files in directory."""
+    from referencing import Registry, Resource
+    registry = Registry()
+    for path in sorted(schema_root.glob("*.schema.json")):
+        schema = json.loads(path.read_text(encoding="utf-8"))
+        uri = schema.get("$id", path.as_uri())
+        registry = registry.with_resource(uri, Resource.from_contents(schema))
+    return registry
+
+
 def verify_certificate(certificate: dict[str, Any], *, schema_name: str = "common_certificate.schema.json") -> dict[str, Any]:
     """校验标准证书结构，并返回可写入 bundle 的明确状态。"""
     try:
         schema = load_schema(Path(__file__).parents[1] / "specs/certificates" / schema_name)
-        # jsonschema 是正式 verifier 的依赖；导入失败必须明确 unresolved。
-        from jsonschema import Draft202012Validator, RefResolver
-        schema_path = Path(__file__).parents[1] / "specs/certificates" / schema_name
-        resolver = RefResolver(schema_path.as_uri(), schema)
-        errors = sorted(Draft202012Validator(schema, resolver=resolver).iter_errors(certificate), key=lambda e: list(e.path))
+        from jsonschema import Draft202012Validator
+        schema_root = Path(__file__).parents[1] / "specs/certificates"
+        ref_registry = _build_schema_registry(schema_root)
+        validator = Draft202012Validator(schema, registry=ref_registry)
+        errors = sorted(validator.iter_errors(certificate), key=lambda e: list(e.path))
     except Exception as exc:
         return {"status": "FAIL", "failure": {"code": "CERTIFICATE_SCHEMA_CHECK_UNAVAILABLE",
                 "route": "PROOF_BUNDLE_INVALID", "detail": str(exc)}}
@@ -29,7 +40,13 @@ def verify_certificate(certificate: dict[str, Any], *, schema_name: str = "commo
     if certificate.get("obligation_status") in {"PASS", "FAIL", "UNRESOLVED"} and not certificate.get("certificate_context_hash"):
         return {"status": "FAIL", "failure": {"code": "CERTIFICATE_CONTEXT_HASH_MISSING",
                 "route": "PROOF_BUNDLE_INVALID"}}
-    return {"status": "PASS", "certificate_hash": sha256_object(certificate)}
+    from formal_toolchain.core.artifact import CERTIFICATE_ENVELOPE_KEYS
+    payload = {key: certificate[key] for key in CERTIFICATE_ENVELOPE_KEYS if key != "artifact_hash"}
+    expected = certificate.get("artifact_hash")
+    if expected and sha256_object(payload) != expected:
+        return {"status": "FAIL", "failure": {"code": "CERTIFICATE_HASH_MISMATCH",
+                "route": "PROOF_BUNDLE_INVALID"}}
+    return {"status": "PASS", "certificate_hash": expected}
 
 
 def verify_registry_certificate(certificate: dict[str, Any], *, registry_path: Path,
@@ -59,7 +76,7 @@ def verify_registry_certificate(certificate: dict[str, Any], *, registry_path: P
         if not isinstance(predecessor, dict) or predecessor.get("obligation_status") != "PASS":
             return {"status": "FAIL", "failure": {"code": "PREDECESSOR_NOT_VERIFIED",
                     "route": "PROOF_BUNDLE_INVALID", "obligation_id": predecessor_id}}
-        if sha256_object(predecessor) != certificate["direct_predecessor_hashes"][predecessor_id]:
+        if certificate["direct_predecessor_hashes"][predecessor_id] != predecessor.get("artifact_hash"):
             return {"status": "FAIL", "failure": {"code": "PREDECESSOR_HASH_MISMATCH",
                     "route": "PROOF_BUNDLE_INVALID", "obligation_id": predecessor_id}}
     if certificate.get("certificate_context_hash") != sha256_object(context_inputs):

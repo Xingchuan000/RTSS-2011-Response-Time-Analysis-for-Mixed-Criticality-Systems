@@ -1,7 +1,8 @@
-"""registry DAG、字段覆盖和 migration 合同检查。"""
+"""registry DAG、字段覆盖、ClaimClosure 和 migration 合同检查。"""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from collections import defaultdict
 from pathlib import PurePosixPath
 from pathlib import Path
@@ -22,16 +23,100 @@ from formal_toolchain.core.obligation_ids import (
 
 REQUIRED_FIELDS = frozenset({"id", "profile", "kind", "activation", "required", "depends_on",
                              "artifact", "artifact_schema", "summary_path", "failure_route",
-                             "gates_claims", "status_evidence_rule"})
+                             "gates_claims", "status_evidence_rule",
+                             "proof_role", "context_layer"})
 KNOWN_FAILURE_ROUTES = frozenset({"PROOF_BUNDLE_INVALID", "MODEL_CONFORMANCE_FAILED",
                                   "CONCRETE_TIMING_COUNTEREXAMPLE", "POLICY_CONTRACT_VIOLATION",
                                   "REFERENCE_COUNTEREXAMPLE", "REFERENCE_CERTIFICATE_FAILED",
                                   "UNRESOLVED"})
 
+REGISTRY_HASH_FIELDS = (
+    "id", "profile", "kind", "activation", "required", "depends_on",
+    "artifact", "artifact_schema", "summary_path", "failure_route",
+    "gates_claims", "status_evidence_rule",
+    "proof_role", "context_layer", "producer", "authorization_for",
+)
+
+STRUCTURAL_GATE_IDS = frozenset({
+    "ARTIFACT_MANIFEST", "COMPONENT_CONTEXT_INTEGRITY", "DIRECT_PREDECESSOR_HASHES",
+    "STATUS_EVIDENCE", "OUTER_BUNDLE_ROOT", "INDEPENDENT_BUNDLE_VERIFICATION",
+    "CLAIM_AGGREGATION_RESULT",
+})
+
+
+@dataclass(frozen=True)
+class ClaimClosure:
+    mathematical: frozenset[str]
+    authorization: frozenset[str]
+    structural: frozenset[str]
+
+    @property
+    def candidate_artifacts(self) -> frozenset[str]:
+        return self.mathematical | self.authorization
+
+    @property
+    def verified_artifacts(self) -> frozenset[str]:
+        return self.candidate_artifacts | self.structural
+
+
+def build_claim_closure(entries: list[dict[str, Any]], claim: str) -> ClaimClosure:
+    """从 Registry 精确推导 claim 的闭包分层。
+    
+    compiler 与 verifier 必须调用同一个实现，确保 candidate/verified closure 一致。
+    """
+    by_id = {str(e["id"]): e for e in entries}
+    math_roots = {str(e["id"]) for e in entries
+                  if e["proof_role"] == "mathematical_root" and claim in e.get("gates_claims", [])}
+    if not math_roots:
+        raise ValueError(f"NO_MATHEMATICAL_ROOT_FOR_CLAIM:{claim}")
+    if len(math_roots) > 1:
+        raise ValueError(f"MULTIPLE_MATHEMATICAL_ROOTS:{sorted(math_roots)}")
+
+    def dependency_closure(roots: set[str]) -> set[str]:
+        result: set[str] = set()
+        def visit(oid: str) -> None:
+            if oid in result:
+                return
+            entry = by_id.get(oid)
+            if entry is None or entry.get("activation") != "active":
+                return
+            result.add(oid)
+            for dep in entry.get("depends_on", []):
+                visit(str(dep))
+        for r in roots:
+            visit(r)
+        return result
+
+    mathematical = dependency_closure(math_roots)
+    authorization = {
+        str(e["id"]) for e in entries
+        if e["proof_role"] == "authorization_gate"
+        and claim in e.get("authorization_for", [])
+    }
+    structural = {str(e["id"]) for e in entries
+                  if e["proof_role"] == "structural_gate"} | STRUCTURAL_GATE_IDS
+    return ClaimClosure(
+        mathematical=frozenset(mathematical),
+        authorization=frozenset(authorization),
+        structural=frozenset(structural),
+    )
+
+
+def exact_math_roots(entries: list[dict[str, Any]], claim: str) -> set[str]:
+    """返回 claim 的精确数学根集合。"""
+    roots = {str(e["id"]) for e in entries
+             if e["proof_role"] == "mathematical_root" and claim in e.get("gates_claims", [])}
+    if not roots:
+        raise ValueError(f"NO_MATHEMATICAL_ROOT_FOR_CLAIM:{claim}")
+    return roots
+
+
 def load_registry(path: Path) -> list[dict[str, Any]]:
     """只读取磁盘 JSON；loader 不增删、不覆盖任何 registry 字段。"""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return [dict(entry) for entry in data.get("entries", data)]
+    entries = [dict(entry) for entry in data.get("entries", data)]
+    validate_registry(entries)
+    return entries
 
 
 def active_obligations_for_claim(entries: list[dict[str, Any]], *, claim: str,
@@ -145,10 +230,16 @@ def validate_registry(entries: list[dict[str, Any]]) -> None:
             raise ValueError(f"{entry['id']} 依赖未知 obligation: {sorted(unknown)}")
         if entry["failure_route"] not in KNOWN_FAILURE_ROUTES:
             raise ValueError(f"{entry['id']} 使用未知 failure route")
+        if entry["proof_role"] == "authorization_gate" and not entry.get("authorization_for"):
+            raise ValueError(f"{entry['id']} 是 authorization_gate 但 authorization_for 为空")
         for field in ("artifact", "artifact_schema"):
             path = PurePosixPath(str(entry[field]).replace("\\", "/"))
             if path.is_absolute() or ".." in path.parts:
                 raise ValueError(f"{entry['id']} 的 {field} 越界")
+        if entry["proof_role"] not in frozenset({"mathematical_lemma", "mathematical_root",
+                                                  "authorization_gate", "structural_gate",
+                                                  "diagnostic"}):
+            raise ValueError(f"{entry['id']} 使用未知 proof_role: {entry['proof_role']}")
         graph[entry["id"]] = set(entry["depends_on"])
     visiting: set[str] = set()
     visited: set[str] = set()
@@ -166,6 +257,29 @@ def validate_registry(entries: list[dict[str, Any]]) -> None:
 
     for node in graph:
         visit(node)
+
+
+def topological_order(entries: list[dict[str, Any]]) -> list[str]:
+    """Return the registry's dependency-first order, rejecting every cycle."""
+    validate_registry(entries)
+    by_id = {str(entry["id"]): entry for entry in entries}
+    state: dict[str, int] = {}
+    result: list[str] = []
+
+    def visit(node: str) -> None:
+        if state.get(node) == 1:
+            raise ValueError("obligation registry 存在环")
+        if state.get(node) == 2:
+            return
+        state[node] = 1
+        for dependency in by_id[node].get("depends_on", []):
+            visit(str(dependency))
+        state[node] = 2
+        result.append(node)
+
+    for node in sorted(by_id):
+        visit(node)
+    return result
 
 
 def interface_coverage(entries: list[dict[str, Any]], known_artifacts: set[str] | None = None,
@@ -186,6 +300,15 @@ def interface_coverage(entries: list[dict[str, Any]], known_artifacts: set[str] 
     active_ids = {str(e["id"]) for e in entries if e["activation"] == "active"}
     dependency_activation = sorted(str(e["id"]) for e in entries
                                    if e["activation"] == "active" and any(dep not in active_ids for dep in e["depends_on"]))
+    producer_missing = sorted(
+        row["id"] for row in entries
+        if row.get("activation") == "active" and "producer" not in row
+    )
+    artifact_path_not_canonical = sorted(
+        row["id"] for row in entries
+        if row.get("activation") == "active"
+        and row.get("artifact") != f"artifacts/{row['id'].lower()}.json"
+    )
     return {"orphan_obligation": [], "orphan_artifact": sorted(known_artifacts - seen_artifacts),
             "orphan_summary_path": [str(e["id"]) for e in entries if not e["summary_path"]],
             "unknown_failure_route": [str(e["id"]) for e in entries if e["failure_route"] not in known_routes],
@@ -195,7 +318,9 @@ def interface_coverage(entries: list[dict[str, Any]], known_artifacts: set[str] 
             "duplicate_artifact_path": artifact_duplicates,
             "duplicate_summary_path": summary_duplicates,
             "active_dependency_not_active": dependency_activation,
-            "semantic_dependency_missing": []}
+            "semantic_dependency_missing": [],
+            "producer_missing": producer_missing,
+            "artifact_path_not_canonical": artifact_path_not_canonical}
 
 
 def write_interface_coverage_report(entries: list[dict[str, Any]], output_path, *,
@@ -209,9 +334,22 @@ def write_interface_coverage_report(entries: list[dict[str, Any]], output_path, 
     return report
 
 
+def artifact_path_for(entry: dict[str, Any], bundle_root: Path) -> Path:
+    """从 Registry entry 的 artifact 字段计算规范路径。"""
+    relative = Path(str(entry["artifact"]))
+    path = (bundle_root / relative).resolve()
+    if bundle_root.resolve() not in path.parents and path != bundle_root.resolve():
+        raise ValueError(f"REGISTRY_ARTIFACT_PATH_ESCAPE: {entry['id']} -> {path}")
+    return path
+
+
 def registry_fingerprint(entries: list[dict[str, Any]]) -> str:
     from formal_toolchain.core.hashing import sha256_object
-    return sha256_object(sorted(entries, key=lambda item: str(item["id"])))
+    stable = [
+        {field: entry.get(field) for field in REGISTRY_HASH_FIELDS}
+        for entry in entries
+    ]
+    return sha256_object(sorted(stable, key=lambda row: str(row.get("id", ""))))
 
 
 def check_migration(previous_schema_version: str, current_schema_version: str,

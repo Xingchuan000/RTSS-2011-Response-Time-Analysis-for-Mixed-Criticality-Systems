@@ -1,5 +1,5 @@
 {
-  "assumption_hash": "024e334a421d85d698fdf9c69db8185d14d62b409505e6ad0aabfb70a639cd4b",
+  "assumption_hash": "92dd4cf8528b5d3a00c8ab19db2ac7dc7e6f2e656a694c30dfc55af5016be1b6",
   "assumptions": [
     "integer_start_domain",
     "protected_hi_task_i",

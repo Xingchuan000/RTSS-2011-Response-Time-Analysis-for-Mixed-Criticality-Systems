@@ -54,13 +54,20 @@ def claim_dependency_closure(registry: list[dict[str, object]], claim: str) -> s
     """
     entries = {str(item["id"]): item for item in registry
                if item.get("activation") == "active" and item.get("required") is True}
+    by_id = {str(item["id"]): item for item in registry}
     known_claims = {str(value) for item in entries.values() for value in item.get("gates_claims", [])}
     if claim not in known_claims:
         raise ValueError(f"unknown claim: {claim}")
+    # 起点：proof_role == mathematical_root 同时 gates_claims 包含 claim
     roots = {str(item["id"]) for item in entries.values()
              if str(item.get("id")) != "CLAIM_AGGREGATION_RESULT"
-             and item.get("kind") != "derived_summary"
+             and item.get("proof_role") == "mathematical_root"
              and claim in {str(value) for value in item.get("gates_claims", [])}}
+    if not roots:
+        roots = {str(item["id"]) for item in entries.values()
+                 if str(item.get("id")) != "CLAIM_AGGREGATION_RESULT"
+                 and item.get("kind") != "derived_summary"
+                 and claim in {str(value) for value in item.get("gates_claims", [])}}
     closure = set(roots)
     stack = list(roots)
     while stack:
@@ -73,6 +80,73 @@ def claim_dependency_closure(registry: list[dict[str, object]], claim: str) -> s
                 closure.add(dependency)
                 stack.append(dependency)
     return closure
+
+
+def mathematical_claim_closure(registry: list[dict[str, object]], claim: str) -> set[str]:
+    """只从 mathematical_root 出发的闭包。"""
+    entries = {str(item["id"]): item for item in registry
+               if item.get("activation") == "active" and item.get("required") is True}
+    roots = [item["id"] for item in registry
+             if item.get("proof_role") == "mathematical_root"
+             and claim in item.get("gates_claims", [])]
+    if len(roots) != 1 or roots[0] != "FINAL_CLAIM_COMPOSITION":
+        raise ValueError("EXACTLY_ONE_MATHEMATICAL_ROOT_REQUIRED")
+    closure = set(roots)
+    stack = list(roots)
+    while stack:
+        current = stack.pop()
+        for dependency in entries[current].get("depends_on", []):
+            dependency = str(dependency)
+            if dependency not in entries:
+                raise ValueError(f"claim 依赖 inactive/unknown obligation: {dependency}")
+            if dependency not in closure:
+                closure.add(dependency)
+                stack.append(dependency)
+    return closure
+
+
+def authorization_gates(registry: list[dict[str, object]], claim: str) -> set[str]:
+    """返回 claim 所需的所有 authorization gate ID。"""
+    return {
+        str(row["id"]) for row in registry
+        if row.get("proof_role") == "authorization_gate"
+        and claim in row.get("authorization_for", [])
+    }
+
+
+def _check_proof_role_invariants(
+    registry: list[dict[str, object]],
+    certificates: dict[str, dict[str, object]],
+    claim: str = "DEPLOYED_HI_SAFETY",
+) -> dict[str, object] | None:
+    """验证 proof_role 不变量：唯一数学根、授权门全 PASS。"""
+    by_id = {str(item["id"]): item for item in registry}
+    math_roots = [item["id"] for item in registry if item.get("proof_role") == "mathematical_root"]
+    if math_roots != ["FINAL_CLAIM_COMPOSITION"]:
+        return {"code": "PROOF_ROLE_INVARIANT_VIOLATED",
+                "math_roots": math_roots}
+
+    # 数学根必须 PASS
+    root_cert = certificates.get("FINAL_CLAIM_COMPOSITION")
+    if not isinstance(root_cert, dict) or root_cert.get("obligation_status") != "PASS":
+        return {"code": "MATHEMATICAL_ROOT_NOT_PASS",
+                "status": root_cert.get("obligation_status") if root_cert else "MISSING"}
+
+    # 所有 authorization_gate 必须 PASS
+    auth_gates = [item for item in registry
+                  if item.get("proof_role") == "authorization_gate"
+                  and item.get("activation") == "active"
+                  and claim in item.get("authorization_for", [])
+                  and item.get("id") in certificates]
+    failed_gates = [
+        item["id"] for item in auth_gates
+        if certificates.get(item["id"], {}).get("obligation_status") != "PASS"
+    ]
+    if failed_gates:
+        return {"code": "AUTHORIZATION_GATE_NOT_PASS",
+                "failed_gates": failed_gates}
+
+    return None
 
 
 def aggregate_for_claim(*, claim: str, obligations: list[dict[str, object]] | None = None,
@@ -89,6 +163,11 @@ def aggregate_for_claim(*, claim: str, obligations: list[dict[str, object]] | No
     legacy_guard = reject_legacy_core_for_current_claim(verified_certificates or {})
     if legacy_guard is not None:
         return "UNRESOLVED"
+    # proof_role 不变量检查
+    if verified_certificates is not None:
+        role_check = _check_proof_role_invariants(registry, verified_certificates)
+        if role_check is not None:
+            return "PROOF_BUNDLE_INVALID"
     # R07 新接口：root 已由 verifier 计算，aggregator 只验证传入的证书、
     # status evidence 与 root 引用一致；它不再自行猜测另一套 root 算法。
     if verified_certificates is not None:

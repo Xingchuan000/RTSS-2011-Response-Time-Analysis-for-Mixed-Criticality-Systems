@@ -34,7 +34,7 @@ from formal_toolchain.verifier.recompute import (
     load_verifier_inputs,
 )
 from formal_toolchain.reference.arithmetic import ceil_div_nonnegative, floor_div_nonnegative, post_count
-from formal_toolchain.reference.rta_production import protected_hi_rta
+from formal_toolchain.reference.rta_production import all_task_reference_rta as protected_hi_rta
 from formal_toolchain.reference.rta_replay import replay_rta
 from formal_toolchain.reference.recurring_hi import build_recurring_hi_instances
 from formal_toolchain.reference.protected_hi import protected_hi_safety_corollary
@@ -304,11 +304,23 @@ def test_verifier_invokes_fresh_phase_k_generation(tmp_path: Path, monkeypatch: 
         raw_inputs=inputs,
         invariant_context_hash=str(inputs.contexts["invariant_context"]["hash"]),
     )
-    fresh_reference = _fresh_reference_taskset(inputs, envelope_state.certified_envelope)
+    is_synthetic_envelope = envelope_state.certified_envelope is None
+    certified_envelope = envelope_state.certified_envelope
+    if is_synthetic_envelope:
+        certified_envelope = {
+            "trust_level": "CANDIDATE_UNVERIFIED",
+            "not_a_certified_envelope": True,
+            "upper": {str(task.name): int(task.c_hi) for task in inputs.target.ordered_tasks},
+            "lower": {str(task.name): 0 for task in inputs.target.ordered_tasks},
+        }
+    fresh_reference = _fresh_reference_taskset(inputs, certified_envelope)
     candidate_release_mapping = json.loads((compile_out / "artifacts" / "RELEASE_FIXED_REMOVAL_MAPPING.json").read_text(encoding="utf-8"))
-    rta = protected_hi_rta(fresh_reference)
-    recurring = build_recurring_hi_instances(fresh_reference, rta_certificate=rta)
-    corollary = protected_hi_safety_corollary(recurring)
+    recurring = {"status": "UNRESOLVED"}
+    corollary = {"status": "UNRESOLVED"}
+    if not is_synthetic_envelope and fresh_reference is not None:
+        rta = protected_hi_rta(fresh_reference)
+        recurring = build_recurring_hi_instances(fresh_reference, rta_certificate=rta)
+        corollary = protected_hi_safety_corollary(recurring)
     fresh_certificates = {
         "SCHEDULER_MODEL": json.loads((compile_out / "artifacts" / "SCHEDULER_MODEL.json").read_text(encoding="utf-8")),
         "MODE_SEMANTICS_CONFORMANCE": json.loads((compile_out / "artifacts" / "MODE_SEMANTICS_CONFORMANCE.json").read_text(encoding="utf-8")),
@@ -325,6 +337,7 @@ def test_verifier_invokes_fresh_phase_k_generation(tmp_path: Path, monkeypatch: 
         "CERTIFIED_ENVELOPE": {"obligation_id": "CERTIFIED_ENVELOPE", "obligation_status": "PASS"},
         "PROTECTED_HI_SAFETY_COROLLARY": corollary,
         "RELEASE_FIXED_REMOVAL_MAPPING": candidate_release_mapping,
+        "REFERENCE_TASKSET": {"obligation_id": "REFERENCE_TASKSET", "obligation_status": "PASS", "artifact_hash": "0" * 64},
     }
 
     calls = {"count": 0}

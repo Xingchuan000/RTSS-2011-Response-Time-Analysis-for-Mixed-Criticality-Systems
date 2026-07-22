@@ -8,7 +8,6 @@ from typing import Any, Mapping
 
 from formal_toolchain.core.artifact import verify_obligation_certificate
 from formal_toolchain.core.hashing import sha256_object
-from formal_toolchain.binding.event_runtime_binding import bind_event_runtime
 from formal_toolchain.binding.removal_binding import bind_removal_runtime
 from .closure_cases import (
     build_bridge_prerequisite_certificates, build_deadline_observation_certificate,
@@ -33,6 +32,9 @@ def _theory(theorem_id: str) -> dict[str, str]:
 
 def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
                     reference_taskset: Mapping[str, Any], bridge_context_hash: str,
+                    contexts: Mapping[str, Mapping[str, Any]],
+                    reference_prefix_theorem: Mapping[str, Any],
+                    reference_prefix_proof_receipt: Mapping[str, Any],
                     model_bounds: P0ModelBounds | None = None,
                     concrete_base: P0ConcreteState | None = None,
                     reference_base: P0ReferenceState | None = None,
@@ -41,6 +43,12 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
                     closure_completion_certificate: Mapping[str, Any] | None = None,
                     runtime_config: Any | None = None) -> dict[str, Any]:
     """不读取外部 proof PASS 对象，只消费已绑定源码与参考 taskset。"""
+    if reference_prefix_proof_receipt.get("status") != "PASS":
+        return {"status": "UNRESOLVED", "failure": "REFERENCE_PREFIX_THEOREM_BACKEND_FAILED"}
+    if not isinstance(reference_prefix_proof_receipt.get("receipt_hash"), str):
+        return {"status": "UNRESOLVED", "failure": "REFERENCE_PREFIX_THEOREM_RECEIPT_MISSING"}
+    if reference_prefix_theorem.get("theorem_id") != "REFERENCE_PREFIX_EXTENSION":
+        return {"status": "UNRESOLVED", "failure": "REFERENCE_PREFIX_EXTENSION_THEOREM_REQUIRED"}
     bounds = model_bounds or derive_p0_model_bounds(reference_taskset)
     compiled = compile_and_prove_all_transition_cases(
         branch_map, bridge_context_hash=bridge_context_hash, bounds=bounds,
@@ -73,7 +81,6 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
         return {"status": "UNRESOLVED", "failure": "K5_SEMANTIC_ACCEPTANCE_GATE_FAILED",
                 "transition_cases": compiled}
     root = Path(source_root)
-    event_binding = bind_event_runtime(root)
     removal_binding = bind_removal_runtime(root)
     from formal_toolchain.binding.controller_binding import bind_controller_runtime
     from .handler_decomposition import build_handler_decomposition_certificate
@@ -91,7 +98,8 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
                                 "DEMAND_ORACLE_BATCH_CONTRACT", "HI_EXECUTION_CONTRACT",
                                 "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION", "DEADLINE_OBSERVATION",
                                 "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE", "CONTROLLER_POSTCLOSURE",
-                                "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION", "CERTIFIED_ENVELOPE"))
+                                "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION", "CERTIFIED_ENVELOPE",
+                                "REFERENCE_TASKSET"))
             or not isinstance(release_mapping_certificate, Mapping)
             or release_mapping_certificate.get("obligation_id") != "RELEASE_FIXED_REMOVAL_MAPPING"
             or release_mapping_certificate.get("obligation_status") != "PASS"):
@@ -100,7 +108,7 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
     if concrete_base is None or reference_base is None:
         return {"status": "UNRESOLVED", "failure": "PRECLOSED_BASE_STATE_REQUIRED",
                 "transition_cases": compiled}
-    event_order = build_event_order_certificate(context_hash=bridge_context_hash, binding=event_binding)
+    event_order = upstream_certificates["EFFECTIVE_EVENT_ORDER"]
     from .base_relation import build_preclosed0_base_certificate, empty_boot_states
     empty_concrete, empty_reference = empty_boot_states(reference_taskset=reference_taskset)
     proof_by_case = {row["case_id"]: row for row in compiled["proofs"]}
@@ -138,10 +146,15 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
     if closed.get("obligation_status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "CLOSED_PREFIX_INCOMPLETE", "transition_cases": compiled,
                 "prerequisites": prereqs, "closed_prefix": closed}
+    reference_taskset_certificate = upstream_certificates.get("REFERENCE_TASKSET", {})
     extension = build_parameterized_prefix_extension_certificate(
-        reference_taskset=reference_taskset, time_progress_certificate=prereqs["positive_time"],
-        event_order_certificate=event_order, context_hash=bridge_context_hash,
-        theorem_manifest={**_theory("REFERENCE_PREFIX_EXTENSION"), "theorem_id": "REFERENCE_PREFIX_EXTENSION"})
+        reference_taskset=reference_taskset, reference_taskset_certificate=reference_taskset_certificate,
+        time_progress_certificate=prereqs["positive_time"],
+        event_order_certificate=event_order,
+        contexts=contexts,
+        context_hash=bridge_context_hash,
+        theorem_statement=reference_prefix_theorem,
+        theorem_proof_receipt=reference_prefix_proof_receipt)
     if extension.get("inputs", {}).get("theorem_id") != "REFERENCE_PREFIX_EXTENSION":
         return {"status": "UNRESOLVED", "failure": "REFERENCE_PREFIX_EXTENSION_THEOREM_REQUIRED",
                 "transition_cases": compiled, "closed_prefix": closed, "reference_extension": extension}

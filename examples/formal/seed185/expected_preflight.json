@@ -1,7 +1,0 @@
-{
-  "obligation_status": "UNRESOLVED",
-  "failure": {
-    "code": "AUTHORITATIVE_TARGET_MISSING",
-    "route": "MODEL_CONFORMANCE_FAILED"
-  }
-}

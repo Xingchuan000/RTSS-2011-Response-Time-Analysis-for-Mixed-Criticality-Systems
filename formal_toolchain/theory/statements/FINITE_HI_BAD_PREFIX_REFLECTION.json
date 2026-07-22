@@ -1,5 +1,5 @@
 {
-  "assumption_hash": "7bba460aed255e0cc1850f0b1a1e71619c7ce7f07dc0ca935925b282cfb9d1b8",
+  "assumption_hash": "3a16d7804f5e096d7cbf835894fc335e23eab6f7cec788f00475ed45fb2b9cc4",
   "assumptions": [
     "first_finite_concrete_hi_bad_prefix",
     "closed_prefix_refinement",

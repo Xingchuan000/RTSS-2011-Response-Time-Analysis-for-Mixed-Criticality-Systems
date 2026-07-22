@@ -1,5 +1,5 @@
 {
-  "assumption_hash": "0e85f62ecfd2cf1f852d0a80f510117901bc55652f5b661e13280b60eda3c541",
+  "assumption_hash": "43d4e9e6f66f840faeb4cca6e1598ac2473dff5ee866e29b709b1e33b42f0cc8",
   "assumptions": [
     "integer_tick",
     "zero_processor_overhead",

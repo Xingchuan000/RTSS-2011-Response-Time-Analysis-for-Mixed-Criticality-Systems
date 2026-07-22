@@ -1,1 +1,29 @@
-{"schema_version":"theory_manifest_v3","library_version":"p0-theory-r4","proof_schema_version":"common_certificate_v2","registry_fingerprint":"19d3645e015c64e80deda54b5fe571bb24657293f55016c9f37c24c7d01a94d9","proof_schema_compatible":["proof_request_v2","common_certificate_v1","common_certificate_v2"],"assurance_levels":["PUBLISHED_THEORY_TCB","MACHINE_CHECKED_PROJECT_LEMMA"],"required_theorems":["FPPS_LO_RTA_POSTFIXED_SUFFICIENCY","C_AMC_SEM_ALL_TASK_SCHEDULABILITY_SUFFICIENCY","DISCRETE_TICK_FPPS_EMBEDDING","ZERO_RELATIVE_START_LEMMA","INHERITED_HI_VIRTUAL_SWITCH_DOMINATION","CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT","REFERENCE_PREFIX_EXTENSION","FINITE_HI_BAD_PREFIX_REFLECTION","REFERENCE_HI_SUBSET_SAFETY_FROM_TASKSET_SCHEDULABILITY","FINITE_BAD_PREFIX_CONTRADICTION","FINAL_DEPLOYED_HI_SAFETY_COMPOSITION"]}
+{
+  "schema_version": "theory_manifest_v4",
+  "library_version": "p0-theory-r7",
+  "proof_schema_version": "common_certificate_v2",
+  "registry_fingerprint": "b6cf91b00fb09c22abc0c266c28814c37570bf6122857582044d1a521844cca8",
+  "proof_schema_compatible": [
+    "proof_request_v2",
+    "common_certificate_v1",
+    "common_certificate_v2"
+  ],
+  "assurance_levels": [
+    "PUBLISHED_THEORY_TCB",
+    "MACHINE_CHECKED_PROJECT_LEMMA"
+  ],
+  "required_theorems": [
+    "FPPS_LO_RTA_POSTFIXED_SUFFICIENCY",
+    "C_AMC_SEM_ALL_TASK_SCHEDULABILITY_SUFFICIENCY",
+    "DISCRETE_TICK_FPPS_EMBEDDING",
+    "ZERO_RELATIVE_START_LEMMA",
+    "INHERITED_HI_VIRTUAL_SWITCH_DOMINATION",
+    "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT",
+    "REFERENCE_PREFIX_EXTENSION",
+    "FINITE_HI_BAD_PREFIX_REFLECTION",
+    "REFERENCE_HI_SUBSET_SAFETY_FROM_TASKSET_SCHEDULABILITY",
+    "FINITE_BAD_PREFIX_CONTRADICTION",
+    "FINAL_DEPLOYED_HI_SAFETY_COMPOSITION",
+    "REFERENCE_MODEL_CONFORMANCE_DISCHARGE"
+  ]
+}

@@ -4,8 +4,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from formal_toolchain.reference.model_conformance import (
-    REQUIRED_CHECK_IDS,
     build_reference_model_conformance_certificate,
+    load_reference_model_conformance_contract,
 )
 from formal_toolchain.theory.loader import load_verified_theory_statement
 
@@ -28,13 +28,20 @@ def verify_reference_model_conformance(
             "code": "FRESH_REFERENCE_TASKSET_MISSING",
         }
 
-    expected_ids = set(REQUIRED_CHECK_IDS) | {"REFERENCE_TASKSET"}
+    theorem = load_verified_theory_statement(
+        __import__("pathlib").Path(__file__).resolve().parents[1] / "theory",
+        "C_AMC_SEM_ALL_TASK_SCHEDULABILITY_SUFFICIENCY",
+    )
+    contract = load_reference_model_conformance_contract()
+    expected_ids = {
+        predecessor_id
+        for condition in contract["conditions"]
+        for predecessor_id in condition["predecessor_obligation_ids"]
+    }
     try:
         require_exact_predecessor_set(predecessors=verified_predecessors, expected_ids=expected_ids)
         contexts = getattr(raw_inputs, "contexts", {})
         for obligation_id in expected_ids:
-            if obligation_id == "REFERENCE_TASKSET":
-                continue
             require_verified_predecessor(
                 predecessors=verified_predecessors,
                 obligation_id=obligation_id,
@@ -48,23 +55,24 @@ def verify_reference_model_conformance(
             "failure": str(exc),
         }
 
+    fresh_fingerprint = fresh_reference.to_dict().get("fingerprint")
+    reference_certificate = verified_predecessors["REFERENCE_TASKSET"]
+    reference_witness = reference_certificate.get("witness", {})
+    reference_taskset = reference_witness.get("reference_taskset", {})
+    certificate_fingerprint = reference_taskset.get("fingerprint")
+    if certificate_fingerprint != fresh_fingerprint:
+        return {
+            "status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+            "code": "REFERENCE_TASKSET_FINGERPRINT_MISMATCH",
+            "failure": {"certificate": certificate_fingerprint, "fresh": fresh_fingerprint},
+        }
     rebuilt = build_reference_model_conformance_certificate(
         reference_taskset=fresh_reference.to_dict(),
         context_hash=expected_context_hash,
-        predecessor_summaries={
-            obligation_id: {
-                "obligation_id": obligation_id,
-                "artifact_hash": cert.get("artifact_hash"),
-                "context_hash": cert.get("certificate_context_hash"),
-                "verified": True,
-                "obligation_status": cert.get("obligation_status"),
-            }
-            for obligation_id, cert in verified_predecessors.items()
-        },
-        imported_theorem=load_verified_theory_statement(
-            __import__("pathlib").Path(__file__).resolve().parents[1] / "theory",
-            "C_AMC_SEM_ALL_TASK_SCHEDULABILITY_SUFFICIENCY",
-        ),
+        verified_predecessors=verified_predecessors,
+        contexts=getattr(raw_inputs, "contexts", {}),
+        conformance_contract=contract,
+        imported_theorem=theorem,
     )
     if rebuilt.get("obligation_status") != "PASS":
         return {
@@ -74,16 +82,10 @@ def verify_reference_model_conformance(
             "witness": rebuilt,
         }
 
-    candidate_witness = candidate_certificate.get("witness", {})
-    rebuilt_witness = rebuilt.get("witness", {})
     if candidate_certificate.get("obligation_status") == "PASS":
-        if candidate_witness.get("check_ids") != list(REQUIRED_CHECK_IDS):
-            return {
-                "status": "FAIL",
-                "route": "PROOF_BUNDLE_INVALID",
-                "code": "REFERENCE_CONFORMANCE_CHECK_SET_MISMATCH",
-            }
-        if candidate_witness != rebuilt_witness:
+        from formal_toolchain.core.artifact import verify_obligation_certificate
+        if (not verify_obligation_certificate(candidate_certificate)
+                or candidate_certificate != rebuilt):
             return {
                 "status": "FAIL",
                 "route": "PROOF_BUNDLE_INVALID",

@@ -1,5 +1,5 @@
 {
-  "assumption_hash": "188a2035d31a9f92451781a23656ef15805dc2e30bbaa8aa2a96c14aa9b6d42a",
+  "assumption_hash": "79a05370b22fa6c7600f061ce31b613145fe434870f6ad2c251e58f5a098ddc1",
   "assumptions": [
     "finite_concrete_closed_prefix",
     "complete_transition_case_coverage",

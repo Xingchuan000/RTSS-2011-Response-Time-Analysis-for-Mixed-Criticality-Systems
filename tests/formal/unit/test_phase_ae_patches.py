@@ -14,7 +14,7 @@ from formal_toolchain.verifier.aggregator import aggregate_for_claim, claim_depe
 from formal_toolchain.verifier.checker_catalog import checker_for
 from formal_toolchain.verifier.envelope_checker import independently_verify_envelope
 from formal_toolchain.verifier.recompute import _fresh_reference_taskset, candidate_evidence, load_verifier_inputs, verify_bundle
-from formal_toolchain.reference.rta_production import protected_hi_rta
+from formal_toolchain.reference.rta_production import all_task_reference_rta as protected_hi_rta
 from formal_toolchain.reference.rta_replay import replay_rta
 from formal_toolchain.workflow.seed_workspace import freeze_seed_workspace
 
@@ -225,6 +225,7 @@ def test_proof_result_propagates_failure_audit_fields(tmp_path: Path, monkeypatc
     code, result = prove_seed_module.prove_seed(
         seed_dir=FIXTURE_ROOT, tree_variant="best_overall", code_root=ROOT,
         out=tmp_path / "bundle", overwrite=True,
+        dependency_manifest_override={"packages": {"z3-solver": "4.13.4.0", "jsonschema": "4.26.0", "numpy": "1.26.0", "scikit-learn": "1.5.0", "setuptools": "68.0.0"}, "python_version_info": "3.11.0"},
     )
     assert code == 10
     proof_result = json.loads((tmp_path / "bundle" / "proof_result.json").read_text(encoding="utf-8"))

@@ -26,6 +26,7 @@ def main() -> None:
         row["assumption_hash"] = sha256_object({
             "theorem_id": theorem_id,
             "assumptions": row.get("assumptions", []),
+            "premise_obligation_ids": row.get("premise_obligation_ids", []),
             "version": row["version"],
         })
         path.write_text(json.dumps(row, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

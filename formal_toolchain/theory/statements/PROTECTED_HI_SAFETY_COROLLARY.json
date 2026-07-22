@@ -1,5 +1,5 @@
 {
-  "assumption_hash": "0d0f1b15c483a4a08a4354d98f7878f9e929272613ac85569a6cf13d2d24d179",
+  "assumption_hash": "959c32892831dcd0b0357972e210ed1366058dcfda5b4e0271c0a92afdbce6b8",
   "assumptions": [
     "reference_protected_schedule",
     "all_hi_tasks",

@@ -74,6 +74,7 @@ class ReferenceTaskset:
         value = {"schema_version": "reference_taskset_v2",
                 "tasks": [asdict(task) for task in self.tasks],
                 "priority_order": list(self.priority_order),
+                "periodic_language_is_sporadic_sub_language": True,
                 "source_context_hash": self.source_context_hash}
         value["fingerprint"] = sha256_object(value)
         return value
@@ -175,6 +176,8 @@ def build_reference_taskset(
         if period <= 0 or not 0 < deadline <= period:
             raise ValueError(f"{name}: expected constrained deadline 0 < D <= T")
         offset = _integer(getattr(task, "offset", 0), f"{name}.offset")
+        if offset != 0:
+            raise ValueError(f"{name}: P0 runtime only supports zero release offset (got {offset})")
         if not 0 <= offset < period:
             raise ValueError(f"{name}: invalid periodic release offset")
         # I02 的 B̄_i 只来自 Phase H certified envelope；budget_floor 和

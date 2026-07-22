@@ -1,94 +1,112 @@
-"""Phase K 的参数化 reference-prefix extension certificate builder。"""
-
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from formal_toolchain.core.artifact import obligation_certificate, verify_obligation_certificate
+from formal_toolchain.core.artifact import obligation_certificate
+from formal_toolchain.core.hashing import sha256_file, sha256_object
+from formal_toolchain.core.predecessor_contract import validate_verified_predecessor
+from formal_toolchain.theory.backends.reference_prefix_extension import EXPECTED_CASE_IDS, EXPECTED_SOLVER_OBLIGATIONS
 
 
-def _theory(theorem_id: str) -> dict[str, str]:
-    if theorem_id != "REFERENCE_PREFIX_EXTENSION":
-        raise ValueError("prefix extension 必须使用 REFERENCE_PREFIX_EXTENSION")
-    return json.loads((Path(__file__).resolve().parents[1] / "theory" / "hashes.json").read_text(encoding="utf-8"))["statements"][theorem_id]
+def _receipt_is_valid(
+    receipt: Mapping[str, Any], theorem: Mapping[str, Any], proof_path: Path,
+) -> bool:
+    if receipt.get("status") != "PASS" or receipt.get("backend_id") != "reference-prefix-extension-z3-v3":
+        return False
+    required = {
+        "backend_id", "proof_object_hash", "theorem_statement_hash",
+        "theorem_assumption_hash", "source_bindings", "case_ids",
+        "solver_obligations", "z3_version",
+    }
+    if not required <= set(receipt):
+        return False
+    if receipt.get("proof_object_hash") != sha256_file(proof_path):
+        return False
+    if receipt.get("proof_object_hash") != theorem.get("proof_object", {}).get("sha256"):
+        return False
+    if receipt.get("theorem_statement_hash") != theorem.get("statement_hash"):
+        return False
+    if receipt.get("theorem_assumption_hash") != theorem.get("assumption_hash"):
+        return False
+    if receipt.get("case_ids") != list(EXPECTED_CASE_IDS):
+        return False
+    if set(receipt.get("solver_obligations", {})) != set(EXPECTED_SOLVER_OBLIGATIONS):
+        return False
+    body = {key: receipt[key] for key in required}
+    return receipt.get("receipt_hash") == sha256_object(body)
 
 
-def build_parameterized_prefix_extension_certificate(*, reference_taskset: Mapping[str, Any],
-                                                     time_progress_certificate: Mapping[str, Any],
-                                                     event_order_certificate: Mapping[str, Any],
-                                                     context_hash: str,
-                                                     theorem_manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """证明当前 periodic reference 子语言没有 abstract dead-end。"""
-    if (not verify_obligation_certificate(time_progress_certificate)
-            or time_progress_certificate.get("obligation_status") != "PASS"
-            or not verify_obligation_certificate(event_order_certificate)
-            or event_order_certificate.get("obligation_status") != "PASS"):
-        raise ValueError("prefix extension 的 service/event-order 前置证书无效")
-    theorem = (theorem_manifest or _theory("REFERENCE_PREFIX_EXTENSION"))
-    if theorem.get("theorem_id") not in (None, "REFERENCE_PREFIX_EXTENSION"):
-        raise ValueError("theorem manifest 不是 REFERENCE_PREFIX_EXTENSION")
+def build_parameterized_prefix_extension_certificate(
+    *, reference_taskset: Mapping[str, Any],
+    reference_taskset_certificate: Mapping[str, Any],
+    time_progress_certificate: Mapping[str, Any],
+    event_order_certificate: Mapping[str, Any],
+    contexts: Mapping[str, Mapping[str, Any]],
+    context_hash: str,
+    theorem_statement: Mapping[str, Any],
+    theorem_proof_receipt: Mapping[str, Any],
+) -> dict[str, Any]:
+    predecessors = {
+        "REFERENCE_TASKSET": reference_taskset_certificate,
+        "TIME_PROGRESS": time_progress_certificate,
+        "EFFECTIVE_EVENT_ORDER": event_order_certificate,
+    }
+    if set(predecessors) != {"REFERENCE_TASKSET", "TIME_PROGRESS", "EFFECTIVE_EVENT_ORDER"}:
+        raise ValueError("REFERENCE_PREFIX_PREDECESSOR_SET_MISMATCH")
+    for obligation_id in predecessors:
+        validate_verified_predecessor(
+            predecessors=predecessors, obligation_id=obligation_id, contexts=contexts,
+        )
+    fresh_fingerprint = reference_taskset.get("fingerprint")
+    certificate_fingerprint = reference_taskset_certificate.get("witness", {}).get("reference_taskset", {}).get("fingerprint")
+    if certificate_fingerprint != fresh_fingerprint:
+        raise ValueError("REFERENCE_PREFIX_REFERENCE_TASKSET_FINGERPRINT_MISMATCH")
+    if theorem_statement.get("theorem_id") != "REFERENCE_PREFIX_EXTENSION":
+        raise ValueError("THEOREM_MUST_BE_REFERENCE_PREFIX_EXTENSION")
+    proof_object = theorem_statement.get("proof_object", {})
+    proof_path = (Path(__file__).resolve().parents[1] / "theory" / proof_object.get("path", "")).resolve()
+    if not proof_path.is_file() or not _receipt_is_valid(theorem_proof_receipt, theorem_statement, proof_path):
+        raise ValueError("REFERENCE_PREFIX_THEOREM_RECEIPT_INVALID")
     tasks = reference_taskset.get("tasks", [])
     if not isinstance(tasks, list) or not tasks:
-        raise ValueError("reference taskset 不满足正周期前缀扩展前提")
+        raise ValueError("REFERENCE_PREFIX_REFERENCE_TASKSET_EMPTY")
     for task in tasks:
         period = int(task.get("period", 0))
         deadline = int(task.get("deadline", -1))
         offset = int(task.get("offset", 0))
-        # 对任意有限 reference prefix，periodic successor 的构造需要正周期、
-        # 有限 deadline 且释放偏移落在一个周期内；否则“最小未来释放”
-        # 公式并不保证仍属于同一个 task language。
-        if period <= 0 or deadline < 0 or deadline > period or not (0 <= offset < period):
-            raise ValueError("reference taskset 不满足 periodic prefix extension 前提")
-    if not context_hash or len(context_hash) != 64:
-        raise ValueError("prefix extension context hash 无效")
-    predecessor = {"TIME_PROGRESS": time_progress_certificate["artifact_hash"],
-                   "EFFECTIVE_EVENT_ORDER": event_order_certificate["artifact_hash"]}
-    next_event_sources = [
-        "PERIODIC_RELEASE",
-        "DEADLINE",
-        "VALID_COMPLETION",
-        "VALID_OVERRUN",
-        "VALID_RESPONSE_EXPIRY",
-        "RECOVERY",
-        "CONTROLLER_BOUNDARY",
-    ]
-    same_timestamp_phases = [
-        "RECOVERY",
-        "DEADLINE",
-        "ARRIVAL_BATCH_FREEZE",
-        "ARRIVAL",
-        "COMPLETION",
-        "OVERRUN",
-        "RESPONSE_EXPIRY",
-        "CONTROLLER_POSTCLOSURE",
-        "DISPATCH",
-    ]
+        if period <= 0 or not 0 < deadline <= period or not 0 <= offset < period:
+            raise ValueError("REFERENCE_PREFIX_TASK_PERIOD_DEADLINE_OFFSET_INVALID")
+    ref_state_source_hash = sha256_file(Path(__file__).resolve().parents[1] / "reference" / "reference_state.py")
+    exec_source_hash = sha256_file(Path(__file__).resolve().parents[1] / "reference" / "executable_semantics.py")
+    receipt_hash = theorem_proof_receipt["receipt_hash"]
     return obligation_certificate(
         obligation_id="REFERENCE_PREFIX_EXTENSION", status="PASS", context_hash=context_hash,
-        inputs={"theorem_id": "REFERENCE_PREFIX_EXTENSION",
-                "theorem": theorem, "reference_taskset_hash": reference_taskset.get("fingerprint")},
-        witness={"schema_version": "reference_prefix_extension_v2",
-                 "quantification": "FOR_ALL_FINITE_VALID_REFERENCE_PREFIXES",
-                 "next_event_sources": next_event_sources,
-                 "same_timestamp_phases": same_timestamp_phases,
-                 "closure_rank": {
-                     "measure": "(remaining_same_time_events, phase_rank, pending_token_refreshes)",
-                     "well_founded_order": "LEXICOGRAPHIC_NATURAL",
-                     "strict_decrease_cases": [
-                         "READY_BRANCH_SERVICE_TICK",
-                         "IDLE_BRANCH_JUMP",
-                         "PERIODIC_RELEASE_SUCCESSOR",
-                     ],
-                 },
-                 "ready_successor": {"rule": "ONE_SERVICE_TICK_OR_EARLIER_EFFECTIVE_EVENT"},
-                 "idle_successor": {"rule": "JUMP_TO_MINIMUM_EFFECTIVE_FUTURE_EVENT"},
-                 "periodic_release_successor": {"formula": "offset + k*period",
-                                                "least_k_rule": "floor((time-offset)/period)+1"},
-                 "multiple_pending_jobs_supported": True,
-                 "finite_prefix_job_map_total": True,
-                 "horizon_independent": True,
-                 "task_count": len(tasks),
-                 "theorem": theorem},
-        direct_predecessor_hashes=predecessor, checker_id=__name__, checker_version="phase-k-v1")
+        inputs={
+            "theorem_id": "REFERENCE_PREFIX_EXTENSION",
+            "reference_taskset_fingerprint": fresh_fingerprint,
+            "theorem_statement_hash": theorem_statement["statement_hash"],
+            "theorem_assumption_hash": theorem_statement["assumption_hash"],
+            "theorem_proof_object_hash": proof_object["sha256"],
+            "reference_state_source_hash": ref_state_source_hash,
+            "executable_semantics_source_hash": exec_source_hash,
+        },
+        witness={
+            "schema_version": "reference_prefix_extension_v4",
+            "closed_state_predicate": "is_closed_reference_state",
+            "case_ids": list(EXPECTED_CASE_IDS),
+            "backend_receipt_hash": receipt_hash,
+            "theorem_proof_receipt": dict(theorem_proof_receipt),
+            "reference_context_hash": context_hash,
+            "predecessor_context_layers": {
+                obligation_id: contexts.get({
+                    "REFERENCE_TASKSET": "reference_context",
+                    "TIME_PROGRESS": "semantic_context",
+                    "EFFECTIVE_EVENT_ORDER": "semantic_context",
+                }[obligation_id], {}).get("hash")
+                for obligation_id in predecessors
+            },
+        },
+        direct_predecessor_hashes={key: value["artifact_hash"] for key, value in predecessors.items()},
+        checker_id=__name__, checker_version="prefix-extension-v5",
+    )

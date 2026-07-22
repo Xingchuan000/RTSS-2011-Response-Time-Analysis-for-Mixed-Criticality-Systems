@@ -1,1 +1,0 @@
-{"workflow_status": "FAILED", "result_status": "PROOF_BUNDLE_INVALID", "failure_route": "PROOF_BUNDLE_INVALID", "failure_code": "INTERNAL_VERIFY_ERROR", "failure_message": "name '_mapping' is not defined"}

@@ -71,20 +71,28 @@ def verify_component_contexts(*, contexts: Mapping[str, Any],
 
 def verify_predecessor_hashes(*, registry: list[Mapping[str, Any]],
                               certificates: Mapping[str, Mapping[str, Any]]) -> StructuralCheckResult:
-    """验证每个证书的 direct predecessor 集合和每一个 hash。"""
+    """验证每个证书的 direct predecessor 集合和每一个 hash。
+
+    使用 exact predecessor set：不在 certificates 中的前驱也必须声明。
+    """
     try:
         by_id = {str(row["id"]): row for row in registry}
         for obligation_id, certificate in certificates.items():
             if obligation_id not in by_id:
                 return _fail("UNKNOWN_CERTIFICATE_OBLIGATION", {"obligation_id": obligation_id})
-            expected_ids = sorted(str(dep) for dep in by_id[obligation_id].get("depends_on", [])
-                                  if str(dep) in certificates)
+            expected_all = sorted(str(dep) for dep in by_id[obligation_id].get("depends_on", []))
             actual = certificate.get("direct_predecessor_hashes", {})
-            if not isinstance(actual, Mapping) or sorted(str(key) for key in actual) != expected_ids:
+            actual_ids = sorted(str(key) for key in actual) if isinstance(actual, Mapping) else []
+            if actual_ids != expected_all:
+                missing = sorted(set(expected_all) - set(actual_ids))
+                extra = sorted(set(actual_ids) - set(expected_all))
                 return _fail("PREDECESSOR_SET_MISMATCH",
-                             {"obligation_id": obligation_id, "expected": expected_ids,
-                              "actual": sorted(str(key) for key in actual) if isinstance(actual, Mapping) else actual})
-            for dependency in expected_ids:
+                             {"obligation_id": obligation_id, "expected": expected_all,
+                              "actual": actual_ids, "missing": missing, "extra": extra})
+            for dependency in expected_all:
+                if dependency not in certificates:
+                    return _fail("PREDECESSOR_CERTIFICATE_MISSING",
+                                 {"obligation_id": obligation_id, "dependency": dependency})
                 if actual.get(dependency) != certificates[dependency].get("artifact_hash"):
                     return _fail("PREDECESSOR_HASH_MISMATCH",
                                  {"obligation_id": obligation_id, "dependency": dependency})

@@ -18,9 +18,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--request", required=True, type=Path)
     parser.add_argument("--bundle", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--source-root", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
-        summary = verify_bundle(args.request, args.bundle, args.out)
+        summary = verify_bundle(args.request, args.bundle, args.out, source_root=args.source_root)
     except Exception as exc:
         print(json.dumps({"workflow_status": "FAILED", "result_status": "PROOF_BUNDLE_INVALID",
                           "failure_route": "PROOF_BUNDLE_INVALID", "failure_code": "INTERNAL_VERIFY_ERROR",

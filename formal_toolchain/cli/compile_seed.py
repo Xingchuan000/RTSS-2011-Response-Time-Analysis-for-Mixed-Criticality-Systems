@@ -10,9 +10,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="生成不可授信的 candidate proof bundle")
     parser.add_argument("--request", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--source-root", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
-        summary = compile_request(args.request, args.out)
+        summary = compile_request(args.request, args.out, source_root=args.source_root)
     except Exception as exc:
         print(f"candidate compile failed: {exc}")
         return 70

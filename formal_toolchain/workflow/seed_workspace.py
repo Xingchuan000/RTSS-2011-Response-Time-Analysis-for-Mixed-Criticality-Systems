@@ -179,6 +179,8 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
         encoding="utf-8",
     )
 
+    from formal_toolchain.adapters.source_manifest import build_source_manifest
+    source_manifest = build_source_manifest(code_root)
     request = {
         "schema_version": "proof_request_v2",
         "profile": "P0",
@@ -192,6 +194,11 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
         "tree_variant": tree_variant,
         "source_root": ".",
         "expected_tree_file_sha256": sha256_file(copied_tree / "integer_tree.json"),
+        "source_binding": {
+            "source_root_role": "external_argument",
+            "source_manifest_semantic_hash": source_manifest["semantic_hash"],
+            "required_paths": ["amc_py", "formal_toolchain", "scripts"],
+        },
         "optional_claims": [],
         "nonvacuity_profile": str(nonvacuity_profile or "off"),
         "nonvacuity_params": dict(nonvacuity_params or {}),

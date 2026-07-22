@@ -1,0 +1,12 @@
+{
+  "schema_version": "proof_dependency_lock_v1",
+  "python": "3.11.x",
+  "packages": {
+    "z3-solver": "4.13.4.0",
+    "jsonschema": "4.26.0"
+  },
+  "notes": [
+    "Exact versions required for proof reproducibility.",
+    "CI must install these exact versions before running the verifier."
+  ]
+}

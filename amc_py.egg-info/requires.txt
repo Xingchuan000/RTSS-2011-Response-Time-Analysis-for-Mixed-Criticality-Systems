@@ -1,0 +1,16 @@
+numpy
+pandas
+matplotlib
+torch
+scikit-learn
+joblib
+
+[dev]
+pytest
+ruff
+black
+mypy
+
+[formal]
+jsonschema<5,>=4.23
+z3-solver<5,>=4.13

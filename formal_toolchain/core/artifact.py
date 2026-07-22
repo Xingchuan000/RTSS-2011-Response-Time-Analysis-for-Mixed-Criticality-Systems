@@ -9,6 +9,9 @@ from .hashing import sha256_object
 from .status import OBLIGATION_STATUSES
 
 
+CERTIFICATE_SCHEMA_VERSION = "certificate_envelope_v2"
+
+
 def obligation_certificate(*, obligation_id: str, status: str, context_hash: str,
                            inputs: Mapping[str, Any], witness: Mapping[str, Any],
                            checker_id: str, checker_version: str,
@@ -28,7 +31,7 @@ def obligation_certificate(*, obligation_id: str, status: str, context_hash: str
     if status != "PASS" and failure is None:
         raise ValueError("非 PASS certificate 必须包含 failure")
     artifact = {
-        "artifact_schema_version": "certificate_envelope_v1",
+        "artifact_schema_version": CERTIFICATE_SCHEMA_VERSION,
         "obligation_id": obligation_id,
         "obligation_status": status,
         "certificate_context_hash": context_hash,
@@ -44,17 +47,19 @@ def obligation_certificate(*, obligation_id: str, status: str, context_hash: str
     return artifact
 
 
+CERTIFICATE_ENVELOPE_KEYS = (
+    "artifact_schema_version", "obligation_id", "obligation_status",
+    "certificate_context_hash", "direct_predecessor_hashes", "checker_id",
+    "checker_version", "inputs", "witness", "evidence", "failure",
+)
+
+
 def verify_obligation_certificate(artifact: Mapping[str, Any]) -> bool:
     """独立重算 envelope hash；缺字段、hash 不匹配都返回 False。"""
     expected = artifact.get("artifact_hash")
     if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
         return False
-    envelope_keys = (
-        "artifact_schema_version", "obligation_id", "obligation_status",
-        "certificate_context_hash", "direct_predecessor_hashes", "checker_id",
-        "checker_version", "inputs", "witness", "evidence", "failure",
-    )
-    if any(key not in artifact for key in envelope_keys):
+    if any(key not in artifact for key in CERTIFICATE_ENVELOPE_KEYS):
         return False
-    payload = {key: artifact[key] for key in envelope_keys}
+    payload = {key: artifact[key] for key in CERTIFICATE_ENVELOPE_KEYS}
     return sha256_object(payload) == expected

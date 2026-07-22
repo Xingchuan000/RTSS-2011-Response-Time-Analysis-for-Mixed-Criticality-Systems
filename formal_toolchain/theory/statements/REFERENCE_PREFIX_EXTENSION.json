@@ -1,16 +1,26 @@
 {
-  "assumption_hash": "5303e2f971399fd96dc2735d7017634d811ed74b048fce2516ab1177fbfdaee8",
+  "assumption_hash": "2bfaaa35b6fb853a96c619dbb8528d548b169053e5d375f1177e005091158f4a",
   "assumptions": [
-    "finite_legal_reference_prefix",
-    "periods_positive",
-    "periodic_release_offsets_are_finite",
-    "work_conserving_service_or_least_future_release"
+    "state_satisfies_validate_reference_state",
+    "finite_nonempty_periodic_taskset",
+    "integer_time",
+    "same_timestamp_events_processed_in_phase_order",
+    "generated_same_time_events_have_strictly_larger_phase_rank",
+    "period_i_positive",
+    "zero_le_offset_i_lt_period_i",
+    "strict_preemptive_fixed_priority_dispatch",
+    "step_reference_successors_are_revalidated"
   ],
-  "assurance_level": "DECLARED_AXIOM_TCB",
+  "assurance_level": "MACHINE_CHECKED_PROJECT_LEMMA",
   "conclusion": "forall finite legal reference prefixes rho, exists legal reference state/event successor extending rho",
-  "exact_statement": "For every finite legal P0 reference prefix, if the current ready set is nonempty the work-conserving service transition is a legal successor; otherwise the least future periodic release exists and the next-event jump is a legal successor.",
+  "exact_statement": "For every finite legal P0 reference prefix whose state satisfies validate_reference_state and whose periodic generator invariant holds: (1) the three abstract cases SAME_TIMESTAMP_CLOSURE, READY_SERVICE_OR_EARLIER_BOUNDARY, and IDLE_JUMP_TO_MINIMUM_FUTURE_EVENT are exhaustive and mutually exclusive as proved by Z3; (2) same-time closure decreases a lexicographic rank as proved by Z3; (3) same-time generated events enter only a strictly higher phase as enforced by the executable contract; (4) every step_reference successor is revalidated by validate_reference_state; and (5) periodic successor strict futurity and period congruence are proved by Z3.",
+  "proof_object": {
+    "backend": "reference-prefix-extension-z3-v3",
+    "path": "proofs/REFERENCE_PREFIX_EXTENSION.proof.json",
+    "sha256": "38b50790136e67b9a65406bc5e7270a89f7eb63d29e2d8b0ecaef43803af0f1c"
+  },
   "source_reference": "P0 reference periodic machine transition rule",
-  "statement_hash": "4c92bb1ac7c9be6eefba564d1b8e32a2814dccc86f01514fb668bad9bd34f297",
+  "statement_hash": "ba42157a994cfab7bd16e50b3deee4bb98178adac4328dd964a7a06b9813216d",
   "theorem_id": "REFERENCE_PREFIX_EXTENSION",
-  "version": "p0-theory-r2"
+  "version": "p0-theory-r5"
 }

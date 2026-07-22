@@ -23,12 +23,49 @@ def _write(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _dependency_preflight(source_root: Path) -> dict[str, Any] | None:
+    """前置依赖检查：lock 文件中的精确版本缺失时直接拒绝。"""
+    lock_path = source_root / "formal_toolchain" / "specs" / "proof_dependency_lock.json"
+    if not lock_path.is_file():
+        return {"code": "DEPENDENCY_LOCK_FILE_MISSING", "message": f"lock file not found: {lock_path}"}
+    import json
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    from formal_toolchain.adapters.runtime_manifest import build_dependency_manifest, check_dependency_policy
+    manifest = build_dependency_manifest()
+    result = check_dependency_policy(manifest, lock=lock)
+    if result.get("status") != "PASS":
+        return result
+    return None
+
+
 def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
                target_recipe: Path | None = None, overwrite: bool = False,
                nonvacuity_profile: str = "off",
                nonvacuity_params: dict[str, Any] | None = None,
-               refresh_phase_k_map: bool = False) -> tuple[int, dict[str, Any]]:
-    """执行 discovery→preflight→compile→fresh verify→report。"""
+               refresh_phase_k_map: bool = False,
+               dependency_manifest_override: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
+    """执行 discovery→preflight→compile→fresh verify→report。
+
+    dependency_manifest_override: 测试用注入 dependency manifest，绕过真实环境检查。
+    """
+    if dependency_manifest_override is None:
+        preflight = _dependency_preflight(code_root)
+        if preflight is not None:
+            return 30, {"workflow_status": "FAILED", "result_status": "PROOF_BUNDLE_INVALID",
+                         "failure_route": "PROOF_BUNDLE_INVALID",
+                         "failure_code": preflight.get("code", "DEPENDENCY_LOCK_INCOMPLETE"),
+                         "failure_message": str(preflight.get("message", preflight))}
+    else:
+        from formal_toolchain.adapters.runtime_manifest import check_dependency_policy
+        lock_path = code_root / "formal_toolchain" / "specs" / "proof_dependency_lock.json"
+        import json
+        lock = json.loads(lock_path.read_text(encoding="utf-8")) if lock_path.is_file() else None
+        result = check_dependency_policy(dependency_manifest_override, lock=lock)
+        if result.get("status") != "PASS":
+            return 30, {"workflow_status": "FAILED", "result_status": "PROOF_BUNDLE_INVALID",
+                         "failure_route": "PROOF_BUNDLE_INVALID",
+                         "failure_code": result.get("code", "DEPENDENCY_LOCK_INCOMPLETE"),
+                         "failure_message": str(result)}
 
     out = Path(out).resolve()
     lock = out.parent / f".{out.name}.lock"
@@ -62,7 +99,7 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
                        "exit_code": 10}
         else:
             compile_out = staging / "candidate"
-            compile_run = run_cli("formal_toolchain.cli.compile_seed", ["--request", str(request), "--out", str(compile_out)], cwd=Path(code_root), log_dir=staging / "logs")
+            compile_run = run_cli("formal_toolchain.cli.compile_seed", ["--request", str(request), "--out", str(compile_out), "--source-root", str(code_root.resolve())], cwd=Path(code_root), log_dir=staging / "logs")
             manifest["commands"].append(compile_run)
             if compile_run["returncode"] != 0:
                 summary = {"workflow_status": "FAILED", "result_status": "PROOF_BUNDLE_INVALID",
@@ -70,7 +107,7 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
                            "exit_code": 30}
             else:
                 verify_out = staging / "verified"
-                verify_run = run_cli("formal_toolchain.cli.verify_bundle", ["--request", str(request), "--bundle", str(compile_out), "--out", str(verify_out)], cwd=Path(code_root), log_dir=staging / "logs")
+                verify_run = run_cli("formal_toolchain.cli.verify_bundle", ["--request", str(request), "--bundle", str(compile_out), "--out", str(verify_out), "--source-root", str(code_root.resolve())], cwd=Path(code_root), log_dir=staging / "logs")
                 manifest["commands"].append(verify_run)
                 if not (verify_out / "proof_summary.json").is_file():
                     summary = {"workflow_status": "FAILED", "result_status": "PROOF_BUNDLE_INVALID",

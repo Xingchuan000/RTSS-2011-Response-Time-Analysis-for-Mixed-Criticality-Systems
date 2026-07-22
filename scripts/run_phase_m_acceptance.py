@@ -43,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
         "--seed-dir", str(FIXTURE_ROOT), "--tree-variant", "best_overall",
         "--code-root", str(ROOT), "--out", str(out), "--overwrite", "--json",
     ], cwd=ROOT, capture_output=True, text=True, check=False)
+
     if single.returncode != 0:
         print(single.stdout)
         return single.returncode or 1
@@ -51,8 +52,8 @@ def main(argv: list[str] | None = None) -> int:
     manual_candidate = out.parent / "manual_synthetic_p0_candidate"
     manual_verified = out.parent / "manual_synthetic_p0_verified"
     inspect = _run("formal_toolchain.cli.inspect_target", ["--request", str(request)])
-    compile_run = _run("formal_toolchain.cli.compile_seed", ["--request", str(request), "--out", str(manual_candidate)])
-    verify_run = _run("formal_toolchain.cli.verify_bundle", ["--request", str(request), "--bundle", str(manual_candidate), "--out", str(manual_verified)]) if compile_run.returncode == 0 else None
+    compile_run = _run("formal_toolchain.cli.compile_seed", ["--request", str(request), "--out", str(manual_candidate), "--source-root", str(ROOT)])
+    verify_run = _run("formal_toolchain.cli.verify_bundle", ["--request", str(request), "--bundle", str(manual_candidate), "--out", str(manual_verified), "--source-root", str(ROOT)]) if compile_run.returncode == 0 else None
     report_run = _run("formal_toolchain.cli.render_report", ["--verified", str(manual_verified), "--out", str(manual_verified / "human_readable_report.md")]) if verify_run and verify_run.returncode == 0 else None
     if inspect.returncode != 0 or compile_run.returncode != 0 or verify_run is None or verify_run.returncode != 0 or report_run is None or report_run.returncode != 0:
         print(json.dumps({"phase_result": "PHASE_M_REJECTED", "failure_code": "MANUAL_FOUR_COMMAND_FAILED"}, ensure_ascii=False))

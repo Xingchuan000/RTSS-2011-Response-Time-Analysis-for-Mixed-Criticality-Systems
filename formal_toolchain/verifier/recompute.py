@@ -15,7 +15,8 @@ from formal_toolchain.core.artifact import obligation_certificate, verify_obliga
 from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.core.contexts import expected_context_for_obligation, context_layer_for_obligation
 from formal_toolchain.core.registry import load_registry
-from formal_toolchain.verifier.aggregator import aggregate_for_claim, claim_dependency_closure
+from formal_toolchain.verifier.aggregator import aggregate_for_claim, _check_proof_role_invariants
+from formal_toolchain.verifier.checker_context import FreshVerifierState, CheckerContext
 from formal_toolchain.verifier.bootstrap_checks import (
     build_interface_coverage_report,
     verify_migration_manifest,
@@ -23,6 +24,7 @@ from formal_toolchain.verifier.bootstrap_checks import (
 )
 from formal_toolchain.verifier.checker_catalog import VERIFIER_CHECKERS, checker_for
 from formal_toolchain.verifier import independent_arithmetic
+from formal_toolchain.core.registry import load_registry, build_claim_closure
 from formal_toolchain.verifier.bridge_proof_checker import (
     verify_bad_prefix_proof_object,
     verify_closed_prefix_proof_object,
@@ -81,6 +83,12 @@ def _fail_summary(*, active: list[str], status: str, code: str,
 def _load_candidate(bundle: Path, active: list[str]) -> tuple[dict[str, Mapping[str, Any]] | None, dict[str, dict[str, Any]], dict[str, Any] | None]:
     """加载并校验 candidate envelope，缺失任一 active artifact 立即拒绝。"""
 
+    from formal_toolchain.core.registry import load_registry, artifact_path_for
+    from formal_toolchain.verifier.artifact_verifier import verify_certificate
+    registry_path = Path(__file__).parents[1] / "specs/obligation_registry.json"
+    registry = load_registry(registry_path)
+    by_id = {str(entry["id"]): entry for entry in registry}
+
     artifact_dir = Path(bundle) / "artifacts"
     candidates: dict[str, dict[str, Any]] = {}
     contexts_path = Path(bundle) / "component_contexts.json"
@@ -88,7 +96,11 @@ def _load_candidate(bundle: Path, active: list[str]) -> tuple[dict[str, Mapping[
     if not isinstance(candidate_contexts, Mapping):
         return None, {}, {"code": "CANDIDATE_COMPONENT_CONTEXTS_MISSING"}
     for obligation_id in active:
-        path = artifact_dir / f"{obligation_id}.json"
+        entry = by_id.get(obligation_id)
+        if entry is not None:
+            path = artifact_path_for(entry, bundle)
+        else:
+            path = artifact_dir / f"{obligation_id}.json"
         if not path.is_file():
             return None, {}, {"code": "CANDIDATE_CERTIFICATE_MISSING", "obligation_id": obligation_id}
         certificate = _read(path)
@@ -96,6 +108,12 @@ def _load_candidate(bundle: Path, active: list[str]) -> tuple[dict[str, Mapping[
             return None, {}, {"code": "CANDIDATE_CERTIFICATE_INVALID", "obligation_id": obligation_id}
         if certificate.get("obligation_id") != obligation_id:
             return None, {}, {"code": "CANDIDATE_CERTIFICATE_ID_MISMATCH", "obligation_id": obligation_id}
+        # 专用 Schema 校验（仅验证形状，predecessor 在后续阶段校验）
+        schema_name = entry.get("artifact_schema", "common_certificate.schema.json").split("/")[-1] if entry else "common_certificate.schema.json"
+        schema_result = verify_certificate(certificate, schema_name=schema_name)
+        if schema_result.get("status") != "PASS":
+            return None, {}, {"code": "CANDIDATE_CERTIFICATE_SCHEMA_INVALID",
+                              "obligation_id": obligation_id, "schema_error": schema_result.get("failure")}
         try:
             layer = context_layer_for_obligation(obligation_id)
         except KeyError:
@@ -131,12 +149,100 @@ def _source_binding(source_root: Path) -> dict[str, Any]:
     return {"status": "PASS", "witness": binding}
 
 
-def _fresh_reference_taskset(inputs: Any, certified_envelope: Mapping[str, Any]) -> Any:
+def registry_predecessors_or_fail(
+    obligation_id: str,
+    by_id: Mapping[str, Any],
+    certificates: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Mapping[str, Any]]:
+    """精确前驱验证：缺失前驱直接报错。"""
+    ids = [str(x) for x in by_id[obligation_id].get("depends_on", [])]
+    missing = [x for x in ids if x not in certificates]
+    if missing:
+        raise ValueError(
+            f"VERIFIED_PREDECESSOR_MISSING:{obligation_id}:{missing}"
+        )
+    return {x: certificates[x] for x in ids}
+
+
+def build_fresh_verifier_state(
+    inputs: Any,
+    envelope_state: Any,
+    fresh_reference: Any | None,
+) -> FreshVerifierState | None:
+    """一次性构造所有 fresh verifier 状态对象。"""
+    if fresh_reference is None or envelope_state.certified_envelope is None:
+        return None
+    try:
+        from formal_toolchain.reference.rta_production import all_task_reference_rta
+        from formal_toolchain.reference.rta_replay import replay_all_task_rta
+        rta_production = all_task_reference_rta(fresh_reference)
+        rta_replay = replay_all_task_rta(fresh_reference, rta_production)
+    except Exception:
+        rta_production = {}
+        rta_replay = {"status": "UNRESOLVED", "message": "RTA generation failed"}
+
+    concrete_preclosed_engine = None
+    concrete_runtime_snapshot = None
+    reference_preclosed_state = None
+    reference_runtime_snapshot = None
+    try:
+        from formal_toolchain.adapters.formal_scenario import build_formal_scenario
+        from formal_toolchain.runtime.event_runtime import EventRuntimeEngine
+        from formal_toolchain.adapters.formal_runtime_snapshot import build_formal_runtime_snapshot
+        scenario = build_formal_scenario(
+            base_scenario=inputs.target.scenario,
+            ordered_tasks=inputs.target.ordered_tasks,
+        )
+        engine = EventRuntimeEngine.build(
+            ordered_tasks=inputs.target.ordered_tasks,
+            scenario=scenario,
+            config=inputs.target.runtime_config,
+        )
+        engine.run_until(0, include_boundary=True)
+        concrete_preclosed_engine = engine
+        concrete_runtime_snapshot = build_formal_runtime_snapshot(
+            engine,
+            priority_map=engine.priority_map,
+        )
+    except Exception:
+        concrete_preclosed_engine = None
+        concrete_runtime_snapshot = None
+
+    try:
+        from formal_toolchain.reference.executable_semantics import (
+            initial_reference_state, close_timestamp,
+        )
+        from formal_toolchain.reference.runtime_snapshot import build_reference_runtime_snapshot
+        ref_initial = initial_reference_state(fresh_reference)
+        reference_preclosed_state = close_timestamp(ref_initial, fresh_reference)
+        reference_runtime_snapshot = build_reference_runtime_snapshot(reference_preclosed_state)
+    except Exception:
+        reference_preclosed_state = None
+        reference_runtime_snapshot = None
+
+    return FreshVerifierState(
+        inputs=inputs,
+        certified_envelope=envelope_state.certified_envelope,
+        fresh_reference_taskset=fresh_reference,
+        fresh_rta_production=rta_production,
+        fresh_rta_replay=rta_replay,
+        concrete_preclosed_engine=concrete_preclosed_engine,
+        concrete_runtime_snapshot=concrete_runtime_snapshot,
+        reference_preclosed_state=reference_preclosed_state,
+        reference_runtime_snapshot=reference_runtime_snapshot,
+        phase_k_objects={},
+    )
+
+
+def _fresh_reference_taskset(inputs: Any, certified_envelope: Mapping[str, Any] | None) -> Any:
     """用 fresh certified envelope 重建 reference taskset。
 
     candidate 中的 reference object 只用于后续一致性比较；这里的任务顺序、
     code cost 和 budget provenance 全部来自 verifier 重新加载的 target。
     """
+
+    if not isinstance(certified_envelope, Mapping):
+        raise TypeError("FRESH_REFERENCE_TASKSET_REQUIRES_CERTIFIED_ENVELOPE")
 
     from formal_toolchain.adapters.runtime_config import export_formal_target_config
     from formal_toolchain.reference.task_mapping import build_reference_taskset
@@ -147,16 +253,18 @@ def _fresh_reference_taskset(inputs: Any, certified_envelope: Mapping[str, Any])
                     "certified_envelope_hash": envelope_hash}
         for name, row in inputs.target.provenance["budget_by_task"].items()
     }
+    is_candidate_view = bool(certified_envelope.get("trust_level") == "CANDIDATE_UNVERIFIED")
     return build_reference_taskset(
         inputs.target.ordered_tasks, budget_by_task,
         xf=inputs.target.runtime_config.c_amc_sem_lo_degradation_ratio,
         certified_envelope=certified_envelope,
         semantic_context_hash=str(inputs.contexts["semantic_context"]["hash"]),
         effective_runtime_config_hash=sha256_object(export_formal_target_config(inputs.target)),
+        allow_unverified_candidate=is_candidate_view,
     )
 
 
-def _rta_replay(*, inputs: Any, certified_envelope: Mapping[str, Any],
+def _rta_replay(*, inputs: Any, certified_envelope: Mapping[str, Any] | None,
                 candidate: Mapping[str, Mapping[str, Any]],
                 fresh_reference: Any | None = None) -> dict[str, Any]:
     """现场生成 production，再用 verifier 的独立整数 replay 重放。
@@ -197,12 +305,36 @@ def _rta_replay(*, inputs: Any, certified_envelope: Mapping[str, Any],
             "replay_status": "PASS"}
 
 
-def _fresh_bridge_proofs(*, inputs: Any, fresh_certificates: Mapping[str, Mapping[str, Any]],
-                         fresh_reference: Any | None) -> tuple[dict[str, Mapping[str, Any]], dict[str, Any] | None]:
-    """由 fresh verifier 在本进程中重新生成 closed-prefix / prefix-extension proof objects。"""
+def _fresh_source_root(inputs: Any) -> Path:
+    return Path(inputs.source_root).resolve()
 
+
+def _fresh_reference_prefix_backend() -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    from formal_toolchain.theory.loader import TCB_BACKENDS, load_verified_theory_statement
+    theory_dir = Path(__file__).resolve().parents[1] / "theory"
+    theorem = load_verified_theory_statement(theory_dir, "REFERENCE_PREFIX_EXTENSION")
+    proof_object = theorem.get("proof_object", {})
+    backend = TCB_BACKENDS.get(proof_object.get("backend"))
+    if backend is None:
+        return None, None, {"route": "UNRESOLVED", "code": "REFERENCE_PREFIX_BACKEND_MISSING"}
+    proof_path = (theory_dir / proof_object.get("path", "")).resolve()
+    receipt = backend.verify(proof_path, theorem=theorem)
+    if receipt.get("status") != "PASS":
+        return theorem, receipt, {
+            "route": "UNRESOLVED", "code": "REFERENCE_PREFIX_BACKEND_REJECTED",
+            "backend_result": receipt,
+        }
+    return theorem, receipt, None
+
+
+def _build_phase_k_objects(*, inputs: Any, fresh_certificates: Mapping[str, Mapping[str, Any]],
+                           fresh_reference: Any | None) -> tuple[dict[str, Mapping[str, Any]], dict[str, Any] | None]:
+    """单次生成所有 Phase K proof objects（closed-prefix, prefix-extension, bad-prefix）。"""
     if fresh_reference is None:
         return {}, {"route": "REFERENCE_CERTIFICATE_FAILED", "code": "FRESH_REFERENCE_TASKSET_MISSING"}
+    reference_prefix_theorem, reference_prefix_receipt, backend_error = _fresh_reference_prefix_backend()
+    if backend_error:
+        return {}, backend_error
     bridge_context_hash = str(inputs.contexts["bridge_context"]["hash"])
     case_map_path = Path(inputs.workspace) / "request" / "inputs" / "formal_inputs" / "phase_k_case_map.json"
     if not case_map_path.is_file():
@@ -213,8 +345,9 @@ def _fresh_bridge_proofs(*, inputs: Any, fresh_certificates: Mapping[str, Mappin
     from formal_toolchain.bridge.runtime_branch_map import build_runtime_branch_map
 
     case_map = json.loads(case_map_path.read_text(encoding="utf-8"))
+    src_root = _fresh_source_root(inputs)
     branch_map = build_runtime_branch_map(
-        Path.cwd(), source_hash=str(inputs.source_manifest.get("semantic_hash", "")),
+        src_root, source_hash=str(inputs.source_manifest.get("semantic_hash", "")),
         path_map=case_map)
     if branch_map.get("status") != "PASS":
         return {}, {"route": "UNRESOLVED", "code": "PHASE_K_BRANCH_MAP_UNRESOLVED"}
@@ -223,7 +356,7 @@ def _fresh_bridge_proofs(*, inputs: Any, fresh_certificates: Mapping[str, Mappin
         "HI_EXECUTION_CONTRACT", "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION",
         "DEADLINE_OBSERVATION", "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE",
         "CONTROLLER_POSTCLOSURE", "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION",
-        "CERTIFIED_ENVELOPE",
+        "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET",
     )
     upstream = {name: fresh_certificates[name] for name in upstream_names
                 if fresh_certificates.get(name, {}).get("obligation_status") == "PASS"}
@@ -236,8 +369,10 @@ def _fresh_bridge_proofs(*, inputs: Any, fresh_certificates: Mapping[str, Mappin
     concrete_base, reference_base = build_preclosed_runtime_states(inputs.target, reference_taskset)
     model_bounds = derive_p0_model_bounds(reference_taskset)
     bridge = compile_phase_k(
-        source_root=Path.cwd(), branch_map=branch_map, reference_taskset=reference_taskset,
+        source_root=src_root, branch_map=branch_map, reference_taskset=reference_taskset,
         bridge_context_hash=bridge_context_hash, model_bounds=model_bounds,
+        contexts=inputs.contexts, reference_prefix_theorem=reference_prefix_theorem,
+        reference_prefix_proof_receipt=reference_prefix_receipt,
         concrete_base=concrete_base, reference_base=reference_base,
         upstream_certificates=upstream, release_mapping_certificate=release_mapping,
         closure_completion_certificate=None, runtime_config=inputs.target.runtime_config,
@@ -250,19 +385,77 @@ def _fresh_bridge_proofs(*, inputs: Any, fresh_certificates: Mapping[str, Mappin
     }, None
 
 
-def _fresh_bad_prefix_proof(*, inputs: Any, fresh_certificates: Mapping[str, Mapping[str, Any]],
-                            fresh_reference: Any | None) -> tuple[dict[str, Mapping[str, Any]], dict[str, Any] | None]:
-    """在 corollary PASS 后，重新生成 HI bad-prefix proof object。"""
+def _fresh_bridge_proofs(*, inputs: Any, fresh_certificates: Mapping[str, Mapping[str, Any]],
+                        fresh_reference: Any | None) -> tuple[dict[str, Mapping[str, Any]], dict[str, Any] | None]:
+    """由 fresh verifier 在本进程中重新生成 closed-prefix / prefix-extension proof objects。"""
 
     if fresh_reference is None:
         return {}, {"route": "REFERENCE_CERTIFICATE_FAILED", "code": "FRESH_REFERENCE_TASKSET_MISSING"}
+    reference_prefix_theorem, reference_prefix_receipt, backend_error = _fresh_reference_prefix_backend()
+    if backend_error:
+        return {}, backend_error
     bridge_context_hash = str(inputs.contexts["bridge_context"]["hash"])
     case_map_path = Path(inputs.workspace) / "request" / "inputs" / "formal_inputs" / "phase_k_case_map.json"
     if not case_map_path.is_file():
         return {}, {"route": "UNRESOLVED", "code": "PHASE_K_CASE_MAP_MISSING"}
+    from formal_toolchain.bridge.compile_bridge import compile_phase_k
+    from formal_toolchain.bridge.model_bounds import derive_p0_model_bounds
+    from formal_toolchain.bridge.phase_k_runtime_states import build_preclosed_runtime_states
+    from formal_toolchain.bridge.runtime_branch_map import build_runtime_branch_map
+
+    case_map = json.loads(case_map_path.read_text(encoding="utf-8"))
+    src_root = _fresh_source_root(inputs)
+    branch_map = build_runtime_branch_map(
+        src_root, source_hash=str(inputs.source_manifest.get("semantic_hash", "")),
+        path_map=case_map)
+    if branch_map.get("status") != "PASS":
+        return {}, {"route": "UNRESOLVED", "code": "PHASE_K_BRANCH_MAP_UNRESOLVED"}
+    reference_taskset = fresh_reference.to_dict()
+    concrete_base, reference_base = build_preclosed_runtime_states(inputs.target, reference_taskset)
+    model_bounds = derive_p0_model_bounds(reference_taskset)
+    bridge = compile_phase_k(
+        source_root=src_root, branch_map=branch_map, reference_taskset=reference_taskset,
+        bridge_context_hash=bridge_context_hash, model_bounds=model_bounds,
+        contexts=inputs.contexts, reference_prefix_theorem=reference_prefix_theorem,
+        reference_prefix_proof_receipt=reference_prefix_receipt,
+        concrete_base=concrete_base, reference_base=reference_base,
+        upstream_certificates={name: fresh_certificates[name] for name in (
+            "SCHEDULER_MODEL", "MODE_SEMANTICS_CONFORMANCE", "DEMAND_ORACLE_BATCH_CONTRACT",
+            "HI_EXECUTION_CONTRACT", "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION",
+            "DEADLINE_OBSERVATION", "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE",
+            "CONTROLLER_POSTCLOSURE", "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION",
+            "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET",
+        )},
+        release_mapping_certificate=fresh_certificates.get("RELEASE_FIXED_REMOVAL_MAPPING"),
+        closure_completion_certificate=None, runtime_config=inputs.target.runtime_config,
+    )
+    if bridge.get("status") != "PASS":
+        return {}, {"route": "UNRESOLVED", "code": str(bridge.get("failure", "PHASE_K_UNRESOLVED"))}
+    return {
+        "CLOSED_PREFIX_REFINEMENT": bridge["closed_prefix"],
+        "REFERENCE_PREFIX_EXTENSION": bridge["reference_extension"],
+    }, None
+
+
+def _fresh_bad_prefix_proof(*, inputs: Any, fresh_certificates: Mapping[str, Mapping[str, Any]],
+                            fresh_reference: Any | None,
+                            phase_k_cache: Mapping[str, Mapping[str, Any]] | None = None) -> tuple[dict[str, Mapping[str, Any]], dict[str, Any] | None]:
+    """在 corollary PASS 后，从已缓存的 Phase K bridge 中取 bad-prefix proof object。"""
+
+    if fresh_reference is None:
+        return {}, {"route": "REFERENCE_CERTIFICATE_FAILED", "code": "FRESH_REFERENCE_TASKSET_MISSING"}
+    reference_prefix_theorem, reference_prefix_receipt, backend_error = _fresh_reference_prefix_backend()
+    if backend_error:
+        return {}, backend_error
     reference_hi = fresh_certificates.get("REFERENCE_HI_SUBSET_SAFETY")
     if not isinstance(reference_hi, Mapping) or reference_hi.get("obligation_status") != "PASS":
         return {}, {"route": "UNRESOLVED", "code": "REFERENCE_HI_SUBSET_SAFETY_UNRESOLVED"}
+    if phase_k_cache is not None and "HI_BAD_CLOSED_PREFIX_REFLECTION" in phase_k_cache:
+        return {"HI_BAD_CLOSED_PREFIX_REFLECTION": phase_k_cache["HI_BAD_CLOSED_PREFIX_REFLECTION"]}, None
+    bridge_context_hash = str(inputs.contexts["bridge_context"]["hash"])
+    case_map_path = Path(inputs.workspace) / "request" / "inputs" / "formal_inputs" / "phase_k_case_map.json"
+    if not case_map_path.is_file():
+        return {}, {"route": "UNRESOLVED", "code": "PHASE_K_CASE_MAP_MISSING"}
     release_mapping = fresh_certificates.get("RELEASE_FIXED_REMOVAL_MAPPING")
     if not isinstance(release_mapping, Mapping) or release_mapping.get("obligation_status") != "PASS":
         return {}, {"route": "UNRESOLVED", "code": "RELEASE_MAPPING_CANDIDATE_MISSING"}
@@ -272,8 +465,9 @@ def _fresh_bad_prefix_proof(*, inputs: Any, fresh_certificates: Mapping[str, Map
     from formal_toolchain.bridge.runtime_branch_map import build_runtime_branch_map
 
     case_map = json.loads(case_map_path.read_text(encoding="utf-8"))
+    src_root = _fresh_source_root(inputs)
     branch_map = build_runtime_branch_map(
-        Path.cwd(), source_hash=str(inputs.source_manifest.get("semantic_hash", "")),
+        src_root, source_hash=str(inputs.source_manifest.get("semantic_hash", "")),
         path_map=case_map)
     if branch_map.get("status") != "PASS":
         return {}, {"route": "UNRESOLVED", "code": "PHASE_K_BRANCH_MAP_UNRESOLVED"}
@@ -281,15 +475,17 @@ def _fresh_bad_prefix_proof(*, inputs: Any, fresh_certificates: Mapping[str, Map
     concrete_base, reference_base = build_preclosed_runtime_states(inputs.target, reference_taskset)
     model_bounds = derive_p0_model_bounds(reference_taskset)
     bridge = compile_phase_k(
-        source_root=Path.cwd(), branch_map=branch_map, reference_taskset=reference_taskset,
+        source_root=src_root, branch_map=branch_map, reference_taskset=reference_taskset,
         bridge_context_hash=bridge_context_hash, model_bounds=model_bounds,
+        contexts=inputs.contexts, reference_prefix_theorem=reference_prefix_theorem,
+        reference_prefix_proof_receipt=reference_prefix_receipt,
         concrete_base=concrete_base, reference_base=reference_base,
         upstream_certificates={name: fresh_certificates[name] for name in (
             "SCHEDULER_MODEL", "MODE_SEMANTICS_CONFORMANCE", "DEMAND_ORACLE_BATCH_CONTRACT",
             "HI_EXECUTION_CONTRACT", "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION",
             "DEADLINE_OBSERVATION", "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE",
             "CONTROLLER_POSTCLOSURE", "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION",
-            "CERTIFIED_ENVELOPE",
+            "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET",
         )},
         release_mapping_certificate=release_mapping,
         closure_completion_certificate=reference_hi, runtime_config=inputs.target.runtime_config,
@@ -361,15 +557,16 @@ def _first_failed_obligation(*, order: list[str], certificates: Mapping[str, Map
     return None, None, None, None
 
 
-def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, Any]:
+def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_root: Path | None = None) -> dict[str, Any]:
     """从原始输入开始 fresh replay，最后只调用 canonical aggregator。"""
 
+    source_root = Path(source_root).resolve(strict=True) if source_root is not None else Path(request_path).resolve().parent.parent.parent
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     registry_path = Path(__file__).parents[1] / "specs/obligation_registry.json"
-    registry = load_registry(registry_path)
     try:
-        active = sorted(claim_dependency_closure(registry, "DEPLOYED_HI_SAFETY"))
+        closure = build_claim_closure(registry, "DEPLOYED_HI_SAFETY")
+        active = sorted(closure.verified_artifacts)
         order = verifier_topological_order(registry)
     except ValueError as exc:
         summary = _fail_summary(active=[], status="PROOF_BUNDLE_INVALID",
@@ -386,7 +583,7 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
     migration = _read(Path(__file__).parents[1] / "specs/migration_manifest.json")
     migration_check = verify_migration_manifest(
         migration=migration, registry=registry,
-        current_schema_version="obligation_registry_v4")
+        current_schema_version="obligation_registry_v5")
     if migration_check["status"] != "PASS":
         summary = _fail_summary(active=active, status="PROOF_BUNDLE_INVALID",
                                 code=migration_check["code"] or "MIGRATION_MANIFEST_MISMATCH",
@@ -395,7 +592,7 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
         return summary
 
     try:
-        inputs = load_verifier_inputs(request_path, source_root=Path.cwd())
+        inputs = load_verifier_inputs(request_path, source_root=source_root)
     except Exception as exc:
         summary = _fail_summary(active=active, status="MODEL_CONFORMANCE_FAILED",
                                 code="VERIFIER_INPUT_REPLAY_FAILED", message=str(exc))
@@ -462,9 +659,9 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
         try:
             fresh_reference = _fresh_reference_taskset(inputs, envelope_state.certified_envelope)
         except (KeyError, TypeError, ValueError):
-            # 具体失败由 REFERENCE_TASKSET 的 fresh 结果给出；不能在这里
-            # 用 candidate taskset 或默认值补齐 verifier 输入。
             fresh_reference = None
+
+    fresh_state = build_fresh_verifier_state(inputs, envelope_state, fresh_reference)
 
     by_id = {str(entry["id"]): entry for entry in registry}
     fresh: dict[str, dict[str, Any]] = {}
@@ -473,12 +670,20 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
     bad_bridge_generation_cache: dict[str, Mapping[str, Any]] | None = None
     bad_bridge_generation_failure: dict[str, Any] | None = None
     for obligation_id in order:
-        if obligation_id not in active or obligation_id in STRUCTURAL_IDS:
+        if obligation_id not in active or obligation_id in closure.structural:
             continue
         candidate = candidates[obligation_id]
-        predecessor_ids = [str(item) for item in by_id[obligation_id].get("depends_on", [])
-                           if str(item) in fresh]
-        predecessors = {item: fresh[item] for item in predecessor_ids}
+        try:
+            predecessors = registry_predecessors_or_fail(
+                obligation_id, by_id, fresh,
+            )
+        except ValueError as exc:
+            fresh[obligation_id] = _semantic_certificate(
+                obligation_id=obligation_id, candidate=candidate, status="UNRESOLVED",
+                context_hash=expected_context_for_obligation(obligation_id, inputs.contexts), predecessors={},
+                failure={"route": "PROOF_BUNDLE_INVALID", "code": "VERIFIED_PREDECESSOR_MISSING",
+                         "message": str(exc)})
+            continue
         if any(item["obligation_status"] != "PASS" for item in predecessors.values()):
             fresh[obligation_id] = _semantic_certificate(
                 obligation_id=obligation_id, candidate=candidate, status="UNRESOLVED",
@@ -536,6 +741,8 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
             }[obligation_id](
                 candidate=bridge_generation_cache[obligation_id],
                 bridge_context_hash=inputs.contexts["bridge_context"]["hash"],
+                contexts=inputs.contexts,
+                predecessors=predecessors,
                 raw_inputs=inputs,
                 reference_taskset=(fresh_reference.to_dict() if fresh_reference is not None else {}),
                 certified_envelope=envelope_state.certified_envelope,
@@ -584,27 +791,61 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
             candidate_witness = candidate.get("witness", {})
             evidence_key = candidate_witness.get("evidence_key") if isinstance(candidate_witness, Mapping) else None
             raw_evidence = candidate_witness.get("evidence") if isinstance(candidate_witness, Mapping) else None
-            checked = checker(
+            ctx = CheckerContext(
+                obligation_id=obligation_id,
                 candidate_certificate=candidate,
                 candidate_evidence=raw_evidence,
-                raw_inputs=inputs,
                 verified_predecessors=predecessors,
                 expected_context_hash=expected_context_for_obligation(obligation_id, inputs.contexts),
-                certified_envelope=(envelope_state.certified_envelope
-                                   if obligation_id in {"CODE_REFERENCE_UPPER_BOUND_MAPPING",
-                                                        "REFERENCE_TASKSET",
-                                                        "PROTECTED_HI_RTA_ARITHMETIC",
-                                                        "PER_HI_TASK_INDUCTIVE_WCRT",
-                                                        "REFERENCE_HI_SUBSET_SAFETY"}
-                                   else None),
-                fresh_reference=(fresh_reference
-                                 if obligation_id in {"CODE_REFERENCE_UPPER_BOUND_MAPPING",
-                                                      "REFERENCE_TASKSET",
-                                                      "PROTECTED_HI_RTA_ARITHMETIC",
-                                                      "PER_HI_TASK_INDUCTIVE_WCRT",
-                                                      "REFERENCE_HI_SUBSET_SAFETY"}
-                                 else None),
+                raw_inputs=inputs,
+                fresh_state=fresh_state,
             )
+            try:
+                checked = checker(
+                    context=ctx,
+                    candidate_certificate=candidate,
+                    candidate_evidence=raw_evidence,
+                    raw_inputs=inputs,
+                    verified_predecessors=predecessors,
+                    expected_context_hash=expected_context_for_obligation(obligation_id, inputs.contexts),
+                    certified_envelope=(envelope_state.certified_envelope
+                                       if obligation_id in {"CODE_REFERENCE_UPPER_BOUND_MAPPING",
+                                                            "REFERENCE_TASKSET",
+                                                            "PROTECTED_HI_RTA_ARITHMETIC",
+                                                            "PER_HI_TASK_INDUCTIVE_WCRT",
+                                                            "REFERENCE_HI_SUBSET_SAFETY",
+                                                            "ALL_TASK_REFERENCE_RTA_ARITHMETIC",
+                                                            "BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION",
+                                                            "REFERENCE_SEMANTICS_CONTRACT",
+                                                            "REFERENCE_MODEL_CONFORMANCE",
+                                                            "REFERENCE_TASKSET_SCHEDULABLE",
+                                                            "EFFECTIVE_EVENT_FRONTIER_RELATION"}
+                                       else None),
+                    fresh_reference=(fresh_reference
+                                     if obligation_id in {"CODE_REFERENCE_UPPER_BOUND_MAPPING",
+                                                          "REFERENCE_TASKSET",
+                                                          "PROTECTED_HI_RTA_ARITHMETIC",
+                                                          "PER_HI_TASK_INDUCTIVE_WCRT",
+                                                          "REFERENCE_HI_SUBSET_SAFETY",
+                                                          "ALL_TASK_REFERENCE_RTA_ARITHMETIC",
+                                                          "BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION",
+                                                          "REFERENCE_SEMANTICS_CONTRACT",
+                                                          "REFERENCE_MODEL_CONFORMANCE",
+                                                          "REFERENCE_TASKSET_SCHEDULABLE",
+                                                          "EFFECTIVE_EVENT_FRONTIER_RELATION"}
+                                     else None),
+                )
+            except (KeyError, TypeError, ValueError, RuntimeError, AttributeError) as exc:
+                checked = {
+                    "status": "FAIL",
+                    "route": "PROOF_BUNDLE_INVALID",
+                    "code": "CHECKER_EXECUTION_ERROR",
+                    "failure": {
+                        "obligation_id": obligation_id,
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
             # fresh verifier 的状态必须完全取自独立 checker 的结果。
             # 不能只在 checker 失败时覆盖初始的 UNRESOLVED；否则 checker
             # 明确返回 PASS 时，外层仍会把该义务错误地收敛成
@@ -619,7 +860,7 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
                 # 聚合逻辑把一个已经独立复核通过的义务误判为失败。
                 failure = None
                 witness = checked.get("witness")
-        if obligation_id == "PROTECTED_HI_RTA_ARITHMETIC":
+        if obligation_id in ("PROTECTED_HI_RTA_ARITHMETIC", "ALL_TASK_REFERENCE_RTA_ARITHMETIC"):
             replay = (_rta_replay(
                 inputs=inputs, certified_envelope=envelope_state.certified_envelope,
                 candidate=candidates, fresh_reference=fresh_reference)
@@ -666,7 +907,7 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
     deferred_structural = {"STATUS_EVIDENCE", "OUTER_BUNDLE_ROOT",
                            "INDEPENDENT_BUNDLE_VERIFICATION"}
     for obligation_id in order:
-        if obligation_id not in active or obligation_id not in STRUCTURAL_IDS \
+        if obligation_id not in active or obligation_id not in closure.structural \
                 or obligation_id in deferred_structural:
             continue
         if obligation_id == "CLAIM_AGGREGATION_RESULT":
@@ -781,7 +1022,12 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
     if aggregation_status not in ROUTED_FAILURES and aggregation_status != "DEPLOYED_TREE_PROVED":
         aggregation_status = "PROOF_BUNDLE_INVALID"
     for obligation_id, certificate in certificates.items():
-        _write(out_dir / "artifacts" / f"{obligation_id}.json", certificate)
+        entry = by_id.get(obligation_id)
+        if entry is not None:
+            out_path = artifact_path_for(entry, out_dir)
+        else:
+            out_path = out_dir / "artifacts" / f"{obligation_id}.json"
+        _write(out_path, certificate)
     _write(out_dir / "status_evidence.json", status_evidence)
     _write(out_dir / "component_contexts.json", contexts)
     _write(out_dir / "outer_bundle_root.json", {
@@ -792,7 +1038,7 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
         "artifacts": {key: value["artifact_hash"] for key, value in certificates.items()}})
     coverage = build_interface_coverage_report(
         registry=registry, spec_root=Path(__file__).parents[1] / "specs",
-        checker_catalog=VERIFIER_CHECKERS, structural_ids=set(STRUCTURAL_IDS))
+        checker_catalog=VERIFIER_CHECKERS, structural_ids=set(closure.structural))
     _write(out_dir / "interface_coverage_report.json", coverage)
     result = {"result_status": aggregation_status, "outer_bundle_root": root,
               "claim_aggregation_source": "canonical_claim_aggregation"}
@@ -805,16 +1051,28 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
     if violated is None and aggregation_status != "DEPLOYED_TREE_PROVED":
         failure_route = aggregation_status if aggregation_status in ROUTED_FAILURES else "PROOF_BUNDLE_INVALID"
         failure_code = "CLAIM_AGGREGATION_FAILED"
-    summary = {"schema_version": "proof_summary_v1", "workflow_status": "VERIFIED",
-               "result_status": aggregation_status, "profile": "P0",
-               "primary_claim": "DEPLOYED_HI_SAFETY", "certificate_context_hash": context_hash,
+    auth_gates = {k: v for k, v in certificates.items()
+                  if k in closure.authorization}
+    auth_all_pass = bool(auth_gates) and all(
+        v.get("obligation_status") == "PASS" for v in auth_gates.values())
+    math_root_pass = certificates.get("FINAL_CLAIM_COMPOSITION", {}).get("obligation_status") == "PASS"
+    structural_all_pass = all(
+        certificates.get(k, {}).get("obligation_status") == "PASS"
+        for k in closure.structural if k in certificates)
+    summary = {"schema_version": "proof_summary_v2",
+               "workflow_status": "VERIFIED",
+               "result_status": aggregation_status,
+               "profile": "P0",
+               "primary_claim": "DEPLOYED_HI_SAFETY",
+               "certificate_context_hash": context_hash,
                "fixture_id": inputs.request.get("target_id"),
                "fixture_kind": inputs.request.get("target_kind"),
                "target_id": inputs.request.get("target_id"),
                "target_kind": inputs.request.get("target_kind"),
                "taskset_seed": inputs.request.get("taskset_seed"),
                "tree_variant": inputs.request.get("tree_variant"),
-               "outer_bundle_root": root, "active_obligation_ids": active,
+               "outer_bundle_root": root,
+               "active_obligation_ids": active,
                "failure_route": failure_route,
                "failure_code": failure_code,
                "obligation_statuses": {key: value["obligation_status"] for key, value in certificates.items()},
@@ -822,14 +1080,24 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
                "violated_obligation_id": violated,
                "failure_message": failure_message,
                "claim_aggregation_source": "canonical_claim_aggregation",
-               "rta_replay_verified": certificates.get("PROTECTED_HI_RTA_ARITHMETIC", {}).get("obligation_status") == "PASS"
-                                      and certificates.get("PROTECTED_HI_RTA_ARITHMETIC", {}).get("witness", {}).get("replay_status", "PASS") == "PASS",
+               "layered_status": {
+                   "environment_status": "PASS" if (
+                       certificates.get("DEPENDENCY_LOCK", {}).get("obligation_status") == "PASS"
+                       and certificates.get("RUNTIME_ENVIRONMENT", {}).get("obligation_status") == "PASS"
+                   ) else "FAIL",
+                   "pipeline_integrity_status": "PASS" if structural_all_pass and auth_all_pass else "FAIL",
+                   "mathematical_proof_status": "PASS" if math_root_pass else (
+                       "UNRESOLVED" if aggregation_status == "UNRESOLVED" else "FAIL"),
+               },
+               "rta_replay_verified": certificates.get("ALL_TASK_REFERENCE_RTA_ARITHMETIC", {}).get("obligation_status") == "PASS",
                "certified_envelope_verified": certificates.get("CERTIFIED_ENVELOPE", {}).get("obligation_status") == "PASS"
-                                      and certificates.get("CERTIFIED_ENVELOPE", {}).get("witness", {}).get("verified_by") == "fresh_verifier",
+                                       and certificates.get("CERTIFIED_ENVELOPE", {}).get("witness", {}).get("verified_by") == "fresh_verifier",
                "bridge_proof_verified": all(certificates.get(key, {}).get("obligation_status") == "PASS"
                                              for key in ("CLOSED_PREFIX_REFINEMENT",
                                                          "REFERENCE_PREFIX_EXTENSION",
                                                          "HI_BAD_CLOSED_PREFIX_REFLECTION")),
+               "diagnostic_mode": False,
+               "claim_eligible": aggregation_status == "DEPLOYED_TREE_PROVED",
                "real_seed_evaluation": "DEFERRED" if inputs.request.get("target_kind") == "SYNTHETIC_P0"
                else "COMPLETED" if inputs.request.get("target_kind") is not None else "UNRESOLVED"}
     _write(out_dir / "proof_summary.json", summary)
