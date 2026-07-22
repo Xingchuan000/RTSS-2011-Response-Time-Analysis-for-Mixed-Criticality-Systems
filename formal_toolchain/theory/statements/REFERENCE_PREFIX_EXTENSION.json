@@ -1,16 +1,16 @@
 {
-  "theorem_id": "REFERENCE_PREFIX_EXTENSION",
-  "exact_statement": "For every finite legal P0 reference prefix, if the current ready set is nonempty the work-conserving service transition is a legal successor; otherwise the least future periodic release exists and the next-event jump is a legal successor.",
+  "assumption_hash": "5303e2f971399fd96dc2735d7017634d811ed74b048fce2516ab1177fbfdaee8",
   "assumptions": [
     "finite_legal_reference_prefix",
     "periods_positive",
     "periodic_release_offsets_are_finite",
     "work_conserving_service_or_least_future_release"
   ],
-  "conclusion": "forall finite legal reference prefixes rho, exists legal reference state/event successor extending rho",
-  "source_reference": "P0 reference periodic machine transition rule",
   "assurance_level": "DECLARED_AXIOM_TCB",
-  "version": "p0-theory-r2",
+  "conclusion": "forall finite legal reference prefixes rho, exists legal reference state/event successor extending rho",
+  "exact_statement": "For every finite legal P0 reference prefix, if the current ready set is nonempty the work-conserving service transition is a legal successor; otherwise the least future periodic release exists and the next-event jump is a legal successor.",
+  "source_reference": "P0 reference periodic machine transition rule",
   "statement_hash": "4c92bb1ac7c9be6eefba564d1b8e32a2814dccc86f01514fb668bad9bd34f297",
-  "assumption_hash": "5303e2f971399fd96dc2735d7017634d811ed74b048fce2516ab1177fbfdaee8"
+  "theorem_id": "REFERENCE_PREFIX_EXTENSION",
+  "version": "p0-theory-r2"
 }

@@ -1,58 +1,77 @@
 {
-  "schema_version": "theory_hashes_v2",
+  "schema_version": "theory_hashes_v3",
   "statements": {
     "ARRIVAL_BATCH_LOOP_DECOMPOSITION": {
-      "statement_hash": "776435a971078d7a2ac46588b6ef9547836a59fcdfdb17a5bddb2e38f10081f0",
-      "assumption_hash": "103d396777ca65407ebda72a0b92134ed7aeded011ca41d3e9fdeef954cafa40"
-    },
-    "EVENT_HANDLER_MICROSTEP_DECOMPOSITION": {
-      "statement_hash": "cfd65c4734366cebe133512673b3756bbcfebac04447808803d763697b42c668",
-      "assumption_hash": "c7d89211898f04b3f4f80eb655b9b57520e0349a15b9c7e012d51aad57a312e4"
-    },
-    "REFERENCE_PREFIX_EXTENSION": {
-      "statement_hash": "4c92bb1ac7c9be6eefba564d1b8e32a2814dccc86f01514fb668bad9bd34f297",
-      "assumption_hash": "5303e2f971399fd96dc2735d7017634d811ed74b048fce2516ab1177fbfdaee8"
+      "assumption_hash": "103d396777ca65407ebda72a0b92134ed7aeded011ca41d3e9fdeef954cafa40",
+      "statement_hash": "776435a971078d7a2ac46588b6ef9547836a59fcdfdb17a5bddb2e38f10081f0"
     },
     "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT": {
-      "statement_hash": "e660e145e4c922a4ed03a90434ae032ccde308bb8c8dec0f29170c0f2de1521f",
-      "assumption_hash": "188a2035d31a9f92451781a23656ef15805dc2e30bbaa8aa2a96c14aa9b6d42a"
+      "assumption_hash": "188a2035d31a9f92451781a23656ef15805dc2e30bbaa8aa2a96c14aa9b6d42a",
+      "statement_hash": "e660e145e4c922a4ed03a90434ae032ccde308bb8c8dec0f29170c0f2de1521f"
+    },
+    "C_AMC_SEM_ALL_TASK_SCHEDULABILITY_SUFFICIENCY": {
+      "assumption_hash": "8c4633d4cf913ef1d520f76355f8227e82549dc0e39f9d94ca4805ab04b686be",
+      "statement_hash": "ffe3db9fa88f5c4ac8be502cbad30d5cee6dcf8c831b80e07abe7c5af02a4911"
     },
     "C_AMC_SEM_CASE1_CASE2_SUFFICIENCY": {
-      "statement_hash": "90dd214d215d92676138b2ee4ef3a780e66bb0b2bf2fb35bf80b3acd056e947d",
-      "assumption_hash": "9c62ba9c1fb97935b13fc512a4f13c9d3181dc2871bdf9d442bdff9b9f859660"
+      "assumption_hash": "9c62ba9c1fb97935b13fc512a4f13c9d3181dc2871bdf9d442bdff9b9f859660",
+      "statement_hash": "90dd214d215d92676138b2ee4ef3a780e66bb0b2bf2fb35bf80b3acd056e947d"
     },
     "DISCRETE_TICK_FPPS_EMBEDDING": {
-      "statement_hash": "c6bffb2db3fb7cb82f18a940ee98eef1dfe341f54b7f4f46f64f3a26d0abe2f2",
-      "assumption_hash": "0e85f62ecfd2cf1f852d0a80f510117901bc55652f5b661e13280b60eda3c541"
+      "assumption_hash": "0e85f62ecfd2cf1f852d0a80f510117901bc55652f5b661e13280b60eda3c541",
+      "statement_hash": "c6bffb2db3fb7cb82f18a940ee98eef1dfe341f54b7f4f46f64f3a26d0abe2f2"
+    },
+    "EVENT_HANDLER_MICROSTEP_DECOMPOSITION": {
+      "assumption_hash": "c7d89211898f04b3f4f80eb655b9b57520e0349a15b9c7e012d51aad57a312e4",
+      "statement_hash": "cfd65c4734366cebe133512673b3756bbcfebac04447808803d763697b42c668"
+    },
+    "FINAL_DEPLOYED_HI_SAFETY_COMPOSITION": {
+      "statement_hash": "a67135eb62d2ab0a51aea65f051d41ed24ee48da4a7b922521d6c97a6e6b6cd6",
+      "assumption_hash": "e2a67bf64e98747f9855f7b87fe0555633acb45e9ab72cd5ab21677de03533a0"
+    },
+    "FINITE_BAD_PREFIX_CONTRADICTION": {
+      "assumption_hash": "c35e18d61885c496de00ad2cad77317b96b09823337bb9e654a37e7e24f2a0ca",
+      "statement_hash": "906199413b1db4cd4196b9ca66c7468f61f7acabac619ee1176e58cc66129fbc"
     },
     "FINITE_HI_BAD_PREFIX_REFLECTION": {
-      "statement_hash": "2c00844cbaebe5df77392f4dc45c977ba6c116f0cbe5bb703fc8e502dffc7e93",
-      "assumption_hash": "7bba460aed255e0cc1850f0b1a1e71619c7ce7f07dc0ca935925b282cfb9d1b8"
+      "assumption_hash": "7bba460aed255e0cc1850f0b1a1e71619c7ce7f07dc0ca935925b282cfb9d1b8",
+      "statement_hash": "2c00844cbaebe5df77392f4dc45c977ba6c116f0cbe5bb703fc8e502dffc7e93"
     },
     "FPPS_LO_RTA_POSTFIXED_SUFFICIENCY": {
-      "statement_hash": "f4bd2253ddd7dd60e6273da85aa25b5ec82b84226d4439fbec4ba1cd0a40d5f9",
-      "assumption_hash": "dacffc443fe11f1439ed59a15ef1953d6bdeaba72e2f0b5b5bcf98c803960224"
+      "assumption_hash": "dacffc443fe11f1439ed59a15ef1953d6bdeaba72e2f0b5b5bcf98c803960224",
+      "statement_hash": "f4bd2253ddd7dd60e6273da85aa25b5ec82b84226d4439fbec4ba1cd0a40d5f9"
     },
     "INHERITED_HI_VIRTUAL_SWITCH_DOMINATION": {
-      "statement_hash": "461436b2e35161cf9bf77745fd9e7db9018af51b59eb282954b6d21bab1789c3",
-      "assumption_hash": "8ef09ae25bb624c9f711d7aae716c0bda7c9e02c8257a25a114c692dd0ca25fe"
+      "assumption_hash": "8ef09ae25bb624c9f711d7aae716c0bda7c9e02c8257a25a114c692dd0ca25fe",
+      "statement_hash": "461436b2e35161cf9bf77745fd9e7db9018af51b59eb282954b6d21bab1789c3"
     },
     "PER_HI_TASK_INDUCTIVE_WCRT": {
-      "statement_hash": "1be7e63468d4637327dc2ef27228e77310ee57b87330e195b18b65f0a5c12ea5",
-      "assumption_hash": "0d157ac388f61bdfaf066d7924ad897f9e35f027126c20bc437407684e1337ea"
+      "assumption_hash": "0d157ac388f61bdfaf066d7924ad897f9e35f027126c20bc437407684e1337ea",
+      "statement_hash": "1be7e63468d4637327dc2ef27228e77310ee57b87330e195b18b65f0a5c12ea5"
     },
     "PROTECTED_HI_SAFETY_COROLLARY": {
-      "statement_hash": "14bb5bcca74acf65d8a7ff7da1c9652264b9802978d807053160b3950d4669e3",
-      "assumption_hash": "0d0f1b15c483a4a08a4354d98f7878f9e929272613ac85569a6cf13d2d24d179"
+      "assumption_hash": "0d0f1b15c483a4a08a4354d98f7878f9e929272613ac85569a6cf13d2d24d179",
+      "statement_hash": "14bb5bcca74acf65d8a7ff7da1c9652264b9802978d807053160b3950d4669e3"
     },
     "RECURRING_JOB_CRITICAL_INSTANT_DOMINATION": {
-      "statement_hash": "2212ebc70441a52f487b80045ab4b0aa884906a53b693c29ceb55bcc65ea2aa7",
-      "assumption_hash": "e12942a3f31c20113b3d66b434339e2906140d5ea8fe85edf3c245821f3a679d"
+      "assumption_hash": "e12942a3f31c20113b3d66b434339e2906140d5ea8fe85edf3c245821f3a679d",
+      "statement_hash": "2212ebc70441a52f487b80045ab4b0aa884906a53b693c29ceb55bcc65ea2aa7"
+    },
+    "REFERENCE_HI_SUBSET_SAFETY_FROM_TASKSET_SCHEDULABILITY": {
+      "assumption_hash": "bdc565adf00b18b15c7a8c1cc23c152db53d964d5b553747c7f8c74e3fcc453c",
+      "statement_hash": "d995af8aa40aa85ce6191626c4efc8fbcce005439dfe68b7f9b48d263e922f4f"
+    },
+    "REFERENCE_MODEL_CONFORMANCE_DISCHARGE": {
+      "assumption_hash": "976824360e122bcc4230f3523a36e0a49251702b73ba1d22c8cc6e12dabf34de",
+      "statement_hash": "73b052304e4f9d5a543f0d6431c189fffcc636bcdb0bd032221dc4a997a49dfa"
+    },
+    "REFERENCE_PREFIX_EXTENSION": {
+      "assumption_hash": "5303e2f971399fd96dc2735d7017634d811ed74b048fce2516ab1177fbfdaee8",
+      "statement_hash": "4c92bb1ac7c9be6eefba564d1b8e32a2814dccc86f01514fb668bad9bd34f297"
     },
     "ZERO_RELATIVE_START_LEMMA": {
-      "statement_hash": "dd9e3ae59422c43594bb9eedfd265c2436d3faee8202344caa852c6e839f0168",
-      "assumption_hash": "024e334a421d85d698fdf9c69db8185d14d62b409505e6ad0aabfb70a639cd4b"
+      "assumption_hash": "024e334a421d85d698fdf9c69db8185d14d62b409505e6ad0aabfb70a639cd4b",
+      "statement_hash": "dd9e3ae59422c43594bb9eedfd265c2436d3faee8202344caa852c6e839f0168"
     }
-  },
-  "manifest_hash": "8009405681abd54f188e39a8ef4b2cd155206747283996f6226f3183c1d5f215"
+  }
 }

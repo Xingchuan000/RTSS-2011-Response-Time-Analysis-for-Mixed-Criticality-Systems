@@ -87,37 +87,44 @@ def build_target(**_kwargs):
             "hi_upper_bound": True,
             "normal_abnormal_boundary": True,
         }
+    def actual_cost_for(task, release_index):
+        budget_by_task = target_budget_by_task
+        name = getattr(task, "name", task)
+        if name not in budget_by_task:
+            raise KeyError(f"unknown synthetic task: {name}")
+        return int(budget_by_task[name]["initial_runtime_budget"])
+    target_budget_by_task = {
+        "SYN_HI_0": {
+            "initial_runtime_budget": 1,
+            "budget_floor": 1,
+            "action_hard_upper": 2,
+            "source_base_budget": 2,
+        },
+        "SYN_LO": {
+            "initial_runtime_budget": 1,
+            "budget_floor": 1,
+            "action_hard_upper": 2,
+            "source_base_budget": 1,
+        },
+        "SYN_HI_1": {
+            "initial_runtime_budget": 2,
+            "budget_floor": 2,
+            "action_hard_upper": 3,
+            "source_base_budget": 3,
+        },
+    }
     target = FormalTarget(
         ordered_tasks=tasks,
         runtime_config=config,
         environment=environment,
         policy=SimpleNamespace(name="synthetic_p0_integer_tree"),
-        scenario=SimpleNamespace(name="synthetic_p0", export_formal_contract=export_formal_contract),
+        scenario=SimpleNamespace(name="synthetic_p0", export_formal_contract=export_formal_contract, actual_cost_for=actual_cost_for),
         action_definitions=action_definitions,
         feature_names=feature_names,
         provenance={
             "fixture": "synthetic_p0",
             "taskset_seed": None,
-            "budget_by_task": {
-                "SYN_HI_0": {
-                    "initial_runtime_budget": 1,
-                    "budget_floor": 1,
-                    "action_hard_upper": 2,
-                    "source_base_budget": 2,
-                },
-                "SYN_LO": {
-                    "initial_runtime_budget": 1,
-                    "budget_floor": 1,
-                    "action_hard_upper": 2,
-                    "source_base_budget": 1,
-                },
-                "SYN_HI_1": {
-                    "initial_runtime_budget": 2,
-                    "budget_floor": 2,
-                    "action_hard_upper": 3,
-                    "source_base_budget": 3,
-                },
-            },
+            "budget_by_task": target_budget_by_task,
         },
     )
     object.__setattr__(target, "runtime_adapter", SyntheticP0RuntimeAdapter(target))

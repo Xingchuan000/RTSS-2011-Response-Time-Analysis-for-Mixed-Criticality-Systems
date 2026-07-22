@@ -27,6 +27,7 @@ from formal_toolchain.policy.mask_fallback import build_parametric_mask_fallback
 from formal_toolchain.adapters.synthetic_context import build_synthetic_context
 from formal_toolchain.adapters.synthetic_policy import build_transition_witness
 from formal_toolchain.adapters.synthetic_runtime_adapter import SyntheticP0RuntimeAdapter
+from formal_toolchain.core.artifact import obligation_certificate
 from formal_toolchain.verifier.artifact_verifier import verify_registry_certificate
 from amc_py.viper.integer_tree import IntegerTreeModel, IntegerTreeNode, IntegerTreeLeaf
 
@@ -88,6 +89,7 @@ def verify_payload(payload: dict) -> dict:
     rankings = {int(leaf.node_id): tuple(int(action_id) for action_id in leaf.action_ranking) for leaf in tree.leaves}
     mask_contract = adapter.export_mask_contract()
     mask = build_parametric_mask_fallback_certificate(rankings=rankings, action_dim=len(actions), mask_contract=mask_contract)
+    selection_semantics = str(mask_contract.get("selection", "ranked_first_valid"))
     deployed_enumerated = check_deployed_policy_preservation(
         enumerated_candidate,
         actions,
@@ -129,27 +131,34 @@ def verify_payload(payload: dict) -> dict:
                                   ("LO_BUDGET_UPPER_INVARIANT", structural_candidate),
                                   ("HI_BUDGET_LOWER_INVARIANT", structural_candidate),
                                   ("ACTIVE_RELEASE_BUDGET_INVARIANT", structural_candidate)):
-        predecessor_certificates[obligation_id] = {"artifact_schema_version": "synthetic_phase_f_v1",
-            "obligation_id": obligation_id, "obligation_status": "PASS", "certificate_context_hash": cert_context_hash,
-            "direct_predecessor_hashes": {}, "checker_id": "phase_fh_fresh_verifier", "checker_version": "1",
-            "inputs": {"fixture": "synthetic_p0", "source_hash": sha256_object(source)},
-            "witness": {"source_hash": sha256_object(source)}, "evidence": [{"status": "PASS"}], "failure": None}
-    predecessor_certificates["DEPLOYED_POLICY_PRESERVATION"] = {"artifact_schema_version": "synthetic_phase_fh_certificate_v1",
-        "obligation_id": "DEPLOYED_POLICY_PRESERVATION", "obligation_status": "PASS", "certificate_context_hash": cert_context_hash,
-        "direct_predecessor_hashes": {name: sha256_object(predecessor_certificates[name]) for name in
+        predecessor_certificates[obligation_id] = obligation_certificate(
+            obligation_id=obligation_id, status="PASS", context_hash=cert_context_hash,
+            inputs={"fixture": "synthetic_p0", "source_hash": sha256_object(source)},
+            witness={"source_hash": sha256_object(source)},
+            evidence=[{"status": "PASS"}],
+            direct_predecessor_hashes={},
+            checker_id="phase_fh_fresh_verifier", checker_version="1",
+        )
+    predecessor_certificates["DEPLOYED_POLICY_PRESERVATION"] = obligation_certificate(
+        obligation_id="DEPLOYED_POLICY_PRESERVATION", status="PASS", context_hash=cert_context_hash,
+        inputs={"fixture": "synthetic_p0"},
+        witness={"deployed_hash": sha256_object(deployed_structural)},
+        evidence=[{"status": "PASS"}],
+        direct_predecessor_hashes={name: sha256_object(predecessor_certificates[name]) for name in
             ("EXECUTABLE_POLICY_SEMANTICS", "CANDIDATE_ENVELOPE", "BUDGET_DOMAIN", "COMMON_TRANSITION_PRESERVATION")},
-        "checker_id": "phase_fh_fresh_verifier", "checker_version": "1",
-        "inputs": {"fixture": "synthetic_p0"}, "witness": {"deployed_hash": sha256_object(deployed_structural)},
-        "evidence": [{"status": "PASS"}], "failure": None}
-    certified_certificate = {"artifact_schema_version": "synthetic_phase_fh_certificate_v1",
-        "obligation_id": "CERTIFIED_ENVELOPE", "obligation_status": "PASS", "certificate_context_hash": cert_context_hash,
-        "direct_predecessor_hashes": {name: sha256_object(predecessor_certificates[name]) for name in
+        checker_id="phase_fh_fresh_verifier", checker_version="1",
+    )
+    certified_certificate = obligation_certificate(
+        obligation_id="CERTIFIED_ENVELOPE", status="PASS", context_hash=cert_context_hash,
+        inputs={"fixture": "synthetic_p0", "context_hash": context_hash},
+        witness={"candidate_hash": sha256_object(structural_candidate), "common_hash": sha256_object(common),
+                 "deployed_hash": sha256_object(deployed_structural)},
+        evidence=[{"fresh_process": True}],
+        direct_predecessor_hashes={name: sha256_object(predecessor_certificates[name]) for name in
             ("DEPLOYED_POLICY_PRESERVATION", "LO_BUDGET_UPPER_INVARIANT", "HI_BUDGET_LOWER_INVARIANT",
              "ACTIVE_RELEASE_BUDGET_INVARIANT")},
-        "checker_id": "phase_fh_fresh_verifier", "checker_version": "1",
-        "inputs": {"fixture": "synthetic_p0", "context_hash": context_hash},
-        "witness": {"candidate_hash": sha256_object(structural_candidate), "common_hash": sha256_object(common),
-                    "deployed_hash": sha256_object(deployed_structural)}, "evidence": [{"fresh_process": True}], "failure": None}
+        checker_id="phase_fh_fresh_verifier", checker_version="1",
+    )
     checked = verify_registry_certificate(certified_certificate, registry_path=registry_path,
         predecessor_certificates=predecessor_certificates, context_inputs=cert_context_inputs)
     if checked.get("status") != "PASS":

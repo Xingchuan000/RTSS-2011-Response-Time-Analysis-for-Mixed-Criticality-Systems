@@ -14,6 +14,7 @@ from .closure_cases import (
     build_bridge_prerequisite_certificates, build_deadline_observation_certificate,
     build_event_order_certificate, build_hi_nontruncation_certificate,
 )
+from .early_stop_gate import build_early_stop_configuration_gate
 from .p0_case_manifest import p0_case_manifest_hash
 from .p0_case_manifest import require_case
 from .prefix_extension import build_parameterized_prefix_extension_certificate
@@ -37,7 +38,7 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
                     reference_base: P0ReferenceState | None = None,
                     upstream_certificates: Mapping[str, Mapping[str, Any]] | None = None,
                     release_mapping_certificate: Mapping[str, Any] | None = None,
-                    protected_hi_certificate: Mapping[str, Any] | None = None,
+                    closure_completion_certificate: Mapping[str, Any] | None = None,
                     runtime_config: Any | None = None) -> dict[str, Any]:
     """不读取外部 proof PASS 对象，只消费已绑定源码与参考 taskset。"""
     bounds = model_bounds or derive_p0_model_bounds(reference_taskset)
@@ -150,20 +151,15 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
                                                        removal_binding=removal_binding)
     bad_prefix = build_hi_bad_prefix_reflection_certificate(
         closed_prefix_certificate=closed, prefix_extension_certificate=extension,
+        release_mapping_certificate=release_mapping_certificate,
         deadline_observation_certificate=deadline, hi_nontruncation_certificate=nontruncation,
-        event_projection_certificate=prereqs["event_projection"],
+        effective_frontier_certificate=prereqs["event_projection"],
+        early_stop_gate_certificate=build_early_stop_configuration_gate(
+            runtime_config=runtime_config, context_hash=bridge_context_hash,
+            closure_completion_certificate=closure_completion_certificate,
+        ),
         state_relation_schema=p0_state_relation_schema_hash(bounds), context_hash=bridge_context_hash,
-        theorem_manifest=_theory("FINITE_HI_BAD_PREFIX_REFLECTION"),
-        protected_hi_certificate=protected_hi_certificate,
-        release_mapping_certificate=release_mapping_certificate)
-    if protected_hi_certificate is None:
-        return {"status": "PASS", "manifest_hash": p0_case_manifest_hash(),
-                "model_bounds_status": "PASS", "model_bounds": bounds.to_dict(),
-                "transition_cases": compiled, "prerequisites": prereqs,
-                "coverage": branch_map["coverage"], "controller_binding": controller_binding,
-                "decomposition": decomposition,
-                "closed_prefix": closed, "reference_extension": extension,
-                "deadline_observation": deadline, "hi_nontruncation": nontruncation}
+        theorem_manifest=_theory("FINITE_HI_BAD_PREFIX_REFLECTION"))
     if bad_prefix.get("obligation_status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "BAD_PREFIX_REFLECTION_INCOMPLETE",
                 "transition_cases": compiled, "prerequisites": prereqs,

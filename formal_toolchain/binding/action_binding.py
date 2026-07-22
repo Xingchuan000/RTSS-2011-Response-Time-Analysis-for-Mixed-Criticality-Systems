@@ -9,6 +9,66 @@ from typing import Any
 from .python_ast_ir import function_to_ir
 
 
+def _function_node(source: str, qualified_name: str) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    tree = ast.parse(source)
+    if "." in qualified_name:
+        class_name, method_name = qualified_name.rsplit(".", 1)
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name == class_name:
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == method_name:
+                        return item
+        return None
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == qualified_name:
+            return node
+    return None
+
+
+def _has_none_base_return(source: str, qualified_name: str) -> bool:
+    node = _function_node(source, qualified_name)
+    if node is None:
+        return False
+    for item in ast.walk(node):
+        if isinstance(item, ast.Return) and isinstance(item.value, ast.Tuple) and len(item.value.elts) == 2:
+            left, right = item.value.elts
+            if isinstance(left, ast.Constant) and left.value is None and isinstance(right, ast.Name) and right.id == "base":
+                return True
+    return False
+
+
+def _top1_or_noop_branch_returns_none_base(source: str) -> bool:
+    node = _function_node(source, "IntegerTreeBudgetPolicy.select_action_id")
+    if node is None:
+        return False
+    for item in ast.walk(node):
+        if not isinstance(item, ast.If):
+            continue
+        has_target_compare = False
+        for sub in ast.walk(item.test):
+            if (
+                isinstance(sub, ast.Compare)
+                and isinstance(sub.left, ast.Name)
+                and sub.left.id == "selection_semantics"
+                and len(sub.ops) == 1
+                and isinstance(sub.ops[0], ast.Eq)
+                and len(sub.comparators) == 1
+                and isinstance(sub.comparators[0], ast.Constant)
+                and sub.comparators[0].value == "top1_or_noop"
+            ):
+                has_target_compare = True
+                break
+        if not has_target_compare:
+            continue
+        for sub in ast.walk(item):
+            if isinstance(sub, ast.Return) and isinstance(sub.value, ast.Tuple) and len(sub.value.elts) == 2:
+                left, right = sub.value.elts
+                if isinstance(left, ast.Constant) and left.value is None and isinstance(right, ast.Name) and right.id == "base":
+                    return True
+        return False
+    return False
+
+
 def bind_action_runtime(source_root: Path, *, action_space_type: str = "single",
                         action_dim: int = 24, explicit_noop: bool = False) -> dict[str, Any]:
     if (action_space_type, action_dim, explicit_noop) != ("single", 24, False):
@@ -36,7 +96,11 @@ def bind_action_runtime(source_root: Path, *, action_space_type: str = "single",
     unresolved = [name for name, value in functions.items() if value.get("status") != "PASS"]
     if unresolved:
         return {"status": "UNRESOLVED", "failure": {"code": "TARGET_METHOD_IR_UNRESOLVED", "route": "UNRESOLVED", "functions": unresolved}, "functions": functions}
-    fallback_semantics_ok = "return None, base" in policy_source and "tree_no_valid_action" in policy_source
+    fallback_semantics_ok = (
+        _top1_or_noop_branch_returns_none_base(policy_source)
+        and _has_none_base_return(policy_source, "IntegerTreeBudgetPolicy.select_action_id")
+        and "tree_no_valid_action" in policy_source
+    )
     if not fallback_semantics_ok:
         return {"status": "FAIL", "failure": {"code": "ACTION_FALLBACK_SEMANTICS_FAILED",
                 "route": "MODEL_CONFORMANCE_FAILED"}, "functions": functions}

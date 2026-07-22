@@ -1,6 +1,5 @@
 {
-  "theorem_id": "C_AMC_SEM_CASE1_CASE2_SUFFICIENCY",
-  "exact_statement": "For a fixed protected HI task i, let R_i(LO) and W_i(LO) be the LO-mode response and relative-start bounds, and define S_i^1={s in N | 0 <= s < R_i(LO)} and S_i^2={0} when W_i(LO)=0, otherwise S_i^2={s in N | 0 <= s < W_i(LO)}. For s in S_i^1 use the Case 1 integer workload bound; for s in S_i^2 with W_i(LO)>0 use the ordinary Case 2 integer recurrence and accept only its least post-fixed candidate. When W_i(LO)=0, use the direct zero-start lemma and do not invoke the ordinary Case 2 recurrence. Under the protected-window, C-AMC-sem arrival/switch and integer-domain assumptions, the accepted bound upper-bounds RT(J_i).",
+  "assumption_hash": "9c62ba9c1fb97935b13fc512a4f13c9d3181dc2871bdf9d442bdff9b9f859660",
   "assumptions": [
     "c_amc_sem_arrival_switch",
     "protected_hi_window",
@@ -10,10 +9,11 @@
     "least_post_fixed_candidate",
     "zero_start_direct_lemma"
   ],
-  "conclusion": "the accepted Case 1 or valid Case 2 bound satisfies RT(J_i) <= accepted_bound, with the W_i(LO)=0 branch handled only by the direct lemma",
-  "source_reference": "C-AMC-sem framework interface: Case 1 and Case 2 integer workload bounds",
   "assurance_level": "DECLARED_AXIOM_TCB",
-  "version": "p0-theory-r2",
+  "conclusion": "the accepted Case 1 or valid Case 2 bound satisfies RT(J_i) <= accepted_bound, with the W_i(LO)=0 branch handled only by the direct lemma",
+  "exact_statement": "For a fixed protected HI task i, let R_i(LO) and W_i(LO) be the LO-mode response and relative-start bounds, and define S_i^1={s in N | 0 <= s < R_i(LO)} and S_i^2={0} when W_i(LO)=0, otherwise S_i^2={s in N | 0 <= s < W_i(LO)}. For s in S_i^1 use the Case 1 integer workload bound; for s in S_i^2 with W_i(LO)>0 use the ordinary Case 2 integer recurrence and accept only its least post-fixed candidate. When W_i(LO)=0, use the direct zero-start lemma and do not invoke the ordinary Case 2 recurrence. Under the protected-window, C-AMC-sem arrival/switch and integer-domain assumptions, the accepted bound upper-bounds RT(J_i).",
+  "source_reference": "C-AMC-sem framework interface: Case 1 and Case 2 integer workload bounds",
   "statement_hash": "90dd214d215d92676138b2ee4ef3a780e66bb0b2bf2fb35bf80b3acd056e947d",
-  "assumption_hash": "9c62ba9c1fb97935b13fc512a4f13c9d3181dc2871bdf9d442bdff9b9f859660"
+  "theorem_id": "C_AMC_SEM_CASE1_CASE2_SUFFICIENCY",
+  "version": "p0-theory-r2"
 }

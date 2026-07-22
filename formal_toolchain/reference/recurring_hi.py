@@ -8,7 +8,7 @@ from typing import Any
 
 from formal_toolchain.core.artifact import obligation_certificate, verify_obligation_certificate
 from formal_toolchain.core.hashing import sha256_object
-from .rta_production import protected_hi_rta
+from .rta_production import all_task_reference_rta
 from .task_mapping import ReferenceTaskset
 
 
@@ -35,15 +35,17 @@ def build_recurring_hi_instances(taskset: ReferenceTaskset, *,
     """只消费已验证 RTA certificate，构造带 theorem side conditions 的 instance。"""
     if not verify_obligation_certificate(rta_certificate):
         raise ValueError("RTA certificate hash 无效")
-    if (rta_certificate.get("obligation_id") != "PROTECTED_HI_RTA_ARITHMETIC"
-            or rta_certificate.get("obligation_status") != "PASS"
-            or rta_certificate.get("status") != "PASS"
+    if (rta_certificate.get("obligation_id") != "ALL_TASK_REFERENCE_RTA_ARITHMETIC"
             or rta_certificate.get("taskset") != taskset.to_dict()):
         raise ValueError("RTA certificate context/status 不满足 recurring theorem 前置条件")
     theory = _theory_hashes()
     instances = []
     for row in rta_certificate.get("tasks", []):
         task = row["task"]
+        if task.get("criticality") != "HI":
+            continue
+        if row.get("status") != "PASS":
+            raise ValueError(f"task {task['name']} 的 HI witness 未通过")
         task_index = taskset.priority_order.index(task["name"])
         hp_lo = [item.name for item in taskset.tasks[:task_index] if item.criticality == "LO"]
         hp_hi = [item.name for item in taskset.tasks[:task_index] if item.criticality == "HI"]
@@ -72,7 +74,7 @@ def build_recurring_hi_instances(taskset: ReferenceTaskset, *,
             "status": "PASS",
         })
     if not instances:
-        raise ValueError("没有 HI task，不能构造 recurring HI theorem instance")
+        raise ValueError("没有可用的 HI task，不能构造 recurring HI theorem instance")
     result = {"schema_version": "per_hi_task_inductive_wcrt_v1",
               "theorem": "PER_HI_TASK_INDUCTIVE_WCRT", "status": "PASS",
               "instances": instances, "context_hash": taskset.source_context_hash,

@@ -15,30 +15,26 @@ def _theory(theorem_id: str) -> dict[str, str]:
 
 def build_hi_bad_prefix_reflection_certificate(*, closed_prefix_certificate: Mapping[str, Any],
                                                prefix_extension_certificate: Mapping[str, Any],
+                                               release_mapping_certificate: Mapping[str, Any],
                                                deadline_observation_certificate: Mapping[str, Any],
                                                hi_nontruncation_certificate: Mapping[str, Any],
-                                               event_projection_certificate: Mapping[str, Any],
+                                               effective_frontier_certificate: Mapping[str, Any],
+                                               early_stop_gate_certificate: Mapping[str, Any],
                                                state_relation_schema: str,
                                                context_hash: str,
-                                               theorem_manifest: Mapping[str, Any] | None = None,
-                                               protected_hi_certificate: Mapping[str, Any] | None = None,
-                                               release_mapping_certificate: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    required = (closed_prefix_certificate, prefix_extension_certificate,
-                deadline_observation_certificate, hi_nontruncation_certificate,
-                event_projection_certificate)
+                                               theorem_manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    required = (
+        closed_prefix_certificate,
+        prefix_extension_certificate,
+        release_mapping_certificate,
+        deadline_observation_certificate,
+        hi_nontruncation_certificate,
+        effective_frontier_certificate,
+        early_stop_gate_certificate,
+    )
     if any(not verify_obligation_certificate(item) or item.get("obligation_status") != "PASS"
            or item.get("certificate_context_hash") != context_hash for item in required):
         raise ValueError("bad-prefix reflection 前置证书无效")
-    if (not isinstance(protected_hi_certificate, Mapping)
-            or protected_hi_certificate.get("obligation_id") != "PROTECTED_HI_SAFETY_COROLLARY"
-            or protected_hi_certificate.get("obligation_status") != "PASS"
-            or not verify_obligation_certificate(protected_hi_certificate)):
-        return {"status": "UNRESOLVED", "failure": "PROTECTED_HI_COROLLARY_REQUIRED"}
-    if (not isinstance(release_mapping_certificate, Mapping)
-            or release_mapping_certificate.get("obligation_id") != "RELEASE_FIXED_REMOVAL_MAPPING"
-            or release_mapping_certificate.get("obligation_status") != "PASS"
-            or not verify_obligation_certificate(release_mapping_certificate)):
-        return {"status": "UNRESOLVED", "failure": "RELEASE_MAPPING_REQUIRED"}
     theorem = theorem_manifest or _theory("FINITE_HI_BAD_PREFIX_REFLECTION")
     if theorem.get("theorem_id") not in (None, "FINITE_HI_BAD_PREFIX_REFLECTION"):
         raise ValueError("bad-prefix theorem manifest 不匹配")
@@ -57,13 +53,13 @@ def build_hi_bad_prefix_reflection_certificate(*, closed_prefix_certificate: Map
         "iff ReferenceHIMiss(job_key, release_time, deadline, service, miss_time))"
     )
     predecessors = {
-        "closed_prefix": closed_prefix_certificate["artifact_hash"],
-        "prefix_extension": prefix_extension_certificate["artifact_hash"],
-        "deadline_observation": deadline_observation_certificate["artifact_hash"],
-        "hi_nontruncation": hi_nontruncation_certificate["artifact_hash"],
-        "event_projection": event_projection_certificate["artifact_hash"],
-        "protected_hi": protected_hi_certificate["artifact_hash"],
-        "release_mapping": release_mapping_certificate["artifact_hash"],
+        "CLOSED_PREFIX_REFINEMENT": closed_prefix_certificate["artifact_hash"],
+        "REFERENCE_PREFIX_EXTENSION": prefix_extension_certificate["artifact_hash"],
+        "RELEASE_FIXED_REMOVAL_MAPPING": release_mapping_certificate["artifact_hash"],
+        "DEADLINE_OBSERVATION": deadline_observation_certificate["artifact_hash"],
+        "HI_NONTRUNCATION": hi_nontruncation_certificate["artifact_hash"],
+        "EFFECTIVE_EVENT_FRONTIER_RELATION": effective_frontier_certificate["artifact_hash"],
+        "EARLY_STOP_CONFIGURATION_GATE": early_stop_gate_certificate["artifact_hash"],
     }
     return obligation_certificate(
         obligation_id="HI_BAD_CLOSED_PREFIX_REFLECTION", status="PASS", context_hash=context_hash,

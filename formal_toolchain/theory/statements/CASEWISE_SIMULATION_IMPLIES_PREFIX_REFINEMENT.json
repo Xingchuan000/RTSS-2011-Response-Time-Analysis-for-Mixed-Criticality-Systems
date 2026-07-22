@@ -1,6 +1,5 @@
 {
-  "theorem_id": "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT",
-  "exact_statement": "Let pi be any finite concrete closed prefix. If every reachable transition of pi is covered by exactly one modeled case, each case preserves the state relation, and the projected event relation is preserved at every step, then there exists a legal reference prefix rho of the same projected length such that every prefix state/event pair of pi is related to the corresponding prefix pair of rho.",
+  "assumption_hash": "188a2035d31a9f92451781a23656ef15805dc2e30bbaa8aa2a96c14aa9b6d42a",
   "assumptions": [
     "finite_concrete_closed_prefix",
     "complete_transition_case_coverage",
@@ -8,10 +7,11 @@
     "state_relation_preservation",
     "event_projection_preservation"
   ],
-  "conclusion": "forall finite concrete closed prefixes pi, exists a legal reference prefix rho with pointwise state and projected-event refinement",
-  "source_reference": "This framework theorem interface, casewise simulation and prefix refinement",
   "assurance_level": "DECLARED_AXIOM_TCB",
-  "version": "p0-theory-r2",
+  "conclusion": "forall finite concrete closed prefixes pi, exists a legal reference prefix rho with pointwise state and projected-event refinement",
+  "exact_statement": "Let pi be any finite concrete closed prefix. If every reachable transition of pi is covered by exactly one modeled case, each case preserves the state relation, and the projected event relation is preserved at every step, then there exists a legal reference prefix rho of the same projected length such that every prefix state/event pair of pi is related to the corresponding prefix pair of rho.",
+  "source_reference": "This framework theorem interface, casewise simulation and prefix refinement",
   "statement_hash": "e660e145e4c922a4ed03a90434ae032ccde308bb8c8dec0f29170c0f2de1521f",
-  "assumption_hash": "188a2035d31a9f92451781a23656ef15805dc2e30bbaa8aa2a96c14aa9b6d42a"
+  "theorem_id": "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT",
+  "version": "p0-theory-r2"
 }

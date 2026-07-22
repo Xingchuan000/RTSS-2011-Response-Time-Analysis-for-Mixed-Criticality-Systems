@@ -166,16 +166,17 @@ def _rta_replay(*, inputs: Any, certified_envelope: Mapping[str, Any],
     """
 
     try:
-        from formal_toolchain.reference.rta_production import protected_hi_rta
+        from formal_toolchain.reference.rta_production import all_task_reference_rta
         taskset = fresh_reference or _fresh_reference_taskset(inputs, certified_envelope)
-        production = protected_hi_rta(taskset)
+        production = all_task_reference_rta(taskset)
     except (KeyError, TypeError, ValueError) as exc:
         return {"status": "PROOF_BUNDLE_INVALID", "route": "PROOF_BUNDLE_INVALID",
                 "code": "FRESH_REFERENCE_TASKSET_INVALID", "message": str(exc)}
 
     # 通过模块属性调用，确保测试或部署环境替换独立 replay 实现时，fresh
     # verifier 不会继续使用 import 时缓存的旧函数引用。
-    replay = independent_arithmetic.replay_protected_hi_rta(taskset, production)
+    from formal_toolchain.reference.rta_replay import replay_all_task_rta
+    replay = replay_all_task_rta(taskset, production)
     if replay.get("status") == "FAIL":
         return {"status": "FAIL", "route": "REFERENCE_CERTIFICATE_FAILED",
                 "code": "RTA_REPLAY_MISMATCH", "replay": replay,
@@ -239,7 +240,7 @@ def _fresh_bridge_proofs(*, inputs: Any, fresh_certificates: Mapping[str, Mappin
         bridge_context_hash=bridge_context_hash, model_bounds=model_bounds,
         concrete_base=concrete_base, reference_base=reference_base,
         upstream_certificates=upstream, release_mapping_certificate=release_mapping,
-        protected_hi_certificate=None, runtime_config=inputs.target.runtime_config,
+        closure_completion_certificate=None, runtime_config=inputs.target.runtime_config,
     )
     if bridge.get("status") != "PASS":
         return {}, {"route": "UNRESOLVED", "code": str(bridge.get("failure", "PHASE_K_UNRESOLVED"))}
@@ -259,9 +260,9 @@ def _fresh_bad_prefix_proof(*, inputs: Any, fresh_certificates: Mapping[str, Map
     case_map_path = Path(inputs.workspace) / "request" / "inputs" / "formal_inputs" / "phase_k_case_map.json"
     if not case_map_path.is_file():
         return {}, {"route": "UNRESOLVED", "code": "PHASE_K_CASE_MAP_MISSING"}
-    protected_hi = fresh_certificates.get("PROTECTED_HI_SAFETY_COROLLARY")
-    if not isinstance(protected_hi, Mapping) or protected_hi.get("obligation_status") != "PASS":
-        return {}, {"route": "UNRESOLVED", "code": "PHASE_K_PROTECTED_HI_UNRESOLVED"}
+    reference_hi = fresh_certificates.get("REFERENCE_HI_SUBSET_SAFETY")
+    if not isinstance(reference_hi, Mapping) or reference_hi.get("obligation_status") != "PASS":
+        return {}, {"route": "UNRESOLVED", "code": "REFERENCE_HI_SUBSET_SAFETY_UNRESOLVED"}
     release_mapping = fresh_certificates.get("RELEASE_FIXED_REMOVAL_MAPPING")
     if not isinstance(release_mapping, Mapping) or release_mapping.get("obligation_status") != "PASS":
         return {}, {"route": "UNRESOLVED", "code": "RELEASE_MAPPING_CANDIDATE_MISSING"}
@@ -291,7 +292,7 @@ def _fresh_bad_prefix_proof(*, inputs: Any, fresh_certificates: Mapping[str, Map
             "CERTIFIED_ENVELOPE",
         )},
         release_mapping_certificate=release_mapping,
-        protected_hi_certificate=protected_hi, runtime_config=inputs.target.runtime_config,
+        closure_completion_certificate=reference_hi, runtime_config=inputs.target.runtime_config,
     )
     if bridge.get("status") != "PASS" or "bad_prefix_reflection" not in bridge:
         return {}, {"route": "UNRESOLVED", "code": str(bridge.get("failure", "PHASE_K_UNRESOLVED"))}
@@ -385,7 +386,7 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
     migration = _read(Path(__file__).parents[1] / "specs/migration_manifest.json")
     migration_check = verify_migration_manifest(
         migration=migration, registry=registry,
-        current_schema_version="obligation_registry_v3")
+        current_schema_version="obligation_registry_v4")
     if migration_check["status"] != "PASS":
         summary = _fail_summary(active=active, status="PROOF_BUNDLE_INVALID",
                                 code=migration_check["code"] or "MIGRATION_MANIFEST_MISMATCH",
@@ -594,14 +595,14 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path) -> dict[str, 
                                                         "REFERENCE_TASKSET",
                                                         "PROTECTED_HI_RTA_ARITHMETIC",
                                                         "PER_HI_TASK_INDUCTIVE_WCRT",
-                                                        "PROTECTED_HI_SAFETY_COROLLARY"}
+                                                        "REFERENCE_HI_SUBSET_SAFETY"}
                                    else None),
                 fresh_reference=(fresh_reference
                                  if obligation_id in {"CODE_REFERENCE_UPPER_BOUND_MAPPING",
                                                       "REFERENCE_TASKSET",
                                                       "PROTECTED_HI_RTA_ARITHMETIC",
                                                       "PER_HI_TASK_INDUCTIVE_WCRT",
-                                                      "PROTECTED_HI_SAFETY_COROLLARY"}
+                                                      "REFERENCE_HI_SUBSET_SAFETY"}
                                  else None),
             )
             # fresh verifier 的状态必须完全取自独立 checker 的结果。

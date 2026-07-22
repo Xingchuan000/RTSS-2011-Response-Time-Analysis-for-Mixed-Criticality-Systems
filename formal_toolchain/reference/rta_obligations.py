@@ -49,12 +49,26 @@ def build_case1_domain_evidence(rta: Mapping[str, Any]) -> dict[str, Any]:
 def build_case2_domain_evidence(rta: Mapping[str, Any]) -> dict[str, Any]:
     checks = []
     for row in _tasks(rta):
-        w_lo = int(row["start"]["w_lo"])
+        start = row.get("start")
+        if not isinstance(start, Mapping):
+            checks.append({"task": row["task"]["name"], "w_lo": None, "expected": None,
+                           "actual": None, "match": False})
+            continue
+        w_lo = int(start["w_lo"])
         case2 = row.get("case2", [])
         if w_lo == 0:
-            ok = len(case2) == 1 and case2[0].get("tag") == "ZERO_RELATIVE_START" and case2[0].get("start") == 0
-            expected = ["ZERO_RELATIVE_START"]
-            actual = [item.get("tag") for item in case2]
+            zero_boundary = row.get("zero_relative_start_boundary", {})
+            ok = (
+                case2 == []
+                and isinstance(zero_boundary, Mapping)
+                and zero_boundary.get("applicable") is True
+                and zero_boundary.get("bound") == int(row["task"]["c_hi"])
+            )
+            expected = {"case2": [], "zero_boundary": True}
+            actual = {
+                "case2": case2,
+                "zero_boundary": zero_boundary,
+            }
         else:
             expected = list(range(w_lo))
             actual = [int(item["start"]) for item in case2]
@@ -67,14 +81,24 @@ def build_case2_domain_evidence(rta: Mapping[str, Any]) -> dict[str, Any]:
 def build_zero_relative_start_evidence(rta: Mapping[str, Any]) -> dict[str, Any]:
     checks = []
     for row in _tasks(rta):
-        w_lo = int(row["start"]["w_lo"])
+        start = row.get("start")
+        if not isinstance(start, Mapping):
+            checks.append({"task": row["task"]["name"], "applicable": False, "status": "NOT_APPLICABLE"})
+            continue
+        w_lo = int(start["w_lo"])
         if w_lo != 0:
             checks.append({"task": row["task"]["name"], "applicable": False, "status": "NOT_APPLICABLE"})
             continue
-        case2 = row.get("case2", [])
+        zero_boundary = row.get("zero_relative_start_boundary", {})
         task = row["task"]
-        ok = len(case2) == 1 and case2[0].get("tag") == "ZERO_RELATIVE_START" and case2[0].get("start") == 0 and case2[0].get("response_for_deadline") == int(task["c_hi"])
-        checks.append({"task": task["name"], "applicable": True, "status": "PASS" if ok else "FAIL", "case2": case2})
+        ok = (
+            isinstance(zero_boundary, Mapping)
+            and zero_boundary.get("applicable") is True
+            and zero_boundary.get("bound") == int(task["c_hi"])
+            and zero_boundary.get("deadline_holds") == (int(task["c_hi"]) <= int(task["deadline"]))
+            and row.get("case2", []) == []
+        )
+        checks.append({"task": task["name"], "applicable": True, "status": "PASS" if ok else "FAIL", "zero_boundary": zero_boundary})
     applicable = [item for item in checks if item["applicable"]]
     passed = all(item["status"] == "PASS" for item in applicable)
     return {"status": "PASS" if passed else "FAIL", "route": None if passed else "REFERENCE_CERTIFICATE_FAILED", "failure": None if passed else {"code": "ZERO_RELATIVE_START_LEMMA_INSTANCE_FAILED"}, "checks": checks}
@@ -95,13 +119,22 @@ def build_release_count_evidence(rta: Mapping[str, Any]) -> dict[str, Any]:
     # taskset 使用。
     tasksets = _task_map(rta)
     for row in _tasks(rta):
-        for item in row["lo"]["trace"]:
+        lo = row.get("lo")
+        start = row.get("start")
+        if not isinstance(lo, Mapping) or not isinstance(start, Mapping):
+            checks.append({
+                "kind": "ROW_SHAPE",
+                "task": row.get("task", {}).get("name"),
+                "match": False,
+            })
+            continue
+        for item in lo["trace"]:
             r = int(item["r"])
             for name, count in item.get("release_counts", {}).items():
                 period = int(tasksets[name]["period"])
                 expected = ceil_div_nonnegative(r, period)
                 checks.append({"kind": "LO_CEIL", "task": row["task"]["name"], "interferer": name, "expected": expected, "actual": int(count), "match": expected == int(count)})
-        for item in row["start"]["trace"]:
+        for item in start["trace"]:
             w = int(item["w"])
             for name, count in item.get("release_counts", {}).items():
                 period = int(tasksets[name]["period"])
@@ -111,39 +144,156 @@ def build_release_count_evidence(rta: Mapping[str, Any]) -> dict[str, Any]:
     return {"status": "PASS" if ok else "FAIL", "route": None if ok else "REFERENCE_CERTIFICATE_FAILED", "failure": None if ok else {"code": "RELEASE_COUNT_WITNESS_MISMATCH"}, "check_count": len(checks), "checks": checks}
 
 
-def validate_case_trace(*, row: Mapping[str, Any], candidate: Mapping[str, Any], task_map: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+def validate_case_trace(
+    *,
+    row: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    task_map: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
     from formal_toolchain.reference.arithmetic import ceil_div_nonnegative
-    checks: list[dict[str, Any]] = []
+
+    trace = candidate.get("trace")
+    if not isinstance(trace, list) or not trace:
+        return [{
+            "task": row["task"]["name"],
+            "case": candidate.get("case"),
+            "kind": "trace_nonempty",
+            "match": False,
+        }]
+
+    task = row["task"]
     start = int(candidate["start"])
-    r = int(candidate["response_for_deadline"] if "response_for_deadline" in candidate else candidate["absolute_response"])
-    for name, term in candidate.get("il_terms", {}).items():
-        j = task_map[name]
-        if candidate.get("case") == "CASE1":
-            expected = ceil_div_nonnegative(r, int(j["period"])) * int(j["c_hi"]) + (start // int(j["period"]) + 1) * (int(j["c_lo"]) - int(j["c_hi"]))
-        else:
-            expected = ceil_div_nonnegative(r, int(j["period"])) * int(j["c_hi"]) + (start // int(j["period"]) + 1) * (int(j["c_lo"]) - int(j["c_hi"]))
-        checks.append({"case": candidate.get("case"), "task": row["task"]["name"], "interferer": name, "kind": "il_terms", "expected": expected, "actual": int(term), "match": expected == int(term)})
-    for name, term in candidate.get("ih_terms", {}).items():
-        j = task_map[name]
-        if candidate.get("case") == "CASE1":
-            expected = ceil_div_nonnegative(r, int(j["period"])) * int(j["c_lo"]) + (0 if r <= start else ceil_div_nonnegative(r - start, int(j["period"]))) * (int(j["c_hi"]) - int(j["c_lo"]))
-        else:
-            expected = ceil_div_nonnegative(r, int(j["period"])) * int(j["c_lo"]) + max(0, ceil_div_nonnegative(r - start, int(j["period"]))) * (int(j["c_hi"]) - int(j["c_lo"]))
-        checks.append({"case": candidate.get("case"), "task": row["task"]["name"], "interferer": name, "kind": "ih_terms", "expected": expected, "actual": int(term), "match": expected == int(term)})
-    checks.append({"case": candidate.get("case"), "task": row["task"]["name"], "kind": "f", "expected": r, "actual": int(candidate.get("f", r)), "match": r == int(candidate.get("f", r))})
+    checks: list[dict[str, Any]] = []
+
+    for step in trace:
+        absolute_r = int(step.get("absolute_r", step.get("r")))
+        actual_il = step.get("il_terms")
+        actual_ih = step.get("ih_terms")
+        if not isinstance(actual_il, Mapping) or not isinstance(actual_ih, Mapping):
+            checks.append({
+                "task": task["name"],
+                "case": candidate.get("case"),
+                "kind": "interference_maps_present",
+                "match": False,
+            })
+            continue
+
+        expected_il: dict[str, int] = {}
+        expected_ih: dict[str, int] = {}
+        for name, j in task_map.items():
+            if int(j["priority_index"]) >= int(task["priority_index"]):
+                continue
+            if j["criticality"] == "LO":
+                expected_il[name] = (
+                    ceil_div_nonnegative(absolute_r, int(j["period"]))
+                    * int(j["c_hi"])
+                    + (start // int(j["period"]) + 1)
+                    * (int(j["c_lo"]) - int(j["c_hi"]))
+                )
+            else:
+                carry = (
+                    0 if absolute_r <= start
+                    else ceil_div_nonnegative(
+                        absolute_r - start, int(j["period"])
+                    )
+                )
+                expected_ih[name] = (
+                    ceil_div_nonnegative(absolute_r, int(j["period"]))
+                    * int(j["c_lo"])
+                    + carry * (int(j["c_hi"]) - int(j["c_lo"]))
+                )
+
+        own = int(task["c_lo"] if candidate["case"] == "CASE1" else task["c_hi"])
+        expected_raw_f = own + sum(expected_il.values()) + sum(expected_ih.values())
+        expected_guarded_f = (
+            max(start + int(task["c_hi"]), expected_raw_f)
+            if candidate["case"] == "CASE2"
+            else expected_raw_f
+        )
+
+        checks.extend([
+            {
+                "task": task["name"],
+                "case": candidate["case"],
+                "kind": "il_terms",
+                "expected": expected_il,
+                "actual": dict(actual_il),
+                "match": dict(actual_il) == expected_il,
+            },
+            {
+                "task": task["name"],
+                "case": candidate["case"],
+                "kind": "ih_terms",
+                "expected": expected_ih,
+                "actual": dict(actual_ih),
+                "match": dict(actual_ih) == expected_ih,
+            },
+            {
+                "task": task["name"],
+                "case": candidate["case"],
+                "kind": "raw_f",
+                "expected": expected_raw_f,
+                "actual": int(step.get("raw_f", step.get("f", -1))),
+                "match": int(step.get("raw_f", step.get("f", -1))) == expected_raw_f,
+            },
+            {
+                "task": task["name"],
+                "case": candidate["case"],
+                "kind": "guarded_f",
+                "expected": expected_guarded_f,
+                "actual": int(step.get("guarded_f", step.get("f", -1))),
+                "match": int(step.get("guarded_f", step.get("f", -1))) == expected_guarded_f,
+            },
+        ])
+        if candidate["case"] == "CASE2":
+            guard = absolute_r >= start + int(task["c_hi"])
+            checks.append({
+                "task": task["name"],
+                "case": "CASE2",
+                "kind": "physical_guard",
+                "expected": True,
+                "actual": guard,
+                "match": guard,
+            })
+
     return checks
 
 
 def build_demand_domination_evidence(rta: Mapping[str, Any]) -> dict[str, Any]:
-    checks = []
+    task_rows = _tasks(rta)
+    expected_count = int(
+        rta.get(
+            "task_count_expected",
+            rta.get("inputs", {}).get("task_count_expected", -1),
+        )
+    )
+    if len(task_rows) != expected_count:
+        return {
+            "status": "FAIL",
+            "route": "REFERENCE_CERTIFICATE_FAILED",
+            "failure": {"code": "RTA_TASK_COVERAGE_INCOMPLETE"},
+            "checks": [],
+        }
+
+    checks: list[dict[str, Any]] = []
     task_map = _task_map(rta)
-    for row in _tasks(rta):
+    for row in task_rows:
         for candidate in row.get("case1", []) + row.get("case2", []):
-            if candidate.get("tag") == "ZERO_RELATIVE_START":
-                continue
-            checks.extend(validate_case_trace(row=row, candidate=candidate, task_map=task_map))
-    ok = all(item["match"] for item in checks)
-    return {"status": "PASS" if ok else "FAIL", "route": None if ok else "REFERENCE_CERTIFICATE_FAILED", "failure": None if ok else {"code": "DEMAND_DOMINATION_TRACE_MISMATCH"}, "checks": checks}
+            checks.extend(
+                validate_case_trace(
+                    row=row,
+                    candidate=candidate,
+                    task_map=task_map,
+                )
+            )
+
+    ok = bool(checks) and all(item.get("match") is True for item in checks)
+    return {
+        "status": "PASS" if ok else "FAIL",
+        "route": None if ok else "REFERENCE_CERTIFICATE_FAILED",
+        "failure": None if ok else {"code": "DEMAND_DOMINATION_TRACE_MISMATCH"},
+        "checks": checks,
+    }
 
 
 def build_inherited_hi_domination_evidence(*, rta: Mapping[str, Any], mode_result: Mapping[str, Any]) -> dict[str, Any]:

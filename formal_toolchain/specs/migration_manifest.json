@@ -1,10 +1,1 @@
-{
-  "schema_version": "migration_manifest_v1",
-  "registry_schema_version": "obligation_registry_v3",
-  "breaking_change_requires": [
-    "schema_version",
-    "migration_id"
-  ],
-  "migration_id": "r6-registry-route-and-verifier-sync",
-  "registry_fingerprint": "41802f94a031f99032f540d9ebb1c807632c8bf13473c7b8b07d9568253771de"
-}
+{"schema_version":"migration_manifest_v2","registry_schema_version":"obligation_registry_v4","breaking_change_requires":["schema_version","migration_id"],"migration_id":"r6-registry-route-and-verifier-sync","registry_fingerprint":"19d3645e015c64e80deda54b5fe571bb24657293f55016c9f37c24c7d01a94d9"}

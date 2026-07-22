@@ -95,14 +95,15 @@ def verify_reference_mapping(*, reference: ReferenceTaskset, ordered_tasks: Sequ
                              "deadline": deadline, "c_lo": c_lo, "c_hi": c_hi,
                              "criticality": criticality, "priority_index": index,
                              "code_c_lo": int(code.c_lo), "code_c_hi": int(code.c_hi),
-                             "degraded_cost": cdeg if criticality == "LO" else None})
+                             "degraded_cost": cdeg if criticality == "LO" else None,
+                             "offset": _integer_independent(getattr(code, "offset", 0), f"{name}.offset")})
         code_records = [{"name": str(code.name), "priority_index": index,
                          "criticality": getattr(code.criticality, "value", str(code.criticality)),
                          "period": _integer_independent(code.period, f"{code.name}.period"), "deadline": _integer_independent(code.deadline, f"{code.name}.deadline"),
                          "code_c_lo": _integer_independent(code.c_lo, f"{code.name}.c_lo"), "code_c_hi": _integer_independent(code.c_hi, f"{code.name}.c_hi")}
                         for index, code in enumerate(ordered_tasks)]
         code_fp = sha256_object({"tasks": code_records, "priority_order": names})
-        ref_fp = sha256_object({"schema_version": "reference_taskset_v1",
+        ref_fp = sha256_object({"schema_version": "reference_taskset_v2",
                                 "tasks": expected, "priority_order": names})
         context = build_reference_context(
             semantic_context_hash=semantic_context_hash,

@@ -1,0 +1,14 @@
+{
+  "assumption_hash": "c35e18d61885c496de00ad2cad77317b96b09823337bb9e654a37e7e24f2a0ca",
+  "assumptions": [
+    "reference hi subset safety",
+    "finite bad prefix reflection"
+  ],
+  "assurance_level": "MACHINE_CHECKED_PROJECT_LEMMA",
+  "conclusion": "no_deployed_hi_safety_counterexample",
+  "exact_statement": "A finite bad prefix reflection together with reference HI subset safety yields a contradiction with the existence of a deployed HI safety counterexample.",
+  "source_reference": "project lemma derived from bad-prefix layering",
+  "statement_hash": "906199413b1db4cd4196b9ca66c7468f61f7acabac619ee1176e58cc66129fbc",
+  "theorem_id": "FINITE_BAD_PREFIX_CONTRADICTION",
+  "version": "p0-theory-r4"
+}

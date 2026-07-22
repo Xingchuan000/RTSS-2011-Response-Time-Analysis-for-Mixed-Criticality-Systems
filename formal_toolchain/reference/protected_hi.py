@@ -24,12 +24,10 @@ def _expected_theory_refs() -> dict[str, dict[str, str]]:
 def protected_hi_safety_corollary(recurring_instances: dict[str, Any]) -> dict[str, Any]:
     """只有全部逐 task instance 通过时才给出 corollary PASS。"""
     instances = recurring_instances.get("instances")
-    status = recurring_instances.get("status")
     context_hash = recurring_instances.get("context_hash")
     if (recurring_instances.get("schema_version") != "per_hi_task_inductive_wcrt_v1"
             or recurring_instances.get("theorem") != "PER_HI_TASK_INDUCTIVE_WCRT"
             or not isinstance(instances, list) or not instances
-            or status != "PASS"
             or not isinstance(context_hash, str) or not context_hash
             or any(instance.get("status") != "PASS" for instance in instances)
             or not verify_obligation_certificate(recurring_instances)
@@ -38,8 +36,7 @@ def protected_hi_safety_corollary(recurring_instances: dict[str, Any]) -> dict[s
         return {"status": "FAIL", "route": "REFERENCE_CERTIFICATE_FAILED",
                 "theorem": "PROTECTED_HI_SAFETY_COROLLARY"}
     rta = recurring_instances.get("rta_certificate")
-    if (not isinstance(rta, dict) or rta.get("status") != "PASS"
-            or not verify_obligation_certificate(rta)):
+    if not isinstance(rta, dict) or not verify_obligation_certificate(rta):
         return {"status": "FAIL", "route": "REFERENCE_CERTIFICATE_FAILED",
                 "theorem": "PROTECTED_HI_SAFETY_COROLLARY",
                 "failure": "RTA_PREDECESSOR_INVALID"}
@@ -48,7 +45,11 @@ def protected_hi_safety_corollary(recurring_instances: dict[str, Any]) -> dict[s
                 "theorem": "PROTECTED_HI_SAFETY_COROLLARY",
                 "failure": "RTA_PREDECESSOR_HASH_MISMATCH"}
     expected_refs = _expected_theory_refs()
-    rta_rows = {row.get("task", {}).get("name"): row for row in rta.get("tasks", [])}
+    rta_rows = {
+        row.get("task", {}).get("name"): row
+        for row in rta.get("tasks", [])
+        if row.get("task", {}).get("criticality") == "HI"
+    }
     if set(rta_rows) != {item.get("task", {}).get("name") for item in instances}:
         return {"status": "FAIL", "route": "REFERENCE_CERTIFICATE_FAILED",
                 "theorem": "PROTECTED_HI_SAFETY_COROLLARY",

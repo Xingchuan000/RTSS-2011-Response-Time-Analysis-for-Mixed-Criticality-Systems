@@ -43,16 +43,52 @@ def build_parameterized_prefix_extension_certificate(*, reference_taskset: Mappi
             raise ValueError("reference taskset 不满足 periodic prefix extension 前提")
     if not context_hash or len(context_hash) != 64:
         raise ValueError("prefix extension context hash 无效")
-    predecessor = {"time_progress": time_progress_certificate["artifact_hash"],
-                   "event_order": event_order_certificate["artifact_hash"]}
+    predecessor = {"TIME_PROGRESS": time_progress_certificate["artifact_hash"],
+                   "EFFECTIVE_EVENT_ORDER": event_order_certificate["artifact_hash"]}
+    next_event_sources = [
+        "PERIODIC_RELEASE",
+        "DEADLINE",
+        "VALID_COMPLETION",
+        "VALID_OVERRUN",
+        "VALID_RESPONSE_EXPIRY",
+        "RECOVERY",
+        "CONTROLLER_BOUNDARY",
+    ]
+    same_timestamp_phases = [
+        "RECOVERY",
+        "DEADLINE",
+        "ARRIVAL_BATCH_FREEZE",
+        "ARRIVAL",
+        "COMPLETION",
+        "OVERRUN",
+        "RESPONSE_EXPIRY",
+        "CONTROLLER_POSTCLOSURE",
+        "DISPATCH",
+    ]
     return obligation_certificate(
         obligation_id="REFERENCE_PREFIX_EXTENSION", status="PASS", context_hash=context_hash,
         inputs={"theorem_id": "REFERENCE_PREFIX_EXTENSION",
                 "theorem": theorem, "reference_taskset_hash": reference_taskset.get("fingerprint")},
-        witness={"ready_branch": "ONE_SERVICE_TICK", "empty_ready_branch": "JUMP_TO_NEXT_EVENT",
-                 "periodic_release_language": "release = offset + k * period",
-                 "least_future_release_rule": "min{offset+k*period | offset+k*period > time}",
-                 "successor_conditions": ["period > 0", "0 <= offset < period", "0 <= deadline <= period"],
+        witness={"schema_version": "reference_prefix_extension_v2",
+                 "quantification": "FOR_ALL_FINITE_VALID_REFERENCE_PREFIXES",
+                 "next_event_sources": next_event_sources,
+                 "same_timestamp_phases": same_timestamp_phases,
+                 "closure_rank": {
+                     "measure": "(remaining_same_time_events, phase_rank, pending_token_refreshes)",
+                     "well_founded_order": "LEXICOGRAPHIC_NATURAL",
+                     "strict_decrease_cases": [
+                         "READY_BRANCH_SERVICE_TICK",
+                         "IDLE_BRANCH_JUMP",
+                         "PERIODIC_RELEASE_SUCCESSOR",
+                     ],
+                 },
+                 "ready_successor": {"rule": "ONE_SERVICE_TICK_OR_EARLIER_EFFECTIVE_EVENT"},
+                 "idle_successor": {"rule": "JUMP_TO_MINIMUM_EFFECTIVE_FUTURE_EVENT"},
+                 "periodic_release_successor": {"formula": "offset + k*period",
+                                                "least_k_rule": "floor((time-offset)/period)+1"},
+                 "multiple_pending_jobs_supported": True,
+                 "finite_prefix_job_map_total": True,
+                 "horizon_independent": True,
                  "task_count": len(tasks),
                  "theorem": theorem},
         direct_predecessor_hashes=predecessor, checker_id=__name__, checker_version="phase-k-v1")

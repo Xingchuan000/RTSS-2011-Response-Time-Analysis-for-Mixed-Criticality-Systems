@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.core.obligation_ids import LEGACY_PROTECTED_HI_IDS
 
 
 PRIORITY = (
@@ -13,6 +14,24 @@ PRIORITY = (
     "REFERENCE_COUNTEREXAMPLE", "REFERENCE_CERTIFICATE_FAILED",
     "UNRESOLVED", "DEPLOYED_TREE_PROVED",
 )
+
+
+def reject_legacy_core_for_current_claim(
+    certificates: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    present = sorted(
+        obligation_id
+        for obligation_id in LEGACY_PROTECTED_HI_IDS
+        if obligation_id in certificates
+    )
+    if not present:
+        return None
+    return {
+        "status": "UNRESOLVED",
+        "route": "UNRESOLVED",
+        "code": "LEGACY_PROTECTED_HI_CORE_NOT_ELIGIBLE",
+        "legacy_obligations": present,
+    }
 
 
 def aggregate_phase_ae_local(statuses: list[dict[str, object]]) -> str:
@@ -67,6 +86,9 @@ def aggregate_for_claim(*, claim: str, obligations: list[dict[str, object]] | No
         closure = claim_dependency_closure(registry, claim)
     except ValueError:
         return "PROOF_BUNDLE_INVALID"
+    legacy_guard = reject_legacy_core_for_current_claim(verified_certificates or {})
+    if legacy_guard is not None:
+        return "UNRESOLVED"
     # R07 新接口：root 已由 verifier 计算，aggregator 只验证传入的证书、
     # status evidence 与 root 引用一致；它不再自行猜测另一套 root 算法。
     if verified_certificates is not None:

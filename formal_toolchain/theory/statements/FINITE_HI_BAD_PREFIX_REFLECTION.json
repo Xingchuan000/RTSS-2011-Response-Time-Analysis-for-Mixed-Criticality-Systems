@@ -1,6 +1,5 @@
 {
-  "theorem_id": "FINITE_HI_BAD_PREFIX_REFLECTION",
-  "exact_statement": "Let pi be the first finite concrete closed prefix containing an observed HI deadline miss. If pi has a legal reference-prefix extension and the concrete/reference event projection preserves the corresponding HI deadline observation, then the mapped reference prefix contains a corresponding HI bad event; this theorem performs only the concrete-to-reference bad-prefix mapping and does not prove the reference WCRT or protected-HI corollary.",
+  "assumption_hash": "7bba460aed255e0cc1850f0b1a1e71619c7ce7f07dc0ca935925b282cfb9d1b8",
   "assumptions": [
     "first_finite_concrete_hi_bad_prefix",
     "closed_prefix_refinement",
@@ -8,10 +7,11 @@
     "deadline_observation_projection",
     "event_mapping"
   ],
-  "conclusion": "a first concrete HI bad closed prefix maps to a legal reference prefix containing a corresponding HI bad event",
-  "source_reference": "This framework theorem interface, finite HI bad-prefix reflection",
   "assurance_level": "DECLARED_AXIOM_TCB",
-  "version": "p0-theory-r2",
+  "conclusion": "a first concrete HI bad closed prefix maps to a legal reference prefix containing a corresponding HI bad event",
+  "exact_statement": "Let pi be the first finite concrete closed prefix containing an observed HI deadline miss. If pi has a legal reference-prefix extension and the concrete/reference event projection preserves the corresponding HI deadline observation, then the mapped reference prefix contains a corresponding HI bad event; this theorem performs only the concrete-to-reference bad-prefix mapping and does not prove the reference WCRT or protected-HI corollary.",
+  "source_reference": "This framework theorem interface, finite HI bad-prefix reflection",
   "statement_hash": "2c00844cbaebe5df77392f4dc45c977ba6c116f0cbe5bb703fc8e502dffc7e93",
-  "assumption_hash": "7bba460aed255e0cc1850f0b1a1e71619c7ce7f07dc0ca935925b282cfb9d1b8"
+  "theorem_id": "FINITE_HI_BAD_PREFIX_REFLECTION",
+  "version": "p0-theory-r2"
 }

@@ -28,6 +28,27 @@ class ReferenceTask:
     code_c_lo: int
     code_c_hi: int
     degraded_cost: int | None = None
+    offset: int = 0
+
+    def __post_init__(self) -> None:
+        if self.criticality not in {"LO", "HI"}:
+            raise ValueError(f"{self.name}: criticality must be LO or HI")
+        if self.period <= 0:
+            raise ValueError(f"{self.name}: period must be positive")
+        if not 0 < self.deadline <= self.period:
+            raise ValueError(f"{self.name}: constrained deadline requires 0 < D <= T")
+        if not 0 <= self.offset < self.period:
+            raise ValueError(f"{self.name}: offset must satisfy 0 <= offset < period")
+        if self.priority_index < 0:
+            raise ValueError(f"{self.name}: priority index must be non-negative")
+        if self.c_lo <= 0 or self.c_hi <= 0:
+            raise ValueError(f"{self.name}: reference WCETs must be positive")
+        if self.code_c_lo < 0 or self.code_c_hi < 0:
+            raise ValueError(f"{self.name}: code WCETs must be non-negative")
+        if self.criticality == "LO" and self.c_hi > self.c_lo:
+            raise ValueError(f"{self.name}: LO task requires C_HI <= C_LO")
+        if self.degraded_cost is not None and self.degraded_cost < 0:
+            raise ValueError(f"{self.name}: degraded_cost must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +71,7 @@ class ReferenceTaskset:
         return tuple(task.name for task in self.tasks)
 
     def to_dict(self) -> dict[str, Any]:
-        value = {"schema_version": "reference_taskset_v1",
+        value = {"schema_version": "reference_taskset_v2",
                 "tasks": [asdict(task) for task in self.tasks],
                 "priority_order": list(self.priority_order),
                 "source_context_hash": self.source_context_hash}
@@ -151,8 +172,11 @@ def build_reference_taskset(
         code_hi = _integer(task.c_hi, f"{name}.c_hi")
         period = _integer(task.period, f"{name}.period")
         deadline = _integer(task.deadline, f"{name}.deadline")
-        if period <= 0 or deadline < 0:
-            raise ValueError(f"{name} 的 period/deadline 不合法")
+        if period <= 0 or not 0 < deadline <= period:
+            raise ValueError(f"{name}: expected constrained deadline 0 < D <= T")
+        offset = _integer(getattr(task, "offset", 0), f"{name}.offset")
+        if not 0 <= offset < period:
+            raise ValueError(f"{name}: invalid periodic release offset")
         # I02 的 B̄_i 只来自 Phase H certified envelope；budget_floor 和
         # provenance.b_bar 都只是绑定检查，不能改变认证后的数值。
         if budget.get("certified_envelope_hash") != certified_envelope_hash:
@@ -175,7 +199,7 @@ def build_reference_taskset(
         else:
             raise ValueError(f"未知 criticality：{crit}")
         result.append(ReferenceTask(name, period, deadline,
-                                    ref_lo, ref_hi, crit, index, code_lo, code_hi, deg))
+                                    ref_lo, ref_hi, crit, index, code_lo, code_hi, deg, offset))
     code_records = [{"name": str(task.name), "priority_index": index,
                      "criticality": getattr(task.criticality, "value", str(task.criticality)),
                      "period": _integer(task.period, f"{task.name}.period"), "deadline": _integer(task.deadline, f"{task.name}.deadline"),
@@ -184,7 +208,7 @@ def build_reference_taskset(
     priority = [record["name"] for record in code_records]
     code_fingerprint = sha256_object({"tasks": code_records, "priority_order": priority})
     reference_records = [asdict(task) for task in result]
-    reference_fingerprint = sha256_object({"schema_version": "reference_taskset_v1",
+    reference_fingerprint = sha256_object({"schema_version": "reference_taskset_v2",
                                            "tasks": reference_records,
                                            "priority_order": priority})
     from formal_toolchain.core.contexts import build_reference_context

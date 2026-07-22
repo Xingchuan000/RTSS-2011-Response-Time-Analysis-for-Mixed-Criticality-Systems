@@ -27,6 +27,7 @@ from formal_toolchain.adapters.tree_artifact import inspect_tree_artifact
 from formal_toolchain.bridge.budget_invariant_derivation import derive_budget_invariant_evidence
 from formal_toolchain.core.contexts import expected_context_for_obligation
 from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.core.artifact import verify_obligation_certificate
 from formal_toolchain.core.registry import load_registry
 from formal_toolchain.conformance.time_domain import build_budget_domain
 from formal_toolchain.invariant.candidate_envelope import synthesize_candidate_envelope
@@ -44,9 +45,24 @@ from formal_toolchain.policy.quantization import deterministic_samples, replay_q
 from formal_toolchain.policy.selected_regions import selected_action_regions, selected_action_regions_v2
 from formal_toolchain.policy.tree import validate_tree_and_leaf_partition
 from formal_toolchain.policy.tree_io import integer_tree_from_dict
-from formal_toolchain.reference.rta_production import protected_hi_rta
-from formal_toolchain.reference.rta_replay import replay_rta
+from formal_toolchain.reference.model_conformance import build_reference_model_conformance_certificate
+from formal_toolchain.reference.rta_production import all_task_reference_rta, protected_hi_rta
+from formal_toolchain.reference.rta_replay import replay_all_task_rta, replay_all_task_rta_independently
 from formal_toolchain.reference.task_mapping import build_reference_taskset, validate_reference_mapping
+from formal_toolchain.verifier.budget_domination_checker import verify_budget_to_reference_domination
+from formal_toolchain.verifier.controller_checkers import (
+    verify_controller_boundary, verify_controller_path_uniqueness,
+    verify_controller_write_set, verify_token_refresh_projection,
+    verify_update_payload_totality,
+)
+from formal_toolchain.verifier.early_stop_gate_checker import verify_early_stop_configuration_gate
+from formal_toolchain.verifier.effective_frontier_checker import verify_effective_event_frontier_relation
+from formal_toolchain.verifier.finite_contradiction_checker import verify_finite_bad_prefix_contradiction
+from formal_toolchain.verifier.reference_conformance_checker import verify_reference_model_conformance
+from formal_toolchain.verifier.reference_theorem_checker import (
+    verify_reference_hi_subset_safety,
+    verify_reference_taskset_schedulable,
+)
 from formal_toolchain.verifier.bootstrap_checks import (
     build_interface_coverage_report,
     verify_json_schema_file,
@@ -442,6 +458,10 @@ def _candidate_status_checker(obligation_id: str) -> Checker:
         return _verify_effective_runtime_config_obligation
     if obligation_id == "REFERENCE_TASKSET":
         return _verify_reference_taskset_obligation
+    if obligation_id == "ALL_TASK_REFERENCE_RTA_ARITHMETIC":
+        return _verify_all_task_reference_rta_obligation
+    if obligation_id == "REFERENCE_MODEL_CONFORMANCE":
+        return _verify_reference_model_conformance
     if obligation_id == "PROTECTED_HI_RTA_ARITHMETIC":
         return _verify_protected_hi_rta_obligation
     return _explicit_unresolved(obligation_id)
@@ -576,7 +596,7 @@ def _verify_migration_manifest_obligation(*, raw_inputs=None, candidate_evidence
     registry = load_registry(_specs_root(raw) / "obligation_registry.json")
     migration = _read_json(_specs_root(raw) / "migration_manifest.json")
     result = verify_migration_manifest(
-        migration=migration, registry=registry, current_schema_version="obligation_registry_v3")
+        migration=migration, registry=registry, current_schema_version="obligation_registry_v4")
     return _finish("MIGRATION_MANIFEST", result, expected_context_hash=expected_context_hash,
                    candidate_evidence=candidate_evidence)
 
@@ -799,44 +819,185 @@ def _verify_protected_hi_rta_obligation(*, raw_inputs=None, candidate_evidence=N
                               "candidate_evidence": candidate_evidence}, "PROTECTED_HI_RTA_ARITHMETIC")
     if error:
         return error
+    if fresh_reference is None:
+        return _raw_inputs_result("PROTECTED_HI_RTA_ARITHMETIC", code="FRESH_REFERENCE_TASKSET_MISSING")
     try:
-        if fresh_reference is None:
-            if not isinstance(certified_envelope, Mapping):
-                return _raw_inputs_result("PROTECTED_HI_RTA_ARITHMETIC", code="FRESH_REFERENCE_TASKSET_MISSING")
-            budget_by_task = {
-                str(name): {**dict(row), "b_bar": int(certified_envelope["upper"][name]),
-                            "certified_envelope_hash": sha256_object(dict(certified_envelope))}
-                for name, row in raw.target.provenance["budget_by_task"].items()
-            }
-            fresh_reference = build_reference_taskset(
-                raw.target.ordered_tasks, budget_by_task,
-                xf=raw.target.runtime_config.c_amc_sem_lo_degradation_ratio,
-                certified_envelope=certified_envelope,
-                semantic_context_hash=str(raw.contexts["semantic_context"]["hash"]),
-                effective_runtime_config_hash=sha256_object(export_formal_target_config(raw.target)),
-            )
-        if fresh_reference is None:
-            return _raw_inputs_result("PROTECTED_HI_RTA_ARITHMETIC", code="FRESH_REFERENCE_TASKSET_MISSING")
-        taskset = fresh_reference if hasattr(fresh_reference, "to_dict") else build_reference_taskset(
-            raw.target.ordered_tasks,
-            {
-                str(name): {**dict(row), "b_bar": int(certified_envelope["upper"][name]),
-                            "certified_envelope_hash": sha256_object(dict(certified_envelope))}
-                for name, row in raw.target.provenance["budget_by_task"].items()
-            },
-            xf=raw.target.runtime_config.c_amc_sem_lo_degradation_ratio,
-            certified_envelope=certified_envelope,
-            semantic_context_hash=str(raw.contexts["semantic_context"]["hash"]),
-            effective_runtime_config_hash=sha256_object(export_formal_target_config(raw.target)),
-        )
-        production = protected_hi_rta(taskset)
-        replay = replay_rta(taskset, production)
-        result = replay
+        from formal_toolchain.reference.rta_replay import replay_all_task_rta
+
+        production = protected_hi_rta(fresh_reference)
+        replay = replay_all_task_rta(fresh_reference, production)
+        if not verify_obligation_certificate(production):
+            raise ValueError("protected_hi_rta certificate hash invalid")
     except (KeyError, TypeError, ValueError) as exc:
-        result = {"status": "FAIL", "route": "REFERENCE_CERTIFICATE_FAILED",
-                  "code": "RTA_REPLAY_INVALID", "failure": {"code": "PROTECTED_HI_RTA_INVALID", "detail": str(exc)}}
+        result = {
+            "status": "FAIL",
+            "route": "PROOF_BUNDLE_INVALID",
+            "code": "PROTECTED_HI_RTA_INVALID",
+            "failure": {"code": "PROTECTED_HI_RTA_INVALID", "detail": str(exc)},
+        }
+    else:
+        if replay.get("status") != "PASS":
+            result = {
+                "status": "FAIL",
+                "route": "PROOF_BUNDLE_INVALID",
+                "code": "PROTECTED_HI_RTA_REPLAY_MISMATCH",
+                "failure": {"code": "PROTECTED_HI_RTA_REPLAY_MISMATCH", "detail": replay},
+            }
+        elif candidate_evidence:
+            candidate_witness = candidate_evidence.get("witness") if isinstance(candidate_evidence, Mapping) else {}
+            candidate_inputs = candidate_evidence.get("inputs") if isinstance(candidate_evidence, Mapping) else {}
+            if isinstance(candidate_witness, Mapping) and candidate_witness != {"production": production, "replay": replay}:
+                result = {
+                    "status": "FAIL",
+                    "route": "PROOF_BUNDLE_INVALID",
+                    "code": "PROTECTED_HI_RTA_REPLAY_MISMATCH",
+                    "failure": {"code": "PROTECTED_HI_RTA_REPLAY_MISMATCH", "detail": "candidate witness mismatch"},
+                }
+            elif isinstance(candidate_inputs, Mapping) and candidate_inputs:
+                result = {
+                    "status": "FAIL",
+                    "route": "PROOF_BUNDLE_INVALID",
+                    "code": "PROTECTED_HI_RTA_REPLAY_MISMATCH",
+                    "failure": {"code": "PROTECTED_HI_RTA_REPLAY_MISMATCH", "detail": "candidate inputs mismatch"},
+                }
+            else:
+                result = {"status": "PASS", "witness": {"production": production, "replay": replay}}
+        else:
+            result = {"status": "PASS", "witness": {"production": production, "replay": replay}}
     return _finish("PROTECTED_HI_RTA_ARITHMETIC", result, expected_context_hash=expected_context_hash,
                    candidate_evidence=candidate_evidence)
+
+
+def _verify_all_task_reference_rta_obligation(*, raw_inputs=None, candidate_evidence=None,
+                                              expected_context_hash=None, fresh_reference=None,
+                                              **kwargs):
+    raw, error = _raw_inputs({"raw_inputs": raw_inputs, "evidence": kwargs.get("evidence"),
+                              "candidate_evidence": candidate_evidence}, "ALL_TASK_REFERENCE_RTA_ARITHMETIC")
+    if error:
+        return error
+    if fresh_reference is None:
+        return _raw_inputs_result("ALL_TASK_REFERENCE_RTA_ARITHMETIC", code="FRESH_REFERENCE_TASKSET_MISSING")
+    try:
+        replay = replay_all_task_rta_independently(fresh_reference)
+    except (KeyError, TypeError, ValueError) as exc:
+        result = {
+            "status": "FAIL",
+            "route": "REFERENCE_CERTIFICATE_FAILED",
+            "code": "ALL_TASK_REFERENCE_RTA_INVALID",
+            "failure": {"code": "ALL_TASK_REFERENCE_RTA_INVALID", "detail": str(exc)},
+        }
+        return _finish("ALL_TASK_REFERENCE_RTA_ARITHMETIC", result,
+                       expected_context_hash=expected_context_hash, candidate_evidence=candidate_evidence)
+    result = dict(replay)
+    if isinstance(candidate_evidence, Mapping):
+        candidate_witness = candidate_evidence.get("witness", candidate_evidence)
+        if candidate_witness and candidate_witness != replay.get("witness", {}):
+            result = {
+                "status": "FAIL",
+                "route": "PROOF_BUNDLE_INVALID",
+                "code": "ALL_TASK_REFERENCE_RTA_REPLAY_MISMATCH",
+                "failure": {"code": "ALL_TASK_REFERENCE_RTA_REPLAY_MISMATCH",
+                            "detail": "candidate witness mismatch"},
+                "witness": replay.get("witness", {}),
+            }
+    return _finish("ALL_TASK_REFERENCE_RTA_ARITHMETIC", result,
+                   expected_context_hash=expected_context_hash, candidate_evidence=candidate_evidence)
+
+
+def _verify_reference_model_conformance(*, raw_inputs=None, candidate_evidence=None,
+                                        expected_context_hash=None, fresh_reference=None,
+                                        verified_predecessors=None, **kwargs):
+    raw, error = _raw_inputs({"raw_inputs": raw_inputs, "evidence": kwargs.get("evidence"),
+                              "candidate_evidence": candidate_evidence}, "REFERENCE_MODEL_CONFORMANCE")
+    if error:
+        return error
+    try:
+        if fresh_reference is None:
+            return _raw_inputs_result("REFERENCE_MODEL_CONFORMANCE", code="FRESH_REFERENCE_TASKSET_MISSING")
+        from formal_toolchain.reference.model_conformance import build_reference_model_conformance_certificate
+        if not isinstance(verified_predecessors, Mapping):
+            verified_predecessors = {}
+        candidate = candidate_evidence if isinstance(candidate_evidence, Mapping) else {}
+        result = verify_reference_model_conformance(
+            candidate_certificate=candidate,
+            raw_inputs=raw,
+            verified_predecessors=verified_predecessors,
+            expected_context_hash=expected_context_hash or str(raw.contexts["reference_context"]["hash"]),
+            fresh_reference=fresh_reference,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        result = {
+            "status": "FAIL",
+            "route": "MODEL_CONFORMANCE_FAILED",
+            "code": "REFERENCE_MODEL_CONFORMANCE_FAILED",
+            "failure": {"code": "REFERENCE_MODEL_CONFORMANCE_FAILED", "detail": str(exc)},
+        }
+    return _finish("REFERENCE_MODEL_CONFORMANCE", result, expected_context_hash=expected_context_hash,
+                   candidate_evidence=candidate_evidence)
+
+
+def _verify_final_claim_composition(*, raw_inputs=None, candidate_evidence=None,
+                                    expected_context_hash=None, verified_predecessors=None,
+                                    **kwargs):
+    raw, error = _raw_inputs({"raw_inputs": raw_inputs, "evidence": kwargs.get("evidence"),
+                              "candidate_evidence": candidate_evidence}, "FINAL_CLAIM_COMPOSITION")
+    if error:
+        return error
+    if not isinstance(verified_predecessors, Mapping):
+        return _raw_inputs_result("FINAL_CLAIM_COMPOSITION", code="VERIFIED_PREDECESSORS_MISSING")
+
+    required_ids = (
+        "BUDGET_DOMAIN",
+        "REFERENCE_MODEL_CONFORMANCE",
+        "REFERENCE_TASKSET_SCHEDULABLE",
+        "FINITE_BAD_PREFIX_CONTRADICTION",
+    )
+    missing = [obligation_id for obligation_id in required_ids
+               if obligation_id not in verified_predecessors]
+    if missing:
+        result = {
+            "status": "FAIL",
+            "route": "REFERENCE_CERTIFICATE_FAILED",
+            "code": "FINAL_CLAIM_PREMISES_MISSING",
+            "failure": {"code": "FINAL_CLAIM_PREMISES_MISSING", "missing": missing},
+        }
+        return _finish("FINAL_CLAIM_COMPOSITION", result,
+                       expected_context_hash=expected_context_hash, candidate_evidence=candidate_evidence)
+
+    witness_rows = []
+    for obligation_id in required_ids:
+        certificate = verified_predecessors[obligation_id]
+        valid = (
+            isinstance(certificate, Mapping)
+            and certificate.get("obligation_id") == obligation_id
+            and certificate.get("obligation_status") == "PASS"
+            and verify_obligation_certificate(certificate)
+        )
+        witness_rows.append({
+            "obligation_id": obligation_id,
+            "status": certificate.get("obligation_status") if isinstance(certificate, Mapping) else None,
+            "valid": valid,
+            "artifact_hash": certificate.get("artifact_hash") if isinstance(certificate, Mapping) else None,
+        })
+
+    if not all(row["valid"] for row in witness_rows):
+        result = {
+            "status": "FAIL",
+            "route": "REFERENCE_CERTIFICATE_FAILED",
+            "code": "FINAL_CLAIM_PREMISES_INVALID",
+            "failure": {"code": "FINAL_CLAIM_PREMISES_INVALID", "witness": witness_rows},
+        }
+    else:
+        result = {
+            "status": "PASS",
+            "witness": {
+                "premise_ids": list(required_ids),
+                "premises": witness_rows,
+                "final_claim": "DEPLOYED_HI_SAFETY",
+            },
+        }
+    return _finish("FINAL_CLAIM_COMPOSITION", result,
+                   expected_context_hash=expected_context_hash, candidate_evidence=candidate_evidence)
 
 
 def _verify_tree(*, raw_inputs=None, candidate_evidence=None, expected_context_hash=None, **kwargs):
@@ -1252,13 +1413,34 @@ VERIFIER_CHECKERS: dict[str, Checker] = {
     "CASE2_INTEGER_DOMAIN": verify_case2_integer_domain,
     "ZERO_RELATIVE_START": verify_zero_relative_start,
     "INHERITED_HI_DOMINATION": verify_inherited_hi_domination,
+    "ALL_TASK_REFERENCE_RTA_ARITHMETIC": _verify_all_task_reference_rta_obligation,
+    "REFERENCE_MODEL_CONFORMANCE": lambda **kwargs: _verify_reference_model_conformance(**kwargs),
+    "BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION": lambda **kwargs: verify_budget_to_reference_domination(**kwargs),
+    "REFERENCE_TASKSET_SCHEDULABLE": lambda **kwargs: verify_reference_taskset_schedulable(**kwargs),
+    "REFERENCE_HI_SUBSET_SAFETY": lambda **kwargs: verify_reference_hi_subset_safety(**kwargs),
+    "FINITE_BAD_PREFIX_CONTRADICTION": lambda **kwargs: verify_finite_bad_prefix_contradiction(**kwargs),
+    "FINAL_CLAIM_COMPOSITION": _verify_final_claim_composition,
+    "ARTIFACT_MANIFEST": lambda **kwargs: _raw_inputs_result("ARTIFACT_MANIFEST", code="STRUCTURAL_CHECK_ROUTED_ELSEWHERE"),
+    "COMPONENT_CONTEXT_INTEGRITY": lambda **kwargs: _raw_inputs_result("COMPONENT_CONTEXT_INTEGRITY", code="STRUCTURAL_CHECK_ROUTED_ELSEWHERE"),
+    "DIRECT_PREDECESSOR_HASHES": lambda **kwargs: _raw_inputs_result("DIRECT_PREDECESSOR_HASHES", code="STRUCTURAL_CHECK_ROUTED_ELSEWHERE"),
+    "STATUS_EVIDENCE": lambda **kwargs: _raw_inputs_result("STATUS_EVIDENCE", code="STRUCTURAL_CHECK_ROUTED_ELSEWHERE"),
+    "OUTER_BUNDLE_ROOT": lambda **kwargs: _raw_inputs_result("OUTER_BUNDLE_ROOT", code="STRUCTURAL_CHECK_ROUTED_ELSEWHERE"),
+    "INDEPENDENT_BUNDLE_VERIFICATION": lambda **kwargs: _raw_inputs_result("INDEPENDENT_BUNDLE_VERIFICATION", code="STRUCTURAL_CHECK_ROUTED_ELSEWHERE"),
+    "CLAIM_AGGREGATION_RESULT": lambda **kwargs: _raw_inputs_result("CLAIM_AGGREGATION_RESULT", code="STRUCTURAL_CHECK_ROUTED_ELSEWHERE"),
     "PROTECTED_HI_RTA_ARITHMETIC": _candidate_status_checker("PROTECTED_HI_RTA_ARITHMETIC"),
+    "EARLY_STOP_CONFIGURATION_GATE": lambda **kwargs: verify_early_stop_configuration_gate(**kwargs),
+    "EFFECTIVE_EVENT_FRONTIER_RELATION": lambda **kwargs: verify_effective_event_frontier_relation(**kwargs),
+    "CONTROLLER_WRITE_SET": lambda **kwargs: verify_controller_write_set(**kwargs),
+    "CONTROLLER_BOUNDARY": lambda **kwargs: verify_controller_boundary(**kwargs),
+    "CONTROLLER_PATH_UNIQUENESS": lambda **kwargs: verify_controller_path_uniqueness(**kwargs),
+    "UPDATE_PAYLOAD_TOTALITY": lambda **kwargs: verify_update_payload_totality(**kwargs),
+    "TOKEN_REFRESH_PROJECTION": lambda **kwargs: verify_token_refresh_projection(**kwargs),
     "PER_HI_TASK_INDUCTIVE_WCRT": verify_per_hi_task_inductive_wcrt,
     "PROTECTED_HI_SAFETY_COROLLARY": verify_protected_hi_safety_corollary,
     "RELEASE_FIXED_REMOVAL_MAPPING": verify_release_fixed_removal_mapping,
     "CLOSED_PREFIX_REFINEMENT": verify_closed_prefix_refinement,
-    "REFERENCE_PREFIX_EXTENSION": verify_reference_prefix_extension,
-    "HI_BAD_CLOSED_PREFIX_REFLECTION": verify_hi_bad_closed_prefix_reflection,
+    "REFERENCE_PREFIX_EXTENSION": lambda **kwargs: verify_reference_prefix_extension(**kwargs),
+    "HI_BAD_CLOSED_PREFIX_REFLECTION": lambda **kwargs: verify_hi_bad_closed_prefix_reflection(**kwargs),
 }
 
 

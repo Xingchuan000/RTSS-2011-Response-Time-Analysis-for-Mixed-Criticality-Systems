@@ -1,0 +1,14 @@
+{
+  "assumption_hash": "bdc565adf00b18b15c7a8c1cc23c152db53d964d5b553747c7f8c74e3fcc453c",
+  "assumptions": [
+    "reference task set schedulable",
+    "reference model conformance"
+  ],
+  "assurance_level": "MACHINE_CHECKED_PROJECT_LEMMA",
+  "conclusion": "reference_hi_subset_safe",
+  "exact_statement": "If the full reference task set is schedulable, then the HI subset safety claim follows for the deployed claim composition.",
+  "source_reference": "project lemma derived from schedulability composition",
+  "statement_hash": "d995af8aa40aa85ce6191626c4efc8fbcce005439dfe68b7f9b48d263e922f4f",
+  "theorem_id": "REFERENCE_HI_SUBSET_SAFETY_FROM_TASKSET_SCHEDULABILITY",
+  "version": "p0-theory-r4"
+}

@@ -1,6 +1,6 @@
 {
   "schema_version": "assurance_policy_v1",
-  "allowed_levels": ["DECLARED_AXIOM_TCB", "MACHINE_FORMALIZED_KERNEL"],
+  "allowed_levels": ["DECLARED_AXIOM_TCB", "PUBLISHED_THEORY_TCB", "MACHINE_CHECKED_PROJECT_LEMMA"],
   "instance_data_forbidden_in_tcb": ["seed", "taskset", "priority", "tree", "candidate_envelope", "runtime_config"],
   "declared_axiom_requires": "explicit_statement_and_assumptions",
   "missing_theorem_route": "PROOF_BUNDLE_INVALID"

@@ -6,7 +6,7 @@
 
 from typing import Any, Mapping
 
-from formal_toolchain.reference.rta_replay import replay_rta
+from formal_toolchain.reference.rta_replay import replay_all_task_rta
 
 
 def replay_protected_hi_rta(reference_taskset: Any,
@@ -19,6 +19,6 @@ def replay_protected_hi_rta(reference_taskset: Any,
 
     if production is None:
         production = {}
-    return replay_rta(reference_taskset, production)
+    return replay_all_task_rta(reference_taskset, production)
 
 __all__ = ["replay_protected_hi_rta"]

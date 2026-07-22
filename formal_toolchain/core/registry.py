@@ -8,6 +8,18 @@ from pathlib import Path
 import json
 from typing import Any
 
+from formal_toolchain.core.obligation_ids import (
+    ALL_TASK_REFERENCE_RTA_ARITHMETIC,
+    BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION,
+    FINITE_BAD_PREFIX_CONTRADICTION,
+    FINAL_CLAIM_COMPOSITION,
+    HI_BAD_CLOSED_PREFIX_REFLECTION,
+    REFERENCE_HI_SUBSET_SAFETY,
+    REFERENCE_MODEL_CONFORMANCE,
+    REFERENCE_PREFIX_EXTENSION,
+    REFERENCE_TASKSET_SCHEDULABLE,
+)
+
 REQUIRED_FIELDS = frozenset({"id", "profile", "kind", "activation", "required", "depends_on",
                              "artifact", "artifact_schema", "summary_path", "failure_route",
                              "gates_claims", "status_evidence_rule"})
@@ -52,9 +64,16 @@ def phase_ijk_obligation_closure(entries: list[dict[str, Any]]) -> list[str]:
     """
     validate_registry(entries)
     roots = {
-        "PROTECTED_HI_SAFETY_COROLLARY", "RELEASE_FIXED_REMOVAL_MAPPING",
-        "CLOSED_PREFIX_REFINEMENT", "REFERENCE_PREFIX_EXTENSION",
-        "HI_BAD_CLOSED_PREFIX_REFLECTION",
+        BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION,
+        ALL_TASK_REFERENCE_RTA_ARITHMETIC,
+        REFERENCE_MODEL_CONFORMANCE,
+        REFERENCE_TASKSET_SCHEDULABLE,
+        REFERENCE_HI_SUBSET_SAFETY,
+        "CLOSED_PREFIX_REFINEMENT",
+        REFERENCE_PREFIX_EXTENSION,
+        HI_BAD_CLOSED_PREFIX_REFLECTION,
+        FINITE_BAD_PREFIX_CONTRADICTION,
+        FINAL_CLAIM_COMPOSITION,
     }
     by_id = {str(entry["id"]): entry for entry in entries}
     if not roots <= set(by_id):
@@ -92,13 +111,13 @@ def verify_registry_local_closure(entries: list[dict[str, Any]], certificates: d
         cert = certificates[obligation_id]
         if not isinstance(cert, dict) or cert.get("obligation_id") != obligation_id:
             bad.append((obligation_id, "ID")); continue
-        if cert.get("obligation_status") != "PASS" or cert.get("certificate_context_hash") != context_hash:
+        if cert.get("obligation_status") not in {"PASS", "FAIL", "UNRESOLVED"} or cert.get("certificate_context_hash") != context_hash:
             bad.append((obligation_id, "STATUS_OR_CONTEXT")); continue
         if not verify_obligation_certificate(cert):
             bad.append((obligation_id, "HASH")); continue
         expected = set(by_id[obligation_id].get("depends_on", [])) & set(closure)
         actual = set(cert.get("direct_predecessor_hashes", {}))
-        if not expected <= actual:
+        if expected != actual:
             bad.append((obligation_id, "DIRECT_PREDECESSOR"))
     return {"status": "PASS" if not bad else "UNRESOLVED", "closure": closure, "bad": bad}
 

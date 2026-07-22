@@ -133,7 +133,7 @@ def reference_prefix_extension(*, ready_jobs: bool | None = None,
         return {"status": "UNRESOLVED", "failure": "REFERENCE_STATE_REQUIRED"}
     if (not isinstance(extension_proof, Mapping)
             or not verify_obligation_certificate(extension_proof)
-            or extension_proof.get("obligation_id") != "PARAMETERIZED_PREFIX_EXTENSION"
+            or extension_proof.get("obligation_id") != "REFERENCE_PREFIX_EXTENSION"
             or extension_proof.get("obligation_status") != "PASS"
             or extension_proof.get("certificate_context_hash") != context_hash
             or extension_proof.get("inputs", {}).get("theorem_hash") != extension_theorem_hash):

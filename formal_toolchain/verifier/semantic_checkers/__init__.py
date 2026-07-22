@@ -31,8 +31,8 @@ from formal_toolchain.conformance.required_obligations import (
 )
 from formal_toolchain.reference.protected_hi import protected_hi_safety_corollary
 from formal_toolchain.reference.recurring_hi import build_recurring_hi_instances
-from formal_toolchain.reference.rta_production import protected_hi_rta
-from formal_toolchain.reference.rta_replay import replay_rta
+from formal_toolchain.reference.rta_production import all_task_reference_rta
+from formal_toolchain.reference.rta_replay import replay_all_task_rta
 from formal_toolchain.reference.rta_obligations import (
     build_case1_domain_evidence as check_case1_integer_domain,
     build_case2_domain_evidence as check_case2_integer_domain,
@@ -367,8 +367,8 @@ def _fresh_protected_hi_pipeline(*, raw_inputs: Any, certified_envelope: Mapping
     elif not hasattr(fresh_reference, "to_dict"):
         return None, _missing("PER_HI_TASK_INDUCTIVE_WCRT", "FRESH_REFERENCE_TASKSET_MISSING")
 
-    production = protected_hi_rta(fresh_reference)
-    replay = replay_rta(fresh_reference, production)
+    production = all_task_reference_rta(fresh_reference)
+    replay = replay_all_task_rta(fresh_reference, production)
     if replay.get("status") != "PASS":
         status = replay.get("status", "UNRESOLVED")
         return None, {

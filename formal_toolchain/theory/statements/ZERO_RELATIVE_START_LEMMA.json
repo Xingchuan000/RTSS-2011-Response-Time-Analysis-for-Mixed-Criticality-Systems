@@ -1,16 +1,16 @@
 {
-  "theorem_id": "ZERO_RELATIVE_START_LEMMA",
-  "exact_statement": "For protected HI task i, if W_i(LO)=0, then the only valid relative-start branch is s=0 and the protected response satisfies RT(J_i) <= C_i(HI). The ordinary positive-start Case 2 recurrence is not evaluated and no positive-start candidate is added.",
+  "assumption_hash": "024e334a421d85d698fdf9c69db8185d14d62b409505e6ad0aabfb70a639cd4b",
   "assumptions": [
     "integer_start_domain",
     "protected_hi_task_i",
     "w_equals_zero",
     "hi_execution_cost_C_i_HI"
   ],
-  "conclusion": "W_i(LO)=0 implies RT(J_i) <= C_i(HI) and excludes every positive-start Case 2 candidate",
-  "source_reference": "This framework theorem interface, zero-relative-start boundary",
   "assurance_level": "DECLARED_AXIOM_TCB",
-  "version": "p0-theory-r2",
+  "conclusion": "W_i(LO)=0 implies RT(J_i) <= C_i(HI) and excludes every positive-start Case 2 candidate",
+  "exact_statement": "For protected HI task i, if W_i(LO)=0, then the only valid relative-start branch is s=0 and the protected response satisfies RT(J_i) <= C_i(HI). The ordinary positive-start Case 2 recurrence is not evaluated and no positive-start candidate is added.",
+  "source_reference": "This framework theorem interface, zero-relative-start boundary",
   "statement_hash": "dd9e3ae59422c43594bb9eedfd265c2436d3faee8202344caa852c6e839f0168",
-  "assumption_hash": "024e334a421d85d698fdf9c69db8185d14d62b409505e6ad0aabfb70a639cd4b"
+  "theorem_id": "ZERO_RELATIVE_START_LEMMA",
+  "version": "p0-theory-r2"
 }

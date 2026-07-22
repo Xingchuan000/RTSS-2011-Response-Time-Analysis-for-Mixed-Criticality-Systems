@@ -2,22 +2,39 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Common certificate envelope",
   "type": "object",
-  "required": ["artifact_schema_version", "obligation_id", "obligation_status", "certificate_context_hash", "direct_predecessor_hashes", "checker_id", "checker_version", "inputs", "witness", "evidence", "failure"],
+  "required": ["artifact_schema_version", "artifact_hash", "obligation_id", "obligation_status", "certificate_context_hash", "direct_predecessor_hashes", "checker_id", "checker_version", "inputs", "witness", "evidence", "failure"],
   "properties": {
     "artifact_schema_version": {"type": "string"},
+    "artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "obligation_id": {"type": "string"},
     "obligation_status": {"enum": ["PASS", "FAIL", "UNRESOLVED", "NOT_APPLICABLE"]},
     "certificate_context_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "direct_predecessor_hashes": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
-    "checker_id": {"type": "string"}, "checker_version": {"type": "string"},
-    "inputs": {"type": "object"}, "witness": {},
+    "direct_predecessor_hashes": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    },
+    "checker_id": {"type": "string"},
+    "checker_version": {"type": "string"},
+    "inputs": {"type": "object"},
+    "witness": {},
     "evidence": {"type": "array", "items": {"type": "object"}},
     "failure": {"type": ["object", "null"]}
-  }, "additionalProperties": false,
+  },
+  "additionalProperties": false,
   "allOf": [
-    {"if": {"properties": {"obligation_status": {"const": "PASS"}}},
-     "then": {"properties": {"witness": {"type": "object", "minProperties": 1}, "evidence": {"minItems": 1}, "failure": {"const": null}}}},
-    {"if": {"properties": {"obligation_status": {"enum": ["FAIL", "UNRESOLVED"]}}},
-     "then": {"properties": {"failure": {"type": "object", "minProperties": 1}}}}
+    {
+      "if": {"properties": {"obligation_status": {"const": "PASS"}}},
+      "then": {
+        "properties": {
+          "witness": {"type": "object", "minProperties": 1},
+          "evidence": {"minItems": 1},
+          "failure": {"const": null}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"obligation_status": {"enum": ["FAIL", "UNRESOLVED"]}}},
+      "then": {"properties": {"failure": {"type": "object", "minProperties": 1}}}
+    }
   ]
 }

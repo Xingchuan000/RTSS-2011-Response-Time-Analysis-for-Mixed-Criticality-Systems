@@ -11,8 +11,9 @@ from typing import Any, Mapping
 
 from amc_py.event_runtime import EventRuntimeEngine
 from amc_py.runtime_models import RuntimeConfig
-from amc_py.runtime_scenarios import ExecutionScenario
 
+from formal_toolchain.adapters.runtime_config_copy import copy_runtime_config
+from formal_toolchain.adapters.formal_scenario_factory import build_formal_scenario
 from .state_relation import P0ReferenceState, p0_state_from_runtime_engine
 
 
@@ -21,19 +22,12 @@ def build_preclosed_runtime_states(target: Any,
     """从 target 的真实配置构造 time-0 PreClosed concrete/reference 状态。"""
 
     cfg = target.runtime_config
-    runtime_config = RuntimeConfig(
-        semantics=cfg.semantics,
-        drop_lo_jobs_on_hi_switch=cfg.drop_lo_jobs_on_hi_switch,
-        c_amc_sem_lo_degradation_ratio=cfg.c_amc_sem_lo_degradation_ratio,
-        c_amc_sem_primary_on_switch_time=cfg.c_amc_sem_primary_on_switch_time,
-        stop_at_first_miss=cfg.stop_at_first_miss,
-        capture_trace=cfg.capture_trace,
-        capture_debug_events=cfg.capture_debug_events,
-        end_time=1,
-    )
-    scenario = ExecutionScenario(
-        name="formal_phase_k_nominal",
-        resolver=lambda task, _release_index: task.c_lo,
+    runtime_config = copy_runtime_config(cfg)
+    if not hasattr(target, "scenario") or not hasattr(target.scenario, "actual_cost_for"):
+        raise TypeError("target.scenario 必须实现 actual_cost_for(task, release_index)")
+    scenario = build_formal_scenario(
+        base_scenario=target.scenario,
+        ordered_tasks=target.ordered_tasks,
     )
     engine = EventRuntimeEngine.build(
         ordered_tasks=target.ordered_tasks, scenario=scenario, config=runtime_config,

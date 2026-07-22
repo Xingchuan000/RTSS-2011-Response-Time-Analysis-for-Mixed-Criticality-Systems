@@ -43,6 +43,7 @@ from formal_toolchain.adapters.synthetic_context import build_synthetic_context
 from formal_toolchain.adapters.synthetic_policy import build_transition_witness
 from formal_toolchain.adapters.synthetic_runtime_adapter import SyntheticP0RuntimeAdapter
 from formal_toolchain.core.registry import active_obligations_for_claim
+from formal_toolchain.core.artifact import obligation_certificate
 from formal_toolchain.verifier.artifact_verifier import verify_registry_certificate
 from formal_toolchain.invariant.candidate_envelope import synthesize_candidate_envelope
 from formal_toolchain.invariant.common_preservation import check_common_transition_preservation
@@ -263,15 +264,20 @@ def main(argv=None) -> int:
             if predecessor in registry_by_id and predecessor in active_ids:
                 make_certificate(str(predecessor))
         check = phase_checks[obligation_id]
-        certificate = {"artifact_schema_version": "synthetic_phase_f_v1", "obligation_id": obligation_id,
-                        "obligation_status": check.get("status"), "certificate_context_hash": context_hash,
-                        "direct_predecessor_hashes": {predecessor: sha256_object(built[predecessor]) for predecessor in entry.get("depends_on", []) if predecessor in built}, "checker_id": "synthetic_phase_f_checker",
-                        "checker_version": "1", "inputs": {"fixture": "synthetic_p0"},
-                        "witness": {"obligation": obligation_id, "source_status": check.get("status"),
-                                    "source_schema": check.get("schema_version", "synthetic_runtime_evidence_v1")},
-                        "evidence": [{"source": "synthetic_runtime_binding", "obligation": obligation_id}],
-                        "failure": None if check.get("status") == "PASS" else {"code": "CHECK_FAILED"}}
-        certificate["certificate_context_hash"] = certificate_context_hash
+        certificate = obligation_certificate(
+            obligation_id=obligation_id,
+            status=check.get("status"),
+            context_hash=certificate_context_hash,
+            inputs={"fixture": "synthetic_p0"},
+            witness={"obligation": obligation_id, "source_status": check.get("status"),
+                     "source_schema": check.get("schema_version", "synthetic_runtime_evidence_v1")},
+            evidence=[{"source": "synthetic_runtime_binding", "obligation": obligation_id}],
+            direct_predecessor_hashes={predecessor: sha256_object(built[predecessor])
+                                       for predecessor in entry.get("depends_on", []) if predecessor in built},
+            checker_id="synthetic_phase_f_checker",
+            checker_version="1",
+            failure=None if check.get("status") == "PASS" else {"code": "CHECK_FAILED"},
+        )
         predecessor_certs = {predecessor: built[predecessor] for predecessor in entry.get("depends_on", []) if predecessor in built}
         verification = verify_registry_certificate(certificate, registry_path=ROOT / "formal_toolchain/specs/obligation_registry.json",
             predecessor_certificates=predecessor_certs, context_inputs=context_inputs)

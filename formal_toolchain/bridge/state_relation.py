@@ -147,10 +147,12 @@ def p0_state_from_runtime_engine(engine: Any) -> P0ConcreteState:
     jobs = []
     for job in tuple(engine.state.active_jobs):
         key = (str(job.task.name), int(job.release_index))
-        raw_actual_cost = int(job.actual_cost)
-        if bool(job.is_degraded):
+        raw_actual_cost = int(getattr(job, "original_actual_cost", job.actual_cost))
+        if getattr(job, "removal_demand", None) is not None:
+            removal_demand = int(job.removal_demand)
+        elif bool(job.is_degraded):
             removal_demand = raw_actual_cost
-        elif str(job.task.criticality.value) == "LO" and job.runtime_budget_at_release is not None:
+        elif str(getattr(job.task.criticality, "value", job.task.criticality)) == "LO" and job.runtime_budget_at_release is not None:
             removal_demand = min(raw_actual_cost, int(job.runtime_budget_at_release) + 1)
         else:
             removal_demand = raw_actual_cost
@@ -164,17 +166,24 @@ def p0_state_from_runtime_engine(engine: Any) -> P0ConcreteState:
             mode=engine.state.mode.name, hi_completed=bool(job.task.criticality.value == "HI" and job.finished()),
             hi_deadline_miss=any(m.task == job.task.name and m.release_index == job.release_index
                                  for m in engine.result.deadline_misses),
-            criticality=str(job.task.criticality.value), released_mode=str(job.released_in_mode.name),
+            criticality=str(getattr(job.task.criticality, "value", job.task.criticality)),
+            released_mode=str(getattr(job.released_in_mode, "name", job.released_in_mode)),
             is_degraded=bool(job.is_degraded), raw_actual_cost=raw_actual_cost,
             removal_demand=removal_demand))
     active_keys = tuple(job.job_key for job in jobs if job.state not in {"dropped", "finished"})
     running = engine.state.running_job
     running_key = None if running is None else (str(running.task.name), int(running.release_index))
     queue_projection = []
-    for item in getattr(engine.queue, "_heap", ()):
-        event = item[3]
-        queue_projection.append((int(event.time), str(event.event_type.value), event.task_name,
-                                 event.release_index, event.token))
+    queue_snapshot = getattr(engine.queue, "snapshot", None)
+    if callable(queue_snapshot):
+        for item in queue_snapshot():
+            queue_projection.append((int(item.time), str(item.event_type), item.task_name,
+                                     item.release_index, item.token))
+    else:
+        for item in getattr(engine.queue, "_heap", ()):
+            event = item[3]
+            queue_projection.append((int(event.time), str(event.event_type.value), event.task_name,
+                                     event.release_index, event.token))
     budgets = tuple(sorted((str(name), int(value)) for name, value in engine.runtime_budgets.budgets.items()))
     queue_projection = tuple(sorted(queue_projection))
     next_boundary = min((int(item[0]) for item in queue_projection
@@ -190,7 +199,8 @@ def p0_state_from_runtime_engine(engine: Any) -> P0ConcreteState:
 
 def remaining_remove(job: P0Job) -> int:
     """按 release-fixed demand 计算关系中的 concrete remaining。"""
-    return max(0, job.demand - job.service)
+    demand = job.removal_demand if job.removal_demand is not None else job.demand
+    return max(0, demand - job.service)
 
 
 def relation_holds(concrete: P0ConcreteState, reference: P0ReferenceState) -> bool:

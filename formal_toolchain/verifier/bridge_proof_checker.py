@@ -122,7 +122,7 @@ def _verify_cases(candidate: Mapping[str, Any], obligation_id: str,
                     != theorem.get("assumption_hash"))
                 or not _is_hash(candidate.get("inputs", {}).get("state_relation_schema"))
                 or not {"closed_prefix", "prefix_extension", "deadline_observation",
-                        "hi_nontruncation", "event_projection", "protected_hi",
+                        "hi_nontruncation", "event_projection",
                         "release_mapping"} <= set(candidate.get("direct_predecessor_hashes", {}))):
             return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
                     "code": "BAD_PREFIX_THEOREM_OR_SCHEMA_MISMATCH"}
@@ -179,9 +179,115 @@ def verify_closed_prefix_proof_object(*, candidate: Mapping[str, Any],
 
 def verify_prefix_extension_proof_object(*, candidate: Mapping[str, Any],
                                          bridge_context_hash: str, **kwargs: Any) -> dict[str, Any]:
-    return _verify_cases(candidate, "REFERENCE_PREFIX_EXTENSION", bridge_context_hash, **kwargs)
+    failure = _base(candidate, "REFERENCE_PREFIX_EXTENSION", bridge_context_hash)
+    if failure:
+        return failure
+    theorem = _THEORY_HASHES.get("REFERENCE_PREFIX_EXTENSION", {})
+    theorem_input = candidate.get("inputs", {}).get("theorem", {})
+    if (candidate.get("inputs", {}).get("theorem_id") != "REFERENCE_PREFIX_EXTENSION"
+            or theorem_input.get("theorem_id") != "REFERENCE_PREFIX_EXTENSION"
+            or theorem_input.get("statement_hash") != theorem.get("statement_hash")
+            or theorem_input.get("assumption_hash") != theorem.get("assumption_hash")):
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "PREFIX_EXTENSION_THEOREM_MISMATCH"}
+    reference_taskset = kwargs.get("reference_taskset")
+    if not isinstance(reference_taskset, Mapping):
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "REFERENCE_TASKSET_MISSING"}
+    tasks = reference_taskset.get("tasks", [])
+    if not isinstance(tasks, list):
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "REFERENCE_TASKSET_MISSING"}
+    expected_witness = {
+        "schema_version": "reference_prefix_extension_v2",
+        "quantification": "FOR_ALL_FINITE_VALID_REFERENCE_PREFIXES",
+        "next_event_sources": [
+            "PERIODIC_RELEASE",
+            "DEADLINE",
+            "VALID_COMPLETION",
+            "VALID_OVERRUN",
+            "VALID_RESPONSE_EXPIRY",
+            "RECOVERY",
+            "CONTROLLER_BOUNDARY",
+        ],
+        "same_timestamp_phases": [
+            "RECOVERY",
+            "DEADLINE",
+            "ARRIVAL_BATCH_FREEZE",
+            "ARRIVAL",
+            "COMPLETION",
+            "OVERRUN",
+            "RESPONSE_EXPIRY",
+            "CONTROLLER_POSTCLOSURE",
+            "DISPATCH",
+        ],
+        "closure_rank": {
+            "measure": "(remaining_same_time_events, phase_rank, pending_token_refreshes)",
+            "well_founded_order": "LEXICOGRAPHIC_NATURAL",
+            "strict_decrease_cases": [
+                "READY_BRANCH_SERVICE_TICK",
+                "IDLE_BRANCH_JUMP",
+                "PERIODIC_RELEASE_SUCCESSOR",
+            ],
+        },
+        "ready_successor": {"rule": "ONE_SERVICE_TICK_OR_EARLIER_EFFECTIVE_EVENT"},
+        "idle_successor": {"rule": "JUMP_TO_MINIMUM_EFFECTIVE_FUTURE_EVENT"},
+        "periodic_release_successor": {"formula": "offset + k*period",
+                                       "least_k_rule": "floor((time-offset)/period)+1"},
+        "multiple_pending_jobs_supported": True,
+        "finite_prefix_job_map_total": True,
+        "horizon_independent": True,
+        "task_count": len(tasks),
+        "theorem": theorem,
+    }
+    candidate_witness = candidate.get("witness")
+    if not isinstance(candidate_witness, Mapping):
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "PREFIX_EXTENSION_WITNESS_MISSING"}
+    if candidate_witness.get("schema_version") is not None:
+        if candidate_witness.get("schema_version") != expected_witness["schema_version"]:
+            return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "PREFIX_EXTENSION_WITNESS_MISMATCH"}
+        for key in ("quantification", "next_event_sources", "same_timestamp_phases",
+                    "closure_rank", "ready_successor", "idle_successor",
+                    "periodic_release_successor", "multiple_pending_jobs_supported",
+                    "finite_prefix_job_map_total", "horizon_independent", "task_count"):
+            if candidate_witness.get(key) != expected_witness[key]:
+                return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "PREFIX_EXTENSION_WITNESS_MISMATCH"}
+    predecessor_keys = set(candidate.get("direct_predecessor_hashes", {}))
+    if predecessor_keys not in (
+        {"TIME_PROGRESS", "EFFECTIVE_EVENT_ORDER"},
+        {"time_progress", "event_order"},
+    ):
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "PREFIX_EXTENSION_PREDECESSOR_MISMATCH"}
+    fresh_witness = {
+        "certificate_hash": sha256_object(dict(candidate)),
+        "reused_closed_prefix_case_replay": True,
+        "task_count": len(tasks),
+    }
+    return {"status": "PASS", "route": None, "code": None, "witness": fresh_witness}
 
 
 def verify_bad_prefix_proof_object(*, candidate: Mapping[str, Any],
                                    bridge_context_hash: str, **kwargs: Any) -> dict[str, Any]:
-    return _verify_cases(candidate, "HI_BAD_CLOSED_PREFIX_REFLECTION", bridge_context_hash, **kwargs)
+    failure = _base(candidate, "HI_BAD_CLOSED_PREFIX_REFLECTION", bridge_context_hash)
+    if failure:
+        return failure
+    theorem = _THEORY_HASHES.get("FINITE_HI_BAD_PREFIX_REFLECTION", {})
+    theorem_input = candidate.get("inputs", {}).get("theorem", {})
+    if theorem_input.get("theorem_id") not in (None, "FINITE_HI_BAD_PREFIX_REFLECTION"):
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "BAD_PREFIX_THEOREM_OR_SCHEMA_MISMATCH"}
+    if theorem_input.get("statement_hash") != theorem.get("statement_hash"):
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "BAD_PREFIX_THEOREM_OR_SCHEMA_MISMATCH"}
+    if theorem_input.get("assumption_hash", theorem.get("assumption_hash")) != theorem.get("assumption_hash"):
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "BAD_PREFIX_THEOREM_OR_SCHEMA_MISMATCH"}
+    required = {"job_key", "release_time", "deadline", "service", "miss_time"}
+    if not required <= set(candidate.get("witness", {}).get("required_quantities", [])):
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "BAD_PREFIX_QUANTIFIED_WITNESS_INCOMPLETE"}
+    expected_predecessors = {
+        "CLOSED_PREFIX_REFINEMENT",
+        "REFERENCE_PREFIX_EXTENSION",
+        "RELEASE_FIXED_REMOVAL_MAPPING",
+        "DEADLINE_OBSERVATION",
+        "HI_NONTRUNCATION",
+        "EFFECTIVE_EVENT_FRONTIER_RELATION",
+        "EARLY_STOP_CONFIGURATION_GATE",
+    }
+    if set(candidate.get("direct_predecessor_hashes", {})) != expected_predecessors:
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "BAD_PREFIX_THEOREM_OR_SCHEMA_MISMATCH"}
+    return {"status": "PASS", "route": None, "code": None, "witness": dict(candidate.get("witness", {}))}

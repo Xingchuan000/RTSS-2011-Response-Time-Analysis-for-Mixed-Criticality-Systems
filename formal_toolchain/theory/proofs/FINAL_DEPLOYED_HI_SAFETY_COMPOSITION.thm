@@ -1,0 +1,8 @@
+theorem_id: FINAL_DEPLOYED_HI_SAFETY_COMPOSITION
+statement_hash: 8d4c95c98718e9bef62dc2f3b23cbd6dddeb8ae216ab39923a1fd489d1618d3f
+proof_kind: composition_certificate
+dependencies:
+  - REFERENCE_MODEL_CONFORMANCE
+  - C_AMC_SEM_ALL_TASK_SCHEDULABILITY_SUFFICIENCY
+  - FINITE_BAD_PREFIX_CONTRADICTION
+comment: machine-formalized proof witness record for the final deployed HI safety composition

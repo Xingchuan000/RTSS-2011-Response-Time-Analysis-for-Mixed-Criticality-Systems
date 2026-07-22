@@ -452,6 +452,15 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
     # preflight 的总体 PASS 复制成同名义务的 PASS；没有 builder 的义务只
     # 能获得明确的 UNRESOLVED evidence。
     from formal_toolchain.compiler.semantic_evidence_builders import SEMANTIC_EVIDENCE_BUILDERS
+    from formal_toolchain.core.obligation_ids import (
+        ALL_TASK_REFERENCE_RTA_ARITHMETIC,
+        BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION,
+        FINITE_BAD_PREFIX_CONTRADICTION,
+        FINAL_CLAIM_COMPOSITION,
+        REFERENCE_HI_SUBSET_SAFETY,
+        REFERENCE_MODEL_CONFORMANCE,
+        REFERENCE_TASKSET_SCHEDULABLE,
+    )
     registry_entries = load_registry(Path(__file__).parents[1] / "specs/obligation_registry.json")
     structural_ids = {"ARTIFACT_MANIFEST", "COMPONENT_CONTEXT_INTEGRITY",
                       "DIRECT_PREDECESSOR_HASHES", "STATUS_EVIDENCE",
@@ -472,9 +481,13 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
         "CASE2_INTEGER_DOMAIN",
         "ZERO_RELATIVE_START",
         "INHERITED_HI_DOMINATION",
-        "PROTECTED_HI_RTA_ARITHMETIC",
-        "PER_HI_TASK_INDUCTIVE_WCRT",
-        "PROTECTED_HI_SAFETY_COROLLARY",
+        ALL_TASK_REFERENCE_RTA_ARITHMETIC,
+        REFERENCE_MODEL_CONFORMANCE,
+        REFERENCE_TASKSET_SCHEDULABLE,
+        REFERENCE_HI_SUBSET_SAFETY,
+        FINITE_BAD_PREFIX_CONTRADICTION,
+        FINAL_CLAIM_COMPOSITION,
+        BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION,
         "RELEASE_FIXED_REMOVAL_MAPPING",
         "CLOSED_PREFIX_REFINEMENT",
         "REFERENCE_PREFIX_EXTENSION",

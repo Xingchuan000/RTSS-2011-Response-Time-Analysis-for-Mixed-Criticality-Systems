@@ -19,7 +19,8 @@ CONTEXT_FIELDS = {
     "invariant_context": ("policy_context", "candidate_envelope"),
     "reference_context": ("invariant_context", "certified_envelope"),
     "bridge_context": ("reference_context", "bridge"),
-    "bundle_context": ("bridge_context", "bundle_inputs"),
+    "composition_context": ("bridge_context", "composition_inputs"),
+    "bundle_context": ("composition_context", "bundle_inputs"),
 }
 
 # 该表是 obligation 与证明上下文的唯一静态绑定。它故意不提供“未知义务
@@ -64,15 +65,29 @@ OBLIGATION_CONTEXT_LAYERS: dict[str, str] = {
     "CERTIFIED_ENVELOPE": "invariant_context",
     # reference
     "CODE_REFERENCE_UPPER_BOUND_MAPPING": "reference_context", "REFERENCE_TASKSET": "reference_context",
+    "ALL_TASK_REFERENCE_RTA_ARITHMETIC": "reference_context",
+    "BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION": "reference_context",
+    "REFERENCE_MODEL_CONFORMANCE": "reference_context",
+    "REFERENCE_TASKSET_SCHEDULABLE": "reference_context",
+    "REFERENCE_HI_SUBSET_SAFETY": "reference_context",
     "DISCRETE_TICK_EMBEDDING": "reference_context", "RELEASE_COUNT": "reference_context",
     "DEMAND_DOMINATION": "reference_context", "LO_MODE_RTA": "reference_context",
     "WORST_CASE_START_TIME": "reference_context", "CASE1_INTEGER_DOMAIN": "reference_context",
     "CASE2_INTEGER_DOMAIN": "reference_context", "ZERO_RELATIVE_START": "reference_context",
     "INHERITED_HI_DOMINATION": "reference_context", "PROTECTED_HI_RTA_ARITHMETIC": "reference_context",
     "PER_HI_TASK_INDUCTIVE_WCRT": "reference_context", "PROTECTED_HI_SAFETY_COROLLARY": "reference_context",
+    "FINITE_BAD_PREFIX_CONTRADICTION": "reference_context",
+    "FINAL_CLAIM_COMPOSITION": "reference_context",
     # bridge
     "RELEASE_FIXED_REMOVAL_MAPPING": "bridge_context", "CLOSED_PREFIX_REFINEMENT": "bridge_context",
     "REFERENCE_PREFIX_EXTENSION": "bridge_context", "HI_BAD_CLOSED_PREFIX_REFLECTION": "bridge_context",
+    "EARLY_STOP_CONFIGURATION_GATE": "bridge_context",
+    "EFFECTIVE_EVENT_FRONTIER_RELATION": "bridge_context",
+    "TOKEN_REFRESH_PROJECTION": "bridge_context",
+    "CONTROLLER_WRITE_SET": "semantic_context",
+    "CONTROLLER_BOUNDARY": "semantic_context",
+    "CONTROLLER_PATH_UNIQUENESS": "semantic_context",
+    "UPDATE_PAYLOAD_TOTALITY": "semantic_context",
     # bundle/root mirrors
     "ARTIFACT_MANIFEST": "bundle_context", "COMPONENT_CONTEXT_INTEGRITY": "bundle_context",
     "DIRECT_PREDECESSOR_HASHES": "bundle_context", "STATUS_EVIDENCE": "bundle_context",
@@ -198,6 +213,8 @@ def build_contexts(inputs: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 value["preimage"][field] = inputs[field]
         value["hash"] = sha256_object(value)
         contexts[name] = value
+    if "composition_inputs" not in inputs:
+        contexts.pop("composition_context", None)
     return contexts
 
 

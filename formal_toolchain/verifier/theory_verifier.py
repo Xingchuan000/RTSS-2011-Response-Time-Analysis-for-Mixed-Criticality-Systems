@@ -13,7 +13,7 @@ from typing import Any
 
 from formal_toolchain.core.hashing import sha256_object
 
-ALLOWED_LEVELS = frozenset({"DECLARED_AXIOM_TCB", "MACHINE_FORMALIZED_KERNEL"})
+ALLOWED_LEVELS = frozenset({"DECLARED_AXIOM_TCB", "PUBLISHED_THEORY_TCB", "MACHINE_CHECKED_PROJECT_LEMMA"})
 REQUIRED_FIELDS = frozenset({"theorem_id", "exact_statement", "assumptions", "conclusion",
                              "source_reference", "assurance_level", "version",
                              "statement_hash", "assumption_hash"})
@@ -34,10 +34,10 @@ def verify_theory_library(theory_dir: Path) -> dict[str, Any]:
     policy_levels = set(policy.get("allowed_levels", []))
     if not policy_levels or not policy_levels <= ALLOWED_LEVELS:
         raise ValueError("assurance_policy.allowed_levels 非法")
-    if not set(manifest.get("proof_schema_compatible", [])) & {"proof_request_v2", "common_certificate_v1"}:
+    if not set(manifest.get("proof_schema_compatible", [])) & {"proof_request_v2", "common_certificate_v1", "common_certificate_v2"}:
         raise ValueError("theory manifest 与当前 proof schema 不兼容")
     registry_path = theory_dir.parents[0] / "specs/obligation_registry.json"
-    if manifest.get("proof_schema_version") != "common_certificate_v1":
+    if manifest.get("proof_schema_version") not in {"common_certificate_v1", "common_certificate_v2"}:
         raise ValueError("theory manifest 未精确绑定当前 proof schema")
     registry_available = registry_path.is_file()
     from formal_toolchain.core.registry import load_registry, registry_fingerprint

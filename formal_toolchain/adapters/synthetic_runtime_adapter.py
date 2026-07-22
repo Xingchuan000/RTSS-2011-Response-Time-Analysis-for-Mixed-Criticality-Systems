@@ -56,6 +56,13 @@ class SyntheticP0RuntimeAdapter:
             "action_definitions": self.target.action_definitions,
         }
 
+    def actual_cost_for(self, task: Any, release_index: int) -> int:
+        name = str(getattr(task, "name", task))
+        budget_info = self.target.provenance["budget_by_task"]
+        if name not in budget_info:
+            raise KeyError(f"unknown synthetic task: {name}")
+        return int(budget_info[name]["initial_runtime_budget"])
+
     def quantization_input_state(self, runtime_state: Mapping[str, Any]) -> Mapping[str, Any]:
         return runtime_state
 

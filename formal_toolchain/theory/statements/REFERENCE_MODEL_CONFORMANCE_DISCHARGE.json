@@ -1,0 +1,14 @@
+{
+  "assumption_hash": "976824360e122bcc4230f3523a36e0a49251702b73ba1d22c8cc6e12dabf34de",
+  "assumptions": [
+    "reference model conformance",
+    "imported schedulability theorem"
+  ],
+  "assurance_level": "MACHINE_CHECKED_PROJECT_LEMMA",
+  "conclusion": "theorem_preconditions_discharged",
+  "exact_statement": "Reference model conformance discharges the imported theorem preconditions for the all-task schedulability sufficiency theorem.",
+  "source_reference": "project lemma binding the imported theorem to the proof context",
+  "statement_hash": "73b052304e4f9d5a543f0d6431c189fffcc636bcdb0bd032221dc4a997a49dfa",
+  "theorem_id": "REFERENCE_MODEL_CONFORMANCE_DISCHARGE",
+  "version": "p0-theory-r4"
+}

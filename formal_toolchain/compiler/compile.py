@@ -121,9 +121,7 @@ def compile_request(request_path: Path, out_dir: Path) -> dict[str, Any]:
             failure=failure,
         )
 
-    phase_k_failure: str | None = None
-    if computed is not None:
-        phase_k_failure = "FRESH_VERIFIER_REQUIRED"
+    phase_k_failure: str | None = "FRESH_VERIFIER_REQUIRED"
 
     for obligation_id, certificate in built.items():
         _write(out_dir / "artifacts" / f"{obligation_id}.json", certificate)

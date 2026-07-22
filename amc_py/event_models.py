@@ -107,6 +107,28 @@ class EventQueue:
             return None
         return self._heap[0][3]
 
+    @dataclass(frozen=True, slots=True)
+    class QueuedEventSnapshot:
+        time: int
+        event_type: str
+        task_name: str | None
+        release_index: int | None
+        token: int | None
+        sequence: int
+
+    def snapshot(self) -> tuple["EventQueue.QueuedEventSnapshot", ...]:
+        return tuple(
+            EventQueue.QueuedEventSnapshot(
+                time=int(item[0]),
+                event_type=str(item[3].event_type.value),
+                task_name=item[3].task_name,
+                release_index=item[3].release_index,
+                token=item[3].token,
+                sequence=int(item[2]),
+            )
+            for item in sorted(self._heap)
+        )
+
     def pop_all_matching(self, *, time: int, event_type: EventType) -> list[Event]:
         """弹出所有“同一时刻 + 同一类型”的事件，便于批处理 simultaneous arrivals。"""
 

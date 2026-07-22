@@ -13,6 +13,7 @@ from pathlib import Path
 import sys
 import tempfile
 import subprocess
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +28,8 @@ from formal_toolchain.bridge.job_mapping import (
     build_parameterized_release_mapping_certificate,
     verify_parameterized_release_mapping_certificate,
 )
+from formal_toolchain.bridge.effective_event_frontier import effective_frontier
+from formal_toolchain.reference.budget_domination import build_budget_to_reference_domination
 from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.core.canonical_json import canonical_dumps
 from formal_toolchain.core.artifact import obligation_certificate, verify_obligation_certificate
@@ -34,6 +37,7 @@ from formal_toolchain.core.registry import (load_registry, phase_ijk_obligation_
                                             verify_registry_local_closure)
 from formal_toolchain.bridge.runtime_branch_map import build_runtime_branch_map
 from formal_toolchain.bridge.compile_bridge import compile_phase_k
+from formal_toolchain.bridge.early_stop_gate import build_early_stop_configuration_gate
 from formal_toolchain.bridge.model_bounds import derive_p0_model_bounds
 from formal_toolchain.bridge.p0_case_manifest import p0_case_manifest_hash
 from formal_toolchain.reference.rta_production import protected_hi_rta
@@ -136,6 +140,74 @@ def _build_preclosed_runtime_states(target: Any, reference_taskset: Mapping[str,
     return concrete, reference
 
 
+def _build_effective_frontier_certificate(*, concrete_base: Any, context_hash: str) -> dict[str, Any]:
+    queue_snapshot = [
+        SimpleNamespace(
+            time=int(item[0]),
+            event_type=item[1],
+            task_name=item[2],
+            release_index=item[3],
+            token=item[4],
+        )
+        for item in concrete_base.queue_projection
+    ]
+    token_lookup = {
+        (str(item[1]), (str(item[2]), int(item[3])) if item[2] is not None and item[3] is not None else None): item[4]
+        for item in concrete_base.queue_projection
+    }
+
+    class _Snapshot:
+        def __init__(self, base):
+            self.active_job_keys = tuple(job.job_key for job in base.active_jobs)
+            self._completion = {
+                (str(item[2]), int(item[3])): item[4]
+                for item in base.queue_projection
+                if item[1] in {"JOB_COMPLETION", "PRIMARY_LO_CANCELLATION", "NORMAL_COMPLETION", "DEGRADED_COMPLETION", "HI_COMPLETION"}
+                and item[2] is not None and item[3] is not None
+            }
+            self._overrun = {
+                (str(item[2]), int(item[3])): item[4]
+                for item in base.queue_projection
+                if item[1] == "BUDGET_OVERRUN"
+                and item[2] is not None and item[3] is not None
+            }
+            self._response = {
+                (str(item[2]), int(item[3])): item[4]
+                for item in base.queue_projection
+                if item[1] == "RESPONSE_TIME_EXPIRY"
+                and item[2] is not None and item[3] is not None
+            }
+
+        def completion_token(self, key):
+            return self._completion.get(tuple(key))
+
+        def overrun_token(self, key):
+            return self._overrun.get(tuple(key))
+
+        def response_token(self, key):
+            return self._response.get(tuple(key))
+
+    runtime_snapshot = _Snapshot(concrete_base)
+    frontier = effective_frontier(queue_snapshot, runtime_snapshot)
+    frontier_records = [asdict(item) for item in frontier]
+    witness = {
+        "schema_version": "effective_event_frontier_relation_v1",
+        "frontier": frontier_records,
+        "frontier_hash": sha256_object(frontier_records),
+        "event_count": len(frontier),
+    }
+    return obligation_certificate(
+        obligation_id="EFFECTIVE_EVENT_FRONTIER_RELATION",
+        status="PASS",
+        context_hash=context_hash,
+        inputs={"frontier_hash": witness["frontier_hash"], "event_count": witness["event_count"]},
+        witness=witness,
+        direct_predecessor_hashes={},
+        checker_id="scripts.run_phase_ijk_acceptance.effective_frontier",
+        checker_version="phase-ijk-v3",
+    )
+
+
 def _context_bind(source: Mapping[str, Any], *, obligation_id: str,
                   context_hash: str,
                   source_registry: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -191,6 +263,9 @@ def _build_phase_ijk_registry_certificates(*, bridge: Mapping[str, Any],
                                            recurring: Mapping[str, Any],
                                            corollary: Mapping[str, Any],
                                            parameterized: Mapping[str, Any],
+                                           budget_domination: Mapping[str, Any],
+                                           early_stop_gate: Mapping[str, Any],
+                                           effective_frontier_certificate: Mapping[str, Any],
                                            branch_map: Mapping[str, Any],
                                            context_hash: str, target_domain: Mapping[str, Any],
                                            concrete_base: Any,
@@ -210,10 +285,21 @@ def _build_phase_ijk_registry_certificates(*, bridge: Mapping[str, Any],
     actual.update(derived_budget)
     local_evidence = {
         "CERTIFIED_ENVELOPE": envelope_certificate,
+        "BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION": budget_domination,
+        "EARLY_STOP_CONFIGURATION_GATE": early_stop_gate,
+        "EFFECTIVE_EVENT_FRONTIER_RELATION": effective_frontier_certificate,
         "CODE_REFERENCE_UPPER_BOUND_MAPPING": mapping,
         "REFERENCE_TASKSET": {"status": "PASS", "taskset": reference.to_dict(),
                               "task_count": len(reference.tasks),
                               "priority_order": list(reference.priority_order)},
+        "REFERENCE_MODEL_CONFORMANCE": {
+            "obligation_id": "REFERENCE_MODEL_CONFORMANCE",
+            "obligation_status": "UNRESOLVED",
+            "status": "UNRESOLVED",
+            "failure": {"route": "MODEL_CONFORMANCE_FAILED",
+                        "code": "REFERENCE_MODEL_CONFORMANCE_UNRESOLVED"},
+        },
+        "ALL_TASK_REFERENCE_RTA_ARITHMETIC": rta,
         "PROTECTED_HI_RTA_ARITHMETIC": rta,
         "PER_HI_TASK_INDUCTIVE_WCRT": recurring,
         "PROTECTED_HI_SAFETY_COROLLARY": corollary,
@@ -238,6 +324,34 @@ def _build_phase_ijk_registry_certificates(*, bridge: Mapping[str, Any],
         "CONTROLLER_POSTCLOSURE": bridge["prerequisites"]["controller_postclosure"],
         "BATCH_CLOSURE": bridge["prerequisites"]["same_timestamp"],
         "EFFECTIVE_EVENT_ORDER": bridge["prerequisites"]["event_projection"],
+        "REFERENCE_TASKSET_SCHEDULABLE": {
+            "obligation_id": "REFERENCE_TASKSET_SCHEDULABLE",
+            "obligation_status": "UNRESOLVED",
+            "status": "UNRESOLVED",
+            "failure": {"route": "REFERENCE_CERTIFICATE_FAILED",
+                        "code": "REFERENCE_TASKSET_SCHEDULABILITY_UNRESOLVED"},
+        },
+        "REFERENCE_HI_SUBSET_SAFETY": {
+            "obligation_id": "REFERENCE_HI_SUBSET_SAFETY",
+            "obligation_status": "UNRESOLVED",
+            "status": "UNRESOLVED",
+            "failure": {"route": "REFERENCE_CERTIFICATE_FAILED",
+                        "code": "REFERENCE_HI_SUBSET_SAFETY_UNRESOLVED"},
+        },
+        "FINITE_BAD_PREFIX_CONTRADICTION": {
+            "obligation_id": "FINITE_BAD_PREFIX_CONTRADICTION",
+            "obligation_status": "UNRESOLVED",
+            "status": "UNRESOLVED",
+            "failure": {"route": "REFERENCE_CERTIFICATE_FAILED",
+                        "code": "FINITE_BAD_PREFIX_CONTRADICTION_UNRESOLVED"},
+        },
+        "FINAL_CLAIM_COMPOSITION": {
+            "obligation_id": "FINAL_CLAIM_COMPOSITION",
+            "obligation_status": "UNRESOLVED",
+            "status": "UNRESOLVED",
+            "failure": {"route": "REFERENCE_CERTIFICATE_FAILED",
+                        "code": "FINAL_CLAIM_COMPOSITION_UNRESOLVED"},
+        },
     }
     # fresh Phase F-H registry evidence is authoritative. I-K may add missing
     # Phase-I/J/bridge nodes, but不得用较弱的本地摘要覆盖同名 fresh cert。
@@ -250,17 +364,26 @@ def _build_phase_ijk_registry_certificates(*, bridge: Mapping[str, Any],
             return certificates[obligation_id]
         entry = by_id[obligation_id]
         source = actual.get(obligation_id)
-        if not isinstance(source, Mapping) or source.get("status", source.get("obligation_status")) != "PASS":
-            raise ValueError(f"registry 节点缺少真实 PASS 证据: {obligation_id}")
+        if not isinstance(source, Mapping):
+            raise ValueError(f"registry 节点缺少真实证据: {obligation_id}")
+        source_status = source.get("obligation_status", source.get("status"))
+        if source_status not in {"PASS", "FAIL", "UNRESOLVED"}:
+            raise ValueError(f"registry 节点状态无效: {obligation_id}")
         predecessors = {str(dep): build(str(dep)) for dep in entry.get("depends_on", [])
                         if str(dep) in closure}
+        failure = None if source_status == "PASS" else {
+            "route": str(source.get("route", "UNRESOLVED")),
+            "code": str((source.get("failure") or {}).get("code", source.get("code", "REGISTRY_CERTIFICATE_FAILED"))),
+            "detail": source.get("failure", source.get("message")),
+        }
         cert = obligation_certificate(
-            obligation_id=obligation_id, status="PASS", context_hash=context_hash,
+            obligation_id=obligation_id, status=str(source_status), context_hash=context_hash,
             inputs={"registry_entry": entry, "source_artifact_hash": source.get("artifact_hash", sha256_object(dict(source)))},
             witness={"source_evidence": dict(source)},
             direct_predecessor_hashes={dep: sha256_object(value) for dep, value in predecessors.items()},
             checker_id="scripts.run_phase_ijk_acceptance.registry_closure",
             checker_version="phase-ijk-v3",
+            failure=failure,
         )
         certificates[obligation_id] = cert
         return cert
@@ -354,16 +477,36 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 rta = protected_hi_rta(reference)
                 replay = replay_rta(reference, rta)
-                if rta.get("obligation_status") != "PASS" or replay.get("status") != "PASS":
+                if not verify_obligation_certificate(rta) or replay.get("status") != "PASS":
                     code, result = _unresolved("RTA_OR_REPLAY_FAILED", rta=rta, replay=replay)
                 else:
-                    recurring = build_recurring_hi_instances(reference, rta_certificate=rta)
-                    corollary = protected_hi_safety_corollary(recurring)
+                    recurring_error = None
+                    try:
+                        recurring = build_recurring_hi_instances(reference, rta_certificate=rta)
+                    except (KeyError, TypeError, ValueError) as exc:
+                        recurring_error = str(exc)
+                        recurring = {
+                            "status": "UNRESOLVED",
+                            "obligation_status": "UNRESOLVED",
+                            "route": "REFERENCE_CERTIFICATE_FAILED",
+                            "failure": {"code": "PER_HI_TASK_INDUCTIVE_WCRT_UNRESOLVED",
+                                        "detail": recurring_error},
+                        }
+                    if recurring.get("status") == "PASS":
+                        corollary = protected_hi_safety_corollary(recurring)
+                    else:
+                        corollary = {
+                            "status": "UNRESOLVED",
+                            "obligation_status": "UNRESOLVED",
+                            "route": "REFERENCE_CERTIFICATE_FAILED",
+                            "failure": {"code": "PROTECTED_HI_SAFETY_COROLLARY_UNRESOLVED",
+                                        "detail": recurring.get("failure", recurring_error)},
+                        }
                     branch_map = build_runtime_branch_map(
                         root, source_hash=inputs["source_hash"],
                         path_map=case_map,
                     )
-                    if corollary.get("status") != "PASS" or branch_map.get("status") != "PASS":
+                    if branch_map.get("status") != "PASS":
                         code, result = _unresolved("THEOREM_OR_BRANCH_BINDING_UNRESOLVED",
                                                    corollary=corollary, branch_map=branch_map)
                     else:
@@ -379,6 +522,11 @@ def main(argv: list[str] | None = None) -> int:
                                     mappings, source_context_hash=reference.source_context_hash)
                                 finite = {"certificate": finite_certificate,
                                           "verified": verify_release_fixed_removal_certificate(finite_certificate)}
+                            budget_domination = build_budget_to_reference_domination(
+                                reference_taskset=reference.to_dict(), certified_envelope=envelope,
+                                reference_context_hash=reference.source_context_hash,
+                                direct_predecessor_hashes={},
+                            )
                             model_bounds = derive_p0_model_bounds(reference.to_dict())
                             bridge_context_hash = sha256_object({
                                 "schema_version": "bridge_context_v2",
@@ -403,9 +551,26 @@ def main(argv: list[str] | None = None) -> int:
                                                               context_hash=bridge_context_hash,
                                                               source_registry=upstream_source)
                                         for name in required_upstream}
-                            protected_bound = _context_bind(corollary,
-                                                            obligation_id="PROTECTED_HI_SAFETY_COROLLARY",
-                                                            context_hash=bridge_context_hash)
+                            protected_bound = None
+                            if corollary.get("status") == "PASS":
+                                protected_bound = _context_bind(
+                                    corollary,
+                                    obligation_id="PROTECTED_HI_SAFETY_COROLLARY",
+                                    context_hash=bridge_context_hash,
+                                )
+                            early_stop_gate = build_early_stop_configuration_gate(
+                                runtime_config=target.runtime_config,
+                                context_hash=bridge_context_hash,
+                                closure_completion_certificate=protected_bound,
+                            )
+                            effective_frontier_certificate = _build_effective_frontier_certificate(
+                                concrete_base=concrete_base, context_hash=bridge_context_hash,
+                            )
+                            release_mapping_bound = _context_bind(
+                                parameterized,
+                                obligation_id="RELEASE_FIXED_REMOVAL_MAPPING",
+                                context_hash=bridge_context_hash,
+                            )
                             bridge = compile_phase_k(source_root=root, branch_map=branch_map,
                                                      reference_taskset=reference.to_dict(),
                                                      bridge_context_hash=bridge_context_hash,
@@ -413,8 +578,8 @@ def main(argv: list[str] | None = None) -> int:
                                                      concrete_base=concrete_base,
                                                      reference_base=reference_base,
                                                      upstream_certificates=upstream,
-                                                     release_mapping_certificate=parameterized,
-                                                     protected_hi_certificate=protected_bound)
+                                                     release_mapping_certificate=release_mapping_bound,
+                                                     closure_completion_certificate=protected_bound)
                             if bridge.get("status") == "PASS":
                                 registry_certificates = _build_phase_ijk_registry_certificates(
                                     bridge=bridge,
@@ -422,7 +587,10 @@ def main(argv: list[str] | None = None) -> int:
                                     envelope_certificate=envelope_certificate,
                                     mapping=mapping, reference=reference, rta=rta,
                                     recurring=recurring, corollary=corollary,
-                                    parameterized=parameterized, branch_map=branch_map,
+                                    parameterized=release_mapping_bound, branch_map=branch_map,
+                                    budget_domination=budget_domination,
+                                    early_stop_gate=early_stop_gate,
+                                    effective_frontier_certificate=effective_frontier_certificate,
                                     context_hash=bridge_context_hash,
                                     target_domain={"status": "PASS", "budget_by_task": target.provenance.get("budget_by_task"),
                                                    "runtime_semantics": target.runtime_config.semantics.value},

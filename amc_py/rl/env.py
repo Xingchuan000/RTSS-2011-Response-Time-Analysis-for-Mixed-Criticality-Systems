@@ -2713,6 +2713,23 @@ class AmcBudgetEnv:
         self._last_observation = observation
         return observation
 
+    def _selected_action_was_invalid(self, action_id: int | None) -> bool:
+        """判断选中动作是否落在最近一次冻结的无效 mask 上。"""
+
+        if action_id is None:
+            return False
+        if isinstance(action_id, bool) or not isinstance(action_id, int):
+            raise TypeError("action_id 必须是 int 或 None")
+        details = getattr(self, "_last_mask_details", None)
+        if not isinstance(details, (list, tuple)):
+            return False
+        if action_id < 0 or action_id >= len(details):
+            raise IndexError(f"action_id={action_id} 超出 mask 范围")
+        row = details[action_id]
+        if not isinstance(row, dict) or "valid" not in row:
+            raise ValueError("_last_mask_details 缺少 valid 字段")
+        return not bool(row["valid"])
+
     def step(self, action_id: int | None) -> AgentStepResult:
         """执行一步动作并推进到下一次 agent 激活点。"""
 
@@ -2922,7 +2939,7 @@ class AmcBudgetEnv:
                 elif is_safe_residual_action and reject_reason is not None:
                     reject_reason = f"safe_mask_step_mismatch:{reject_reason}"
             else:
-                selected_invalid = bool(action_id is not None and action_id < len(valid_mask) and not valid_mask[action_id])
+                selected_invalid = self._selected_action_was_invalid(action_id)
                 if self.step_guard_semantics == "unchecked_apply" or (
                     self.step_guard_semantics == "unchecked_if_invalid" and selected_invalid
                 ):

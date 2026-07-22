@@ -94,6 +94,20 @@ def _stmt(node: ast.stmt) -> dict[str, Any]:
         return {"kind": "for", "target": _expr(node.target), "iter": _expr(node.iter), "body": [_stmt(x) for x in node.body], "lineno": node.lineno}
     if isinstance(node, ast.Expr):
         return {"kind": "expression", "value": _expr(node.value), "lineno": node.lineno}
+    if isinstance(node, ast.Import):
+        return {
+            "kind": "import",
+            "names": [{"name": alias.name, "asname": alias.asname} for alias in node.names],
+            "lineno": node.lineno,
+        }
+    if isinstance(node, ast.ImportFrom):
+        return {
+            "kind": "import_from",
+            "module": node.module,
+            "level": node.level,
+            "names": [{"name": alias.name, "asname": alias.asname} for alias in node.names],
+            "lineno": node.lineno,
+        }
     if isinstance(node, ast.Continue):
         return {"kind": "continue", "lineno": node.lineno}
     raise ValueError(f"UNSUPPORTED_AST_NODE: statement {type(node).__name__}")

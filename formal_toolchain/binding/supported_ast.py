@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 UNSUPPORTED = frozenset({
     ast.While, ast.AsyncFor, ast.AsyncWith, ast.Yield, ast.YieldFrom,
-    ast.Await, ast.NamedExpr, ast.Import, ast.ImportFrom, ast.Global,
+    ast.Await, ast.NamedExpr, ast.Global,
     ast.Try, ast.With, ast.AsyncFunctionDef, ast.ClassDef,
 })
 PURE_CALLS = frozenset({"min", "max", "abs", "ceil", "floor", "int", "float", "bool", "len", "range",
@@ -24,7 +24,8 @@ PURE_CALLS = frozenset({"min", "max", "abs", "ceil", "floor", "int", "float", "b
                         "build_observation", "DeadlineMiss", "apply_budget_action_candidate"})
 PURE_CALLS = PURE_CALLS | frozenset({"actual_cost_for", "pop_all_matching", "budget_of", "apply_updates",
                                     "push", "run_until", "finish", "record_job_completion", "record_lo_budget_overrun",
-                                    "consume_reward", "apply_budget_updates", "record_hi_budget_overrun", "finished", "remove"})
+                                    "consume_reward", "apply_budget_updates", "record_hi_budget_overrun", "finished", "remove",
+                                    "round"})
 FORBIDDEN_CALLS = frozenset({"eval", "exec", "__import__", "compile", "getattr", "setattr", "delattr"})
 
 
