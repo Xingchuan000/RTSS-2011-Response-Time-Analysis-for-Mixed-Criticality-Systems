@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.reference.p0_transition_contract import render_reference_p0_delta
 from .p0_case_manifest import require_case
 from .model_bounds import P0ModelBounds, _legacy_test_bounds
 from .state_relation import p0_smt_relation_fields
@@ -176,70 +177,6 @@ def _queue_relation_constraints(bounds: P0ModelBounds) -> list[str]:
         "queue_token_epoch")]
 
 
-def _reference_delta(case_id: str, bounds: P0ModelBounds) -> str:
-    """独立 P0 reference machine 的后继方程，只能出现 r_*_post。"""
-    c = {"time": "r_time", "service": "r_service", "remaining": "r_remaining"}
-    if case_id == "ONE_SERVICE_TICK":
-        c.update(time="(+ r_time elapsed)", service="(+ r_service elapsed)",
-                 remaining="(- r_remaining elapsed)",
-                 affected_job_service="(+ r_affected_job_service elapsed)")
-        c.update({f"job_{slot}_service":
-                  f"(ite (and (= r_job_{slot}_present 1) (= r_job_{slot}_running 1) "
-                  f"(= r_job_{slot}_key running_job_key)) "
-                  f"(+ r_job_{slot}_service elapsed) r_job_{slot}_service)"
-                  for slot in range(bounds.job_slots)})
-    elif case_id == "JUMP_TO_NEXT_EVENT":
-        c["time"] = "next_event_time"
-    elif case_id == "DEADLINE_OBSERVATION_FIRST_HI_MISS":
-        c.update(miss="1", affected_job_hi_miss="1")
-    elif case_id in {"PRIMARY_LO_RELEASE", "DEGRADED_LO_RELEASE", "HI_RELEASE"}:
-        demand = {
-            "PRIMARY_LO_RELEASE": "(ite (<= actual_cost (+ release_budget 1)) actual_cost (+ release_budget 1))",
-            "DEGRADED_LO_RELEASE": "(ite (<= actual_cost degraded_cost) actual_cost degraded_cost)",
-            "HI_RELEASE": "actual_cost",
-        }[case_id]
-        c.update(active="(+ r_active 1)", ready="(+ r_ready 1)", service="0",
-                 remaining="expected_demand", budget="release_budget", priority="release_priority",
-                 release="release_time", deadline="release_deadline", category="release_category",
-                 job_key="release_job_key", affected_job_key="release_job_key",
-                 affected_job_active="1", affected_job_ready="1",
-                 affected_job_running="0", affected_job_priority="release_priority",
-                 affected_job_release="release_time", affected_job_deadline="release_deadline",
-                 affected_job_category="release_category", affected_job_budget="release_budget",
-                 affected_job_demand="expected_demand", affected_job_service="0",
-                 )
-        c.update(_release_job_overrides("r", bounds))
-    elif case_id in {"NORMAL_COMPLETION", "DEGRADED_COMPLETION", "PRIMARY_LO_CANCELLATION"}:
-        c.update(active="(- r_active 1)", ready="(- r_ready 1)", running="0",
-                 affected_job_active="0", affected_job_ready="0", affected_job_running="0")
-        c.update(_remove_job_overrides("r", bounds))
-    elif case_id == "HI_COMPLETION":
-        c.update(active="(- r_active 1)", ready="(- r_ready 1)", running="0",
-                 affected_job_active="0", affected_job_ready="0", affected_job_running="0",
-                 affected_job_hi_complete="r_affected_job_hi_complete")
-        c.update(_remove_job_overrides("r", bounds))
-    elif case_id == "ARRIVAL_BATCH_SWITCH_S0":
-        c["mode"] = "1"
-    elif case_id == "IDLE_RECOVERY":
-        c["mode"] = "0"
-    elif case_id == "PREEMPTION_DISPATCH":
-        c.update(running="selected_job_key", affected_job_key="selected_job_key",
-                 affected_job_running="1")
-        c.update(_dispatch_job_overrides("r", bounds))
-    elif case_id == "CONTROLLER_SELECTED_ACTION":
-        c.update(future_budget="release_budget", affected_task_budget="release_budget")
-        c.update(_task_budget_overrides("r", bounds))
-    # BOOT and no-op/controller/deadline cases retain the P0 state.
-    body = _all_post("r", bounds, c)
-    if case_id == "PRIMARY_LO_RELEASE":
-        return "(and (= expected_demand (ite (<= actual_cost (+ release_budget 1)) actual_cost (+ release_budget 1))) " + body[5:]
-    if case_id == "DEGRADED_LO_RELEASE":
-        return "(and (= expected_demand (ite (<= actual_cost degraded_cost) actual_cost degraded_cost)) " + body[5:]
-    if case_id == "HI_RELEASE":
-        return "(and (= expected_demand actual_cost) " + body[5:]
-    return body
-
-
 def compile_bound_path_effect(row: Mapping[str, Any], *, bounds: P0ModelBounds | None = None) -> str:
     """把真实路径的有限 effect IR 编译成 concrete ``c_*_post`` 方程。
 
@@ -399,7 +336,10 @@ def compile_case_template(case_id: str, *, bounds: P0ModelBounds | None = None) 
     metadata = require_case(case_id)
     fields = p0_smt_relation_fields(bounds)
     declarations = _declarations(bounds)
-    reference = _reference_delta(case_id, bounds)
+    reference = render_reference_p0_delta(
+        case_id,
+        bounds,
+    )
     preservation = "(and " + " ".join(f"(= c_{f}_post r_{f}_post)" for f in fields) + ")"
     precondition = _relation_precondition(bounds)
     extra: list[str] = []
@@ -461,6 +401,8 @@ def compile_case_template(case_id: str, *, bounds: P0ModelBounds | None = None) 
     # precondition，形成“证明模板与实际门控条件脱节”的假阳性。
     payload = {"case": metadata, "declarations": declarations, "precondition": precondition,
                "reference_delta": reference, "preservation": preservation,
-               "schema": state_relation_schema(bounds), "model_bounds": bounds.to_dict()}
+               "schema": state_relation_schema(bounds), "model_bounds": bounds.to_dict(),
+               "reference_transition_system_id":
+                   "FIXED_EXECUTABLE_REFERENCE_P0_V3"}
     return CompiledTransitionCase(case_id, declarations, precondition, "",
                                   reference, preservation, sha256_object(payload))

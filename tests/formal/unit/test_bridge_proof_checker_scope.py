@@ -98,7 +98,7 @@ def _closed_candidate() -> dict[str, object]:
                         "precondition_formula": "p",
                         "concrete_delta": "c",
                         "projected_reference_delta": "r",
-                        "preservation_formula": "s",
+                        "relation_preservation_formula": "s",
                     },
                 }
             ],

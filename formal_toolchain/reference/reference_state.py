@@ -22,6 +22,7 @@ class PendingReferenceRelease:
     effective_release_mode: str
     release_class: str
     release_budget: int
+    removal_demand: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +57,8 @@ class ReferenceState:
     running: JobKey | None
     frontier: tuple[LogicalEvent, ...]
     pending_releases: Mapping[JobKey, PendingReferenceRelease] = field(default_factory=dict)
+    release_demand_overrides: Mapping[JobKey, int] = field(default_factory=dict)
+    ghost_future_budgets: Mapping[str, int] = field(default_factory=dict)
     mode_switches: tuple[ReferenceModeSwitch, ...] = ()
     abnormal_hi_releases: frozenset[JobKey] = frozenset()
     primary_on_switch_time: bool = True

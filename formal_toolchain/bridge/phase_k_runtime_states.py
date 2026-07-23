@@ -88,6 +88,10 @@ def build_preclosed_runtime_states(target: Any,
         next_controller_boundary=concrete.next_controller_boundary,
         next_timing_boundary=min((int(item[0]) for item in projected_queue
                                   if int(item[0]) >= concrete.time), default=None),
+        released_ledger=concrete.released_ledger,
+        terminal_ledger=concrete.terminal_ledger,
+        miss_ledger=concrete.miss_ledger,
+        effective_event_frontier=concrete.effective_event_frontier,
     )
     return concrete, reference
 

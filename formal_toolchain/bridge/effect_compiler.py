@@ -64,6 +64,9 @@ class CompiledConcreteEffect:
     consumed_effect_hashes: tuple[str, ...]
     non_state_effect_hashes: tuple[str, ...] = ()
     queue_equations: tuple[str, ...] = ()
+    modified_components: tuple[str, ...] = ()
+    semantic_effect_kinds: tuple[str, ...] = ()
+    affected_job_sources: tuple[str, ...] = ()
 
     def to_smt(self) -> str:
         return "(and " + " ".join(self.equations or ("true",)) + ")"
@@ -97,6 +100,9 @@ def compile_job_insert(*, bounds: P0ModelBounds) -> list[str]:
         selected = f"(= release_slot {slot})"
         for field, value in zip(fields, values):
             equations.append(f"(= c_job_{slot}_{field}_post (ite {selected} {value} c_job_{slot}_{field}))")
+        equations.append(
+            f"(=> (= c_job_{slot}_present 1) (not (= c_job_{slot}_key release_job_key)))"
+        )
     return equations
 
 
@@ -170,10 +176,39 @@ def compile_effect_ir(effect_ir: list[Mapping[str, Any]], *, bounds: P0ModelBoun
     pop_count = 0
     token_epoch_delta = 0
     statically_elided: list[str] = []
+    modified_components: set[str] = set()
+    semantic_effects: set[str] = set()
+    affected_job_sources: set[str] = set()
     bindings = dict(_PHASE_K_STATIC_EFFECT_DEFAULTS if static_effect_bindings is None
                     else static_effect_bindings)
     for effect in effect_ir:
         kind, source, ast_hash = str(effect["kind"]), str(effect["source"]), str(effect["ast_hash"])
+        if any(token in source for token in ("job", "active_jobs", "jobs_by_key", "running_job")):
+            affected_job_sources.add(source)
+        if "active_jobs.append" in source:
+            semantic_effects.add("JOB_RELEASE"); modified_components.update({"released_ledger", "active_jobs", "ready_order"})
+        if "jobs_by_key[" in source and "= job" in source:
+            semantic_effects.add("JOB_RELEASE"); modified_components.add("released_ledger")
+        if "active_jobs.remove" in source:
+            semantic_effects.add("JOB_REMOVE"); modified_components.update({"active_jobs", "ready_order", "running_key"})
+        if any(token in source for token in ("completion_time =", "dropped = True", "drop_time =")):
+            semantic_effects.add("TERMINAL_MARK"); modified_components.add("terminal_ledger")
+        if "deadline_misses.append" in source:
+            semantic_effects.add("MISS_APPEND"); modified_components.add("miss_ledger")
+        if "executed_time +=" in source or "_update_running_progress" in source:
+            semantic_effects.add("SERVICE_UPDATE"); modified_components.update({"active_service", "remaining_to_removal", "time"})
+        if "running_job =" in source:
+            semantic_effects.add("RUNNING_UPDATE"); modified_components.add("running_key")
+        if "state.mode =" in source or "self.state.mode =" in source:
+            semantic_effects.add("MODE_UPDATE"); modified_components.add("mode")
+        if "apply_updates" in source:
+            semantic_effects.add("FUTURE_BUDGET_UPDATE"); modified_components.add("future_budget_ghost")
+        if "queue.push" in source:
+            semantic_effects.add("QUEUE_PUSH"); modified_components.add("effective_event_frontier")
+        if "queue.pop" in source or "pop_all_matching" in source:
+            semantic_effects.add("QUEUE_POP"); modified_components.add("effective_event_frontier")
+        if "_invalidate_job_events" in source:
+            semantic_effects.add("TOKEN_INVALIDATION"); modified_components.add("effective_event_frontier")
         compiled: list[str] | None = None
         assignment_target = source.split("=", 1)[0].strip() if "=" in source else ""
         if "active_jobs.append" in source:
@@ -379,4 +414,6 @@ def compile_effect_ir(effect_ir: list[Mapping[str, Any]], *, bounds: P0ModelBoun
     non_state = tuple(non_state_candidates)
     queue_equations = tuple(equation for equation in equations
                             if "c_queue_" in equation and "_post" in equation)
-    return CompiledConcreteEffect(tuple(equations), tuple(consumed), non_state, queue_equations)
+    return CompiledConcreteEffect(tuple(equations), tuple(consumed), non_state, queue_equations,
+                                   tuple(sorted(modified_components)), tuple(sorted(semantic_effects)),
+                                   tuple(sorted(affected_job_sources)))

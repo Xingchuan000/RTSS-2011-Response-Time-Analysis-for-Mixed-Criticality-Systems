@@ -1,0 +1,22 @@
+{
+  "induction_clauses": {
+    "base": "PASS",
+    "finite_sequence_induction": "PASS",
+    "frame_rule": "PASS",
+    "ledger_monotonicity": "PASS",
+    "map_extension": "PASS",
+    "step": "PASS"
+  },
+  "parameterized_relation_schema_hash": "622cef51b934d622d1babe661e52ac21fb944285675dded631ce8ca998cc8a9d",
+  "schema_version": "casewise_prefix_induction_proof_v1",
+  "source_bindings": {
+    "formal_toolchain/bridge/event_projection.py": "122786952059a08fb36f6bc0d0bb3c3cc847b65303d7e37bd6cfd1e539a2fb1e",
+    "formal_toolchain/bridge/prefix_refinement.py": "710df9629a6cab366527a099207622255e117272ac2571c99e770ef94b0cb045",
+    "formal_toolchain/bridge/state_relation.py": "3ad93e8570f82c2e1e52b3baa854429a8e72be283806781f37e95ffaee359994",
+    "formal_toolchain/bridge/transition_cases.py": "8750a80587645e50cadff69397f7d7c8bfc6972651c5b4c4f77e561ef84fb1a6",
+    "formal_toolchain/bridge/transition_compiler.py": "01cfe1285605fc8dd5cea961f0eefd1f333dc52bcb40c16cb6e04997c6d260b8"
+  },
+  "theorem_assumption_hash": "2b17968ceee1451b3f65ce70d9b1ab804c9040eb0bda26a05ffb8e62def2fd46",
+  "theorem_id": "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT",
+  "theorem_statement_hash": "6c84fbe150d4fe80c63b14065955213f17e7cfb02f40837967896a92f2a46225"
+}

@@ -35,6 +35,20 @@ PREFIX_EXTENSION_SOURCE_FILES = {
             / "bridge"
             / "logical_events.py"
         ),
+
+    "formal_toolchain/reference/p0_transition_contract.py":
+        (
+            Path(__file__).resolve().parents[2]
+            / "reference"
+            / "p0_transition_contract.py"
+        ),
+
+    "formal_toolchain/reference/p0_projection.py":
+        (
+            Path(__file__).resolve().parents[2]
+            / "reference"
+            / "p0_projection.py"
+        ),
 }
 
 

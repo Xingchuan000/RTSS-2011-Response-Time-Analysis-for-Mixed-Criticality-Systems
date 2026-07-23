@@ -7,9 +7,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from math import ceil
-from typing import Any, Mapping
+from typing import Any
 
 from formal_toolchain.core.hashing import sha256_object
 
@@ -63,12 +64,40 @@ def _require_int(task: Mapping[str, Any], field: str) -> int:
     return value
 
 
+def canonical_task_rows(
+    reference_taskset: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...]:
+    tasks = reference_taskset.get("tasks")
+
+    if (
+        not isinstance(tasks, Sequence)
+        or isinstance(
+            tasks,
+            (str, bytes, bytearray),
+        )
+        or not tasks
+    ):
+        raise ValueError(
+            "reference taskset 缺少 tasks"
+        )
+
+    rows = tuple(tasks)
+
+    if any(
+        not isinstance(task, Mapping)
+        for task in rows
+    ):
+        raise ValueError(
+            "reference taskset task row invalid"
+        )
+
+    return rows
+
+
 def derive_p0_model_bounds(reference_taskset: Mapping[str, Any]) -> P0ModelBounds:
     """根据 canonical reference taskset 计算不会遗漏正常路径的容量。"""
 
-    tasks = reference_taskset.get("tasks")
-    if not isinstance(tasks, list) or not tasks:
-        raise ValueError("reference taskset 缺少 tasks")
+    tasks = canonical_task_rows(reference_taskset)
 
     task_slots = len(tasks)
     jobs_per_task = [

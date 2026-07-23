@@ -24,7 +24,7 @@ from .state_relation import (
 from .transition_cases import TransitionCaseProof, check_handler_coverage
 
 
-def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
+def build_bounded_closed_prefix_regression(*, base_relation_certificate: Mapping[str, Any],
                               cases: Sequence[TransitionCaseProof],
                               model_bounds: P0ModelBounds, source_hash: str,
                               bridge_context_hash: str | None = None,
@@ -34,12 +34,29 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
                               theorem_hash: str | None = None,
                               upstream_certificates: Mapping[str, Mapping[str, Any]] | None = None,
                               release_mapping_certificate: Mapping[str, Any] | None = None,
-                              transition_case_certificates: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
-    """聚合真实 case proof；缺 case、hash 或 Z3 结果时保持未解析。"""
+                              transition_case_certificates: Sequence[Mapping[str, Any]] | None = None,
+                              reference_transition_identity_certificate:
+                                  Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Finite SMT regression diagnostic; never an N5 authorization."""
     if (base_relation_certificate.get("obligation_id") != "PRECLOSED0_BASE_RELATION"
             or base_relation_certificate.get("obligation_status") != "PASS"
             or not verify_obligation_certificate(base_relation_certificate)):
         return {"obligation_status": "UNRESOLVED", "failure": "PRECLOSED0_BASE_RELATION_REQUIRED"}
+    identity_witness = (
+        reference_transition_identity_certificate
+        .get("witness", {})
+    ) if isinstance(reference_transition_identity_certificate, Mapping) else {}
+    if (
+        identity_witness.get(
+            "transition_system_id"
+        )
+        != "FIXED_EXECUTABLE_REFERENCE_P0_V3"
+    ):
+        return {
+            "status": "FAIL",
+            "failure":
+                "REFERENCE_TRANSITION_SYSTEM_ID_MISMATCH",
+        }
     if not source_hash:
         return {"status": "UNRESOLVED", "failure": "SOURCE_HASH_MISSING"}
     required_upstream = ("SCHEDULER_MODEL", "MODE_SEMANTICS_CONFORMANCE",
@@ -97,7 +114,7 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
             "status": "FAIL",
             "failure": "N6_STATE_RELATION_SCHEMA_MISMATCH",
         }
-    n6_interface = build_n6_relation_interface(model_bounds)
+    n6_interface = {"diagnostic": "bounded SMT regression does not define N6 relation"}
     if any(case.bound_source_hash != source_hash for case in cases):
         return {"status": "FAIL", "failure": "CASE_SOURCE_HASH_MISMATCH"}
     expected_case = {branch["path_id"]: branch.get("case_id") for branch in branches}
@@ -108,13 +125,18 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
     if coverage["status"] != "PASS":
         return {"status": "UNRESOLVED" if coverage["unresolved_cases"] else "FAIL",
                 "failure": "CASEWISE_PROOF_INCOMPLETE", "coverage": coverage}
-    result = {"status": "PASS", "schema_version": "closed_prefix_refinement_v1",
+    result = {"status": "PASS", "schema_version": "bounded_closed_prefix_regression_v1",
+              "proof_scope": "BOUNDED_LOCAL_SMT_REGRESSION",
+              "model_bounds_hash": model_bounds.fingerprint,
               "theorem": "BOUNDED_CASEWISE_SIMULATION_REGRESSION",
               "case_count": len(cases), "source_hash": source_hash,
               "bridge_context_hash": bridge_context_hash, "theorem_hash": theorem_hash,
               "case_ids": sorted(case.case_id for case in cases), "coverage": coverage}
+    identity_hash = reference_transition_identity_certificate.get(
+        "artifact_hash", sha256_object(reference_transition_identity_certificate or {})
+    ) if isinstance(reference_transition_identity_certificate, Mapping) else ""
     result.update(obligation_certificate(
-        obligation_id="CLOSED_PREFIX_REFINEMENT", status="PASS", context_hash=bridge_context_hash,
+        obligation_id="BOUNDED_CLOSED_PREFIX_REGRESSION", status="PASS", context_hash=bridge_context_hash,
         inputs={"source_branch_count": len(derived_branch_ids),
                  "branch_map_hash": str(branch_map.get("path_map_hash")),
                "prerequisite_hashes": {key: prerequisite_certificates[key]["artifact_hash"]
@@ -128,14 +150,18 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
                                   **{key: upstream_certificates[key].get("artifact_hash", sha256_object(upstream_certificates[key]))
                                      for key in required_upstream},
                                   "release_mapping": release_mapping_certificate.get("artifact_hash", sha256_object(release_mapping_certificate)),
+                                  "reference_transition_identity": identity_hash,
                                   **{f"case:{index}": case_artifact["artifact_hash"]
                                      for index, case_artifact in enumerate(transition_case_certificates)}},
         witness={
             "case_ids": result["case_ids"],
             "coverage": coverage,
-            "proof_kind": "BOUNDED_CASEWISE_INDUCTIVE_PREFIX_REFINEMENT",
-            "pointwise_closed_prefix_relation": True,
+            "proof_kind": "BOUNDED_LOCAL_SMT_REGRESSION",
             "n6_relation_interface": n6_interface,
+            "reference_transition_system_id":
+                "FIXED_EXECUTABLE_REFERENCE_P0_V3",
+            "reference_transition_identity_hash":
+                identity_hash,
             "transition_case_certificates": [
                 dict(item)
                 for item in transition_case_certificates
@@ -143,7 +169,96 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
         },
         checker_id="formal_toolchain.bridge.prefix_refinement", checker_version="phase-k-v2",
     ))
+    # This artifact is diagnostic only; it must never masquerade as a gated
+    # obligation or carry the authoritative pointwise relation claim.
+    result.pop("obligation_id", None)
+    result.pop("obligation_status", None)
     return result
+
+
+def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
+                              transition_case_certificates: Sequence[Mapping[str, Any]],
+                              branch_map: Mapping[str, Any],
+                              prerequisite_certificates: Mapping[str, Mapping[str, Any]],
+                              upstream_certificates: Mapping[str, Mapping[str, Any]],
+                              release_mapping_certificate: Mapping[str, Any],
+                              reference_transition_identity_certificate: Mapping[str, Any],
+                              theorem_statement: Mapping[str, Any],
+                              theorem_proof_receipt: Mapping[str, Any],
+                              bridge_context_hash: str, source_hash: str,
+                              bounded_regression: Mapping[str, Any] | None = None,
+                              handler_decomposition_certificate: Mapping[str, Any] | None = None,
+                              cases: Sequence[TransitionCaseProof] | None = None,
+                              **_: Any) -> dict[str, Any]:
+    """Authorize N5 only from parameterized induction and local contracts."""
+    from .state_relation import parameterized_state_relation_schema_hash
+    required_prereqs = ("base_relation", "same_timestamp", "positive_time", "controller_postclosure", "event_projection")
+    if base_relation_certificate.get("obligation_status") != "PASS" or not verify_obligation_certificate(base_relation_certificate):
+        return {"status": "UNRESOLVED", "failure": "PRECLOSED0_BASE_RELATION_REQUIRED"}
+    if not source_hash or branch_map.get("status") != "PASS" or branch_map.get("source_hash") != source_hash:
+        return {"status": "UNRESOLVED", "failure": "PARAMETERIZED_BRANCH_MAP_REQUIRED"}
+    required_upstream = ("SCHEDULER_MODEL", "MODE_SEMANTICS_CONFORMANCE", "DEMAND_ORACLE_BATCH_CONTRACT", "HI_EXECUTION_CONTRACT", "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION", "DEADLINE_OBSERVATION", "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE", "CONTROLLER_POSTCLOSURE", "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION", "CERTIFIED_ENVELOPE")
+    if any(upstream_certificates.get(k, {}).get("obligation_status") != "PASS" for k in required_upstream):
+        return {"status": "UNRESOLVED", "failure": "UPSTREAM_CLOSURE_REQUIRED"}
+    if any(not isinstance(prerequisite_certificates.get(k), Mapping) or prerequisite_certificates[k].get("obligation_status") != "PASS" for k in required_prereqs):
+        return {"status": "UNRESOLVED", "failure": "PARAMETERIZED_PREFIX_PREREQUISITES_REQUIRED"}
+    if release_mapping_certificate.get("obligation_status") != "PASS":
+        return {"status": "UNRESOLVED", "failure": "RELEASE_MAPPING_REQUIRED"}
+    if reference_transition_identity_certificate.get("witness", {}).get("transition_system_id") != "FIXED_EXECUTABLE_REFERENCE_P0_V3":
+        return {"status": "FAIL", "failure": "REFERENCE_TRANSITION_SYSTEM_ID_MISMATCH"}
+    if theorem_statement.get("assurance_level") != "MACHINE_CHECKED_PROJECT_LEMMA" or theorem_proof_receipt.get("status") != "PASS":
+        return {"status": "UNRESOLVED", "failure": "PARAMETERIZED_PREFIX_INDUCTION_BACKEND_FAILED"}
+    schema = parameterized_state_relation_schema_hash()
+    if theorem_proof_receipt.get("parameterized_relation_schema_hash") != schema:
+        return {"status": "FAIL", "failure": "PARAMETERIZED_RELATION_SCHEMA_MISMATCH"}
+    certs = tuple(transition_case_certificates or ())
+    if not certs or any(c.get("obligation_status") != "PASS" or not verify_obligation_certificate(c) for c in certs):
+        return {"status": "UNRESOLVED", "failure": "TRANSITION_CASE_CERTIFICATES_REQUIRED"}
+    rows = [c.get("witness", c) for c in certs]
+    if {r.get("case_id") for r in rows} != set(__import__("formal_toolchain.bridge.transition_cases", fromlist=["REQUIRED_P0_CASE_IDS"]).REQUIRED_P0_CASE_IDS):
+        return {"status": "UNRESOLVED", "failure": "CASEWISE_PROOF_INCOMPLETE"}
+    branches = branch_map.get("paths", [])
+    branch_ids = [b.get("path_id") for b in branches]
+    case_branches = [r.get("source_branch_id") for r in rows]
+    if not branches or any(not isinstance(x, str) for x in branch_ids) or set(case_branches) != set(branch_ids) or len(case_branches) != len(set(case_branches)):
+        return {"status": "UNRESOLVED", "failure": "COMPLETE_UNIQUE_BRANCH_PARTITION_REQUIRED"}
+    if any(next((b.get("case_id") for b in branches if b.get("path_id") == r.get("source_branch_id")), None) != r.get("case_id") for r in rows):
+        return {"status": "FAIL", "failure": "CASE_BRANCH_BINDING_MISMATCH"}
+    from .transition_cases import EXPECTED_MAP_UPDATE_KIND
+    required_contracts = ("created_key_fresh_proved", "released_ledger_contract_proved", "terminal_ledger_contract_proved", "miss_ledger_contract_proved", "unaffected_job_frame_proved", "effective_frontier_contract_proved")
+    def contract_valid(r):
+        expected_kind = EXPECTED_MAP_UPDATE_KIND.get(r.get("case_id"), "UNCHANGED")
+        return (r.get("parameterized_contract_status") == "PASS"
+                and r.get("parameterized_relation_schema_hash") == schema
+                and all(r.get(k) is True for k in required_contracts if k != "created_key_fresh_proved" or expected_kind == "EXTEND_WITH_FRESH_RELEASE")
+                and r.get("local_footprint_hash") and len(r.get("local_footprint_hash")) == 64
+                and isinstance(r.get("evidence_hashes"), (list, tuple)) and bool(r.get("evidence_hashes"))
+                and r.get("map_update_kind") == expected_kind
+                and (expected_kind != "EXTEND_WITH_FINITE_RELEASE_BATCH" or len(r.get("batch_decomposition_receipt_hash", "")) == 64))
+    if any(not contract_valid(r) for r in rows):
+        return {"status": "UNRESOLVED", "failure": "PARAMETERIZED_CASE_CONTRACTS_INCOMPLETE"}
+    if not isinstance(handler_decomposition_certificate, Mapping) or handler_decomposition_certificate.get("status") != "PASS" or handler_decomposition_certificate.get("schema_version") != "handler_decomposition_v3_math_fixed":
+        return {"status": "UNRESOLVED", "failure": "HANDLER_DECOMPOSITION_MATH_FIXED_REQUIRED"}
+    identity_hash = reference_transition_identity_certificate.get("artifact_hash", sha256_object(reference_transition_identity_certificate))
+    witness = {
+        "schema_version": "closed_prefix_refinement_v2",
+        "proof_kind": "PARAMETERIZED_FINITE_MAP_INDUCTIVE_PREFIX_REFINEMENT",
+        "quantification": {"demand_oracle": "FORALL_ADMISSIBLE", "closed_prefix": "FORALL_FINITE_REACHABLE_CLOSED_PREFIXES", "released_jobs": "ARBITRARY_FINITE_PREFIX_INDEXED_MAP", "same_task_overlap": "ARBITRARY_FINITE"},
+        "parameterized_relation_schema_hash": schema,
+        "pointwise_closed_prefix_relation": True,
+        "theorem_proof_receipt_hash": theorem_proof_receipt["receipt_hash"],
+        "reference_transition_system_id": "FIXED_EXECUTABLE_REFERENCE_P0_V3",
+        "case_certificate_hashes": [c["artifact_hash"] for c in certs],
+        "transition_case_certificates": [dict(c) for c in certs],
+        "n6_relation_interface": build_n6_relation_interface(),
+        "bounded_regression_hash": (bounded_regression or {}).get("artifact_hash"),
+        "handler_decomposition_hash": handler_decomposition_certificate.get("artifact_hash"),
+        "arrival_fold_certificate_hash": handler_decomposition_certificate.get("handlers", {}).get("arrival_batch", {}).get("fold_certificate_hash"),
+    }
+    return obligation_certificate(obligation_id="CLOSED_PREFIX_REFINEMENT", status="PASS", context_hash=bridge_context_hash,
+        inputs={"source_hash": source_hash, "theorem_statement_hash": theorem_statement.get("statement_hash"), "theorem_proof_receipt_hash": theorem_proof_receipt["receipt_hash"], "parameterized_relation_schema_hash": schema},
+        direct_predecessor_hashes={"base_relation": base_relation_certificate["artifact_hash"], "release_mapping": release_mapping_certificate.get("artifact_hash", sha256_object(release_mapping_certificate)), "reference_transition_identity": identity_hash, **{f"case:{i}": c["artifact_hash"] for i, c in enumerate(certs)}},
+        witness=witness, checker_id="formal_toolchain.bridge.prefix_refinement", checker_version="phase-k-v4")
 
 
 def reference_prefix_extension(*, ready_jobs: bool | None = None,

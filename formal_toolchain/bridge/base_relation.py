@@ -46,8 +46,16 @@ def build_preclosed0_base_certificate(*, context_hash: str,
     if (handler_decomposition_certificate is None
             or handler_decomposition_certificate.get("status") != "PASS"):
         raise ValueError("HANDLER_COMPOSITION_REQUIRED")
-    arrival_composition = handler_decomposition_certificate.get("compositions", {}).get("arrival_batch", {})
-    if arrival_composition.get("proof_status") != "PASS":
+    arrival_handler = handler_decomposition_certificate.get("handlers", {}).get("arrival_batch", {})
+    arrival_results = arrival_handler.get("alternative_results", {})
+    if (
+        arrival_handler.get("fold_status") != "PASS"
+        or arrival_handler.get("fold_theorem")
+        != "FINITE_SEQUENCE_INDUCTION_OVER_FRESH_RELEASE_MAP_EXTENSIONS"
+        or not isinstance(arrival_results, Mapping)
+        or set(arrival_results) != {"ARRIVAL_BATCH_NO_SWITCH", "ARRIVAL_BATCH_SWITCH_S0"}
+        or any(result.get("proof_status") != "PASS" for result in arrival_results.values())
+    ):
         raise ValueError("ARRIVAL_MICROSTEP_COMPOSITION_REQUIRED")
     preclosed_composition = handler_decomposition_certificate.get("preclosed0_composition", {})
     if preclosed_composition.get("status") != "PASS":

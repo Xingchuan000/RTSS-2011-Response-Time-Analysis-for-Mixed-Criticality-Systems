@@ -1,0 +1,17 @@
+{
+  "clauses": {
+    "ast_cfg": "PASS",
+    "branch_partition": "PASS",
+    "sequence_composition": "PASS"
+  },
+  "source_bindings": {
+    "amc_py/event_runtime.py": "4eb79121ffbc589f90c142575e258510a43371383af106f11b7ef8e1f69f6a8e",
+    "formal_toolchain/bridge/handler_decomposition.py": "de70e4db6bb24b1855be117c03df2dff955bdfc72ecb5ce75435bad072e2fbcd",
+    "formal_toolchain/bridge/state_relation.py": "3ad93e8570f82c2e1e52b3baa854429a8e72be283806781f37e95ffaee359994",
+    "formal_toolchain/bridge/transition_cases.py": "8750a80587645e50cadff69397f7d7c8bfc6972651c5b4c4f77e561ef84fb1a6",
+    "formal_toolchain/bridge/transition_compiler.py": "01cfe1285605fc8dd5cea961f0eefd1f333dc52bcb40c16cb6e04997c6d260b8"
+  },
+  "theorem_assumption_hash": "55995008e4ca5c915188599936d97b64b1bc1b8dbe1b34febbca6be1ac574e7a",
+  "theorem_id": "EVENT_HANDLER_MICROSTEP_DECOMPOSITION",
+  "theorem_statement_hash": "c6c01133e551541de484a3b369fe53ad872dac66ea2f2806ba7bb03ac7910e5b"
+}

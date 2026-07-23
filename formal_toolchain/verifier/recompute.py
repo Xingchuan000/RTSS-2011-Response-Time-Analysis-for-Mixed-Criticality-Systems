@@ -356,7 +356,7 @@ def _build_phase_k_objects(*, inputs: Any, fresh_certificates: Mapping[str, Mapp
         "HI_EXECUTION_CONTRACT", "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION",
         "DEADLINE_OBSERVATION", "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE",
         "CONTROLLER_POSTCLOSURE", "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION",
-        "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET",
+        "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
     )
     upstream = {name: fresh_certificates[name] for name in upstream_names
                 if fresh_certificates.get(name, {}).get("obligation_status") == "PASS"}
@@ -424,7 +424,7 @@ def _fresh_bridge_proofs(*, inputs: Any, fresh_certificates: Mapping[str, Mappin
             "HI_EXECUTION_CONTRACT", "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION",
             "DEADLINE_OBSERVATION", "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE",
             "CONTROLLER_POSTCLOSURE", "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION",
-            "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET",
+            "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
         )},
         release_mapping_certificate=fresh_certificates.get("RELEASE_FIXED_REMOVAL_MAPPING"),
         closure_completion_certificate=None, runtime_config=inputs.target.runtime_config,
@@ -784,16 +784,17 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
                                        else None),
                     fresh_reference=(fresh_reference
                                      if obligation_id in {"CODE_REFERENCE_UPPER_BOUND_MAPPING",
-                                                          "REFERENCE_TASKSET",
-                                                          "PROTECTED_HI_RTA_ARITHMETIC",
-                                                          "PER_HI_TASK_INDUCTIVE_WCRT",
-                                                          "REFERENCE_HI_SUBSET_SAFETY",
-                                                          "ALL_TASK_REFERENCE_RTA_ARITHMETIC",
-                                                          "BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION",
-                                                          "REFERENCE_SEMANTICS_CONTRACT",
-                                                          "REFERENCE_MODEL_CONFORMANCE",
-                                                          "REFERENCE_TASKSET_SCHEDULABLE",
-                                                          "EFFECTIVE_EVENT_FRONTIER_RELATION"}
+                                                           "REFERENCE_TASKSET",
+                                                           "PROTECTED_HI_RTA_ARITHMETIC",
+                                                           "PER_HI_TASK_INDUCTIVE_WCRT",
+                                                           "REFERENCE_HI_SUBSET_SAFETY",
+                                                           "ALL_TASK_REFERENCE_RTA_ARITHMETIC",
+                                                           "BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION",
+                                                           "REFERENCE_SEMANTICS_CONTRACT",
+                                                           "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
+                                                           "REFERENCE_MODEL_CONFORMANCE",
+                                                           "REFERENCE_TASKSET_SCHEDULABLE",
+                                                           "EFFECTIVE_EVENT_FRONTIER_RELATION"}
                                      else None),
                 )
             except (KeyError, TypeError, ValueError, RuntimeError, AttributeError) as exc:

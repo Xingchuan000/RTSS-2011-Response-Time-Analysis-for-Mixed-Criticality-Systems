@@ -12,7 +12,8 @@ from .effect_compiler import (
 from .model_bounds import P0ModelBounds
 from .state_relation import p0_state_relation_schema_hash, p0_smt_relation_fields
 from .p0_case_manifest import require_case
-from .transition_cases import TransitionCaseProof, prove_smt2_case
+from .p0_case_manifest import case_kind, COMPOSITE_CASE
+from .transition_cases import TransitionCaseProof, prove_smt2_case, derive_parameterized_case_contract
 from formal_toolchain.core.artifact import obligation_certificate
 
 
@@ -166,7 +167,9 @@ def _compile_source_guard(row: Mapping[str, Any]) -> str:
 def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
                                            bridge_context_hash: str,
                                            bounds: P0ModelBounds,
-                                           runtime_config: Any | None = None) -> dict[str, Any]:
+                                           runtime_config: Any | None = None,
+                                           batch_decomposition_certificates: Mapping[str, Mapping[str, Any]] | None = None,
+                                           defer_composites: bool = False) -> dict[str, Any]:
     if branch_map.get("status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "BRANCH_MAP_REQUIRED"}
     if not isinstance(bridge_context_hash, str) or len(bridge_context_hash) != 64:
@@ -180,8 +183,13 @@ def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
     static_guard_bindings_hash = sha256_object(static_guard_bindings)
     static_effect_bindings_hash = sha256_object(static_effect_bindings)
     proofs: list[TransitionCaseProof] = []
+    batch_decomposition_certificates = batch_decomposition_certificates or {}
     for row in rows:
         try:
+            if case_kind(row.get("case_id")) == COMPOSITE_CASE and defer_composites:
+                continue
+            if case_kind(row.get("case_id")) == COMPOSITE_CASE and not batch_decomposition_certificates:
+                raise ValueError("COMPOSITE_HANDLER_DECOMPOSITION_REQUIRED")
             if not isinstance(row.get("guard_ir"), list) or not row.get("effect_ir"):
                 raise ValueError("REAL_GUARD_EFFECT_IR_REQUIRED")
             if row.get("guard") != row.get("guard_ir"):
@@ -258,6 +266,13 @@ def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
                 and "(= c_ready_empty 1)" in template.precondition
                 and "(= next_event_time queue_min_time)" in template.precondition
             )
+            parameterized_contract = derive_parameterized_case_contract(
+                case_id=row["case_id"], effect_ir=row["effect_ir"],
+                compiled_effect=compiled_effect, concrete_delta=concrete_delta,
+                queue_relation_hash=row["queue_relation_hash"],
+                expected_queue_relation_hash=sha256_object(row.get("queue_relation", [])),
+                batch_decomposition_certificate=batch_decomposition_certificates.get(row["path_id"]),
+            )
             proof = TransitionCaseProof(**{**proof.to_dict(),
                 "source_branch_id": row["path_id"],
                 "precondition_formula": source_precondition,
@@ -280,6 +295,7 @@ def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
                 "compiled_guard_hashes": compiled_guard.consumed_guard_hashes,
                 "consumed_effect_hashes": compiled_effect.consumed_effect_hashes,
                 "non_state_effect_hashes": compiled_effect.non_state_effect_hashes,
+                **parameterized_contract.to_dict(),
             })
             proofs.append(proof)
         except (KeyError, TypeError, ValueError) as exc:
@@ -289,7 +305,7 @@ def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
                                       require_all_p0_cases=True)
     status = "PASS" if coverage["status"] == "PASS" else ("UNRESOLVED" if coverage["unresolved_cases"] else "FAIL")
     proof_certificates = [obligation_certificate(
-        obligation_id="P0_TRANSITION_CASE", status="PASS" if proof.z3_proof_result == "PASS" else "UNRESOLVED",
+        obligation_id="P0_TRANSITION_CASE", status="PASS" if proof.z3_proof_result == "PASS" and proof.parameterized_contract_status == "PASS" else "UNRESOLVED",
         context_hash=bridge_context_hash,
         inputs={"case_id": proof.case_id, "path_id": proof.path_id,
                 "source_hash": proof.bound_source_hash, "template_hash": proof.case_template_hash,
@@ -303,7 +319,7 @@ def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
                 "static_effect_bindings_hash": static_effect_bindings_hash,
                 "queue_relation_hash": proof.queue_relation_hash},
         witness=proof.to_dict(), checker_id=__name__, checker_version="phase-k-v2",
-        failure=None if proof.z3_proof_result == "PASS" else {"code": "Z3_CASE_UNRESOLVED"})
+        failure=None if proof.z3_proof_result == "PASS" and proof.parameterized_contract_status == "PASS" else {"code": proof.parameterized_contract_failure or "PARAMETERIZED_CONTRACT_UNRESOLVED"})
         for proof in proofs]
     return {"status": status, "proofs": [proof.to_dict() for proof in proofs],
             "proof_certificates": proof_certificates, "coverage": coverage,

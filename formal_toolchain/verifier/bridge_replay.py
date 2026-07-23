@@ -49,9 +49,43 @@ def replay_all_transition_cases(inputs: BridgeReplayInputs) -> dict[str, Any]:
     from formal_toolchain.bridge.model_bounds import derive_p0_model_bounds
     from formal_toolchain.bridge.transition_compiler import compile_and_prove_all_transition_cases
     bounds = derive_p0_model_bounds(inputs.reference_taskset)
+    # Composite arrival cases depend on the finite-fold certificate.  Replay
+    # primitives first, build that certificate from the fresh primitive
+    # certificates, then compile the composite cases with the bound receipt.
     compiled = compile_and_prove_all_transition_cases(
         branch_map, bridge_context_hash=inputs.bridge_context_hash, bounds=bounds,
-        runtime_config=inputs.runtime_config)
+        runtime_config=inputs.runtime_config, defer_composites=True)
+    if not compiled.get("proof_certificates"):
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED",
+                "code": "FRESH_PRIMITIVE_REPLAY_FAILED", "witness": compiled}
+    from formal_toolchain.bridge.handler_decomposition import build_arrival_batch_decomposition_certificate
+    primitive_certificates = [
+        item for item in compiled.get("proof_certificates", [])
+        if item.get("inputs", {}).get("case_id") in {
+            "PRIMARY_LO_RELEASE", "DEGRADED_LO_RELEASE", "HI_RELEASE",
+        }
+    ]
+    arrival_decomposition = build_arrival_batch_decomposition_certificate(
+        source_root=inputs.source_root,
+        branch_map=branch_map,
+        transition_case_certificates=primitive_certificates,
+        context_hash=inputs.bridge_context_hash,
+    )
+    if arrival_decomposition.get("status") != "PASS":
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED",
+                "code": "FRESH_ARRIVAL_FOLD_REPLAY_FAILED",
+                "witness": arrival_decomposition}
+    batch_decomposition_certificates = {
+        path["path_id"]: dict(arrival_decomposition)
+        for path in branch_map.get("paths", [])
+        if path.get("case_id") in {
+            "ARRIVAL_BATCH_NO_SWITCH", "ARRIVAL_BATCH_SWITCH_S0",
+        }
+    }
+    compiled = compile_and_prove_all_transition_cases(
+        branch_map, bridge_context_hash=inputs.bridge_context_hash, bounds=bounds,
+        runtime_config=inputs.runtime_config,
+        batch_decomposition_certificates=batch_decomposition_certificates)
     if compiled.get("status") != "PASS":
         return {"status": compiled.get("status", "UNRESOLVED"), "route": "UNRESOLVED",
                 "code": "FRESH_TRANSITION_REPLAY_FAILED", "witness": compiled}
@@ -60,19 +94,35 @@ def replay_all_transition_cases(inputs: BridgeReplayInputs) -> dict[str, Any]:
         row = proof.to_dict() if hasattr(proof, "to_dict") else dict(proof)
         results.append({"case_id": row.get("case_id"), "source_branch_id": row.get("source_branch_id"),
                         "formula_hash": sha256_object({key: row.get(key) for key in (
-                            "precondition_formula", "concrete_delta", "projected_reference_delta", "preservation_formula")}),
+                            "precondition_formula", "concrete_delta", "projected_reference_delta", "relation_preservation_formula")}),
                         "effect_ir_hash": next((item.get("effect_ir_hash") for item in branch_map.get("paths", [])
                                                  if item.get("path_id") == row.get("source_branch_id")), None),
                         "concrete_feasibility": row.get("concrete_feasibility"),
                         "reference_totality": row.get("reference_totality"),
                         "relation_preservation": row.get("relation_preservation"),
-                        "z3_proof_result": row.get("z3_proof_result")})
+                        "z3_proof_result": row.get("z3_proof_result"),
+                        "parameterized_contract_status": row.get("parameterized_contract_status"),
+                        "parameterized_contract_hash": sha256_object({key: row.get(key) for key in (
+                            "parameterized_relation_schema_hash", "local_footprint_hash", "map_update_kind",
+                            "modified_components", "semantic_effect_kinds", "evidence_hashes",
+                            "created_key_fresh_proved", "released_ledger_contract_proved",
+                            "terminal_ledger_contract_proved", "miss_ledger_contract_proved",
+                            "unaffected_job_frame_proved", "effective_frontier_contract_proved",
+                            "batch_decomposition_receipt_hash")})})
     if any(row.get("z3_proof_result") != "PASS" for row in results):
         return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "FRESH_Z3_CASE_NOT_PASS", "cases": results}
+    from formal_toolchain.bridge.handler_decomposition import build_handler_decomposition_certificate
+    decomposition = build_handler_decomposition_certificate(
+        inputs.source_root, context_hash=inputs.bridge_context_hash,
+        transition_case_certificates=compiled.get("proof_certificates", []))
+    if decomposition.get("status") != "PASS" or decomposition.get("schema_version") != "handler_decomposition_v3_math_fixed":
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "FRESH_HANDLER_DECOMPOSITION_FAILED", "handler_decomposition": decomposition}
     return {"status": "PASS", "route": None, "code": None,
             "source_manifest_hash": inputs.source_manifest_hash,
             "branch_map_hash": sha256_object(branch_map), "cases": results,
-            "case_count": len(results), "solver": {"name": "z3", "timeout_ms": 30000}}
+            "case_count": len(results), "solver": {"name": "z3", "timeout_ms": 30000},
+            "handler_decomposition": decomposition,
+            "handler_decomposition_hash": decomposition.get("artifact_hash")}
 
 
 def compare_candidate_replay(candidate: Mapping[str, Any], replay: Mapping[str, Any]) -> dict[str, Any]:
@@ -116,7 +166,7 @@ def compare_candidate_replay(candidate: Mapping[str, Any], replay: Mapping[str, 
         # fresh replay 与 candidate 使用同一组四项证明公式字段计算摘要，
         # 从而验证 candidate 没有只复制 case ID 而替换实际证明内容。
         claimed_formula_hash = sha256_object({key: claimed_witness.get(key) for key in (
-            "precondition_formula", "concrete_delta", "projected_reference_delta", "preservation_formula")})
+            "precondition_formula", "concrete_delta", "projected_reference_delta", "relation_preservation_formula")})
         declared_formula_hash = claimed_inputs.get("formula_hash", claimed_row.get("formula_hash", claimed_formula_hash))
         declared_effect_ir_hash = claimed_inputs.get("effect_ir_hash", claimed_witness.get("effect_ir_hash"))
         if declared_formula_hash != fresh_row.get("formula_hash"):
@@ -125,4 +175,18 @@ def compare_candidate_replay(candidate: Mapping[str, Any], replay: Mapping[str, 
         if declared_effect_ir_hash != fresh_row.get("effect_ir_hash"):
             return {"status": "FAIL", "code": "BRIDGE_REPLAY_EFFECT_IR_HASH_MISMATCH", "case_id": case_id,
                     "claimed": declared_effect_ir_hash, "fresh": fresh_row.get("effect_ir_hash")}
+        for field in ("parameterized_contract_status",):
+            if claimed_witness.get(field) != fresh_row.get(field):
+                return {"status": "FAIL", "code": "BRIDGE_REPLAY_PARAMETERIZED_CONTRACT_MISMATCH", "case_id": case_id}
+        claimed_contract_hash = claimed_inputs.get("parameterized_contract_hash")
+        if claimed_contract_hash is None:
+            claimed_contract_hash = sha256_object({key: claimed_witness.get(key) for key in (
+                "parameterized_relation_schema_hash", "local_footprint_hash", "map_update_kind",
+                "modified_components", "semantic_effect_kinds", "evidence_hashes",
+                "created_key_fresh_proved", "released_ledger_contract_proved",
+                "terminal_ledger_contract_proved", "miss_ledger_contract_proved",
+                "unaffected_job_frame_proved", "effective_frontier_contract_proved",
+                "batch_decomposition_receipt_hash")})
+        if claimed_contract_hash != fresh_row.get("parameterized_contract_hash"):
+            return {"status": "FAIL", "code": "BRIDGE_REPLAY_PARAMETERIZED_CONTRACT_MISMATCH", "case_id": case_id}
     return {"status": "PASS", "case_count": len(fresh)}

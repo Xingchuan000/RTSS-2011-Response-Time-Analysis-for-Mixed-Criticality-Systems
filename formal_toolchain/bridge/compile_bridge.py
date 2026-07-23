@@ -18,7 +18,7 @@ from .p0_case_manifest import p0_case_manifest_hash
 from .p0_case_manifest import require_case
 from .prefix_extension import build_parameterized_prefix_extension_certificate
 from .bad_prefix import build_hi_bad_prefix_reflection_certificate
-from .prefix_refinement import closed_prefix_certificate
+from .prefix_refinement import closed_prefix_certificate, build_bounded_closed_prefix_regression
 from .transition_cases import TransitionCaseProof
 from .transition_compiler import compile_and_prove_all_transition_cases
 from .state_relation import P0ConcreteState, P0ReferenceState
@@ -57,10 +57,34 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
     n6_receipt = n6_backend.verify(n6_proof_path, theorem=n6_theorem) if n6_backend else {"status": "FAIL"}
     if n6_receipt.get("status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "N6_THEOREM_BACKEND_FAILED", "backend": n6_receipt}
+    n5_theorem = load_verified_theory_statement(theory_dir, "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT")
+    n5_backend = TCB_BACKENDS.get(n5_theorem.get("proof_object", {}).get("backend"))
+    n5_proof_receipt = n5_backend.verify(theory_dir / n5_theorem["proof_object"]["path"], theorem=n5_theorem) if n5_backend else {"status": "FAIL"}
+    if n5_proof_receipt.get("status") != "PASS":
+        return {"status": "UNRESOLVED", "failure": "PARAMETERIZED_PREFIX_INDUCTION_BACKEND_FAILED", "backend": n5_proof_receipt}
     bounds = model_bounds or derive_p0_model_bounds(reference_taskset)
     compiled = compile_and_prove_all_transition_cases(
         branch_map, bridge_context_hash=bridge_context_hash, bounds=bounds,
-        runtime_config=runtime_config)
+        runtime_config=runtime_config, defer_composites=True)
+    if compiled.get("status") != "PASS":
+        # Composite arrival cases are intentionally deferred until their
+        # primitive release proofs have been produced.
+        from .handler_decomposition import build_arrival_batch_decomposition_certificate
+        primitive_certificates = [item for item in compiled.get("proof_certificates", [])
+                                  if item.get("inputs", {}).get("case_id") in {"PRIMARY_LO_RELEASE", "DEGRADED_LO_RELEASE", "HI_RELEASE"}]
+        arrival_decomposition = build_arrival_batch_decomposition_certificate(
+            source_root=source_root, branch_map=branch_map,
+            transition_case_certificates=primitive_certificates,
+            context_hash=bridge_context_hash)
+        if arrival_decomposition.get("status") != "PASS":
+            return {"status": "UNRESOLVED", "failure": "ARRIVAL_BATCH_DECOMPOSITION_REQUIRED", "transition_cases": compiled, "arrival_decomposition": arrival_decomposition}
+        batch_decomposition_certificates = {path["path_id"]: dict(arrival_decomposition)
+                                             for path in branch_map.get("paths", [])
+                                             if path.get("case_id") in {"ARRIVAL_BATCH_NO_SWITCH", "ARRIVAL_BATCH_SWITCH_S0"}}
+        compiled = compile_and_prove_all_transition_cases(
+            branch_map, bridge_context_hash=bridge_context_hash, bounds=bounds,
+            runtime_config=runtime_config,
+            batch_decomposition_certificates=batch_decomposition_certificates)
     if compiled.get("status") != "PASS":
         return {"status": compiled.get("status", "UNRESOLVED"), "failure": "TRANSITION_COMPILATION_INCOMPLETE",
                 "transition_cases": compiled}
@@ -100,6 +124,10 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
         return {"status": "UNRESOLVED", "failure": "COMPOSITE_HANDLER_DECOMPOSITION_REQUIRED",
                 "transition_cases": compiled, "controller_binding": controller_binding,
                 "decomposition": decomposition}
+    if decomposition.get("schema_version") != "handler_decomposition_v3_math_fixed":
+        return {"status": "UNRESOLVED", "failure": "HANDLER_DECOMPOSITION_MATH_FIXED_REQUIRED", "transition_cases": compiled, "decomposition": decomposition}
+    if decomposition.get("backend_receipt_status") != "PASS":
+        return {"status": "UNRESOLVED", "failure": "HANDLER_COMPOSITION_BACKEND_FAILED", "transition_cases": compiled, "decomposition": decomposition}
     if (not isinstance(upstream_certificates, Mapping)
             or any(upstream_certificates.get(name, {}).get("obligation_status") != "PASS"
                    for name in ("SCHEDULER_MODEL", "MODE_SEMANTICS_CONFORMANCE",
@@ -107,7 +135,7 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
                                 "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION", "DEADLINE_OBSERVATION",
                                 "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE", "CONTROLLER_POSTCLOSURE",
                                 "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION", "CERTIFIED_ENVELOPE",
-                                "REFERENCE_TASKSET"))
+                                "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY"))
             or not isinstance(release_mapping_certificate, Mapping)
             or release_mapping_certificate.get("obligation_id") != "RELEASE_FIXED_REMOVAL_MAPPING"
             or release_mapping_certificate.get("obligation_status") != "PASS"):
@@ -143,7 +171,11 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
     # PreClosed(0) certificate。
     prereqs["base_relation"] = base_relation
     proofs = [TransitionCaseProof(**row) for row in compiled["proofs"]]
-    closed = closed_prefix_certificate(
+    reference_taskset_certificate = upstream_certificates.get("REFERENCE_TASKSET", {})
+    reference_transition_identity_certificate = upstream_certificates.get(
+        "REFERENCE_TRANSITION_SYSTEM_IDENTITY", {}
+    )
+    bounded_regression = build_bounded_closed_prefix_regression(
         base_relation_certificate=prereqs["base_relation"],
         cases=proofs, model_bounds=bounds,
         source_hash=str(branch_map["source_hash"]), bridge_context_hash=bridge_context_hash,
@@ -151,11 +183,22 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
         theorem_hash=_theory("CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT")["statement_hash"],
         upstream_certificates=upstream_certificates,
         release_mapping_certificate=release_mapping_certificate,
-        transition_case_certificates=compiled["proof_certificates"])
+        transition_case_certificates=compiled["proof_certificates"],
+        reference_transition_identity_certificate=reference_transition_identity_certificate)
+    closed = closed_prefix_certificate(
+        base_relation_certificate=prereqs["base_relation"],
+        transition_case_certificates=compiled["proof_certificates"],
+        branch_map=branch_map, prerequisite_certificates=prereqs,
+        upstream_certificates=upstream_certificates,
+        release_mapping_certificate=release_mapping_certificate,
+        reference_transition_identity_certificate=reference_transition_identity_certificate,
+        theorem_statement=n5_theorem, theorem_proof_receipt=n5_proof_receipt,
+        bridge_context_hash=bridge_context_hash, source_hash=str(branch_map["source_hash"]),
+        bounded_regression=bounded_regression,
+        handler_decomposition_certificate=decomposition)
     if closed.get("obligation_status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "CLOSED_PREFIX_INCOMPLETE", "transition_cases": compiled,
                 "prerequisites": prereqs, "closed_prefix": closed}
-    reference_taskset_certificate = upstream_certificates.get("REFERENCE_TASKSET", {})
     extension = build_parameterized_prefix_extension_certificate(
         reference_taskset=reference_taskset, reference_taskset_certificate=reference_taskset_certificate,
         time_progress_certificate=prereqs["positive_time"],

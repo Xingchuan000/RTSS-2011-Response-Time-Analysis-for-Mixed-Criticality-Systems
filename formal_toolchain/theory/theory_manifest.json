@@ -1,17 +1,16 @@
 {
-  "schema_version": "theory_manifest_v4",
+  "assurance_levels": [
+    "PUBLISHED_THEORY_TCB",
+    "MACHINE_CHECKED_PROJECT_LEMMA"
+  ],
   "library_version": "p0-theory-r7",
-  "proof_schema_version": "common_certificate_v2",
-  "registry_fingerprint": "b6cf91b00fb09c22abc0c266c28814c37570bf6122857582044d1a521844cca8",
   "proof_schema_compatible": [
     "proof_request_v2",
     "common_certificate_v1",
     "common_certificate_v2"
   ],
-  "assurance_levels": [
-    "PUBLISHED_THEORY_TCB",
-    "MACHINE_CHECKED_PROJECT_LEMMA"
-  ],
+  "proof_schema_version": "common_certificate_v2",
+  "registry_fingerprint": "2d4fb76e5ee56976fc768b26ce0238ae7686a0d4a531084fd1b552af7c63d65a",
   "required_theorems": [
     "FPPS_LO_RTA_POSTFIXED_SUFFICIENCY",
     "C_AMC_SEM_ALL_TASK_SCHEDULABILITY_SUFFICIENCY",
@@ -24,6 +23,10 @@
     "REFERENCE_HI_SUBSET_SAFETY_FROM_TASKSET_SCHEDULABILITY",
     "FINITE_BAD_PREFIX_CONTRADICTION",
     "FINAL_DEPLOYED_HI_SAFETY_COMPOSITION",
-    "REFERENCE_MODEL_CONFORMANCE_DISCHARGE"
-  ]
+    "REFERENCE_MODEL_CONFORMANCE_DISCHARGE",
+    "ARRIVAL_BATCH_LOOP_DECOMPOSITION",
+    "EVENT_HANDLER_MICROSTEP_DECOMPOSITION",
+    "FINITE_RELEASE_FOLD_PRESERVES_RELATION"
+  ],
+  "schema_version": "theory_manifest_v4"
 }

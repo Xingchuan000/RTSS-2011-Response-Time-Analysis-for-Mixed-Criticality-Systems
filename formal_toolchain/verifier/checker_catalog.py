@@ -462,6 +462,8 @@ def _candidate_status_checker(obligation_id: str) -> Checker:
         return _verify_reference_semantics_contract
     if obligation_id == "ALL_TASK_REFERENCE_RTA_ARITHMETIC":
         return _verify_all_task_reference_rta_obligation
+    if obligation_id == "REFERENCE_TRANSITION_SYSTEM_IDENTITY":
+        return _verify_reference_transition_system_identity
     if obligation_id == "REFERENCE_MODEL_CONFORMANCE":
         return _verify_reference_model_conformance
     if obligation_id == "PROTECTED_HI_RTA_ARITHMETIC":
@@ -954,6 +956,41 @@ def _verify_all_task_reference_rta_obligation(*, raw_inputs=None, candidate_evid
             }
     return _finish("ALL_TASK_REFERENCE_RTA_ARITHMETIC", result,
                    expected_context_hash=expected_context_hash, candidate_evidence=candidate_evidence)
+
+
+def _verify_reference_transition_system_identity(*, raw_inputs=None, candidate_evidence=None,
+                                                  expected_context_hash=None, fresh_reference=None,
+                                                  verified_predecessors=None, **kwargs):
+    raw, error = _raw_inputs({"raw_inputs": raw_inputs, "evidence": kwargs.get("evidence"),
+                              "candidate_evidence": candidate_evidence},
+                             "REFERENCE_TRANSITION_SYSTEM_IDENTITY")
+    if error:
+        return error
+    try:
+        if fresh_reference is None:
+            return _raw_inputs_result("REFERENCE_TRANSITION_SYSTEM_IDENTITY", code="FRESH_REFERENCE_TASKSET_MISSING")
+        from formal_toolchain.reference.transition_identity import build_reference_transition_identity_certificate
+        from formal_toolchain.bridge.model_bounds import derive_p0_model_bounds
+        reference_dict = getattr(fresh_reference, "to_dict", lambda: fresh_reference)()
+        model_bounds = derive_p0_model_bounds(reference_dict)
+        predecessors = verified_predecessors if isinstance(verified_predecessors, Mapping) else {}
+        contexts = getattr(raw, "contexts", {})
+        result = build_reference_transition_identity_certificate(
+            reference_taskset=reference_dict,
+            model_bounds=model_bounds,
+            verified_predecessors=predecessors,
+            contexts=contexts,
+            context_hash=expected_context_hash or str(contexts.get("reference_context", {}).get("hash", "")),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        result = {
+            "status": "FAIL",
+            "route": "MODEL_CONFORMANCE_FAILED",
+            "failure": {"code": "REFERENCE_TRANSITION_SYSTEM_IDENTITY_FAILED", "detail": str(exc)},
+        }
+    return _finish("REFERENCE_TRANSITION_SYSTEM_IDENTITY", result,
+                   expected_context_hash=expected_context_hash,
+                   candidate_evidence=candidate_evidence)
 
 
 def _verify_reference_model_conformance(*, raw_inputs=None, candidate_evidence=None,
@@ -1482,6 +1519,7 @@ VERIFIER_CHECKERS: dict[str, Checker] = {
     "INHERITED_HI_DOMINATION": verify_inherited_hi_domination,
     "ALL_TASK_REFERENCE_RTA_ARITHMETIC": _verify_all_task_reference_rta_obligation,
     "REFERENCE_SEMANTICS_CONTRACT": _verify_reference_semantics_contract,
+    "REFERENCE_TRANSITION_SYSTEM_IDENTITY": _candidate_status_checker("REFERENCE_TRANSITION_SYSTEM_IDENTITY"),
     "REFERENCE_MODEL_CONFORMANCE": lambda **kwargs: _verify_reference_model_conformance(**kwargs),
     "BUDGET_ENVELOPE_TO_REFERENCE_DOMINATION": lambda **kwargs: verify_budget_to_reference_domination(**kwargs),
     "REFERENCE_TASKSET_SCHEDULABLE": lambda **kwargs: verify_reference_taskset_schedulable(**kwargs),

@@ -11,10 +11,16 @@ from formal_toolchain.theory.backends.reference_prefix_extension import (
     ReferencePrefixExtensionBackend,
 )
 from formal_toolchain.theory.backends.finite_hi_bad_prefix import FiniteHIBadPrefixBackend
+from formal_toolchain.theory.backends.casewise_prefix_induction import CasewisePrefixInductionBackend
+from formal_toolchain.theory.backends.handler_decomposition import HandlerDecompositionBackend
 
 TCB_BACKENDS: dict[str, Any] = {
     "reference-prefix-extension-z3-v3": ReferencePrefixExtensionBackend(),
     "finite-hi-bad-prefix-z3-v1": FiniteHIBadPrefixBackend(),
+    "casewise-prefix-induction-v1": CasewisePrefixInductionBackend(),
+    "arrival-batch-decomposition-v1": HandlerDecompositionBackend("arrival-batch-decomposition-v1", ("ast_cfg", "finite_fold", "child_cases", "alternative_partition")),
+    "event-handler-decomposition-v1": HandlerDecompositionBackend("event-handler-decomposition-v1", ("ast_cfg", "branch_partition", "sequence_composition")),
+    "finite-release-fold-v1": HandlerDecompositionBackend("finite-release-fold-v1", ("base_case", "empty_sequence_case", "head_step", "tail_induction", "fresh_extension_composition", "old_domain_frame_composition", "ledger_frame_composition")),
 }
 
 MACHINE_PREMISES: dict[str, tuple[str, ...]] = {

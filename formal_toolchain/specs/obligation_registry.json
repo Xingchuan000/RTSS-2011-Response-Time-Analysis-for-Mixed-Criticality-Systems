@@ -1836,7 +1836,8 @@
         "TIME_PROGRESS",
         "WINDOW_MODE_NORMALIZATION",
         "RELEASE_FIXED_REMOVAL_MAPPING",
-        "CERTIFIED_ENVELOPE"
+        "CERTIFIED_ENVELOPE",
+        "REFERENCE_TRANSITION_SYSTEM_IDENTITY"
       ],
       "artifact": "artifacts/closed_prefix_refinement.json",
       "artifact_schema": "certificates/common_certificate.schema.json",
@@ -1850,7 +1851,36 @@
       "context_layer": "bridge_context",
       "producer": {
         "kind": "compiler_candidate",
-        "id": "closed_prefix_refinement_v1"
+        "id": "closed_prefix_refinement_v2"
+      },
+      "authorization_for": []
+    },
+    {
+      "id": "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
+      "profile": "P0",
+      "kind": "obligation",
+      "activation": "active",
+      "required": true,
+      "depends_on": [
+        "REFERENCE_TASKSET",
+        "REFERENCE_SEMANTICS_CONTRACT",
+        "REFERENCE_PREFIX_EXTENSION",
+        "EFFECTIVE_EVENT_ORDER",
+        "EFFECTIVE_EVENT_FRONTIER_RELATION"
+      ],
+      "artifact": "artifacts/REFERENCE_TRANSITION_SYSTEM_IDENTITY.json",
+      "artifact_schema": "certificates/common_certificate.schema.json",
+      "summary_path": "obligations.REFERENCE_TRANSITION_SYSTEM_IDENTITY",
+      "failure_route": "MODEL_CONFORMANCE_FAILED",
+      "gates_claims": [
+        "DEPLOYED_HI_SAFETY"
+      ],
+      "status_evidence_rule": "certificate_status",
+      "proof_role": "mathematical_lemma",
+      "context_layer": "reference_context",
+      "producer": {
+        "kind": "fresh_verifier",
+        "id": "reference_transition_identity_v2"
       },
       "authorization_for": []
     },
@@ -2167,6 +2197,7 @@
       "required": true,
       "depends_on": [
         "REFERENCE_TASKSET",
+        "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
         "REFERENCE_SEMANTICS_CONTRACT",
         "SCHEDULER_MODEL",
         "STRICT_PRIORITY_ORDER",

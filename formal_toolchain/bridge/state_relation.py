@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.bridge.model_bounds import P0ModelBounds
+from formal_toolchain.adapters.formal_runtime_snapshot import ReleasedJobRecord, TerminalRecord, MissRecord
 
 
 N6_JOB_RELATION_SUFFIXES = (
@@ -19,6 +20,23 @@ N6_JOB_RELATION_SUFFIXES = (
     "service",
     "hi_miss",
 )
+
+PARAMETERIZED_RELATION_COMPONENTS = (
+    "time_equal", "mode_equal", "released_job_map_total",
+    "released_job_map_injective", "released_metadata_equal",
+    "active_domain_mapped", "active_service_equal",
+    "remaining_to_removal_equal", "ready_order_mapped",
+    "running_key_mapped", "terminal_ledger_mapped", "miss_ledger_mapped",
+    "miss_ledger_exactly_mapped", "future_budget_ghost_equal",
+    "effective_event_frontier_isomorphic",
+)
+
+
+def parameterized_state_relation_schema_hash() -> str:
+    return sha256_object({
+        "schema_version": "parameterized_closed_prefix_relation_v1",
+        "components": PARAMETERIZED_RELATION_COMPONENTS,
+    })
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,11 +86,123 @@ class RelationResult:
     pass_: bool
     checks: dict[str, bool]
 
+    def __bool__(self) -> bool:
+        return self.pass_
+
 
 def frontiers_isomorphic(concrete_frontier, reference_frontier) -> bool:
     c_keys = tuple(e.logical_key() if hasattr(e, "logical_key") else e for e in concrete_frontier)
     r_keys = tuple(e.logical_key() if hasattr(e, "logical_key") else e for e in reference_frontier)
     return c_keys == r_keys
+
+
+def _mapped(job_map: Mapping, key):
+    return job_map.get(key)
+
+
+def normalize_terminal_kind(kind: str) -> str:
+    if kind in {"PRIMARY_LO_BUDGET_CANCELLATION", "ACTIVE_LO_DROPPED_ON_MODE_SWITCH", "LO_RELEASE_DROPPED_IN_HI_MODE", "COMPLETED"}:
+        return "LOGICAL_REMOVAL"
+    raise ValueError(f"UNKNOWN_TERMINAL_KIND:{kind}")
+
+
+def _released_records(state):
+    records = tuple(getattr(state, "released_ledger", ()))
+    if records:
+        return {record.job_key: record for record in records}
+    # Compatibility for old synthetic P0 states; authoritative runtime states
+    # always carry the formal snapshot ledger.
+    return {
+        job.job_key: job for job in getattr(state, "active_jobs", ())
+    }
+
+
+def relation_holds(
+    concrete: "P0ConcreteState",
+    reference: "P0ReferenceState",
+    job_map: Mapping[tuple[str, int], tuple[str, int]] | None = None,
+) -> RelationResult:
+    """Authoritative finite-map relation for arbitrary released-job domains.
+
+    ``job_map`` is the proof witness.  The optional compatibility default is
+    deliberately derived from equal keys and is not used by N5 builders.
+    """
+    c_released = _released_records(concrete)
+    r_released = _released_records(reference)
+    if job_map is None:
+        job_map = {key: key for key in c_released}
+    mapped_values = tuple(job_map.values())
+    c_active = {job.job_key: job for job in getattr(concrete, "active_jobs", ())
+                if getattr(job, "state", "active") not in {"finished", "dropped"}}
+    r_active = {job.job_key: job for job in getattr(reference, "active_jobs", ())
+                if getattr(job, "state", "active") not in {"finished", "dropped"}}
+    r_active_ref = getattr(reference, "jobs", {})
+    if not r_active and r_active_ref:
+        r_active = dict(r_active_ref)
+
+    def rec_value(record, name, fallback=None):
+        aliases = {"absolute_deadline": "deadline", "release_class": "release_category"}
+        return getattr(record, name, getattr(record, aliases.get(name, ""), fallback))
+
+    released_metadata = True
+    for ckey, crecord in c_released.items():
+        rkey = job_map.get(ckey)
+        rrecord = r_released.get(rkey)
+        if rrecord is None:
+            released_metadata = False
+            break
+        fields = ("release_time", "absolute_deadline", "criticality",
+                  "priority_index", "release_class", "release_budget",
+                  "removal_demand")
+        released_metadata &= all(rec_value(crecord, f) == rec_value(rrecord, f) for f in fields)
+
+    active_domain = set(job_map.get(k) for k in c_active) == set(r_active)
+    active_service = all(
+        job_map.get(k) in r_active and cjob.service == r_active[job_map[k]].service
+        for k, cjob in c_active.items()
+    )
+    remaining = all(
+        job_map.get(k) in r_active and remaining_remove(cjob) == remaining_remove(r_active[job_map[k]])
+        for k, cjob in c_active.items()
+    )
+    c_terminal = {r.job_key: r for r in getattr(concrete, "terminal_ledger", ())}
+    r_terminal = {r.job_key: r for r in getattr(reference, "terminal_ledger", ())}
+    if not r_terminal:
+        r_terminal = dict(getattr(reference, "terminal", {}))
+    mapped_terminal_keys = {job_map.get(k) for k in c_terminal}
+    terminal_ok = None not in mapped_terminal_keys and mapped_terminal_keys == set(r_terminal)
+    if terminal_ok:
+        terminal_ok = all(
+            normalize_terminal_kind(c_terminal[ck].terminal_kind) == normalize_terminal_kind(r_terminal[rk].terminal_kind)
+            and c_terminal[ck].terminal_time == r_terminal[rk].terminal_time
+            and c_terminal[ck].executed_service == r_terminal[rk].executed_service
+            for ck, rk in job_map.items() if ck in c_terminal and rk in r_terminal
+        )
+    c_misses = {(r.job_key, r.miss_time, r.absolute_deadline, r.executed_at_miss)
+                for r in getattr(concrete, "miss_ledger", ())}
+    c_records = tuple(getattr(concrete, "miss_ledger", ()))
+    r_records = tuple(getattr(reference, "miss_ledger", ())) or tuple(getattr(reference, "misses", ()))
+    mapped_concrete_misses = {(job_map.get(r.job_key), r.miss_time, r.absolute_deadline, r.executed_at_miss, r.criticality, r.release_time, r.priority_index) for r in c_records}
+    reference_misses = {(r.job_key, r.miss_time, r.absolute_deadline, r.executed_at_miss, r.criticality, r.release_time, r.priority_index) for r in r_records}
+    miss_ok = None not in {item[0] for item in mapped_concrete_misses} and mapped_concrete_misses == reference_misses
+    checks = {
+        "time_equal": concrete.time == reference.time,
+        "mode_equal": concrete.mode == reference.mode,
+        "released_job_map_total": set(job_map) == set(c_released) and set(mapped_values) == set(r_released),
+        "released_job_map_injective": len(mapped_values) == len(set(mapped_values)) and len(job_map) == len(c_released),
+        "released_metadata_equal": released_metadata,
+        "active_domain_mapped": active_domain,
+        "active_service_equal": active_service,
+        "remaining_to_removal_equal": remaining,
+        "ready_order_mapped": tuple(job_map.get(k) for k in getattr(concrete, "ready_jobs", ())) == tuple(getattr(reference, "ready_jobs", getattr(reference, "ready_order", ()))),
+        "running_key_mapped": job_map.get(getattr(concrete, "running_job", None)) == getattr(reference, "running_job", getattr(reference, "running", None)),
+        "terminal_ledger_mapped": terminal_ok,
+        "miss_ledger_mapped": miss_ok,
+        "miss_ledger_exactly_mapped": miss_ok,
+        "future_budget_ghost_equal": concrete.global_future_budgets == getattr(reference, "global_future_budgets", concrete.global_future_budgets),
+        "effective_event_frontier_isomorphic": frontiers_isomorphic(getattr(concrete, "effective_event_frontier", ()), getattr(reference, "effective_event_frontier", getattr(reference, "frontier", ()))),
+    }
+    return RelationResult(pass_=all(checks.values()), checks=checks)
 
 
 def state_relation(concrete, reference, mapping: FiniteJobMap) -> RelationResult:
@@ -155,6 +285,10 @@ class P0ConcreteState:
     queue_projection: tuple[tuple[Any, ...], ...] = ()
     next_controller_boundary: int | None = None
     next_timing_boundary: int | None = None
+    released_ledger: tuple[ReleasedJobRecord, ...] = ()
+    terminal_ledger: tuple[TerminalRecord, ...] = ()
+    miss_ledger: tuple[MissRecord, ...] = ()
+    effective_event_frontier: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +303,10 @@ class P0ReferenceState:
     queue_projection: tuple[tuple[Any, ...], ...] = ()
     next_controller_boundary: int | None = None
     next_timing_boundary: int | None = None
+    released_ledger: tuple[ReleasedJobRecord, ...] = ()
+    terminal_ledger: tuple[TerminalRecord, ...] = ()
+    miss_ledger: tuple[MissRecord, ...] = ()
+    effective_event_frontier: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,104 +395,33 @@ def p0_state_relation_schema_hash(bounds: P0ModelBounds) -> str:
                            "python_relation_fields": p0_state_relation_schema()})
 
 
-def build_n6_relation_interface(
-    bounds: P0ModelBounds,
-) -> dict[str, Any]:
-    all_fields = set(
-        p0_smt_relation_fields(bounds)
-    )
+def bounded_smt_relation_fields(bounds: P0ModelBounds) -> tuple[str, ...]:
+    return p0_smt_relation_fields(bounds)
 
-    required_fields = (
-        n6_relation_projection_fields(bounds)
-    )
 
-    missing = sorted(
-        set(required_fields) - all_fields
-    )
+def bounded_smt_relation_schema_hash(bounds: P0ModelBounds) -> str:
+    return p0_state_relation_schema_hash(bounds)
 
-    if missing:
-        raise ValueError(
-            "N6_RELATION_FIELDS_MISSING:"
-            + ",".join(missing)
-        )
 
+def build_n6_relation_interface(*_bounded_diagnostic_args: Any) -> dict[str, Any]:
     return {
-        "schema_version":
-            "n6_closed_prefix_relation_interface_v1",
-
-        "scope":
-            "EVERY_REACHABLE_CLOSED_PREFIX",
-
-        "relation_direction":
-            "CONCRETE_FIELD_EQUALS_REFERENCE_FIELD",
-
-        "state_relation_schema_hash":
-            p0_state_relation_schema_hash(bounds),
-
-        "model_bounds_hash":
-            bounds.fingerprint,
-
-        "job_slots":
-            bounds.job_slots,
-
-        "required_fields":
-            list(required_fields),
-
-        "required_job_suffixes":
-            list(N6_JOB_RELATION_SUFFIXES),
+        "schema_version": "n6_closed_prefix_relation_interface_v2",
+        "scope": "EVERY_REACHABLE_CLOSED_PREFIX",
+        "map_domain": "ALL_RELEASED_JOB_KEYS_IN_PREFIX",
+        "required_quantities": ["mapped_job_key", "criticality", "release_time", "absolute_deadline", "removal_demand", "service_at_deadline", "terminal_status", "miss_time", "miss_ledger_membership"],
+        "parameterized_relation_schema_hash": parameterized_state_relation_schema_hash(),
     }
 
 
-def validate_n6_relation_interface(
-    interface: Mapping[str, Any],
-) -> None:
-    if (
-        interface.get("schema_version")
-        != "n6_closed_prefix_relation_interface_v1"
-    ):
-        raise ValueError(
-            "N6_RELATION_INTERFACE_SCHEMA_INVALID"
-        )
-
-    if (
-        interface.get("scope")
-        != "EVERY_REACHABLE_CLOSED_PREFIX"
-    ):
-        raise ValueError(
-            "N6_RELATION_INTERFACE_SCOPE_INVALID"
-        )
-
-    if (
-        interface.get("relation_direction")
-        != "CONCRETE_FIELD_EQUALS_REFERENCE_FIELD"
-    ):
-        raise ValueError(
-            "N6_RELATION_INTERFACE_DIRECTION_INVALID"
-        )
-
-    job_slots = interface.get("job_slots")
-
-    if (
-        isinstance(job_slots, bool)
-        or not isinstance(job_slots, int)
-        or job_slots <= 0
-    ):
-        raise ValueError(
-            "N6_RELATION_INTERFACE_JOB_SLOTS_INVALID"
-        )
-
-    expected = ["time", "miss"]
-
-    for slot in range(job_slots):
-        expected.extend(
-            f"job_{slot}_{suffix}"
-            for suffix in N6_JOB_RELATION_SUFFIXES
-        )
-
-    if interface.get("required_fields") != expected:
-        raise ValueError(
-            "N6_RELATION_INTERFACE_FIELDS_INVALID"
-        )
+def validate_n6_relation_interface(interface: Mapping[str, Any]) -> None:
+    if interface.get("schema_version") != "n6_closed_prefix_relation_interface_v2":
+        raise ValueError("N6_RELATION_INTERFACE_SCHEMA_INVALID")
+    if interface.get("scope") != "EVERY_REACHABLE_CLOSED_PREFIX":
+        raise ValueError("N6_RELATION_INTERFACE_SCOPE_INVALID")
+    if "job_slots" in interface or any(str(k).startswith("job_") for k in interface.get("required_fields", ())):
+        raise ValueError("N6_RELATION_INTERFACE_LEGACY_SLOT_BASED")
+    if interface.get("parameterized_relation_schema_hash") != parameterized_state_relation_schema_hash():
+        raise ValueError("N6_RELATION_INTERFACE_RELATION_SCHEMA_INVALID")
 
 
 def p0_state_from_runtime_engine(engine: Any) -> P0ConcreteState:
@@ -407,51 +474,22 @@ def p0_state_from_runtime_engine(engine: Any) -> P0ConcreteState:
     queue_projection = tuple(sorted(queue_projection))
     next_boundary = min((int(item[0]) for item in queue_projection
                          if int(item[0]) >= int(engine.current_time)), default=None)
+    from formal_toolchain.adapters.formal_runtime_snapshot import build_formal_runtime_snapshot
+    snapshot = build_formal_runtime_snapshot(engine, engine.priority_map)
     return P0ConcreteState(time=int(engine.current_time), mode=str(engine.state.mode.name),
                            active_jobs=tuple(jobs), ready_jobs=active_keys,
                            running_job=running_key, global_future_budgets=budgets,
                            miss_flags=tuple((str(m.task), int(m.release_index)) for m in engine.result.deadline_misses),
                            queue_projection=queue_projection,
                            next_controller_boundary=None,
-                           next_timing_boundary=next_boundary)
+                           next_timing_boundary=next_boundary,
+                           released_ledger=snapshot.released_ledger,
+                           terminal_ledger=snapshot.terminal_ledger,
+                           miss_ledger=snapshot.miss_ledger,
+                           effective_event_frontier=snapshot.effective_event_frontier)
 
 
 def remaining_remove(job: P0Job) -> int:
     """按 release-fixed demand 计算关系中的 concrete remaining。"""
     demand = job.removal_demand if job.removal_demand is not None else job.demand
     return max(0, demand - job.service)
-
-
-def relation_holds(concrete: P0ConcreteState, reference: P0ReferenceState) -> bool:
-    """检查 K03 的 job、时序字段、miss 与 future-budget state 关系。
-
-    budget-update 的事件标签会被投影掉，但它产生的未来预算状态仍是
-    timing-relevant state，不能在关系检查中静默忽略。
-    """
-    if (concrete.time, concrete.mode, concrete.ready_jobs, concrete.running_job,
-            concrete.global_future_budgets, concrete.miss_flags,
-            concrete.queue_projection, concrete.next_controller_boundary,
-            concrete.next_timing_boundary) != (
-            reference.time, reference.mode, reference.ready_jobs,
-            reference.running_job, reference.global_future_budgets, reference.miss_flags,
-            reference.queue_projection, reference.next_controller_boundary,
-            reference.next_timing_boundary):
-        return False
-    c_jobs = {job.job_key: job for job in concrete.active_jobs}
-    r_jobs = {job.job_key: job for job in reference.active_jobs}
-    if set(c_jobs) != set(r_jobs):
-        return False
-    for key, c_job in c_jobs.items():
-        r_job = r_jobs[key]
-        if (c_job.priority_index, c_job.release_time, c_job.deadline,
-                c_job.release_category, c_job.release_budget, c_job.mode, c_job.state,
-                c_job.hi_completed, c_job.hi_deadline_miss, c_job.criticality,
-                c_job.released_mode, c_job.is_degraded, c_job.raw_actual_cost) != (
-                r_job.priority_index, r_job.release_time, r_job.deadline,
-                r_job.release_category, r_job.release_budget, r_job.mode, r_job.state,
-                r_job.hi_completed, r_job.hi_deadline_miss, r_job.criticality,
-                r_job.released_mode, r_job.is_degraded, r_job.raw_actual_cost):
-            return False
-        if c_job.remaining != r_job.remaining:
-            return False
-    return True

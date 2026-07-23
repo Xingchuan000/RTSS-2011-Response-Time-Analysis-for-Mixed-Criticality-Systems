@@ -157,6 +157,22 @@ def build_hi_bad_prefix_reflection_certificate(
         validate_verified_predecessor(
             predecessors=verified_predecessors, obligation_id=obligation_id, contexts=contexts,
         )
+    closed_witness = (
+        verified_predecessors[
+            "CLOSED_PREFIX_REFINEMENT"
+        ].get("witness", {})
+    )
+
+    if (
+        closed_witness.get(
+            "reference_transition_system_id"
+        )
+        != "FIXED_EXECUTABLE_REFERENCE_P0_V3"
+    ):
+        raise ValueError(
+            "N6_REFERENCE_TRANSITION_SYSTEM_ID_MISMATCH"
+        )
+
     relation_interface = (
         _closed_prefix_relation_interface(
             verified_predecessors[
@@ -236,6 +252,8 @@ def build_hi_bad_prefix_reflection_certificate(
         "first_miss_set": first_miss,
         "closed_prefix_relation_interface":
             dict(relation_interface),
+        "reference_transition_system_id":
+            "FIXED_EXECUTABLE_REFERENCE_P0_V3",
         "proof_decomposition": {
             "pointwise_relation_source":
                 "CLOSED_PREFIX_REFINEMENT",

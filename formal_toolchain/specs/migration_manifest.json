@@ -1,11 +1,11 @@
 {
-  "schema_version": "migration_manifest_v3",
-  "registry_schema_version": "obligation_registry_v5",
   "breaking_change_requires": [
     "schema_version",
     "migration_id"
   ],
   "migration_id": "r8-reference-model-conformance-machine-premises",
-  "registry_fingerprint": "b07e34e266c28810ef71e58d761591f1a225b58f6c45acd137ec8d39b8ea85fe",
-  "previous_registry_fingerprint": "68364fceb38338cf03b153c31b94cd88a444c21e1a8f7b311771345fece61711"
+  "previous_registry_fingerprint": "68364fceb38338cf03b153c31b94cd88a444c21e1a8f7b311771345fece61711",
+  "registry_fingerprint": "2d4fb76e5ee56976fc768b26ce0238ae7686a0d4a531084fd1b552af7c63d65a",
+  "registry_schema_version": "obligation_registry_v5",
+  "schema_version": "migration_manifest_v3"
 }

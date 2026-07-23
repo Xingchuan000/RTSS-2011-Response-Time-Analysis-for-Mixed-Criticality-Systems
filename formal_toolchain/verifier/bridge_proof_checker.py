@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from formal_toolchain.core.artifact import verify_obligation_certificate
 from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.bridge.transition_cases import REQUIRED_P0_CASE_IDS
+from formal_toolchain.bridge.state_relation import parameterized_state_relation_schema_hash, validate_n6_relation_interface
 
 
 _THEORY_HASHES = json.loads(
@@ -56,6 +57,9 @@ def _verify_cases(candidate: Mapping[str, Any], obligation_id: str,
     if not isinstance(witness, Mapping):
         return {"status": "UNRESOLVED", "route": "UNRESOLVED",
                 "code": "BRIDGE_WITNESS_MISSING"}
+    if obligation_id == "CLOSED_PREFIX_REFINEMENT":
+        return _verify_universal_closed_prefix(candidate, bridge_context_hash, raw_inputs=raw_inputs,
+                                               reference_taskset=reference_taskset, certified_envelope=certified_envelope)
     if witness.get("hi_bad_prefix_reflected") is True:
         return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
                 "code": "LEGACY_BOOLEAN_BAD_PREFIX_WITNESS_REJECTED"}
@@ -182,22 +186,75 @@ def _verify_cases(candidate: Mapping[str, Any], obligation_id: str,
     if obligation_id == "CLOSED_PREFIX_REFINEMENT":
         fresh_witness["case_count"] = len(case_ids or [])
         fresh_witness["fresh_replay"] = replay
-        candidate_witness = candidate.get("witness", {})
-        if isinstance(candidate_witness, Mapping):
-            if "pointwise_closed_prefix_relation" in candidate_witness:
-                fresh_witness["pointwise_closed_prefix_relation"] = (
-                    candidate_witness["pointwise_closed_prefix_relation"]
-                )
-            if isinstance(
-                candidate_witness.get("n6_relation_interface"),
-                Mapping,
-            ):
-                fresh_witness["n6_relation_interface"] = dict(
-                    candidate_witness["n6_relation_interface"]
-                )
     else:
         fresh_witness["reused_closed_prefix_case_replay"] = True
     return {"status": "PASS", "route": None, "code": None, "witness": fresh_witness}
+
+
+def _verify_universal_closed_prefix(candidate: Mapping[str, Any], bridge_context_hash: str,
+                                    *, raw_inputs: Any = None,
+                                    reference_taskset: Mapping[str, Any] | None = None,
+                                    certified_envelope: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    witness = candidate.get("witness", {})
+    if candidate.get("schema_version") != "closed_prefix_refinement_v2" or witness.get("schema_version") != "closed_prefix_refinement_v2":
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "CLOSED_PREFIX_LEGACY_SCHEMA_REJECTED"}
+    if "model_bounds_hash" in candidate or "job_slots" in witness:
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "CLOSED_PREFIX_SLOT_BASED_WITNESS_REJECTED"}
+    if witness.get("parameterized_relation_schema_hash") != parameterized_state_relation_schema_hash():
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "CLOSED_PREFIX_PARAMETERIZED_SCHEMA_MISSING"}
+    if witness.get("pointwise_closed_prefix_relation") is not True:
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "CLOSED_PREFIX_UNIVERSAL_PROOF_MISSING"}
+    receipt_hash = witness.get("theorem_proof_receipt_hash")
+    if not _is_hash(receipt_hash):
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "CLOSED_PREFIX_UNIVERSAL_PROOF_MISSING"}
+    try:
+        from formal_toolchain.theory.loader import TCB_BACKENDS, load_verified_theory_statement
+        theory_dir = Path(__file__).resolve().parents[1] / "theory"
+        theorem = load_verified_theory_statement(theory_dir, "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT")
+        backend = TCB_BACKENDS[theorem["proof_object"]["backend"]]
+        receipt = backend.verify(theory_dir / theorem["proof_object"]["path"], theorem=theorem)
+    except (KeyError, ValueError, FileNotFoundError) as exc:
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "CLOSED_PREFIX_THEOREM_BACKEND_FAILED", "failure": str(exc)}
+    if receipt.get("status") != "PASS" or receipt.get("receipt_hash") != receipt_hash:
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "CLOSED_PREFIX_THEOREM_RECEIPT_MISMATCH"}
+    try:
+        validate_n6_relation_interface(witness.get("n6_relation_interface", {}))
+    except ValueError as exc:
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": str(exc)}
+    cases = witness.get("transition_case_certificates")
+    if not isinstance(cases, list) or len(cases) != len(REQUIRED_P0_CASE_IDS):
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "CLOSED_PREFIX_CASE_CONTRACTS_MISSING"}
+    from formal_toolchain.bridge.transition_cases import EXPECTED_MAP_UPDATE_KIND
+    required = ("created_key_fresh_proved", "released_ledger_contract_proved", "terminal_ledger_contract_proved", "miss_ledger_contract_proved", "unaffected_job_frame_proved", "effective_frontier_contract_proved")
+    for item in cases:
+        row = item.get("witness", {}) if isinstance(item, Mapping) else {}
+        expected_kind = EXPECTED_MAP_UPDATE_KIND.get(row.get("case_id"), "UNCHANGED")
+        checks = tuple(k for k in required if k != "created_key_fresh_proved" or expected_kind == "EXTEND_WITH_FRESH_RELEASE")
+        if (row.get("parameterized_contract_status") != "PASS"
+                or row.get("parameterized_relation_schema_hash") != parameterized_state_relation_schema_hash()
+                or any(row.get(k) is not True for k in checks)
+                or not isinstance(row.get("evidence_hashes"), (list, tuple)) or not row.get("evidence_hashes")
+                or not isinstance(row.get("local_footprint_hash"), str) or len(row.get("local_footprint_hash")) != 64
+                or row.get("map_update_kind") != expected_kind
+                or (expected_kind == "EXTEND_WITH_FINITE_RELEASE_BATCH" and len(row.get("batch_decomposition_receipt_hash", "")) != 64)):
+            return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "CLOSED_PREFIX_CASE_CONTRACTS_MISSING"}
+    if raw_inputs is None or not isinstance(reference_taskset, Mapping):
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "BRIDGE_REPLAY_INPUTS_MISSING"}
+    # The transition replay remains a fresh source check; it cannot be replaced
+    # by candidate's universal boolean or by a bounded model hash.
+    from formal_toolchain.verifier.bridge_replay import BridgeReplayInputs, replay_all_transition_cases, compare_candidate_replay
+    case_map_path = Path(raw_inputs.workspace) / "request" / "inputs" / "formal_inputs" / "phase_k_case_map.json"
+    if not case_map_path.is_file():
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "PHASE_K_CASE_MAP_MISSING"}
+    replay = replay_all_transition_cases(BridgeReplayInputs(source_root=Path(raw_inputs.source_root), source_manifest_hash=str(raw_inputs.source_manifest.get("semantic_hash", "")), case_manifest=json.loads(case_map_path.read_text(encoding="utf-8")), reference_taskset=reference_taskset, certified_envelope=dict(certified_envelope or {}), semantic_context_hash=str(raw_inputs.contexts["semantic_context"]["hash"]), reference_context_hash=str(raw_inputs.contexts["reference_context"]["hash"]), bridge_context_hash=bridge_context_hash, runtime_config=raw_inputs.target.runtime_config))
+    if replay.get("status") != "PASS":
+        return replay
+    if witness.get("handler_decomposition_hash") != replay.get("handler_decomposition_hash"):
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "HANDLER_DECOMPOSITION_REPLAY_MISMATCH"}
+    consistency = compare_candidate_replay(candidate, replay)
+    if consistency.get("status") != "PASS":
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "BRIDGE_CANDIDATE_REPLAY_MISMATCH", "witness": consistency}
+    return {"status": "PASS", "route": None, "code": None, "witness": {"fresh_theorem_receipt_hash": receipt["receipt_hash"], "fresh_source_replay_hash": sha256_object(replay)}}
 
 
 def verify_closed_prefix_proof_object(*, candidate: Mapping[str, Any],

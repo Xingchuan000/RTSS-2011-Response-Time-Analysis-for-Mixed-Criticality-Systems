@@ -28,6 +28,7 @@ EXPECTED_CONFORMANCE_CONDITIONS: dict[str, dict[str, Any]] = {
     "COMPLETE_INTEGER_SWITCH_DOMAINS": {"source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["CASE1_INTEGER_DOMAIN", "CASE2_INTEGER_DOMAIN", "ZERO_RELATIVE_START"]},
     "DISCRETE_TICK_EMBEDDING": {"source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["DISCRETE_TICK_EMBEDDING"]},
     "REFERENCE_PREFIX_EXTENSIBILITY": {"source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["REFERENCE_TASKSET", "TIME_PROGRESS", "EFFECTIVE_EVENT_ORDER", "REFERENCE_PREFIX_EXTENSION"]},
+    "REFERENCE_TRANSITION_SYSTEM_IDENTITY": {"source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["REFERENCE_TRANSITION_SYSTEM_IDENTITY"]},
 }
 
 
@@ -36,7 +37,7 @@ def _validate_contract(contract: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("REFERENCE_CONFORMANCE_CONTRACT_VERSION_INVALID")
     conditions = contract.get("conditions")
     if not isinstance(conditions, list) or len(conditions) != len(EXPECTED_CONFORMANCE_CONDITIONS):
-        raise ValueError("REFERENCE_CONFORMANCE_CONTRACT_MUST_HAVE_14_CONDITIONS")
+        raise ValueError(f"REFERENCE_CONFORMANCE_CONTRACT_MUST_HAVE_{len(EXPECTED_CONFORMANCE_CONDITIONS)}_CONDITIONS")
     actual = {}
     for condition in conditions:
         if not isinstance(condition, Mapping):
@@ -138,7 +139,7 @@ def build_reference_model_conformance_certificate(
 ) -> dict[str, Any]:
     if not isinstance(verified_predecessors, Mapping):
         raise ValueError("REFERENCE_CONFORMANCE_PREDECESSORS_REQUIRED")
-    contract = _validate_contract(conformance_contract)
+    contract =     _validate_contract(conformance_contract)
     contract_hash = contract["contract_hash"]
     conditions = contract["conditions"]
     condition_ids = [row["condition_id"] for row in conditions]
@@ -162,6 +163,26 @@ def build_reference_model_conformance_certificate(
         raise ValueError("REFERENCE_TASKSET_FINGERPRINT_MISMATCH")
 
     direct_checks = _taskset_direct_checks(reference_taskset)
+    identity_witness = (
+        verified_predecessors[
+            "REFERENCE_TRANSITION_SYSTEM_IDENTITY"
+        ].get("witness", {})
+    )
+    direct_checks["REFERENCE_TRANSITION_SYSTEM_IDENTITY"] = {
+        "pass": (
+            identity_witness.get("transition_system_id")
+            == "FIXED_EXECUTABLE_REFERENCE_P0_V3"
+            and identity_witness.get("contract", {}).get("status") == "PASS"
+            and identity_witness.get("identity_scope", {}).get("event_frontier")
+            == "EFFECTIVE_EVENT_FRONTIER_RELATION"
+        ),
+        "fields": [
+            "transition_system_id",
+            "contract",
+            "identity_scope",
+            "source_bindings",
+        ],
+    }
     rows = []
     all_passed = True
     for condition in conditions:
@@ -204,7 +225,7 @@ def build_reference_model_conformance_certificate(
         "imported_theorem_statement_hash": imported_theorem.get("statement_hash"),
         "condition_ids": condition_ids,
         "condition_results": rows,
-        "all_conditions_covered": len(rows) == 14 and all(row["condition_id"] in condition_ids for row in rows),
+        "all_conditions_covered": len(rows) == len(condition_ids) and all(row["condition_id"] in condition_ids for row in rows),
         "exact_predecessor_set": sorted(required_predecessors),
         "reference_taskset_fingerprint": taskset_fingerprint,
         "reference_context_hash": context_hash,

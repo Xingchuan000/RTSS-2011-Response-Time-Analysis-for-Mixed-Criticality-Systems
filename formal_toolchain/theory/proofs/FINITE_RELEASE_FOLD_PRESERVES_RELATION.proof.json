@@ -1,0 +1,21 @@
+{
+  "clauses": {
+    "base_case": "PASS",
+    "empty_sequence_case": "PASS",
+    "fresh_extension_composition": "PASS",
+    "head_step": "PASS",
+    "ledger_frame_composition": "PASS",
+    "old_domain_frame_composition": "PASS",
+    "tail_induction": "PASS"
+  },
+  "source_bindings": {
+    "amc_py/event_runtime.py": "4eb79121ffbc589f90c142575e258510a43371383af106f11b7ef8e1f69f6a8e",
+    "formal_toolchain/bridge/handler_decomposition.py": "de70e4db6bb24b1855be117c03df2dff955bdfc72ecb5ce75435bad072e2fbcd",
+    "formal_toolchain/bridge/state_relation.py": "3ad93e8570f82c2e1e52b3baa854429a8e72be283806781f37e95ffaee359994",
+    "formal_toolchain/bridge/transition_cases.py": "8750a80587645e50cadff69397f7d7c8bfc6972651c5b4c4f77e561ef84fb1a6",
+    "formal_toolchain/bridge/transition_compiler.py": "01cfe1285605fc8dd5cea961f0eefd1f333dc52bcb40c16cb6e04997c6d260b8"
+  },
+  "theorem_assumption_hash": "d44554a8c6cb4e1a4cb02662ddc5b7a86d35e7b29eae715c0a0972250004e76d",
+  "theorem_id": "FINITE_RELEASE_FOLD_PRESERVES_RELATION",
+  "theorem_statement_hash": "f8b51e24f2692a1094bb67a381a7d9c3cff0c31241e7a5b9ae815ac028759504"
+}

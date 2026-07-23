@@ -1,0 +1,22 @@
+{
+  "assumption_hash": "d44554a8c6cb4e1a4cb02662ddc5b7a86d35e7b29eae715c0a0972250004e76d",
+  "assumptions": [
+    "finite_release_sequence",
+    "primitive_release_case_partition",
+    "fresh_job_key_extension",
+    "old_domain_frame_rule",
+    "ledger_frame_rule"
+  ],
+  "assurance_level": "MACHINE_CHECKED_PROJECT_LEMMA",
+  "conclusion": "forall finite release sequences, the sequential release fold preserves the parameterized relation",
+  "exact_statement": "A finite fold of primitive release transitions preserves the parameterized relation and extends the finite job map by fresh keys.",
+  "proof_object": {
+    "backend": "finite-release-fold-v1",
+    "path": "proofs/FINITE_RELEASE_FOLD_PRESERVES_RELATION.proof.json",
+    "sha256": "62bb99a1b0dd0edd7da13543a080d29527143d7a23bef1ef12df7c92e18f707b"
+  },
+  "source_reference": "Phase K parameterized arrival release fold",
+  "statement_hash": "f8b51e24f2692a1094bb67a381a7d9c3cff0c31241e7a5b9ae815ac028759504",
+  "theorem_id": "FINITE_RELEASE_FOLD_PRESERVES_RELATION",
+  "version": "p0-theory-r1"
+}

@@ -26,14 +26,17 @@
     }
   },
   "source_bindings": {
-    "formal_toolchain/adapters/formal_runtime_snapshot.py": "b9062d883fe98ea3a04fed956eff70d4c84ded8bf3b91839f246e403c89eccff",
-    "formal_toolchain/bridge/bad_prefix.py": "a13f9d84bedc645f6cf2013ba202ddbe95ca3c7e79bf93e86ad865b43905d5cc",
-    "formal_toolchain/bridge/case_templates.py": "37368363af66d3a5542054924b4e077ea9adbd7e8c1acfd27fbec50b7d0308b3",
+    "formal_toolchain/adapters/formal_runtime_snapshot.py": "df697a371ac17eb9339da936dfed3f644f315db366c293cb39936da7bdbef5a5",
+    "formal_toolchain/bridge/bad_prefix.py": "d8ca59cff9ccbf8328c32585b82f6ca7b995817ee4e28cf0f7f71e7afd907e47",
+    "formal_toolchain/bridge/case_templates.py": "15fe04241be303e3d3ea1ad7f66e88085bebece866a6dc4b195599a3850ae60f",
     "formal_toolchain/bridge/event_projection.py": "122786952059a08fb36f6bc0d0bb3c3cc847b65303d7e37bd6cfd1e539a2fb1e",
-    "formal_toolchain/bridge/prefix_refinement.py": "7da07ee338e374cdcd51add90aef64a68b7d43932f1a01a9b99e116a933cc262",
-    "formal_toolchain/bridge/state_relation.py": "b699fd251a5e2b3e065923eeaa58b5c1c8396001973949f626cdbac6dd1b5fa0",
-    "formal_toolchain/bridge/transition_cases.py": "50751a730e8e7fd030bcea237cb1488ba9bfcd222545e060e2709b764941bf34",
-    "formal_toolchain/reference/executable_semantics.py": "074d57da5d9b8701645c2d403b567a651a3ca394d35b5cb80a8732dc8e438eff"
+    "formal_toolchain/bridge/prefix_refinement.py": "710df9629a6cab366527a099207622255e117272ac2571c99e770ef94b0cb045",
+    "formal_toolchain/bridge/state_relation.py": "3ad93e8570f82c2e1e52b3baa854429a8e72be283806781f37e95ffaee359994",
+    "formal_toolchain/bridge/transition_cases.py": "8750a80587645e50cadff69397f7d7c8bfc6972651c5b4c4f77e561ef84fb1a6",
+    "formal_toolchain/reference/executable_semantics.py": "0f1d043bd6227b3c964921cf325a97acdb20e4356c4ce5e1fd828244632169f4",
+    "formal_toolchain/reference/p0_projection.py": "0a6886a3e1579c015c606acb837c0da67e13bb91c85b7b1861d109919515a701",
+    "formal_toolchain/reference/p0_transition_contract.py": "3e1463c16d3b7edb8c708c11d516ff393f911a68945f96c250f0237822d8b392",
+    "formal_toolchain/reference/transition_identity.py": "e2a9ae71a2ebd0d03d312a4c6e854ae6c0e3f3a5461c12abe94d3b7d2ef414eb"
   },
   "theorem_assumption_hash": "2d3440a1b918dad591777af83002e4b1fd83ba2b815fdaa6b92a29e41755473c",
   "theorem_id": "FINITE_HI_BAD_PREFIX_REFLECTION",

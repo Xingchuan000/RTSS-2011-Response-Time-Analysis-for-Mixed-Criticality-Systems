@@ -335,12 +335,23 @@ def build_formal_runtime_snapshot(
 
     raw_misses = []
     for m in tuple(getattr(engine.result, "deadline_misses", ())):
-        pidx = _priority_index(m, priority_map) if hasattr(m, "task") else 0
+        key = (str(m.task), int(m.release_index))
+        job = getattr(engine, "jobs_by_key", {}).get(key)
+        if job is None:
+            raise ValueError(f"MISS_JOB_PROVENANCE_MISSING:{key}")
+        pidx = _priority_index(job, priority_map)
+        criticality = str(getattr(getattr(job.task, "criticality", job.task), "value", getattr(job.task, "criticality", "LO")))
+        release_class = _release_class_from_provenance(
+            job, switch_trigger_keys=trigger_keys, switch_times=switch_times,
+            cancellations=cancellations, losses=losses)
+        release_time = int(job.release_time)
+        deadline = int(getattr(m, "absolute_deadline", job.absolute_deadline))
         raw_misses.append(MissRecord(
-            job_key=(str(m.task), int(m.release_index)),
+            job_key=key, criticality=criticality, release_time=release_time,
+            release_class=release_class,
             mode_at_miss=str(getattr(m, "mode_at_miss", mode)),
-            miss_time=int(getattr(m, "absolute_deadline", getattr(m, "time", 0))),
-            absolute_deadline=int(getattr(m, "absolute_deadline", getattr(m, "time", 0))),
+            miss_time=deadline,
+            absolute_deadline=deadline,
             executed_at_miss=int(getattr(m, "executed_at_miss", getattr(m, "executed_time", 0))),
             priority_index=pidx,
         ))

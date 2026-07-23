@@ -25,6 +25,12 @@ N6_SOURCE_FILES = {
         ROOT / "adapters" / "formal_runtime_snapshot.py",
     "formal_toolchain/reference/executable_semantics.py":
         ROOT / "reference" / "executable_semantics.py",
+    "formal_toolchain/reference/p0_transition_contract.py":
+        ROOT / "reference" / "p0_transition_contract.py",
+    "formal_toolchain/reference/p0_projection.py":
+        ROOT / "reference" / "p0_projection.py",
+    "formal_toolchain/reference/transition_identity.py":
+        ROOT / "reference" / "transition_identity.py",
 }
 
 

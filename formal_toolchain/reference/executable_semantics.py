@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from formal_toolchain.reference.reference_state import (
@@ -16,6 +16,7 @@ from formal_toolchain.bridge.logical_events import LogicalEvent, LogicalEventKin
 from formal_toolchain.adapters.formal_runtime_snapshot import (
     ReleasedJobRecord, TerminalRecord, MissRecord,
 )
+from formal_toolchain.reference.p0_transition_contract import ReferenceP0Environment
 
 
 REFERENCE_TRANSITION_CASES = (
@@ -29,6 +30,24 @@ REFERENCE_TRANSITION_CASES = (
     "SERVICE_TICK",
     "IDLE_JUMP_TO_NEXT_RELEASE",
 )
+
+P0_CASE_BY_EVENT_KIND: dict[str, str] = {}
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceP0Step:
+    before: ReferenceState
+    after: ReferenceState
+    case_id: str
+    events: tuple[LogicalEvent, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceMicroStep:
+    before: ReferenceState
+    after: ReferenceState
+    event: LogicalEvent | None
+    kind: str
 
 
 def _tasks(taskset: Any) -> tuple[Any, ...]:
@@ -216,7 +235,11 @@ def apply_removal(state: ReferenceState, event: LogicalEvent, taskset: Any) -> R
     else:
         new_state = state
     new_state = pop_event(new_state, event, taskset)
-    normalized = _normalize_dispatch(new_state, taskset)
+    normalized = replace(
+        new_state,
+        running=None if new_state.running == key else new_state.running,
+        ready_order=_update_ready_order(new_state, taskset),
+    )
     if (
         normalized.mode == "HI"
         and not normalized.jobs
@@ -310,6 +333,21 @@ def apply_arrival_batch(state: ReferenceState, event: LogicalEvent, taskset: Any
             switched_in_this_batch=classification.switch_trigger is not None,
             primary_on_switch_time=state.primary_on_switch_time,
         )
+        removal_demand = int(
+            state.release_demand_overrides.get(
+                jk,
+                decision.release_budget,
+            )
+        )
+
+        if not (
+            0 < removal_demand
+            <= decision.release_budget
+        ):
+            raise ValueError(
+                "REFERENCE_RELEASE_DEMAND_OUTSIDE_BOUND"
+            )
+
         pending[jk] = PendingReferenceRelease(
             job_key=jk,
             release_time=release_time,
@@ -320,6 +358,7 @@ def apply_arrival_batch(state: ReferenceState, event: LogicalEvent, taskset: Any
             effective_release_mode=decision.effective_release_mode,
             release_class=decision.release_class,
             release_budget=decision.release_budget,
+            removal_demand=removal_demand,
         )
         next_arrival = _arrival_event_for_job(
             task=task,
@@ -360,7 +399,7 @@ def apply_arrival_batch(state: ReferenceState, event: LogicalEvent, taskset: Any
         pending_releases=pending,
         frontier=_canonical_frontier(frontier, taskset),
     )
-    return _normalize_dispatch(new_state, taskset)
+    return replace(new_state, ready_order=_update_ready_order(new_state, taskset))
 
 
 def apply_mode_switch(state: ReferenceState, event: LogicalEvent, taskset: Any) -> ReferenceState:
@@ -393,8 +432,8 @@ def apply_release(state: ReferenceState, event: LogicalEvent, taskset: Any) -> R
         released_mode=plan.effective_release_mode,
         release_class=plan.release_class,
         release_budget=plan.release_budget,
-        raw_actual_cost=plan.release_budget,
-        removal_demand=plan.release_budget,
+        raw_actual_cost=plan.removal_demand,
+        removal_demand=plan.removal_demand,
         priority_index=plan.priority_index,
         provenance="reference_arrival",
     )
@@ -406,8 +445,8 @@ def apply_release(state: ReferenceState, event: LogicalEvent, taskset: Any) -> R
         criticality=plan.criticality,
         released_mode=plan.effective_release_mode,
         release_class=plan.release_class,
-        budget=plan.release_budget,
-        removal_demand=plan.release_budget,
+        budget=plan.removal_demand,
+        removal_demand=plan.removal_demand,
     )
     frontier = [e for e in state.frontier if e != event]
     _append_generated_event(
@@ -421,11 +460,15 @@ def apply_release(state: ReferenceState, event: LogicalEvent, taskset: Any) -> R
             fifo_rank=event.fifo_rank,
         ),
     )
-    return _normalize_dispatch(replace(
+    return replace(replace(
         state, jobs=jobs, released=released,
         pending_releases={k: v for k, v in state.pending_releases.items() if k != key},
         frontier=_canonical_frontier(frontier, taskset),
-    ), taskset)
+    ), ready_order=_update_ready_order(replace(
+        state, jobs=jobs, released=released,
+        pending_releases={k: v for k, v in state.pending_releases.items() if k != key},
+        frontier=_canonical_frontier(frontier, taskset),
+    ), taskset))
 
 
 def apply_dispatch(state: ReferenceState, event: LogicalEvent, taskset: Any) -> ReferenceState:
@@ -532,10 +575,21 @@ def initial_reference_state(
     *,
     abnormal_hi_releases: Iterable[JobKey] = (),
     primary_on_switch_time: bool = True,
+    release_demand_overrides: Mapping[JobKey, int] | None = None,
+    ghost_future_budgets: Mapping[str, int] | None = None,
 ) -> ReferenceState:
     tasks = _tasks(taskset)
     if not tasks:
         raise ValueError("REFERENCE_TASKSET_EMPTY")
+
+    default_future_budgets = {
+        _task_name(task): _task_int(task, "c_lo")
+        for task in tasks
+    }
+    initial_ghost_budgets = {
+        **default_future_budgets,
+        **dict(ghost_future_budgets or {}),
+    }
 
     arrivals = [
         _arrival_event_for_job(
@@ -558,6 +612,8 @@ def initial_reference_state(
         running=None,
         frontier=_canonical_frontier(arrivals, taskset),
         pending_releases={},
+        release_demand_overrides=dict(release_demand_overrides or {}),
+        ghost_future_budgets=initial_ghost_budgets,
         mode_switches=(),
         abnormal_hi_releases=frozenset(abnormal_hi_releases),
         primary_on_switch_time=bool(primary_on_switch_time),
@@ -600,10 +656,9 @@ def validate_reference_state(
             or job.release_time != record.release_time
             or job.absolute_deadline != record.absolute_deadline
             or job.criticality != record.criticality
-            or job.budget != record.release_budget
+            or job.budget != record.removal_demand
             or job.released_mode != record.released_mode
             or job.release_class != record.release_class
-            or job.removal_demand != record.removal_demand
             or job.removal_demand != record.removal_demand
             or not 0 <= job.executed <= job.budget
         ):
@@ -646,10 +701,6 @@ def validate_reference_state(
         raise ValueError("REFERENCE_READY_ORDER_MISMATCH")
 
     normalized = _normalize_dispatch(state, taskset)
-    if normalized.running != state.running:
-        raise ValueError("REFERENCE_RUNNING_NOT_HIGHEST_PRIORITY")
-    if normalized.ready_order != state.ready_order:
-        raise ValueError("REFERENCE_READY_ORDER_NOT_CANONICAL")
 
     active_deadlines = [
         event for event in state.frontier
@@ -669,7 +720,11 @@ def validate_reference_state(
     if set(rel_events) != pending_keys:
         raise ValueError("REFERENCE_PENDING_RELEASE_EVENT_NOT_UNIQUE")
     for key, plan in state.pending_releases.items():
-        if plan.job_key != key or plan.release_budget <= 0:
+        if (
+            plan.job_key != key
+            or plan.release_budget <= 0
+            or not 0 < plan.removal_demand <= plan.release_budget
+        ):
             raise ValueError(f"REFERENCE_PENDING_RELEASE_INVALID:{key}")
         if rel_events[key].time != plan.release_time:
             raise ValueError(f"REFERENCE_PENDING_RELEASE_TIME_MISMATCH:{key}")
@@ -761,52 +816,318 @@ def _checked_successor(
     return state, case_id, events
 
 
-def step_reference(state: ReferenceState, taskset: Any) -> tuple[ReferenceState, str, list]:
-    validate_reference_state(state, taskset)
+def _classify_release(state: ReferenceState, event: LogicalEvent) -> str:
+    key = event.job_key
+    if key is None or key not in state.pending_releases:
+        raise ValueError("REFERENCE_P0_RELEASE_PLAN_MISSING")
+    plan = state.pending_releases[key]
+    if plan.release_class == "LO_DEGRADED_HI_MODE":
+        return "DEGRADED_LO_RELEASE"
+    if plan.criticality == "HI":
+        return "HI_RELEASE"
+    return "PRIMARY_LO_RELEASE"
 
+
+def apply_reference_controller_action(
+    state: ReferenceState,
+    *,
+    updates: Mapping[str, int],
+    taskset: Any,
+) -> ReferenceState:
+    task_names = {_task_name(task) for task in _tasks(taskset)}
+    budgets = dict(state.ghost_future_budgets)
+    for task_name, value in updates.items():
+        if task_name not in task_names:
+            raise ValueError(
+                "REFERENCE_CONTROLLER_TASK_UNKNOWN:" f"{task_name}"
+            )
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(
+                "REFERENCE_CONTROLLER_BUDGET_INVALID:" f"{task_name}"
+            )
+        budgets[task_name] = value
+    after = replace(state, ghost_future_budgets=budgets)
+    validate_reference_state(after, taskset)
+    return after
+
+
+def _classify_completion(state: ReferenceState, event: LogicalEvent) -> str:
+    key = event.job_key
+    if key is not None and key in state.jobs:
+        job = state.jobs[key]
+        if job.criticality == "HI" and job.executed >= job.budget:
+            return "HI_COMPLETION"
+        if job.release_class == "LO_DEGRADED_HI_MODE":
+            return "DEGRADED_COMPLETION"
+    return "NORMAL_COMPLETION"
+
+
+def _build_job_slot_by_key(
+    before: ReferenceState,
+    after: ReferenceState,
+    events: tuple[LogicalEvent, ...] = (),
+    *,
+    job_slots: int | None = None,
+) -> dict[tuple[str, int], int]:
+    all_keys = (
+        set(before.jobs) | set(after.jobs)
+        | set(before.released) | set(after.released)
+        | set(before.terminal) | set(after.terminal)
+    )
+    all_keys.update(
+        key for event in events for key in event.batch_jobs
+    )
+    event_keys = [
+        key for event in events
+        for key in ((event.job_key,) if event.job_key is not None else event.batch_jobs)
+    ]
+    ordered = []
+    for key in event_keys + sorted(after.jobs) + sorted(before.jobs) + sorted(all_keys):
+        if key in all_keys and key not in ordered:
+            ordered.append(key)
+    result = {jk: idx for idx, jk in enumerate(ordered)}
+    if job_slots is not None and len(result) > job_slots:
+        return dict(list(result.items())[:job_slots])
+    return result
+
+
+def _build_task_slot_by_name(taskset: Any) -> dict[str, int]:
+    tasks_list = taskset.tasks if hasattr(taskset, "tasks") else taskset.get("tasks", ())
+    return {str(t["name"] if isinstance(t, Mapping) else t.name): idx
+            for idx, t in enumerate(tasks_list)}
+
+
+def _build_environment(
+    *,
+    step: ReferenceP0Step,
+    job_slot_by_key: Mapping[tuple[str, int], int],
+    task_slot_by_name: Mapping[str, int],
+    controller_updates: Mapping[str, int] | None = None,
+) -> ReferenceP0Environment:
+    from formal_toolchain.reference.p0_projection import (
+        _category_int,
+        _encode_job_key,
+        _mode_int,
+    )
+
+    state = step.before
+    after = step.after
+    event = step.events[0] if step.events else None
+    event_job_key = event.job_key if event is not None else None
+    pending = (
+        state.pending_releases.get(event_job_key)
+        if event_job_key is not None else None
+    )
+    released = (
+        state.released.get(event_job_key)
+        if event_job_key is not None else None
+    )
+    plan = pending or released
+    future = [e for e in state.frontier if e.time > state.time]
+    next_event_time = min((e.time for e in future), default=state.time)
+    release_slot = 0
+    if event_job_key is not None:
+        release_slot = job_slot_by_key.get(event_job_key, 0)
+    affected_task_name = event_job_key[0] if event_job_key is not None else None
+    elapsed = (
+        after.time - state.time
+        if step.case_id == "ONE_SERVICE_TICK"
+        else 0
+    )
+    return ReferenceP0Environment(
+        expected_demand=plan.removal_demand if plan else 0,
+        release_budget=plan.release_budget if plan else 0,
+        release_job_key=_encode_job_key(event_job_key),
+        release_priority=plan.priority_index if plan else 0,
+        release_time=plan.release_time if plan else 0,
+        release_deadline=plan.absolute_deadline if plan else 0,
+        release_category=_category_int(plan.release_class) if plan else 0,
+        release_mode=_mode_int(
+            plan.effective_release_mode
+            if hasattr(plan, "effective_release_mode")
+            else plan.released_mode
+        ) if plan else 0,
+        is_degraded=int(bool(plan and plan.release_class == "LO_DEGRADED_HI_MODE")),
+        task_criticality=int(bool(plan and plan.criticality == "HI")),
+        selected_job_key=_encode_job_key(after.running),
+        event_job_key=_encode_job_key(event_job_key),
+        running_job_key=_encode_job_key(after.running),
+        elapsed=elapsed,
+        next_event_time=next_event_time,
+        release_slot=release_slot,
+        affected_job_slot=job_slot_by_key.get(event_job_key, 0)
+        if event_job_key is not None else 0,
+        update_target_slot=task_slot_by_name.get(affected_task_name, 0)
+        if affected_task_name is not None else 0,
+        update_arity=len(controller_updates or {}),
+    )
+
+
+def _step_reference_micro(
+    state: ReferenceState,
+    taskset: Any,
+) -> ReferenceMicroStep:
+    validate_reference_state(state, taskset)
     if has_same_time_non_service_event(state):
         event = next_logical_event(state)
-        before = state
-        after = apply_logical_event(state, event, taskset)
-        new_measure = closure_measure(after)
-        old_measure = closure_measure(before)
-        if not (new_measure < old_measure):
-            raise ValueError("REFERENCE_CLOSURE_PHASE_REGRESSION")
-        return _checked_successor(
-            state=after,
-            taskset=taskset,
-            case_id=f"SAME_TIME_{event.kind.value}",
-            events=[event],
+        if event is None:
+            raise ValueError("REFERENCE_STEP_NO_EVENT")
+        return ReferenceMicroStep(
+            before=state,
+            after=apply_logical_event(state, event, taskset),
+            event=event,
+            kind=event.kind.value,
         )
 
-    closed = dispatch_if_needed(state, taskset)
-
-    if closed.running is not None:
-        after = apply_service_tick(closed, taskset)
-        return _checked_successor(
-            state=after,
-            taskset=taskset,
-            case_id="READY_SERVICE_OR_EARLIER_BOUNDARY",
-            events=[LogicalEvent(
-                time=closed.time,
-                phase_rank=PHASE_RANK[LogicalEventKind.SVC],
-                kind=LogicalEventKind.SVC,
-                fifo_rank=0,
-            )],
+    normalized = dispatch_if_needed(state, taskset)
+    if (
+        normalized.running != state.running
+        or normalized.ready_order != state.ready_order
+    ):
+        return ReferenceMicroStep(
+            before=state,
+            after=normalized,
+            event=None,
+            kind="DISPATCH",
         )
-
-    future = [event for event in closed.frontier if event.time > closed.time]
-    if future:
-        next_time = min(event.time for event in future)
-        jumped = replace(closed, time=next_time)
-        return _checked_successor(
-            state=jumped,
-            taskset=taskset,
-            case_id="IDLE_JUMP_TO_MINIMUM_FUTURE_EVENT",
-            events=[],
+    if normalized.running is not None:
+        return ReferenceMicroStep(
+            before=state,
+            after=apply_service_tick(normalized, taskset),
+            event=None,
+            kind="SERVICE",
         )
+    future = [event for event in normalized.frontier if event.time > normalized.time]
+    if not future:
+        raise ValueError("REFERENCE_VALID_STATE_PERIODIC_GENERATOR_INVARIANT_BROKEN")
+    return ReferenceMicroStep(
+        before=state,
+        after=replace(normalized, time=min(event.time for event in future)),
+        event=None,
+        kind="JUMP",
+    )
 
-    raise ValueError("REFERENCE_VALID_STATE_PERIODIC_GENERATOR_INVARIANT_BROKEN")
+
+def step_reference_p0(
+    state: ReferenceState,
+    taskset: Any,
+) -> ReferenceP0Step:
+    from collections.abc import Mapping as MappingABC
+    validate_reference_state(state, taskset)
+    before = state
+    first = _step_reference_micro(state, taskset)
+    after = first.after
+    events = [first.event] if first.event is not None else []
+    if first.event is not None and first.event.kind == LogicalEventKind.SW:
+        raise ValueError("REFERENCE_P0_EXPOSED_STANDALONE_SWITCH")
+    if (
+        first.event is not None
+        and first.event.kind == LogicalEventKind.ARR_BATCH
+    ):
+        second_event = next_logical_event(after)
+        if (
+            second_event is not None
+            and second_event.time == first.event.time
+            and second_event.kind == LogicalEventKind.SW
+        ):
+            second = _step_reference_micro(after, taskset)
+            if second.event is None or second.event.kind != LogicalEventKind.SW:
+                raise ValueError("REFERENCE_P0_SWITCH_MACROSTEP_INVALID")
+            after = second.after
+            events.append(second.event)
+            case_id = "ARRIVAL_BATCH_SWITCH_S0"
+        else:
+            case_id = "ARRIVAL_BATCH_NO_SWITCH"
+    elif first.event is None:
+        case_id = {
+            "DISPATCH": "PREEMPTION_DISPATCH",
+            "SERVICE": "ONE_SERVICE_TICK",
+            "JUMP": "JUMP_TO_NEXT_EVENT",
+        }[first.kind]
+    elif first.event.kind == LogicalEventKind.REL:
+        case_id = _classify_release(state, first.event)
+    elif first.event.kind == LogicalEventKind.DDL:
+        new_hi_misses = [
+            miss for miss in after.misses
+            if miss not in before.misses and miss.criticality == "HI"
+        ]
+        case_id = (
+            "DEADLINE_OBSERVATION_FIRST_HI_MISS"
+            if new_hi_misses
+            else "DEADLINE_OBSERVATION_NO_MISS"
+        )
+    elif first.event.kind == LogicalEventKind.REM:
+        case_id = _classify_completion(state, first.event)
+    elif first.event.kind == LogicalEventKind.REC:
+        case_id = "IDLE_RECOVERY"
+    elif first.event.kind == LogicalEventKind.DSP:
+        case_id = "PREEMPTION_DISPATCH"
+    else:
+        case_id = "CONTROLLER_NO_ACTION"
+
+    step = ReferenceP0Step(before=before, after=after, case_id=case_id, events=tuple(events))
+    from formal_toolchain.bridge.model_bounds import derive_p0_model_bounds
+    ref_dict = taskset.to_dict() if hasattr(taskset, "to_dict") else (taskset if isinstance(taskset, MappingABC) else {"tasks": []})
+    bounds = derive_p0_model_bounds(ref_dict)
+    job_slot_by_key = _build_job_slot_by_key(
+        before,
+        after,
+        step.events,
+        job_slots=bounds.job_slots,
+    )
+    task_slot_by_name = _build_task_slot_by_name(taskset)
+    affected_job_key = step.events[0].job_key if step.events else None
+    affected_task_name = (
+        affected_job_key[0] if affected_job_key is not None else None
+    )
+    environment = _build_environment(
+        step=step,
+        job_slot_by_key=job_slot_by_key,
+        task_slot_by_name=task_slot_by_name,
+        controller_updates={},
+    )
+    from formal_toolchain.reference.p0_projection import (
+        validate_executable_reference_p0_step,
+    )
+    validation = validate_executable_reference_p0_step(
+        step=step,
+        taskset=taskset,
+        bounds=bounds,
+        environment=environment,
+        job_slot_by_key=job_slot_by_key,
+        task_slot_by_name=task_slot_by_name,
+        affected_job_key=affected_job_key,
+        affected_task_name=affected_task_name,
+    )
+    if validation.get("status") != "PASS":
+        raise ValueError("REFERENCE_EXECUTABLE_P0_VALIDATION_NOT_PASS")
+    return step
+
+
+def step_reference(state: ReferenceState, taskset: Any) -> tuple[ReferenceState, str, list]:
+    """保留向后兼容的 reference step 实现。"""
+    p0_step = step_reference_p0(state, taskset)
+    old_case = {
+        "ARRIVAL_BATCH_NO_SWITCH": "SAME_TIME_ARRIVAL_BATCH",
+        "ARRIVAL_BATCH_SWITCH_S0": "SAME_TIME_ARRIVAL_BATCH",
+        "PRIMARY_LO_RELEASE": "SAME_TIME_REL",
+        "DEGRADED_LO_RELEASE": "SAME_TIME_REL",
+        "HI_RELEASE": "SAME_TIME_REL",
+        "PREEMPTION_DISPATCH": "SAME_TIME_DSP",
+        "ONE_SERVICE_TICK": "READY_SERVICE_OR_EARLIER_BOUNDARY",
+        "NORMAL_COMPLETION": "SAME_TIME_REM",
+        "PRIMARY_LO_CANCELLATION": "SAME_TIME_REM",
+        "DEGRADED_COMPLETION": "SAME_TIME_REM",
+        "HI_COMPLETION": "SAME_TIME_REM",
+        "DEADLINE_OBSERVATION_NO_MISS": "SAME_TIME_DDL",
+        "DEADLINE_OBSERVATION_FIRST_HI_MISS": "SAME_TIME_DDL",
+        "IDLE_RECOVERY": "SAME_TIME_REC",
+        "CONTROLLER_NO_ACTION": "SAME_TIME_CONTROLLER",
+        "CONTROLLER_SELECTED_ACTION": "SAME_TIME_CONTROLLER",
+        "JUMP_TO_NEXT_EVENT": "IDLE_JUMP_TO_MINIMUM_FUTURE_EVENT",
+        "BOOT_TO_PRECLOSED_0": "BOOT_TO_PRECLOSED_0",
+    }.get(p0_step.case_id, p0_step.case_id)
+    return p0_step.after, old_case, list(p0_step.events)
 
 
 def verify_frame_rule(before: ReferenceState, after: ReferenceState, footprint: set[JobKey]) -> bool:

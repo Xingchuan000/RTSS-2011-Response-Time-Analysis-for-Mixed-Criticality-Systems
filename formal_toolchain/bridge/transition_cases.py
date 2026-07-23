@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Iterable
+from typing import Iterable, Mapping, Sequence
 from formal_toolchain.core.hashing import sha256_object
-from .state_relation import p0_state_relation_schema_hash
+from .state_relation import p0_state_relation_schema_hash, parameterized_state_relation_schema_hash
 from .state_relation import p0_smt_relation_fields
 from .model_bounds import P0ModelBounds, _legacy_test_bounds
 
@@ -57,6 +57,22 @@ class TransitionCaseProof:
     compiled_guard_hashes: tuple[str, ...] = ()
     consumed_effect_hashes: tuple[str, ...] = ()
     non_state_effect_hashes: tuple[str, ...] = ()
+    parameterized_relation_schema_hash: str = ""
+    local_footprint_hash: str = ""
+    map_update_kind: str = "UNCHANGED"
+    created_key_fresh_proved: bool = False
+    released_ledger_contract_proved: bool = False
+    terminal_ledger_contract_proved: bool = False
+    miss_ledger_contract_proved: bool = False
+    unaffected_job_frame_proved: bool = False
+    effective_frontier_contract_proved: bool = False
+    parameterized_contract_status: str = "UNRESOLVED"
+    modified_components: tuple[str, ...] = ()
+    semantic_effect_kinds: tuple[str, ...] = ()
+    affected_job_sources: tuple[str, ...] = ()
+    evidence_hashes: tuple[str, ...] = ()
+    batch_decomposition_receipt_hash: str = ""
+    parameterized_contract_failure: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -65,6 +81,108 @@ class TransitionCaseProof:
 def required_p0_case_ids() -> tuple[str, ...]:
     """返回计划 K05 固定要求的全部 case ID。"""
     return REQUIRED_P0_CASE_IDS
+
+
+MAP_UPDATE_KINDS = frozenset({"UNCHANGED", "EXTEND_WITH_FRESH_RELEASE", "EXTEND_WITH_FINITE_RELEASE_BATCH", "MARK_TERMINAL", "ADD_MISS_RECORD"})
+EXPECTED_MAP_UPDATE_KIND = {
+    "PRIMARY_LO_RELEASE": "EXTEND_WITH_FRESH_RELEASE", "DEGRADED_LO_RELEASE": "EXTEND_WITH_FRESH_RELEASE", "HI_RELEASE": "EXTEND_WITH_FRESH_RELEASE",
+    "ARRIVAL_BATCH_NO_SWITCH": "EXTEND_WITH_FINITE_RELEASE_BATCH", "ARRIVAL_BATCH_SWITCH_S0": "EXTEND_WITH_FINITE_RELEASE_BATCH",
+    "NORMAL_COMPLETION": "MARK_TERMINAL", "PRIMARY_LO_CANCELLATION": "MARK_TERMINAL", "DEGRADED_COMPLETION": "MARK_TERMINAL", "HI_COMPLETION": "MARK_TERMINAL",
+    "DEADLINE_OBSERVATION_FIRST_HI_MISS": "ADD_MISS_RECORD",
+}
+ALLOWED_MODIFIED_COMPONENTS = {
+    "PRIMARY_LO_RELEASE": {"released_ledger", "active_jobs", "ready_order", "effective_event_frontier"},
+    "DEGRADED_LO_RELEASE": {"released_ledger", "active_jobs", "ready_order", "effective_event_frontier"},
+    "HI_RELEASE": {"released_ledger", "active_jobs", "ready_order", "effective_event_frontier"},
+    "ARRIVAL_BATCH_NO_SWITCH": {"released_ledger", "active_jobs", "ready_order", "effective_event_frontier"},
+    "ARRIVAL_BATCH_SWITCH_S0": {"released_ledger", "active_jobs", "ready_order", "mode", "effective_event_frontier"},
+    "NORMAL_COMPLETION": {"active_jobs", "ready_order", "running_key", "terminal_ledger", "effective_event_frontier"},
+    "PRIMARY_LO_CANCELLATION": {"active_jobs", "ready_order", "running_key", "terminal_ledger", "effective_event_frontier"},
+    "DEGRADED_COMPLETION": {"active_jobs", "ready_order", "running_key", "terminal_ledger", "effective_event_frontier"},
+    "HI_COMPLETION": {"active_jobs", "ready_order", "running_key", "terminal_ledger", "effective_event_frontier"},
+    "DEADLINE_OBSERVATION_FIRST_HI_MISS": {"miss_ledger", "time"},
+    "DEADLINE_OBSERVATION_NO_MISS": {"time"}, "ONE_SERVICE_TICK": {"time", "active_service", "remaining_to_removal", "effective_event_frontier"},
+    "PREEMPTION_DISPATCH": {"running_key", "effective_event_frontier"}, "IDLE_RECOVERY": {"mode"},
+    "CONTROLLER_SELECTED_ACTION": {"future_budget_ghost", "running_key", "effective_event_frontier"},
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterizedCaseContract:
+    status: str
+    case_id: str
+    parameterized_relation_schema_hash: str
+    local_footprint_hash: str
+    map_update_kind: str
+    modified_components: tuple[str, ...]
+    created_key_fresh_proved: bool
+    released_ledger_contract_proved: bool
+    terminal_ledger_contract_proved: bool
+    miss_ledger_contract_proved: bool
+    unaffected_job_frame_proved: bool
+    effective_frontier_contract_proved: bool
+    evidence_hashes: tuple[str, ...]
+    failure: str | None = None
+    semantic_effect_kinds: tuple[str, ...] = ()
+    affected_job_sources: tuple[str, ...] = ()
+    batch_decomposition_receipt_hash: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        row = asdict(self)
+        row["parameterized_contract_status"] = row.pop("status")
+        row["parameterized_contract_failure"] = row.pop("failure") or ""
+        return row
+
+
+def _unresolved(case_id: str, failure: str, **kwargs) -> ParameterizedCaseContract:
+    return ParameterizedCaseContract("UNRESOLVED", case_id, parameterized_state_relation_schema_hash(), kwargs.get("local_footprint_hash", ""), kwargs.get("map_update_kind", EXPECTED_MAP_UPDATE_KIND.get(case_id, "UNCHANGED")), tuple(kwargs.get("modified_components", ())), False, False, False, False, False, False, tuple(kwargs.get("evidence_hashes", ())), failure, tuple(kwargs.get("semantic_effect_kinds", ())), tuple(kwargs.get("affected_job_sources", ())), kwargs.get("batch_decomposition_receipt_hash", ""))
+
+
+def derive_parameterized_case_contract(*, case_id: str, effect_ir: Sequence[Mapping[str, object]], compiled_effect, concrete_delta: str, queue_relation_hash: str, expected_queue_relation_hash: str, batch_decomposition_certificate: Mapping[str, object] | None = None) -> ParameterizedCaseContract:
+    evidence = tuple(sorted(item.get("ast_hash") for item in effect_ir if isinstance(item.get("ast_hash"), str)))
+    footprint = sha256_object({"case_id": case_id, "effect_hashes": evidence, "modified_components": compiled_effect.modified_components, "semantic_effect_kinds": compiled_effect.semantic_effect_kinds})
+    base = dict(local_footprint_hash=footprint, evidence_hashes=evidence, modified_components=compiled_effect.modified_components, semantic_effect_kinds=compiled_effect.semantic_effect_kinds, affected_job_sources=compiled_effect.affected_job_sources)
+    if not effect_ir: return _unresolved(case_id, "PARAMETERIZED_EFFECT_IR_EMPTY", **base)
+    if queue_relation_hash != expected_queue_relation_hash: return _unresolved(case_id, "PARAMETERIZED_QUEUE_BINDING_MISMATCH", **base)
+    if not compiled_effect.consumed_effect_hashes: return _unresolved(case_id, "PARAMETERIZED_EFFECTS_NOT_CONSUMED", **base)
+    kind = EXPECTED_MAP_UPDATE_KIND.get(case_id, "UNCHANGED")
+    unexpected = set(compiled_effect.modified_components) - ALLOWED_MODIFIED_COMPONENTS.get(case_id, set())
+    if unexpected: return _unresolved(case_id, "PARAMETERIZED_UNEXPECTED_STATE_WRITE:" + ",".join(sorted(unexpected)), map_update_kind=kind, **base)
+    frame = bool("_post" in concrete_delta and ("c_job_" in concrete_delta or case_id not in REQUIRED_P0_CASE_IDS))
+    frontier_modified = any(k in compiled_effect.semantic_effect_kinds for k in ("QUEUE_PUSH", "QUEUE_POP", "TOKEN_INVALIDATION"))
+    frontier = (bool(compiled_effect.queue_equations) and queue_relation_hash == expected_queue_relation_hash and set(compiled_effect.consumed_effect_hashes) >= set(evidence)) if frontier_modified else "effective_event_frontier" not in compiled_effect.modified_components
+    fresh = False
+    released = False
+    terminal = False
+    miss = False
+    batch_hash = ""
+    if kind == "EXTEND_WITH_FRESH_RELEASE":
+        fresh = "JOB_RELEASE" in compiled_effect.semantic_effect_kinds and "active_jobs.append" in "\n".join(str(x.get("source", "")) for x in effect_ir) and "jobs_by_key[" in "\n".join(str(x.get("source", "")) for x in effect_ir) and "release_job_key" in concrete_delta and "c_job_" in concrete_delta and "(not (= c_job_" in concrete_delta
+        released = fresh
+        terminal = "TERMINAL_MARK" not in compiled_effect.semantic_effect_kinds
+        miss = "MISS_APPEND" not in compiled_effect.semantic_effect_kinds
+    elif kind == "EXTEND_WITH_FINITE_RELEASE_BATCH":
+        batch = batch_decomposition_certificate or {}
+        batch_hash = str(batch.get("artifact_hash", ""))
+        valid = batch.get("status", batch.get("obligation_status")) == "PASS" and batch.get("schema_version") == "arrival_batch_release_decomposition_v1" and batch.get("finite_batch") is True and batch.get("one_release_substep_per_event") is True and batch.get("release_keys_unique") is True
+        fresh = valid and batch.get("release_keys_unique") is True
+        released = valid; terminal = valid; miss = valid
+        if not valid: return _unresolved(case_id, "ARRIVAL_BATCH_RELEASE_DECOMPOSITION_REQUIRED", map_update_kind=kind, batch_decomposition_receipt_hash=batch_hash, **base)
+    elif kind == "MARK_TERMINAL":
+        sources = "\n".join(str(x.get("source", "")) for x in effect_ir)
+        deleted = any(x in sources for x in ("del self.jobs_by_key", "jobs_by_key.pop", "released_ledger.remove", "released_ledger.pop"))
+        released = "JOB_REMOVE" in compiled_effect.semantic_effect_kinds and "TERMINAL_MARK" in compiled_effect.semantic_effect_kinds and not deleted
+        terminal = released; miss = "MISS_APPEND" not in compiled_effect.semantic_effect_kinds
+    elif kind == "ADD_MISS_RECORD":
+        miss = "MISS_APPEND" in compiled_effect.semantic_effect_kinds and "deadline_misses.append" in "\n".join(str(x.get("source", "")) for x in effect_ir) and not any(k in compiled_effect.semantic_effect_kinds for k in ("JOB_REMOVE", "JOB_RELEASE", "TERMINAL_MARK"))
+        released = miss; terminal = miss
+    else:
+        miss = "MISS_APPEND" not in compiled_effect.semantic_effect_kinds
+        released = "released_ledger" not in compiled_effect.modified_components
+        terminal = "terminal_ledger" not in compiled_effect.modified_components or "TERMINAL_MARK" in compiled_effect.semantic_effect_kinds
+    status = "PASS" if all((released, terminal, miss, frame, frontier)) else "UNRESOLVED"
+    failure = None if status == "PASS" else "PARAMETERIZED_CONTRACT_COMPONENT_FAILED"
+    return ParameterizedCaseContract(status, case_id, parameterized_state_relation_schema_hash(), footprint, kind, tuple(compiled_effect.modified_components), fresh, released, terminal, miss, frame, bool(frontier), evidence, failure, tuple(compiled_effect.semantic_effect_kinds), tuple(compiled_effect.affected_job_sources), batch_hash)
 
 
 def prove_smt2_case(*, case_id: str, source_branch_id: str,

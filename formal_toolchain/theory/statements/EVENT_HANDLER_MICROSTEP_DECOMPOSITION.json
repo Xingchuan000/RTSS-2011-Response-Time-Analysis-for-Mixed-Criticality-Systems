@@ -1,15 +1,23 @@
 {
-  "assumption_hash": "dde853213fbdc04d045bc48a0a20c21214faaa10faa372bddae71bc33744e145",
+  "assumption_hash": "55995008e4ca5c915188599936d97b64b1bc1b8dbe1b34febbca6be1ac574e7a",
   "assumptions": [
     "valid_runtime_event",
     "source_ast_cfg_binding",
-    "terminal_effect_binding"
+    "terminal_effect_binding",
+    "event_type_branch_partition",
+    "mutually_exclusive_event_alternatives",
+    "sequential_intermediate_state_linkage"
   ],
-  "assurance_level": "DECLARED_AXIOM_TCB",
+  "assurance_level": "MACHINE_CHECKED_PROJECT_LEMMA",
   "conclusion": "forall runtime events, handler = advance_then_guarded_microstep_then_recovery_then_reschedule",
   "exact_statement": "For every runtime event, event processing is equivalent to time advance, event-specific guarded microstep, generated-event/token update, recovery, and reschedule in the source order.",
+  "proof_object": {
+    "backend": "event-handler-decomposition-v1",
+    "path": "proofs/EVENT_HANDLER_MICROSTEP_DECOMPOSITION.proof.json",
+    "sha256": "e222d318a6e54f617b04f56c9e7177ceb86235012804f243ad4b591b1933dd5f"
+  },
   "source_reference": "Phase I-K runtime handler decomposition contract",
-  "statement_hash": "cfd65c4734366cebe133512673b3756bbcfebac04447808803d763697b42c668",
+  "statement_hash": "c6c01133e551541de484a3b369fe53ad872dac66ea2f2806ba7bb03ac7910e5b",
   "theorem_id": "EVENT_HANDLER_MICROSTEP_DECOMPOSITION",
-  "version": "p0-theory-r3"
+  "version": "p0-theory-r4"
 }

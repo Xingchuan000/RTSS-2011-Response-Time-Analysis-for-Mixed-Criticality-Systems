@@ -10,6 +10,14 @@ from typing import Any
 
 from formal_toolchain.core.hashing import sha256_object
 
+PRIMITIVE_CASE = "PRIMITIVE_CASE"
+COMPOSITE_CASE = "COMPOSITE_CASE"
+CASE_KINDS = {
+    "ARRIVAL_BATCH_NO_SWITCH": COMPOSITE_CASE,
+    "ARRIVAL_BATCH_SWITCH_S0": COMPOSITE_CASE,
+    "BOOT_TO_PRECLOSED_0": COMPOSITE_CASE,
+}
+
 
 _ROWS = (
     ("BOOT_TO_PRECLOSED_0", "boot", "ZERO_TIME", None, ("time", "mode", "jobs"), ("CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT",)),
@@ -39,7 +47,8 @@ def p0_case_manifest() -> dict[str, dict[str, Any]]:
                       "transition_class": transition_class,
                       "projected_event_kind": event_kind,
                       "required_relation_components": list(components),
-                      "theorem_dependencies": list(theorems)}
+                      "theorem_dependencies": list(theorems),
+                      "case_kind": CASE_KINDS.get(case_id, PRIMITIVE_CASE)}
             for case_id, template_id, transition_class, event_kind, components, theorems in _ROWS}
 
 
@@ -52,3 +61,7 @@ def require_case(case_id: str) -> dict[str, Any]:
         return p0_case_manifest()[case_id]
     except KeyError as exc:
         raise ValueError(f"未知 P0 case: {case_id}") from exc
+
+
+def case_kind(case_id: str) -> str:
+    return CASE_KINDS.get(case_id, PRIMITIVE_CASE)

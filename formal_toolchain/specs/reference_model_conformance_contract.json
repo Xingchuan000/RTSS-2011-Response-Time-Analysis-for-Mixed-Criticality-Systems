@@ -14,7 +14,8 @@
     {"condition_id": "STANDARD_EMPTY_LO_INITIALIZATION", "source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["INITIAL_QUIESCENCE", "BOOT_INITIALIZATION"]},
     {"condition_id": "COMPLETE_INTEGER_SWITCH_DOMAINS", "source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["CASE1_INTEGER_DOMAIN", "CASE2_INTEGER_DOMAIN", "ZERO_RELATIVE_START"]},
     {"condition_id": "DISCRETE_TICK_EMBEDDING", "source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["DISCRETE_TICK_EMBEDDING"]},
-    {"condition_id": "REFERENCE_PREFIX_EXTENSIBILITY", "source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["REFERENCE_TASKSET", "TIME_PROGRESS", "EFFECTIVE_EVENT_ORDER", "REFERENCE_PREFIX_EXTENSION"]}
+    {"condition_id": "REFERENCE_PREFIX_EXTENSIBILITY", "source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["REFERENCE_TASKSET", "TIME_PROGRESS", "EFFECTIVE_EVENT_ORDER", "REFERENCE_PREFIX_EXTENSION"]},
+    {"condition_id": "REFERENCE_TRANSITION_SYSTEM_IDENTITY", "source_kind": "VERIFIED_PREDECESSORS", "predecessor_obligation_ids": ["REFERENCE_TRANSITION_SYSTEM_IDENTITY"]}
   ],
-  "contract_hash": "054ccfe8562f31053a23d1e659f3b92128d74ca5ed52c3d7cbe92549d91efac8"
+  "contract_hash": "877c7e7c61a2712d6444bcf8ef8c87068d3d37e494c5f930c3c8341c921953d6"
 }
