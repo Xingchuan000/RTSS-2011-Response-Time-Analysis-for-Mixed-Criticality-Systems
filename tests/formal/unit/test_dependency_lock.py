@@ -35,11 +35,26 @@ def test_check_dependency_policy_with_lock_rejects_mismatch():
     assert "jsonschema" in result["mismatches"]
 
 
-def test_check_dependency_policy_with_lock_passes():
+def test_check_dependency_policy_with_exact_lock_passes():
     manifest = {"packages": {"z3-solver": "4.13.4.0", "jsonschema": "4.26.0"}}
     lock = {"packages": {"z3-solver": "4.13.4.0", "jsonschema": "4.26.0"}}
     result = check_dependency_policy(manifest, lock=lock)
     assert result["status"] == "PASS"
+
+
+def test_check_dependency_policy_with_compatible_range_passes():
+    manifest = {"packages": {"z3-solver": "4.16.0.0", "jsonschema": "4.26.0"}}
+    lock = {"packages": {"z3-solver": ">=4.13,<5", "jsonschema": "4.26.0"}}
+    result = check_dependency_policy(manifest, lock=lock)
+    assert result["status"] == "PASS"
+
+
+def test_check_dependency_policy_rejects_incompatible_major():
+    manifest = {"packages": {"z3-solver": "5.0.0", "jsonschema": "4.26.0"}}
+    lock = {"packages": {"z3-solver": ">=4.13,<5", "jsonschema": "4.26.0"}}
+    result = check_dependency_policy(manifest, lock=lock)
+    assert result["status"] == "FAIL"
+    assert "z3-solver" in result["mismatches"]
 
 
 def test_check_dependency_policy_missing_returns_fail():

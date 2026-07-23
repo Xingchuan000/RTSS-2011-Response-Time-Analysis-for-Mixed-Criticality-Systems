@@ -12,5 +12,5 @@ dependencies:
   - pip
   - pip:
       - jsonschema==4.26.0
-      - z3-solver==4.13.4.0
+      - z3-solver>=4.13,<5
       - packaging>=24,<26

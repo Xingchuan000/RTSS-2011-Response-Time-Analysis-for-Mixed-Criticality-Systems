@@ -48,33 +48,40 @@ def build_dependency_manifest() -> dict[str, Any]:
             "packages": {name: _version(name) for name in names}}
 
 
-def _python_lock_matches(actual: str, locked: str) -> bool:
-    if locked.endswith(".x"):
-        parts = locked.rstrip("x").rstrip(".").split(".")
-        major = parts[0]
-        minor = parts[1] if len(parts) > 1 else "0"
-        spec_lower = f"{major}.{minor}"
-        spec_upper = f"{major}.{int(minor) + 1}"
-        try:
-            ver_parts = actual.split(".")
-            ver_major = int(ver_parts[0]) if len(ver_parts) > 0 else 0
-            ver_minor = int(ver_parts[1]) if len(ver_parts) > 1 else 0
-            low_major, low_minor = int(spec_lower.split(".")[0]), int(spec_lower.split(".")[1])
-            up_major, up_minor = int(spec_upper.split(".")[0]), int(spec_upper.split(".")[1])
-            if ver_major == low_major and low_minor <= ver_minor < up_minor:
-                return True
-            if ver_major > low_major and ver_major < up_major:
-                return True
-            return False
-        except (ValueError, IndexError):
-            return False
+def _version_constraint_matches(actual: str, constraint: str) -> bool:
+    """检查实际版本是否满足 lock 中的精确版本或 PEP 440 约束。
+
+    支持：
+    - ``4.13.4.0``：精确版本；
+    - ``>=4.13,<5``：兼容版本范围；
+    - ``3.11.x``：同一 major/minor 的通配形式。
+    """
+    if not actual or not constraint:
+        return False
+
+    if constraint.endswith(".x"):
+        prefix = constraint[:-2]
+        actual_parts = actual.split(".")
+        prefix_parts = prefix.split(".")
+        return actual_parts[: len(prefix_parts)] == prefix_parts
+
     try:
         from packaging.specifiers import SpecifierSet
         from packaging.version import Version
-        spec = SpecifierSet(f"=={locked}")
-        return Version(actual) in spec
-    except ImportError:
-        return actual.startswith(locked.rstrip(".x").rstrip("."))
+
+        has_operator = any(
+            token in constraint
+            for token in ("<", ">", "=", "!", "~")
+        )
+        spec_text = constraint if has_operator else f"=={constraint}"
+        return Version(actual) in SpecifierSet(spec_text)
+    except (ImportError, ValueError):
+        # packaging 是 formal 环境的显式依赖；这里只保留测试环境的保守回退。
+        return actual == constraint
+
+
+def _python_lock_matches(actual: str, locked: str) -> bool:
+    return _version_constraint_matches(actual, locked)
 
 
 def build_checker_version_manifest(source_root: Path | None = None) -> dict[str, Any]:
@@ -96,10 +103,11 @@ def check_dependency_policy(
     manifest: dict[str, Any],
     lock: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """关键依赖缺失或版本不匹配时返回 FAIL，不能静默继续。
+    """关键依赖缺失或版本约束不满足时返回 FAIL，不能静默继续。
 
-    使用 proof_dependency_lock.json 中的精确版本约束。没有 lock 文件时
-    降级为只检查存在性（用于测试环境），但正式 verifier 必须提供 lock。
+    proof_dependency_lock.json 可以使用精确版本，也可以使用 PEP 440
+    兼容范围。没有 lock 文件时降级为只检查存在性（用于测试环境），
+    但正式 verifier 必须提供 lock。
     """
     packages = manifest.get("packages", {})
     if lock is not None:
@@ -107,8 +115,13 @@ def check_dependency_policy(
         mismatches = {}
         for name, expected_version in expected.items():
             actual = packages.get(name)
-            if actual != expected_version:
-                mismatches[name] = {"expected": expected_version, "actual": actual}
+            if not isinstance(actual, str) or not _version_constraint_matches(
+                actual, str(expected_version)
+            ):
+                mismatches[name] = {
+                    "expected": expected_version,
+                    "actual": actual,
+                }
         python_actual = manifest.get("python_version_info", "")
         python_locked = lock.get("python", "")
         if python_locked and not _python_lock_matches(python_actual, python_locked):

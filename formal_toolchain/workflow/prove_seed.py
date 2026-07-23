@@ -24,7 +24,7 @@ def _write(path: Path, value: Any) -> None:
 
 
 def _dependency_preflight(source_root: Path) -> dict[str, Any] | None:
-    """前置依赖检查：lock 文件中的精确版本缺失时直接拒绝。"""
+    """前置依赖检查：依赖缺失或不满足 lock 版本约束时直接拒绝。"""
     lock_path = source_root / "formal_toolchain" / "specs" / "proof_dependency_lock.json"
     if not lock_path.is_file():
         return {"code": "DEPENDENCY_LOCK_FILE_MISSING", "message": f"lock file not found: {lock_path}"}

@@ -2,11 +2,11 @@
   "schema_version": "proof_dependency_lock_v1",
   "python": "3.11.x",
   "packages": {
-    "z3-solver": "4.13.4.0",
+    "z3-solver": ">=4.13,<5",
     "jsonschema": "4.26.0"
   },
   "notes": [
-    "Exact versions required for proof reproducibility.",
-    "CI must install these exact versions before running the verifier."
+    "Compatible formal dependency ranges are accepted; missing packages and incompatible major versions are rejected.",
+    "The verifier reruns all SMT obligations in the active environment, so the installed version is recorded in dependency_manifest.json."
   ]
 }
