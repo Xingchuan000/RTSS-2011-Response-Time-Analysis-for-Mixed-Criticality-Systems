@@ -26,7 +26,7 @@ from formal_toolchain.adapters.runtime_manifest import (
 from formal_toolchain.adapters.tree_artifact import inspect_tree_artifact
 from formal_toolchain.bridge.budget_invariant_derivation import derive_budget_invariant_evidence
 from formal_toolchain.core.contexts import expected_context_for_obligation
-from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.core.hashing import sha256_object, sha256_proof_object
 from formal_toolchain.core.artifact import verify_obligation_certificate
 from formal_toolchain.core.registry import load_registry
 from formal_toolchain.conformance.time_domain import build_budget_domain
@@ -1341,9 +1341,9 @@ def _verify_certified_envelope(*, raw_inputs=None, candidate_evidence=None, expe
         else:
             attestation = {
                 "fresh_process": True,
-                "candidate_hash": sha256_object(candidate),
-                "common_hash": sha256_object(common),
-                "deployed_hash": sha256_object(deployed),
+                "candidate_hash": sha256_proof_object(candidate),
+                "common_hash": sha256_proof_object(common),
+                "deployed_hash": sha256_proof_object(deployed),
             }
             result = _certify_envelope_from_verifier(
                 candidate,
@@ -1396,9 +1396,9 @@ def _verify_budget_invariant(obligation_id: str, *, raw_inputs=None, candidate_e
                 context_hash=context_hash,
                 verifier_attestation={
                     "fresh_process": True,
-                    "candidate_hash": sha256_object(candidate),
-                    "common_hash": sha256_object(common),
-                    "deployed_hash": sha256_object(deployed),
+                    "candidate_hash": sha256_proof_object(candidate),
+                    "common_hash": sha256_proof_object(common),
+                    "deployed_hash": sha256_proof_object(deployed),
                 },
             )
             target = _target(raw_inputs)
@@ -1420,9 +1420,9 @@ def _verify_budget_invariant(obligation_id: str, *, raw_inputs=None, candidate_e
                 "checker_id": "fresh_verifier",
                 "checker_version": "1",
                 "inputs": {"fixture": "fresh_verifier"},
-                "witness": {"candidate_hash": sha256_object(candidate),
-                            "common_hash": sha256_object(common),
-                            "deployed_hash": sha256_object(deployed)},
+                "witness": {"candidate_hash": sha256_proof_object(candidate),
+                            "common_hash": sha256_proof_object(common),
+                            "deployed_hash": sha256_proof_object(deployed)},
                 "evidence": [{"fresh_process": True}],
                 "failure": None,
             }

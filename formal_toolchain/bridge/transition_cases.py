@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from typing import Iterable, Mapping, Sequence
 from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.core.z3_resources import new_context, new_solver
 from .state_relation import p0_state_relation_schema_hash, parameterized_state_relation_schema_hash
 from .state_relation import p0_smt_relation_fields
 from .model_bounds import P0ModelBounds, _legacy_test_bounds
@@ -218,13 +219,18 @@ def prove_smt2_case(*, case_id: str, source_branch_id: str,
         unresolved["relation_preservation_formula"] = f"{preservation}\n; error={exc}"
         return TransitionCaseProof(z3_proof_result="UNRESOLVED", verified_by_checker=True, **unresolved)
     try:
-        feasibility = z3.Solver()
+        # Each transition case owns a dedicated Z3 context.  The previous
+        # default-context implementation retained native AST allocations for
+        # the lifetime of the whole verifier process and caused multi-GB peaks
+        # when Phase K was generated and replayed repeatedly.
+        context = new_context(z3)
+        feasibility = new_solver(z3, context=context)
         feasibility.from_string(declarations + f"\n(assert {precondition})\n(assert {concrete_delta})\n")
         feasible_result = feasibility.check()
         concrete_feasibility = "SAT" if feasible_result == z3.sat else ("UNSAT" if feasible_result == z3.unsat else "UNRESOLVED")
         post_vars = " ".join(f"(r_{field}_post Int)" for field in p0_smt_relation_fields(bounds))
         def counterexample(body: str) -> object:
-            solver = z3.Solver()
+            solver = new_solver(z3, context=context)
             solver.from_string(declarations + f"\n(assert {precondition})\n(assert {concrete_delta})\n(assert (not (exists ({post_vars}) {body})))\n")
             return solver.check()
         totality_result = counterexample(projected_reference_delta)

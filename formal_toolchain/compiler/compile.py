@@ -14,7 +14,7 @@ from formal_toolchain.compiler.dag_runner import topological_order
 from formal_toolchain.compiler.evidence_catalog import evidence_key_for
 from formal_toolchain.core.artifact import obligation_certificate
 from formal_toolchain.core.formal_checks import calculate_raw_evidence, proof_safe
-from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.core.hashing import sha256_object, sha256_proof_object
 from formal_toolchain.core.contexts import expected_context_for_obligation
 from formal_toolchain.core.registry import load_registry, build_claim_closure
 
@@ -69,11 +69,15 @@ def compile_request(request_path: Path, out_dir: Path, *, source_root: Path | No
         base_error: dict[str, Any] | None = None
     except Exception as exc:
         computed = None
-        base_error = {"route": "MODEL_CONFORMANCE_FAILED", "code": "CANDIDATE_INPUT_REPLAY_FAILED",
-                      "message": str(exc)}
+        base_error = {
+            "route": "MODEL_CONFORMANCE_FAILED",
+            "code": "CANDIDATE_INPUT_REPLAY_FAILED",
+            "exception_type": type(exc).__name__,
+            "message": str(exc),
+        }
 
     if computed is None:
-        context_hash = sha256_object({"request": json.loads(Path(request_path).read_text(encoding="utf-8"))})
+        context_hash = sha256_proof_object({"request": json.loads(Path(request_path).read_text(encoding="utf-8"))})
         evidence: dict[str, Any] = {}
     else:
         context_hash = str(computed["context_hash"])
@@ -136,7 +140,7 @@ def compile_request(request_path: Path, out_dir: Path, *, source_root: Path | No
         _write(out_dir / "candidate_inputs.json", {
             "context_hash": computed["context_hash"],
             "tree_files": computed["inventory"]["files"],
-            "semantic_input_hash": sha256_object(computed["context_body"]),
+            "semantic_input_hash": sha256_proof_object(computed["context_body"]),
         })
         _write(out_dir / "component_contexts.json", computed["contexts"])
     summary = {

@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 import re
 
-from .hashing import sha256_object
+from .hashing import sha256_object, sha256_proof_object
 
 CONTEXT_FIELDS = {
     "bootstrap_context": ("bootstrap",),
@@ -135,7 +135,7 @@ def validate_context_contract(inputs: dict[str, Any]) -> None:
         raise ValueError(f"context 输入缺失: {missing}")
     if "preservation_certificate_hash" not in certified:
         raise ValueError("certified_envelope 必须引用 preservation certificate")
-    if certified.get("candidate_envelope_hash") != sha256_object(candidate):
+    if certified.get("candidate_envelope_hash") != sha256_proof_object(candidate):
         raise ValueError("certified_envelope 未引用当前 candidate_envelope")
     if not re.fullmatch(r"[0-9a-f]{64}", str(certified["preservation_certificate_hash"])):
         raise ValueError("preservation_certificate_hash 必须是 SHA-256")

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.core.hashing import sha256_proof_object
 
 
 def check_common_transition_preservation(candidate: Mapping[str, Any], *, transitions: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -75,6 +75,6 @@ def check_common_transition_preservation(candidate: Mapping[str, Any], *, transi
         "active_release_budget_immutable": True,
         "controller_budget_write": False,
         "invariant_checked": True,
-        "candidate_envelope_hash": sha256_object(dict(candidate)),
+        "candidate_envelope_hash": sha256_proof_object(dict(candidate)),
         "safety_polytope_hash": candidate.get("safety_polytope_hash"),
     }

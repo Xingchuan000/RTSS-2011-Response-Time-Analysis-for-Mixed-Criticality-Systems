@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from amc_py.rl.actions import action_violates_hi_decrease_guard
-from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.core.hashing import sha256_proof_object
 
 
 def check_deployed_policy_preservation(
@@ -187,9 +187,9 @@ def check_deployed_policy_preservation(
             "selected_non_noop -> runtime_mask_valid -> candidate_in_polytope "
             "-> componentwise_envelope; selected_none -> frame"
         ),
-        "candidate_envelope_hash": sha256_object(dict(candidate)),
-        "mask_fallback_hash": sha256_object(dict(mask_fallback_certificate)),
-        "action_transition_hash": sha256_object(dict(action_transition_certificate)),
+        "candidate_envelope_hash": sha256_proof_object(dict(candidate)),
+        "mask_fallback_hash": sha256_proof_object(dict(mask_fallback_certificate)),
+        "action_transition_hash": sha256_proof_object(dict(action_transition_certificate)),
         "safety_polytope_hash": candidate["safety_polytope_hash"],
         "permanently_masked_action_ids": permanently_masked,
         "action_witnesses": action_witnesses,

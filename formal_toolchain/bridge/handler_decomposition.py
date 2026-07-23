@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.core.z3_resources import new_context, new_solver
 
 
 ARRIVAL_BATCH_ALTERNATIVES = (
@@ -26,15 +27,19 @@ def prove_reschedule_partition() -> dict[str, object]:
     """Machine-check the exhaustive, pairwise-disjoint reschedule partition."""
     try:
         import z3
-        selected_eq_previous, force, selected_is_none = z3.Bools(
-            "selected_eq_previous force selected_is_none")
+        context = new_context(z3)
+        selected_eq_previous = z3.Bool("selected_eq_previous", ctx=context)
+        force = z3.Bool("force", ctx=context)
+        selected_is_none = z3.Bool("selected_is_none", ctx=context)
         keep = z3.And(selected_eq_previous, z3.Not(force))
         idle = z3.And(z3.Not(keep), selected_is_none)
         dispatch = z3.And(z3.Not(keep), z3.Not(selected_is_none))
-        solver = z3.Solver()
-        exhaustive = solver.check(z3.Not(z3.Or(keep, idle, dispatch))) == z3.unsat
+        exhaustive_solver = new_solver(z3, context=context)
+        exhaustive = exhaustive_solver.check(
+            z3.Not(z3.Or(keep, idle, dispatch))
+        ) == z3.unsat
         exclusive = all(
-            z3.Solver().check(z3.And(left, right)) == z3.unsat
+            new_solver(z3, context=context).check(z3.And(left, right)) == z3.unsat
             for left, right in ((keep, idle), (keep, dispatch), (idle, dispatch)))
         status = "PASS" if exhaustive and exclusive else "FAIL"
     except ImportError:
@@ -49,16 +54,25 @@ def prove_handler_reschedule_unreachability() -> dict[str, object]:
     """Discharge context-excluded family alternatives as UNSAT, not PASS."""
     try:
         import z3
-        previous_none, selected_none, selected_eq_previous, force = z3.Bools(
-            "handler_previous_none handler_selected_none handler_selected_eq_previous handler_force")
+        context = new_context(z3)
+        previous_none = z3.Bool("handler_previous_none", ctx=context)
+        selected_none = z3.Bool("handler_selected_none", ctx=context)
+        selected_eq_previous = z3.Bool(
+            "handler_selected_eq_previous", ctx=context
+        )
+        force = z3.Bool("handler_force", ctx=context)
         keep = z3.And(selected_eq_previous, z3.Not(force))
         idle = z3.And(z3.Not(keep), selected_none)
         checks = {
             "completion_to_idle": z3.And(previous_none, selected_none, selected_eq_previous, z3.Not(force), idle),
             "controller_force_keep": z3.And(force, keep),
         }
-        result = {name: "UNSAT" if z3.Solver().check(formula) == z3.unsat else "SAT"
-                  for name, formula in checks.items()}
+        result = {
+            name: "UNSAT"
+            if new_solver(z3, context=context).check(formula) == z3.unsat
+            else "SAT"
+            for name, formula in checks.items()
+        }
         return {"status": "PASS" if all(value == "UNSAT" for value in result.values()) else "FAIL",
                 "proofs": result}
     except ImportError:
@@ -119,22 +133,25 @@ def prove_arrival_reschedule_partition(
             "keep_dispatch_exclusive": False,
         }
 
-    selected_eq_previous = z3.Bool("arrival_selected_eq_previous")
-    selected_is_none = z3.Bool("arrival_selected_is_none")
+    context = new_context(z3)
+    selected_eq_previous = z3.Bool(
+        "arrival_selected_eq_previous", ctx=context
+    )
+    selected_is_none = z3.Bool("arrival_selected_is_none", ctx=context)
     selected_nonempty = z3.Not(selected_is_none)
     keep = z3.And(selected_nonempty, selected_eq_previous)
     dispatch = z3.And(selected_nonempty, z3.Not(selected_eq_previous))
     idle = selected_is_none
 
-    idle_solver = z3.Solver()
+    idle_solver = new_solver(z3, context=context)
     idle_solver.add(selected_nonempty, idle)
     idle_unreachable = idle_solver.check() == z3.unsat
 
-    exhaustive_solver = z3.Solver()
+    exhaustive_solver = new_solver(z3, context=context)
     exhaustive_solver.add(selected_nonempty, z3.Not(z3.Or(keep, dispatch)))
     exhaustive = exhaustive_solver.check() == z3.unsat
 
-    exclusive_solver = z3.Solver()
+    exclusive_solver = new_solver(z3, context=context)
     exclusive_solver.add(keep, dispatch)
     exclusive = exclusive_solver.check() == z3.unsat
 
@@ -625,7 +642,8 @@ def _run_sequence_z3_query(*, declarations: str, assertion: str) -> tuple[str, s
         formulas=(assertion,),
         declarations=declarations,
     )
-    solver = z3.Solver()
+    context = new_context(z3)
+    solver = new_solver(z3, context=context)
     query = prepared + "\n(assert " + assertion + ")\n"
     try:
         solver.from_string(query)

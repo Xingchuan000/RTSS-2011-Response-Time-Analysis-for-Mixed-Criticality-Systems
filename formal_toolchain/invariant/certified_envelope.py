@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.core.hashing import sha256_object, sha256_proof_object
 
 
 def certify_envelope(candidate: Mapping[str, Any], common: Mapping[str, Any], deployed: Mapping[str, Any], *, context_hash: str | None = None,
@@ -22,14 +22,14 @@ def _certify_envelope_from_verifier(candidate: Mapping[str, Any], common: Mappin
         raise ValueError("certified envelope 必须绑定 context_hash")
     if verifier_attestation is None or verifier_attestation.get("fresh_process") is not True:
         raise ValueError("certified envelope 只能由 fresh-process verifier attestation 生成")
-    required_hashes = {"candidate_hash": sha256_object(candidate), "common_hash": sha256_object(common),
-                       "deployed_hash": sha256_object(deployed)}
+    required_hashes = {"candidate_hash": sha256_proof_object(candidate), "common_hash": sha256_proof_object(common),
+                       "deployed_hash": sha256_proof_object(deployed)}
     if any(verifier_attestation.get(key) != value for key, value in required_hashes.items()):
         raise ValueError("verifier attestation 与 preservation 输入 hash 不一致")
-    preservation = {"obligation_status": "PASS", "candidate_hash": sha256_object(candidate),
-                    "common_hash": sha256_object(common), "deployed_hash": sha256_object(deployed),
+    preservation = {"obligation_status": "PASS", "candidate_hash": sha256_proof_object(candidate),
+                    "common_hash": sha256_proof_object(common), "deployed_hash": sha256_proof_object(deployed),
                     "fresh_process": True}
-    candidate_hash = sha256_object(candidate)
+    candidate_hash = sha256_proof_object(candidate)
     coordinate_upper_witness_hash = sha256_object(candidate.get("coordinate_upper_witnesses", {}))
     return {
         "status": "PASS",

@@ -13,7 +13,7 @@ from itertools import product
 
 from amc_py.models import Criticality, Task
 from amc_py.rl.actions import build_budget_action_space
-from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.core.hashing import sha256_object, sha256_proof_object
 from formal_toolchain.invariant.candidate_envelope import synthesize_candidate_envelope
 from formal_toolchain.invariant.common_preservation import check_common_transition_preservation
 from formal_toolchain.invariant.deployed_preservation import check_deployed_policy_preservation
@@ -75,7 +75,7 @@ def verify_payload(payload: dict) -> dict:
         domain, actions, tasks, context_hash=context_hash, runtime_adapter=adapter)
     if enumerated_candidate.get("upper") != structural_candidate.get("upper"):
         return {"status": "FAIL", "failure": {"code": "CANDIDATE_UPPER_MISMATCH"}}
-    if sha256_object(structural_candidate) != payload.get("candidate_hash"):
+    if sha256_proof_object(structural_candidate) != payload.get("candidate_hash"):
         return {"status": "FAIL", "failure": {"code": "CANDIDATE_RECOMPUTE_MISMATCH"}}
     if payload.get("domain_hash") != sha256_object(domain):
         return {"status": "FAIL", "failure": {"code": "DOMAIN_RECOMPUTE_MISMATCH"}}
@@ -114,10 +114,10 @@ def verify_payload(payload: dict) -> dict:
     )
     if deployed_enumerated.get("status") != "PASS" or deployed_structural.get("status") != "PASS":
         return {"status": "FAIL", "failure": {"code": "DEPLOYED_RECOMPUTE_FAILED"}}
-    if sha256_object(common) != payload.get("common_hash") or sha256_object(deployed_structural) != payload.get("deployed_hash"):
+    if sha256_proof_object(common) != payload.get("common_hash") or sha256_proof_object(deployed_structural) != payload.get("deployed_hash"):
         return {"status": "FAIL", "failure": {"code": "PRESERVATION_RECOMPUTE_MISMATCH"}}
-    attestation = {"fresh_process": True, "candidate_hash": sha256_object(structural_candidate),
-                   "common_hash": sha256_object(common), "deployed_hash": sha256_object(deployed_structural)}
+    attestation = {"fresh_process": True, "candidate_hash": sha256_proof_object(structural_candidate),
+                   "common_hash": sha256_proof_object(common), "deployed_hash": sha256_proof_object(deployed_structural)}
     certified = _certify_envelope_from_verifier(structural_candidate, common, deployed_structural, context_hash=context_hash,
                                                 verifier_attestation=attestation)
     registry_path = Path(__file__).parents[1] / "specs/obligation_registry.json"
@@ -133,8 +133,8 @@ def verify_payload(payload: dict) -> dict:
                                   ("ACTIVE_RELEASE_BUDGET_INVARIANT", structural_candidate)):
         predecessor_certificates[obligation_id] = obligation_certificate(
             obligation_id=obligation_id, status="PASS", context_hash=cert_context_hash,
-            inputs={"fixture": "synthetic_p0", "source_hash": sha256_object(source)},
-            witness={"source_hash": sha256_object(source)},
+            inputs={"fixture": "synthetic_p0", "source_hash": sha256_proof_object(source)},
+            witness={"source_hash": sha256_proof_object(source)},
             evidence=[{"status": "PASS"}],
             direct_predecessor_hashes={},
             checker_id="phase_fh_fresh_verifier", checker_version="1",
@@ -142,7 +142,7 @@ def verify_payload(payload: dict) -> dict:
     predecessor_certificates["DEPLOYED_POLICY_PRESERVATION"] = obligation_certificate(
         obligation_id="DEPLOYED_POLICY_PRESERVATION", status="PASS", context_hash=cert_context_hash,
         inputs={"fixture": "synthetic_p0"},
-        witness={"deployed_hash": sha256_object(deployed_structural)},
+        witness={"deployed_hash": sha256_proof_object(deployed_structural)},
         evidence=[{"status": "PASS"}],
         direct_predecessor_hashes={name: predecessor_certificates[name]["artifact_hash"] for name in
             ("EXECUTABLE_POLICY_SEMANTICS", "CANDIDATE_ENVELOPE", "BUDGET_DOMAIN", "COMMON_TRANSITION_PRESERVATION")},
@@ -151,8 +151,8 @@ def verify_payload(payload: dict) -> dict:
     certified_certificate = obligation_certificate(
         obligation_id="CERTIFIED_ENVELOPE", status="PASS", context_hash=cert_context_hash,
         inputs={"fixture": "synthetic_p0", "context_hash": context_hash},
-        witness={"candidate_hash": sha256_object(structural_candidate), "common_hash": sha256_object(common),
-                 "deployed_hash": sha256_object(deployed_structural)},
+        witness={"candidate_hash": sha256_proof_object(structural_candidate), "common_hash": sha256_proof_object(common),
+                 "deployed_hash": sha256_proof_object(deployed_structural)},
         evidence=[{"fresh_process": True}],
         direct_predecessor_hashes={name: predecessor_certificates[name]["artifact_hash"] for name in
             ("DEPLOYED_POLICY_PRESERVATION", "LO_BUDGET_UPPER_INVARIANT", "HI_BUDGET_LOWER_INVARIANT",
@@ -165,7 +165,7 @@ def verify_payload(payload: dict) -> dict:
         return {"status": "FAIL", "failure": {"code": "CERTIFICATE_SCHEMA_INVALID", "detail": checked}}
     certified["preservation_certificate"] = certified_certificate
     certified["preservation_certificate_hash"] = sha256_object(certified_certificate)
-    return {"status": "PASS", "fresh_process": True, "candidate_hash": sha256_object(structural_candidate),
+    return {"status": "PASS", "fresh_process": True, "candidate_hash": sha256_proof_object(structural_candidate),
             "certified_hash": sha256_object(certified), "certified": certified}
 
 

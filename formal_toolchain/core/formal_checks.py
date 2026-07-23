@@ -28,7 +28,12 @@ from formal_toolchain.adapters.tree_artifact import inspect_tree_artifact
 from formal_toolchain.conformance.preflight import preflight_formal_target
 from formal_toolchain.conformance.runtime_evidence import build_p0_runtime_evidence
 from formal_toolchain.conformance.time_domain import build_budget_domain
-from formal_toolchain.core.hashing import sha256_file, sha256_object
+from formal_toolchain.core.hashing import (
+    proof_safe_value,
+    sha256_file,
+    sha256_object,
+    sha256_proof_object,
+)
 from formal_toolchain.core.contexts import (
     build_bootstrap_context, build_bridge_context, build_bundle_context,
     build_composition_context, build_implementation_context,
@@ -63,15 +68,9 @@ def _read(path: Path) -> Any:
 
 
 def proof_safe(value: Any) -> Any:
-    """把运行时诊断中的 float 转为稳定十进制字符串后再进入证书 hash。"""
+    """把运行时诊断规范化后再进入证书或 proof-object hash。"""
 
-    if isinstance(value, float):
-        return format(value, ".17g")
-    if isinstance(value, Mapping):
-        return {str(key): proof_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [proof_safe(item) for item in value]
-    return value
+    return proof_safe_value(value)
 
 
 def workspace_for_request(request_path: Path) -> Path:
@@ -558,9 +557,9 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
             return result
         certified = {"status": "CANDIDATE", "schema_version": "candidate_envelope_view_v1",
                      "trust_level": "CANDIDATE_UNVERIFIED", "not_a_certified_envelope": True,
-                     "candidate_envelope_hash": sha256_object(candidate),
-                     "common_candidate_hash": sha256_object(common),
-                     "deployed_candidate_hash": sha256_object(deployed),
+                     "candidate_envelope_hash": sha256_proof_object(candidate),
+                     "common_candidate_hash": sha256_proof_object(common),
+                     "deployed_candidate_hash": sha256_proof_object(deployed),
                      "lower": dict(candidate.get("lower", {})), "upper": dict(candidate.get("upper", {})),
                      "active_release_budget_upper": dict(candidate.get("active_release_budget_upper", {}))}
         envelope_hash = sha256_object(certified)

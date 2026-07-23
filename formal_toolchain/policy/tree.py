@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from amc_py.viper.integer_tree import IntegerTreeModel, evaluate_integer_tree
+from formal_toolchain.core.z3_resources import new_context, new_solver
 
 
 def validate_tree_and_leaf_partition(model: IntegerTreeModel, *, state_min: int = 0,
@@ -50,7 +51,11 @@ def validate_tree_and_leaf_partition(model: IntegerTreeModel, *, state_min: int 
         # 区间求解，不是随机抽样或边界猜测；真实复杂树仍由 Z3 backend 处理。
         return _validate_with_exact_intervals(model, state_min=state_min, state_max=state_max)
     leaves = {leaf.node_id for leaf in model.leaves}
-    variables = [z3.Int(f"q_{i}") for i in range(model.state_dim)]
+    context = new_context(z3)
+    variables = [
+        z3.Int(f"q_{i}", ctx=context)
+        for i in range(model.state_dim)
+    ]
     bounds = [z3.And(value >= state_min, value <= state_max) for value in variables]
     guards: dict[int, list[Any]] = {}
     nodes = {node.node_id: node for node in model.nodes}
@@ -68,16 +73,18 @@ def validate_tree_and_leaf_partition(model: IntegerTreeModel, *, state_min: int 
     if set(guards) != leaves:
         raise ValueError("leaf guard 生成未覆盖全部 leaf")
     for leaf_id, guard in guards.items():
-        solver = z3.Solver(); solver.add(*(bounds + guard))
+        solver = new_solver(z3, context=context)
+        solver.add(*(bounds + guard))
         if solver.check() != z3.sat:
             raise ValueError(f"leaf {leaf_id} guard 不可满足")
     leaf_ids = sorted(guards)
     for index, left_id in enumerate(leaf_ids):
         for right_id in leaf_ids[index + 1:]:
-            solver = z3.Solver(); solver.add(*(bounds + guards[left_id] + guards[right_id]))
+            solver = new_solver(z3, context=context)
+            solver.add(*(bounds + guards[left_id] + guards[right_id]))
             if solver.check() != z3.unsat:
                 raise ValueError(f"leaf guard overlap: {left_id}/{right_id}")
-    coverage_solver = z3.Solver()
+    coverage_solver = new_solver(z3, context=context)
     coverage_solver.add(*bounds)
     coverage_solver.add(z3.Not(z3.Or(*(z3.And(*guard) for guard in guards.values()))))
     if coverage_solver.check() != z3.unsat:

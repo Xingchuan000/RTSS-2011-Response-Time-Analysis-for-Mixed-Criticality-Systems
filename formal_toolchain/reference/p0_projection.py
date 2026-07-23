@@ -10,6 +10,7 @@ from formal_toolchain.reference.p0_transition_contract import (
 )
 from formal_toolchain.reference.reference_state import ReferenceState
 from formal_toolchain.bridge.logical_events import LogicalEventKind
+from formal_toolchain.core.z3_resources import new_context, new_solver
 
 
 def _encode_job_key(key: tuple[str, int] | int | None) -> int:
@@ -277,9 +278,10 @@ def validate_executable_reference_p0_step(
         import z3
     except ImportError as exc:
         raise ValueError("REFERENCE_P0_Z3_NOT_AVAILABLE") from exc
-    solver = z3.Solver()
+    context = new_context(z3)
+    solver = new_solver(z3, context=context)
     try:
-        solver.add(z3.parse_smt2_string(smt2))
+        solver.add(z3.parse_smt2_string(smt2, ctx=context))
     except z3.Z3Exception as exc:
         raise ValueError(
             "REFERENCE_P0_CANONICAL_DELTA_PARSE_FAILED:"
