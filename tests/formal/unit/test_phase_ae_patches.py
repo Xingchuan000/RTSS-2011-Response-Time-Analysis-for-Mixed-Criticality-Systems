@@ -233,3 +233,49 @@ def test_proof_result_propagates_failure_audit_fields(tmp_path: Path, monkeypatc
     assert proof_result["failure_route"] == "MODEL_CONFORMANCE_FAILED"
     assert proof_result["failure_code"] == "REFERENCE_MAPPING_MISMATCH"
     assert proof_result["violated_obligation_id"] == "CODE_REFERENCE_UPPER_BOUND_MAPPING"
+
+
+def test_prove_seed_normal_dependency_path_does_not_shadow_json(tmp_path: Path, monkeypatch):
+    from formal_toolchain.workflow import prove_seed as prove_seed_module
+
+    workspace = tmp_path / "workspace"
+    freeze_seed_workspace(FIXTURE_ROOT, "best_overall", workspace, code_root=ROOT)
+
+    monkeypatch.setattr(prove_seed_module, "_dependency_preflight", lambda _root: None)
+
+    def fake_run_cli(module_name, args, cwd, log_dir):
+        out_dir = None
+        if "--out" in args:
+            out_dir = Path(args[args.index("--out") + 1])
+        if module_name == "formal_toolchain.cli.verify_bundle" and out_dir is not None:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            summary = {
+                "schema_version": "proof_summary_v1",
+                "workflow_status": "VERIFIED",
+                "result_status": "UNRESOLVED",
+                "failure_route": "UNRESOLVED",
+                "failure_code": "REGRESSION_SENTINEL",
+                "outer_bundle_root": "b" * 64,
+            }
+            (out_dir / "proof_summary.json").write_text(
+                json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        if module_name == "formal_toolchain.cli.render_report" and out_dir is not None:
+            out_dir.parent.mkdir(parents=True, exist_ok=True)
+            out_dir.write_text("# ok\n", encoding="utf-8")
+        return {"returncode": 0}
+
+    monkeypatch.setattr(prove_seed_module, "run_cli", fake_run_cli)
+
+    code, result = prove_seed_module.prove_seed(
+        seed_dir=FIXTURE_ROOT,
+        tree_variant="best_overall",
+        code_root=ROOT,
+        out=tmp_path / "bundle",
+        overwrite=True,
+    )
+
+    assert code == 20
+    assert result["failure_code"] == "REGRESSION_SENTINEL"
+    assert result["failure_code"] != "INTERNAL_WORKFLOW_ERROR"

@@ -464,9 +464,10 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
         FINITE_BAD_PREFIX_CONTRADICTION,
         FINAL_CLAIM_COMPOSITION,
         REFERENCE_HI_SUBSET_SAFETY,
-    REFERENCE_MODEL_CONFORMANCE,
-    REFERENCE_SEMANTICS_CONTRACT,
+        REFERENCE_MODEL_CONFORMANCE,
+        REFERENCE_SEMANTICS_CONTRACT,
         REFERENCE_TASKSET_SCHEDULABLE,
+        REFERENCE_TRANSITION_SYSTEM_IDENTITY,
     )
     registry_entries = load_registry(Path(__file__).parents[1] / "specs/obligation_registry.json")
     structural_ids = {"ARTIFACT_MANIFEST", "COMPONENT_CONTEXT_INTEGRITY",

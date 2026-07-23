@@ -28,7 +28,6 @@ def _dependency_preflight(source_root: Path) -> dict[str, Any] | None:
     lock_path = source_root / "formal_toolchain" / "specs" / "proof_dependency_lock.json"
     if not lock_path.is_file():
         return {"code": "DEPENDENCY_LOCK_FILE_MISSING", "message": f"lock file not found: {lock_path}"}
-    import json
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     from formal_toolchain.adapters.runtime_manifest import build_dependency_manifest, check_dependency_policy
     manifest = build_dependency_manifest()
@@ -58,7 +57,6 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
     else:
         from formal_toolchain.adapters.runtime_manifest import check_dependency_policy
         lock_path = code_root / "formal_toolchain" / "specs" / "proof_dependency_lock.json"
-        import json
         lock = json.loads(lock_path.read_text(encoding="utf-8")) if lock_path.is_file() else None
         result = check_dependency_policy(dependency_manifest_override, lock=lock)
         if result.get("status") != "PASS":
