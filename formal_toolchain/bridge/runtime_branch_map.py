@@ -8,6 +8,7 @@ hash 和 terminal point；源码变化会使旧 map 失效。
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -15,9 +16,83 @@ from formal_toolchain.adapters.source_manifest import build_source_manifest
 from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.binding.event_runtime_binding import bind_event_runtime
 from formal_toolchain.binding.removal_binding import bind_removal_runtime
-from formal_toolchain.binding.python_cfg_ir import ExecutablePath, enumerate_function_paths
+from formal_toolchain.binding.python_cfg_ir import ExecutablePath, enumerate_function_paths, _effect, _ast_hash
 from .p0_case_manifest import p0_case_manifest_hash
 from .transition_cases import REQUIRED_P0_CASE_IDS
+
+
+RESCHEDULE_CASE_IDS = (
+    "RESCHEDULE_KEEP_SAME", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RescheduleBranchBinding:
+    case_id: str
+    entry_function: str
+    guard_ir: tuple[dict[str, object], ...]
+    effect_ir: tuple[dict[str, object], ...]
+    source_function_hash: str
+    branch_family_hash: str
+
+
+def _reschedule_function(source_root: str | Path) -> ast.FunctionDef:
+    path = Path(source_root) / "amc_py/event_runtime.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    matches = [node for node in tree.body
+               if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and node.name == "_reschedule"]
+    if len(matches) != 1:
+        raise ValueError("RESCHEDULE_FUNCTION_NOT_UNIQUE")
+    return matches[0]
+
+
+def _reschedule_effects(function: ast.FunctionDef) -> tuple[dict[str, object], ...]:
+    # This is deliberately a family binding: all statements participating in
+    # the conditional reschedule body are retained, while no CFG path is
+    # selected.  The family compiler interprets the alternatives below.
+    statements = [node for node in ast.walk(function)
+                  if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign,
+                                       ast.Expr, ast.Return))]
+    statements.sort(key=lambda node: (node.lineno, getattr(node, "col_offset", 0)))
+    return tuple(_effect(node).to_dict() for node in statements)
+
+
+def bind_reschedule_branch_families(source_root: str | Path) -> dict[str, RescheduleBranchBinding]:
+    function = _reschedule_function(source_root)
+    source = ast.unparse(function)
+    effects = _reschedule_effects(function)
+    effect_hashes = tuple(str(item["ast_hash"]) for item in effects)
+    guards = {
+        "RESCHEDULE_KEEP_SAME": (("selected is state.running_job and (not force)", True),),
+        "RESCHEDULE_TO_IDLE": (
+            ("selected is state.running_job and (not force)", False),
+            ("selected is None", True),
+        ),
+        "PREEMPTION_DISPATCH": (
+            ("selected is state.running_job and (not force)", False),
+            ("selected is None", False),
+        ),
+    }
+    guard_nodes = {
+        ast.unparse(node.test): node.test
+        for node in ast.walk(function) if isinstance(node, ast.If)
+    }
+    bindings = {}
+    function_hash = sha256_object({"entry_function": "_reschedule", "source": source})
+    for case_id in RESCHEDULE_CASE_IDS:
+        guard_ir = tuple({"test_source": test, "polarity": polarity,
+                          "test_ast_hash": _ast_hash(guard_nodes[test]),
+                          "lineno": guard_nodes[test].lineno}
+                         for test, polarity in guards[case_id])
+        family_hash = sha256_object({"case_id": case_id, "guards": guard_ir,
+                                     "effect_hashes": effect_hashes,
+                                     "source_function_hash": function_hash})
+        family_effects = tuple(item for item in effects
+                               if item.get("kind") == "RETURN")[:1] if case_id == "RESCHEDULE_KEEP_SAME" else effects
+        bindings[case_id] = RescheduleBranchBinding(
+            case_id, "_reschedule", guard_ir, family_effects, function_hash, family_hash)
+    return bindings
 
 
 def _has_guard(path: ExecutablePath, text: str, polarity: bool | None = None) -> bool:
@@ -69,11 +144,6 @@ def _semantic_path_predicate(case_id: str):
         # path 不包含 AMC-RA/AMC-RH 的 expiry scheduling effect。
         return exact((release_mode, False), (task_hi, True), (c_amc, True),
                      (response, False), (response, False))
-    if case_id == "PREEMPTION_DISPATCH":
-        return exact(("selected is state.running_job and (not force)", False),
-                     ("state.running_job is not None", True),
-                     ("selected is None", False),
-                     ("selected_key not in state.started_jobs", False))
     if case_id == "ONE_SERVICE_TICK":
         return exact(("now < old_time", False), ("self.config.capture_trace", False))
     if case_id in {"NORMAL_COMPLETION", "DEGRADED_COMPLETION"}:
@@ -143,7 +213,9 @@ PATH_SPECS = (
     ("release/primary_lo", "EventRuntimeEngine._process_single_arrival_in_priority_order", "PRIMARY_LO_RELEASE", "release_mode=LO and task_is_LO", ("build_job", "release_fixed_budget", "queue_release", "deadline_schedule", "active_add", "ready_add")),
     ("release/degraded_lo", "EventRuntimeEngine._process_single_arrival_in_priority_order", "DEGRADED_LO_RELEASE", "release_mode=HI and task_is_LO and c_amc_sem", ("degraded_budget", "actual_cost_clamp", "queue_release", "deadline_schedule", "active_add", "ready_add")),
     ("release/hi", "EventRuntimeEngine._process_single_arrival_in_priority_order", "HI_RELEASE", "task_is_HI", ("build_job", "release_fixed_budget", "queue_release", "deadline_schedule", "active_add", "ready_add")),
-    ("dispatch/preempt", "_reschedule", "PREEMPTION_DISPATCH", "selected_is_not_previous_or_force", ("highest_priority_select", "running_update", "preempt_invalidate")),
+    ("reschedule/keep_same", "_reschedule", "RESCHEDULE_KEEP_SAME", "selected_is_previous_and_not_force", ("highest_priority_select", "reschedule_stutter")),
+    ("reschedule/to_idle", "_reschedule", "RESCHEDULE_TO_IDLE", "not_keep_and_selected_none", ("highest_priority_select", "optional_previous_invalidation", "running_clear")),
+    ("reschedule/dispatch", "_reschedule", "PREEMPTION_DISPATCH", "not_keep_and_selected_nonempty", ("highest_priority_select", "optional_previous_invalidation", "running_update", "running_event_schedule")),
     ("service/one_tick", "EventRuntimeEngine._advance_time", "ONE_SERVICE_TICK", "event_before_boundary", ("advance_time", "service_accounting", "remaining_update")),
     ("completion/normal", "EventRuntimeEngine._process_event", "NORMAL_COMPLETION", "event_is_JOB_COMPLETION and job_is_normal", ("executed_to_actual", "active_remove", "running_clear", "recovery_event", "reschedule")),
     ("completion/degraded", "EventRuntimeEngine._process_event", "DEGRADED_COMPLETION", "event_is_JOB_COMPLETION and job_is_degraded", ("executed_to_actual", "active_remove", "running_clear", "recovery_event", "reschedule")),
@@ -184,6 +256,28 @@ def _handler_source(root: Path, qualified: str) -> tuple[str, int, int]:
 
 def _path_row(root: Path, spec: tuple[Any, ...]) -> dict[str, Any]:
     path_id, handler, case_id, guard, effects = spec
+    if case_id in RESCHEDULE_CASE_IDS:
+        binding = bind_reschedule_branch_families(root)[case_id]
+        guard_ir = list(binding.guard_ir)
+        effect_ir = list(binding.effect_ir)
+        queue_relation = [item for item in effect_ir
+                          if any(token in str(item.get("source", ""))
+                                 for token in ("queue", "token", "_schedule", "_invalidate"))]
+        return {
+            "path_id": path_id, "handler": handler, "case_id": case_id,
+            "source_file": "amc_py/event_runtime.py", "guard": guard_ir,
+            "guard_ir": guard_ir, "guard_hash": sha256_object(guard_ir),
+            "guard_ast_hash": sha256_object(guard_ir), "effects": list(effects),
+            "effect_ir": effect_ir, "effect_ir_hash": sha256_object(effect_ir),
+            "queue_relation": queue_relation,
+            "queue_relation_hash": sha256_object(queue_relation),
+            "path_ast_hash": binding.branch_family_hash,
+            "handler_hash": binding.source_function_hash,
+            "path_effect_hash": binding.branch_family_hash,
+            "branch_family_hash": binding.branch_family_hash,
+            "source_function_hash": binding.source_function_hash,
+            "terminal": "FAMILY",
+        }
     source, _handler_start, _handler_end = _handler_source(root, handler)
     evidence = {
         "mode=HI": ("SystemMode.HI",), "mode=LO": ("SystemMode.LO",),
@@ -278,10 +372,14 @@ def build_runtime_branch_map(source_root: str | Path, *, source_hash: str,
         # ``guard_ir`` / hash / effect 这组字段共同约束。重复比较镜像字段
         # 会让不同执行环境的 JSON 规范化细节误判为 stale，因此这里只保留
         # 真正参与证明绑定的字段。
-        for field in ("case_id", "handler", "source_file",
+        fields = ("case_id", "handler", "source_file",
                       "guard_ir", "guard_hash", "guard_ast_hash", "effects", "effect_ir",
                       "effect_ir_hash", "path_ast_hash", "queue_relation", "queue_relation_hash",
-                      "path_effect_hash", "handler_hash", "terminal"):
+                      "path_effect_hash", "handler_hash", "terminal",
+                      "branch_family_hash", "source_function_hash")
+        for field in fields:
+            if field not in actual:
+                continue
             if supplied.get(field) != actual[field]:
                 return {"status": "UNRESOLVED", "failure": "TRANSITION_PATH_BINDING_STALE", "path_id": path_id, "field": field}
         rows.append(actual)

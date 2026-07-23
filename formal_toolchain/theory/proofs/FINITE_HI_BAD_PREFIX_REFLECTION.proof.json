@@ -1,6 +1,18 @@
 {
+  "parameterized_relation_schema_hash": "622cef51b934d622d1babe661e52ac21fb944285675dded631ce8ca998cc8a9d",
   "proof_scope": "POINTWISE_RELATION_SPECIALIZATION_OVER_FINITE_CLOSED_PREFIXES",
-  "relation_interface": "n6_closed_prefix_relation_interface_v1",
+  "relation_interface": "n6_closed_prefix_relation_interface_v2",
+  "required_quantities": [
+    "mapped_job_key",
+    "criticality",
+    "release_time",
+    "absolute_deadline",
+    "removal_demand",
+    "service_at_deadline",
+    "terminal_status",
+    "miss_time",
+    "miss_ledger_membership"
+  ],
   "schema_version": "finite_hi_bad_prefix_reflection_proof_v2",
   "solver_backend": "z3",
   "solver_obligation_receipts": {
@@ -27,11 +39,11 @@
   },
   "source_bindings": {
     "formal_toolchain/adapters/formal_runtime_snapshot.py": "df697a371ac17eb9339da936dfed3f644f315db366c293cb39936da7bdbef5a5",
-    "formal_toolchain/bridge/bad_prefix.py": "d8ca59cff9ccbf8328c32585b82f6ca7b995817ee4e28cf0f7f71e7afd907e47",
+    "formal_toolchain/bridge/bad_prefix.py": "42a90262eb499a81486cb7e078fa4159756e5ae781e52b100c58df34c134f5b5",
     "formal_toolchain/bridge/case_templates.py": "15fe04241be303e3d3ea1ad7f66e88085bebece866a6dc4b195599a3850ae60f",
     "formal_toolchain/bridge/event_projection.py": "122786952059a08fb36f6bc0d0bb3c3cc847b65303d7e37bd6cfd1e539a2fb1e",
-    "formal_toolchain/bridge/prefix_refinement.py": "710df9629a6cab366527a099207622255e117272ac2571c99e770ef94b0cb045",
-    "formal_toolchain/bridge/state_relation.py": "3ad93e8570f82c2e1e52b3baa854429a8e72be283806781f37e95ffaee359994",
+    "formal_toolchain/bridge/prefix_refinement.py": "5bc2ff55d65025446a90d2e1e3bd6463462dc902444396640a3d50923b42684a",
+    "formal_toolchain/bridge/state_relation.py": "1df1edcebb0fa1bf0e8a55b1ff4132f0114997a3e16283aa03a63a892763c4f2",
     "formal_toolchain/bridge/transition_cases.py": "8750a80587645e50cadff69397f7d7c8bfc6972651c5b4c4f77e561ef84fb1a6",
     "formal_toolchain/reference/executable_semantics.py": "0f1d043bd6227b3c964921cf325a97acdb20e4356c4ce5e1fd828244632169f4",
     "formal_toolchain/reference/p0_projection.py": "0a6886a3e1579c015c606acb837c0da67e13bb91c85b7b1861d109919515a701",

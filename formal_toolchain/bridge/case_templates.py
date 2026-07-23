@@ -374,9 +374,16 @@ def compile_case_template(case_id: str, *, bounds: P0ModelBounds | None = None) 
         extra += ["(= task_criticality 1)"]
     if case_id == "PRIMARY_LO_CANCELLATION":
         extra += ["(= primary_mode 1)", "(> c_service c_budget)", "(= config_semantics 1)"]
+    if case_id == "RESCHEDULE_KEEP_SAME":
+        extra += ["(= force 0)", "(= selected_job_key c_running_job_key)",
+                  "(= highest_priority_selected 1)"]
+    if case_id == "RESCHEDULE_TO_IDLE":
+        extra += ["(= selected_job_present 1)",
+                  "(or (= force 1) (not (= selected_job_key c_running_job_key)))"]
     if case_id == "PREEMPTION_DISPATCH":
-        extra += ["(= highest_priority_selected 1)", "(= selected_job_key c_affected_job_key)",
-                  "(= c_selected_job_key selected_job_key)", "(>= c_ready 0)"]
+        extra += ["(= highest_priority_selected 1)", "(= selected_job_present 0)",
+                  "(or (= force 1) (not (= selected_job_key c_running_job_key)))",
+                  "(= selected_job_key c_affected_job_key)", "(> c_ready 0)"]
         extra += ["(or " + " ".join(
             f"(and (= c_job_{slot}_ready 1) (= c_job_{slot}_key selected_job_key))"
             for slot in range(bounds.job_slots)) + ")"]

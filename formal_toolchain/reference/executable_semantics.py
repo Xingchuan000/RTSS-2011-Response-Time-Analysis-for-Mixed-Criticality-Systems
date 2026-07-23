@@ -1061,7 +1061,18 @@ def step_reference_p0(
     elif first.event.kind == LogicalEventKind.REC:
         case_id = "IDLE_RECOVERY"
     elif first.event.kind == LogicalEventKind.DSP:
-        case_id = "PREEMPTION_DISPATCH"
+        before_running = getattr(before, "running_job_key", None)
+        if before_running is None:
+            before_running = before.running
+        after_running = getattr(after, "running_job_key", None)
+        if after_running is None:
+            after_running = after.running
+        if after_running == before_running:
+            case_id = "RESCHEDULE_KEEP_SAME"
+        elif after_running is None:
+            case_id = "RESCHEDULE_TO_IDLE"
+        else:
+            case_id = "PREEMPTION_DISPATCH"
     else:
         case_id = "CONTROLLER_NO_ACTION"
 
@@ -1113,6 +1124,8 @@ def step_reference(state: ReferenceState, taskset: Any) -> tuple[ReferenceState,
         "PRIMARY_LO_RELEASE": "SAME_TIME_REL",
         "DEGRADED_LO_RELEASE": "SAME_TIME_REL",
         "HI_RELEASE": "SAME_TIME_REL",
+        "RESCHEDULE_KEEP_SAME": "SAME_TIME_RESCHEDULE_STUTTER",
+        "RESCHEDULE_TO_IDLE": "SAME_TIME_RESCHEDULE_IDLE",
         "PREEMPTION_DISPATCH": "SAME_TIME_DSP",
         "ONE_SERVICE_TICK": "READY_SERVICE_OR_EARLIER_BOUNDARY",
         "NORMAL_COMPLETION": "SAME_TIME_REM",

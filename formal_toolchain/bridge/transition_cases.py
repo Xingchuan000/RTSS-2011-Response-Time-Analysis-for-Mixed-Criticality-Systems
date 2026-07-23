@@ -12,7 +12,8 @@ from .model_bounds import P0ModelBounds, _legacy_test_bounds
 
 REQUIRED_P0_CASE_IDS = (
     "BOOT_TO_PRECLOSED_0", "ARRIVAL_BATCH_NO_SWITCH", "ARRIVAL_BATCH_SWITCH_S0",
-    "PRIMARY_LO_RELEASE", "DEGRADED_LO_RELEASE", "HI_RELEASE", "PREEMPTION_DISPATCH",
+    "PRIMARY_LO_RELEASE", "DEGRADED_LO_RELEASE", "HI_RELEASE",
+    "RESCHEDULE_KEEP_SAME", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH",
     "ONE_SERVICE_TICK", "NORMAL_COMPLETION", "PRIMARY_LO_CANCELLATION",
     "DEGRADED_COMPLETION", "HI_COMPLETION", "DEADLINE_OBSERVATION_NO_MISS",
     "DEADLINE_OBSERVATION_FIRST_HI_MISS", "IDLE_RECOVERY", "CONTROLLER_NO_ACTION",
@@ -102,6 +103,8 @@ ALLOWED_MODIFIED_COMPONENTS = {
     "HI_COMPLETION": {"active_jobs", "ready_order", "running_key", "terminal_ledger", "effective_event_frontier"},
     "DEADLINE_OBSERVATION_FIRST_HI_MISS": {"miss_ledger", "time"},
     "DEADLINE_OBSERVATION_NO_MISS": {"time"}, "ONE_SERVICE_TICK": {"time", "active_service", "remaining_to_removal", "effective_event_frontier"},
+    "RESCHEDULE_KEEP_SAME": set(),
+    "RESCHEDULE_TO_IDLE": {"running_key", "effective_event_frontier"},
     "PREEMPTION_DISPATCH": {"running_key", "effective_event_frontier"}, "IDLE_RECOVERY": {"mode"},
     "CONTROLLER_SELECTED_ACTION": {"future_budget_ghost", "running_key", "effective_event_frontier"},
 }

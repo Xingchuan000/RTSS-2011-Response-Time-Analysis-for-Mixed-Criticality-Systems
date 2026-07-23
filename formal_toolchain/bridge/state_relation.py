@@ -10,6 +10,20 @@ from formal_toolchain.bridge.model_bounds import P0ModelBounds
 from formal_toolchain.adapters.formal_runtime_snapshot import ReleasedJobRecord, TerminalRecord, MissRecord
 
 
+REFERENCE_TRANSITION_SYSTEM_ID = "FIXED_EXECUTABLE_REFERENCE_P0_V3"
+
+N6_REQUIRED_QUANTITIES = (
+    "mapped_job_key",
+    "criticality",
+    "release_time",
+    "absolute_deadline",
+    "removal_demand",
+    "service_at_deadline",
+    "terminal_status",
+    "miss_time",
+    "miss_ledger_membership",
+)
+
 N6_JOB_RELATION_SUFFIXES = (
     "present",
     "key",
@@ -408,8 +422,9 @@ def build_n6_relation_interface(*_bounded_diagnostic_args: Any) -> dict[str, Any
         "schema_version": "n6_closed_prefix_relation_interface_v2",
         "scope": "EVERY_REACHABLE_CLOSED_PREFIX",
         "map_domain": "ALL_RELEASED_JOB_KEYS_IN_PREFIX",
-        "required_quantities": ["mapped_job_key", "criticality", "release_time", "absolute_deadline", "removal_demand", "service_at_deadline", "terminal_status", "miss_time", "miss_ledger_membership"],
+        "required_quantities": list(N6_REQUIRED_QUANTITIES),
         "parameterized_relation_schema_hash": parameterized_state_relation_schema_hash(),
+        "reference_transition_system_id": REFERENCE_TRANSITION_SYSTEM_ID,
     }
 
 
@@ -418,10 +433,20 @@ def validate_n6_relation_interface(interface: Mapping[str, Any]) -> None:
         raise ValueError("N6_RELATION_INTERFACE_SCHEMA_INVALID")
     if interface.get("scope") != "EVERY_REACHABLE_CLOSED_PREFIX":
         raise ValueError("N6_RELATION_INTERFACE_SCOPE_INVALID")
-    if "job_slots" in interface or any(str(k).startswith("job_") for k in interface.get("required_fields", ())):
+    if interface.get("map_domain") != "ALL_RELEASED_JOB_KEYS_IN_PREFIX":
+        raise ValueError("N6_RELATION_INTERFACE_MAP_DOMAIN_INVALID")
+    if "job_slots" in interface or any(
+        str(k).startswith("job_")
+        for k in interface.get("required_fields", ())
+    ):
         raise ValueError("N6_RELATION_INTERFACE_LEGACY_SLOT_BASED")
+    quantities = interface.get("required_quantities")
+    if not isinstance(quantities, list) or tuple(quantities) != N6_REQUIRED_QUANTITIES:
+        raise ValueError("N6_RELATION_INTERFACE_FIELDS_INVALID")
     if interface.get("parameterized_relation_schema_hash") != parameterized_state_relation_schema_hash():
         raise ValueError("N6_RELATION_INTERFACE_RELATION_SCHEMA_INVALID")
+    if interface.get("reference_transition_system_id") != REFERENCE_TRANSITION_SYSTEM_ID:
+        raise ValueError("N6_RELATION_INTERFACE_REFERENCE_SYSTEM_INVALID")
 
 
 def p0_state_from_runtime_engine(engine: Any) -> P0ConcreteState:

@@ -97,6 +97,13 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
         return {"status": "UNRESOLVED", "failure": "BOUND_PATH_OR_SCHEMA_GATE_FAILED",
                 "transition_cases": compiled}
     by_case = {proof["case_id"]: proof for proof in compiled["proofs"]}
+    required_reschedule_cases = {
+        "RESCHEDULE_KEEP_SAME", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH",
+    }
+    if not required_reschedule_cases <= set(by_case):
+        return {"status": "UNRESOLVED",
+                "failure": "RESCHEDULE_CASE_PARTITION_INCOMPLETE",
+                "transition_cases": compiled}
     all_three = all(proof.get("concrete_feasibility") == "SAT"
                     and proof.get("reference_totality") == "PASS"
                     and proof.get("relation_preservation") == "PASS"

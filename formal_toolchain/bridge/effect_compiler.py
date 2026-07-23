@@ -72,6 +72,70 @@ class CompiledConcreteEffect:
         return "(and " + " ".join(self.equations or ("true",)) + ")"
 
 
+def compile_reschedule_family_effect(*, case_id: str, branch_binding,
+                                     bounds: P0ModelBounds) -> CompiledConcreteEffect:
+    """Compile the complete ``_reschedule`` family, never a selected CFG path.
+
+    The source binding supplies the real AST evidence; the equations below are
+    the abstract scheduler projection of the three mutually exclusive runtime
+    alternatives.  Audit/monitor/start-history effects are consumed as ghost
+    evidence and do not enter the P0 relation.
+    """
+    if case_id not in {"RESCHEDULE_KEEP_SAME", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH"}:
+        raise ValueError(f"NOT_RESCHEDULE_FAMILY:{case_id}")
+    effect_ir = tuple(branch_binding.effect_ir)
+    consumed = tuple(str(item["ast_hash"]) for item in effect_ir)
+    overridden = {"running", "running_job_key", "affected_job_running"}
+    if case_id == "PREEMPTION_DISPATCH":
+        overridden.add("affected_job_key")
+    if case_id in {"RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH"}:
+        overridden.add("queue_token_epoch")
+    if case_id == "PREEMPTION_DISPATCH":
+        overridden.add("queue_event_count")
+    if case_id == "RESCHEDULE_KEEP_SAME":
+        overridden = set()
+    equations = [f"(= c_{field}_post c_{field})" for field in p0_smt_relation_fields(bounds)
+                 if field not in overridden and (case_id == "RESCHEDULE_KEEP_SAME"
+                                                 or not (field.startswith("job_") and field.endswith("_running")))]
+    modified: set[str] = set()
+    semantic: set[str] = set()
+    queue_equations: list[str] = []
+    if case_id == "RESCHEDULE_KEEP_SAME":
+        # The return boundary is a state identity, including the frontier.
+        pass
+    elif case_id == "RESCHEDULE_TO_IDLE":
+        equations.extend(("(= c_running_post 0)", "(= c_running_job_key_post 0)",
+                          "(= c_affected_job_running_post 0)",
+                          "(= c_queue_token_epoch_post (+ c_queue_token_epoch 1))"))
+        for slot in range(bounds.job_slots):
+            equations.append(f"(= c_job_{slot}_running_post 0)")
+        modified.update(("running_key", "effective_event_frontier"))
+        semantic.add("TOKEN_INVALIDATION")
+        queue_equations.append("(= c_queue_token_epoch_post (+ c_queue_token_epoch 1))")
+    else:
+        equations.extend(("(= c_running_post 1)",
+                          "(= c_running_job_key_post selected_job_key)",
+                          "(= c_affected_job_key_post selected_job_key)",
+                          "(= c_affected_job_running_post 1)",
+                          "(= c_queue_token_epoch_post (+ c_queue_token_epoch 1))",
+                          "(= c_queue_event_count_post (+ c_queue_event_count 2))"))
+        for slot in range(bounds.job_slots):
+            selected = f"(and (= c_job_{slot}_present 1) (= c_job_{slot}_key selected_job_key))"
+            equations.append(f"(= c_job_{slot}_running_post (ite {selected} 1 0))")
+        modified.update(("running_key", "effective_event_frontier"))
+        semantic.update(("TOKEN_INVALIDATION", "QUEUE_PUSH"))
+        queue_equations.extend(("(= c_queue_token_epoch_post (+ c_queue_token_epoch 1))",
+                                "(= c_queue_event_count_post (+ c_queue_event_count 2))"))
+    return CompiledConcreteEffect(
+        tuple(equations), consumed, queue_equations=tuple(queue_equations),
+        modified_components=tuple(sorted(modified)),
+        semantic_effect_kinds=tuple(sorted(semantic)),
+        affected_job_sources=tuple(sorted(str(item.get("source", "")) for item in effect_ir
+                                          if any(token in str(item.get("source", ""))
+                                                 for token in ("running_job", "queue", "token"))))
+    )
+
+
 def is_pure_local_effect(*, kind: str, source: str) -> bool:
     if kind in {"PURE_EXPR", "ASSERT", "RETURN"}:
         return True

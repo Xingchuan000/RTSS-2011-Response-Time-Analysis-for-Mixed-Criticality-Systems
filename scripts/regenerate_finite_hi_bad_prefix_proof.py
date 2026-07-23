@@ -4,6 +4,10 @@ import json
 from pathlib import Path
 
 from formal_toolchain.core.hashing import sha256_file
+from formal_toolchain.bridge.state_relation import (
+    N6_REQUIRED_QUANTITIES,
+    parameterized_state_relation_schema_hash,
+)
 from formal_toolchain.theory.backends.finite_hi_bad_prefix import (
     FiniteHIBadPrefixBackend, current_n6_source_bindings, verify_finite_hi_bad_prefix_math,
 )
@@ -23,7 +27,9 @@ def main() -> None:
              "theorem_statement_hash": statement["statement_hash"],
              "theorem_assumption_hash": statement["assumption_hash"],
              "source_bindings": current_n6_source_bindings(), "solver_backend": "z3",
-             "relation_interface": "n6_closed_prefix_relation_interface_v1",
+             "relation_interface": "n6_closed_prefix_relation_interface_v2",
+             "parameterized_relation_schema_hash": parameterized_state_relation_schema_hash(),
+             "required_quantities": list(N6_REQUIRED_QUANTITIES),
              "proof_scope": "POINTWISE_RELATION_SPECIALIZATION_OVER_FINITE_CLOSED_PREFIXES",
              "solver_obligation_receipts": math["obligations"]}
     PROOF_PATH.write_text(json.dumps(proof, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -1,6 +1,6 @@
 {
   "schema_version": "phase_k_transition_path_map_v2_cfg_ir",
-  "source_hash": "3890bcd3b3906865d53b7bf982ab209d61dfd8423bedd5e765817a99556efc46",
+  "source_hash": "9ea771f94063bd40402a2c21aa488e3b338e41d72c65f4aa4251cfae194f6de2",
   "paths": {
     "boot/preclosed_0": {
       "path_id": "boot/preclosed_0",
@@ -1230,71 +1230,93 @@
       "handler_hash": "27f593f76e390641a15d864b52b8298acfacbd5f59810b6c00ae10ea2d96529b",
       "terminal": "FALLTHROUGH"
     },
-    "dispatch/preempt": {
-      "path_id": "dispatch/preempt",
+    "reschedule/keep_same": {
+      "path_id": "reschedule/keep_same",
       "handler": "_reschedule",
-      "case_id": "PREEMPTION_DISPATCH",
+      "case_id": "RESCHEDULE_KEEP_SAME",
       "source_file": "amc_py/event_runtime.py",
       "guard": [
         {
           "test_source": "selected is state.running_job and (not force)",
-          "test_ast_hash": "ad4f12c13b82b64b420056f94520473256aaeb452ecaa8aed22bd6ec36fab0ab",
-          "polarity": false,
-          "lineno": 456
-        },
-        {
-          "test_source": "state.running_job is not None",
-          "test_ast_hash": "7ed8cfceae09b84dbf4688759ebc4ec5eb2476fab2597adc54d1c85ea7d9400d",
           "polarity": true,
-          "lineno": 459
-        },
-        {
-          "test_source": "selected is None",
-          "test_ast_hash": "241e1bca800870407f1bce2d0062bf8d0f0e26f3be9970f9b2f7b28aece1d8fc",
-          "polarity": false,
-          "lineno": 463
-        },
-        {
-          "test_source": "selected_key not in state.started_jobs",
-          "test_ast_hash": "2a32c61ed7bb4508723c301703570c5fab6453014663192257bdc810f2cbff62",
-          "polarity": false,
-          "lineno": 468
+          "test_ast_hash": "ad4f12c13b82b64b420056f94520473256aaeb452ecaa8aed22bd6ec36fab0ab",
+          "lineno": 456
         }
       ],
       "guard_ir": [
         {
           "test_source": "selected is state.running_job and (not force)",
+          "polarity": true,
           "test_ast_hash": "ad4f12c13b82b64b420056f94520473256aaeb452ecaa8aed22bd6ec36fab0ab",
+          "lineno": 456
+        }
+      ],
+      "guard_hash": "e1b3768dd5c400888079cbf257bde4da3c4a2b70fd1f49f999d0e3051e42a691",
+      "guard_ast_hash": "e1b3768dd5c400888079cbf257bde4da3c4a2b70fd1f49f999d0e3051e42a691",
+      "effects": [
+        "highest_priority_select",
+        "reschedule_stutter"
+      ],
+      "effect_ir": [
+        {
+          "kind": "RETURN",
+          "target": null,
+          "callee": null,
+          "source": "return",
+          "ast_hash": "e01524ad0f23296d6682f379ba99272d756b40859ff82242232dde7245ace8e9",
+          "lineno": 457
+        }
+      ],
+      "effect_ir_hash": "992c0f21705d14ab542a85de4c177f98a4ca6e38d115abc1a063c491b4367fbf",
+      "queue_relation": [],
+      "queue_relation_hash": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "path_ast_hash": "0e9e54b6720fea78f97016701311977915adb8a05074cffc8ee1ae691cebf7b4",
+      "handler_hash": "a098307eab6c026a86f03df3d2b5dea83a5a286d9285d77f1ebd9c398cc25c58",
+      "path_effect_hash": "0e9e54b6720fea78f97016701311977915adb8a05074cffc8ee1ae691cebf7b4",
+      "branch_family_hash": "0e9e54b6720fea78f97016701311977915adb8a05074cffc8ee1ae691cebf7b4",
+      "source_function_hash": "a098307eab6c026a86f03df3d2b5dea83a5a286d9285d77f1ebd9c398cc25c58",
+      "terminal": "FAMILY"
+    },
+    "reschedule/to_idle": {
+      "path_id": "reschedule/to_idle",
+      "handler": "_reschedule",
+      "case_id": "RESCHEDULE_TO_IDLE",
+      "source_file": "amc_py/event_runtime.py",
+      "guard": [
+        {
+          "test_source": "selected is state.running_job and (not force)",
           "polarity": false,
+          "test_ast_hash": "ad4f12c13b82b64b420056f94520473256aaeb452ecaa8aed22bd6ec36fab0ab",
           "lineno": 456
         },
         {
-          "test_source": "state.running_job is not None",
-          "test_ast_hash": "7ed8cfceae09b84dbf4688759ebc4ec5eb2476fab2597adc54d1c85ea7d9400d",
+          "test_source": "selected is None",
           "polarity": true,
-          "lineno": 459
+          "test_ast_hash": "241e1bca800870407f1bce2d0062bf8d0f0e26f3be9970f9b2f7b28aece1d8fc",
+          "lineno": 463
+        }
+      ],
+      "guard_ir": [
+        {
+          "test_source": "selected is state.running_job and (not force)",
+          "polarity": false,
+          "test_ast_hash": "ad4f12c13b82b64b420056f94520473256aaeb452ecaa8aed22bd6ec36fab0ab",
+          "lineno": 456
         },
         {
           "test_source": "selected is None",
+          "polarity": true,
           "test_ast_hash": "241e1bca800870407f1bce2d0062bf8d0f0e26f3be9970f9b2f7b28aece1d8fc",
-          "polarity": false,
           "lineno": 463
-        },
-        {
-          "test_source": "selected_key not in state.started_jobs",
-          "test_ast_hash": "2a32c61ed7bb4508723c301703570c5fab6453014663192257bdc810f2cbff62",
-          "polarity": false,
-          "lineno": 468
         }
       ],
-      "guard_hash": "403d32f62702dc5689f5e4c08d3d19b6bb05dbb16bb23fa56763033761d9c612",
-      "guard_ast_hash": "403d32f62702dc5689f5e4c08d3d19b6bb05dbb16bb23fa56763033761d9c612",
+      "guard_hash": "3931eb9b6f9e30dfad9d7adbdafe390e868acacb8510ee618acd46388e055f11",
+      "guard_ast_hash": "3931eb9b6f9e30dfad9d7adbdafe390e868acacb8510ee618acd46388e055f11",
       "effects": [
         "highest_priority_select",
-        "running_update",
-        "preempt_invalidate"
+        "optional_previous_invalidation",
+        "running_clear"
       ],
-      "path_effect_hash": "1784f7647ca0934d56a48ad6c0e29839e43dd1cf64acbfd5917e6877898224d8",
       "effect_ir": [
         {
           "kind": "PURE_EXPR",
@@ -1311,6 +1333,14 @@
           "source": "selected = _select_highest_priority_ready_job(state.active_jobs, priority_map)",
           "ast_hash": "98b3221fec1ee1aef2c6486cba90cd7f9f596222d9f9d0f631506d5cd48e9fb3",
           "lineno": 455
+        },
+        {
+          "kind": "RETURN",
+          "target": null,
+          "callee": null,
+          "source": "return",
+          "ast_hash": "e01524ad0f23296d6682f379ba99272d756b40859ff82242232dde7245ace8e9",
+          "lineno": 457
         },
         {
           "kind": "CALL",
@@ -1330,11 +1360,43 @@
         },
         {
           "kind": "ASSIGN",
+          "target": "state.run_started_at",
+          "callee": null,
+          "source": "state.run_started_at = None",
+          "ast_hash": "bb1462f10430422209bd9796f9da4f2bd6bf122850dcaeaff09a4828606c6f48",
+          "lineno": 464
+        },
+        {
+          "kind": "RETURN",
+          "target": null,
+          "callee": null,
+          "source": "return",
+          "ast_hash": "e01524ad0f23296d6682f379ba99272d756b40859ff82242232dde7245ace8e9",
+          "lineno": 465
+        },
+        {
+          "kind": "ASSIGN",
           "target": "selected_key",
           "callee": null,
           "source": "selected_key = _job_key(selected.task.name, selected.release_index)",
           "ast_hash": "04db0420f4b235b57c3658d3b2398dbae24f8213485b1ddbf2ce136aebcb4d1a",
           "lineno": 467
+        },
+        {
+          "kind": "CALL",
+          "target": null,
+          "callee": "state.started_jobs.add",
+          "source": "state.started_jobs.add(selected_key)",
+          "ast_hash": "eec11701ebc59076122fcb4af3f12a91ec5643cdc64ab565226df06b617b42ec",
+          "lineno": 469
+        },
+        {
+          "kind": "CALL",
+          "target": null,
+          "callee": "monitor.record_job_start",
+          "source": "monitor.record_job_start(selected.task.name)",
+          "ast_hash": "5eb6526794cee55475150c2d004413627845c83adfb5f6485c1fda4af2fb00bb",
+          "lineno": 471
         },
         {
           "kind": "ASSIGN",
@@ -1353,8 +1415,16 @@
           "lineno": 474
         }
       ],
-      "effect_ir_hash": "57f04c5a53a7e5365ed4be11c58612235f7adfbe9ad5c4fb31df57bf57fef532",
+      "effect_ir_hash": "73858ab5b8a9b298b8d0f712ddf031b8b2163b52052b6e488d98515aeb95ed04",
       "queue_relation": [
+        {
+          "kind": "CALL",
+          "target": null,
+          "callee": "_invalidate_job_events",
+          "source": "_invalidate_job_events(state, state.running_job)",
+          "ast_hash": "c39075d8556fc3175fbb86e7dd00257087f1bf434ebbd0fcd56db6f88caee451",
+          "lineno": 460
+        },
         {
           "kind": "CALL",
           "target": null,
@@ -1364,10 +1434,179 @@
           "lineno": 474
         }
       ],
-      "queue_relation_hash": "9d98e1613e189d07d880b1e7e19270d61a4be2da230a45965b9db6a3f3c35705",
-      "path_ast_hash": "eb29a83c092f154606f8e99e33e4d2d8169786b5279708bc3391130a3a1c249c",
-      "handler_hash": "8c9ffc449915e5f8a90c54229cd7955d85d927b2bad36e3dc940e003396ed52e",
-      "terminal": "FALLTHROUGH"
+      "queue_relation_hash": "66f565964c471370a2cc41e2ca1bc6dbf89079caaf4bafe4445f8207408bf0ff",
+      "path_ast_hash": "9b560a25ee3bbf5c0d9e8ca16767704647b97e62e2a7c4e7d0a843bf10fa7f52",
+      "handler_hash": "a098307eab6c026a86f03df3d2b5dea83a5a286d9285d77f1ebd9c398cc25c58",
+      "path_effect_hash": "9b560a25ee3bbf5c0d9e8ca16767704647b97e62e2a7c4e7d0a843bf10fa7f52",
+      "branch_family_hash": "9b560a25ee3bbf5c0d9e8ca16767704647b97e62e2a7c4e7d0a843bf10fa7f52",
+      "source_function_hash": "a098307eab6c026a86f03df3d2b5dea83a5a286d9285d77f1ebd9c398cc25c58",
+      "terminal": "FAMILY"
+    },
+    "reschedule/dispatch": {
+      "path_id": "reschedule/dispatch",
+      "handler": "_reschedule",
+      "case_id": "PREEMPTION_DISPATCH",
+      "source_file": "amc_py/event_runtime.py",
+      "guard": [
+        {
+          "test_source": "selected is state.running_job and (not force)",
+          "polarity": false,
+          "test_ast_hash": "ad4f12c13b82b64b420056f94520473256aaeb452ecaa8aed22bd6ec36fab0ab",
+          "lineno": 456
+        },
+        {
+          "test_source": "selected is None",
+          "polarity": false,
+          "test_ast_hash": "241e1bca800870407f1bce2d0062bf8d0f0e26f3be9970f9b2f7b28aece1d8fc",
+          "lineno": 463
+        }
+      ],
+      "guard_ir": [
+        {
+          "test_source": "selected is state.running_job and (not force)",
+          "polarity": false,
+          "test_ast_hash": "ad4f12c13b82b64b420056f94520473256aaeb452ecaa8aed22bd6ec36fab0ab",
+          "lineno": 456
+        },
+        {
+          "test_source": "selected is None",
+          "polarity": false,
+          "test_ast_hash": "241e1bca800870407f1bce2d0062bf8d0f0e26f3be9970f9b2f7b28aece1d8fc",
+          "lineno": 463
+        }
+      ],
+      "guard_hash": "eccfd08996d3660740e31fbc8488d6e4949862409fc2ac5a9b9cc0f78c1dbc00",
+      "guard_ast_hash": "eccfd08996d3660740e31fbc8488d6e4949862409fc2ac5a9b9cc0f78c1dbc00",
+      "effects": [
+        "highest_priority_select",
+        "optional_previous_invalidation",
+        "running_update",
+        "running_event_schedule"
+      ],
+      "effect_ir": [
+        {
+          "kind": "PURE_EXPR",
+          "target": null,
+          "callee": null,
+          "source": "'按固定优先级重调度，必要时触发抢占并重排事件。'",
+          "ast_hash": "a700229f0924c01ebd88cc0ea8a6785243d19bf64ae0e7b434e0a6ad3833fa94",
+          "lineno": 453
+        },
+        {
+          "kind": "ASSIGN",
+          "target": "selected",
+          "callee": null,
+          "source": "selected = _select_highest_priority_ready_job(state.active_jobs, priority_map)",
+          "ast_hash": "98b3221fec1ee1aef2c6486cba90cd7f9f596222d9f9d0f631506d5cd48e9fb3",
+          "lineno": 455
+        },
+        {
+          "kind": "RETURN",
+          "target": null,
+          "callee": null,
+          "source": "return",
+          "ast_hash": "e01524ad0f23296d6682f379ba99272d756b40859ff82242232dde7245ace8e9",
+          "lineno": 457
+        },
+        {
+          "kind": "CALL",
+          "target": null,
+          "callee": "_invalidate_job_events",
+          "source": "_invalidate_job_events(state, state.running_job)",
+          "ast_hash": "c39075d8556fc3175fbb86e7dd00257087f1bf434ebbd0fcd56db6f88caee451",
+          "lineno": 460
+        },
+        {
+          "kind": "ASSIGN",
+          "target": "state.running_job",
+          "callee": null,
+          "source": "state.running_job = selected",
+          "ast_hash": "40796b185106a5656fc22dc6fc1099c9225292005028a0ecf84c25b14ab05713",
+          "lineno": 462
+        },
+        {
+          "kind": "ASSIGN",
+          "target": "state.run_started_at",
+          "callee": null,
+          "source": "state.run_started_at = None",
+          "ast_hash": "bb1462f10430422209bd9796f9da4f2bd6bf122850dcaeaff09a4828606c6f48",
+          "lineno": 464
+        },
+        {
+          "kind": "RETURN",
+          "target": null,
+          "callee": null,
+          "source": "return",
+          "ast_hash": "e01524ad0f23296d6682f379ba99272d756b40859ff82242232dde7245ace8e9",
+          "lineno": 465
+        },
+        {
+          "kind": "ASSIGN",
+          "target": "selected_key",
+          "callee": null,
+          "source": "selected_key = _job_key(selected.task.name, selected.release_index)",
+          "ast_hash": "04db0420f4b235b57c3658d3b2398dbae24f8213485b1ddbf2ce136aebcb4d1a",
+          "lineno": 467
+        },
+        {
+          "kind": "CALL",
+          "target": null,
+          "callee": "state.started_jobs.add",
+          "source": "state.started_jobs.add(selected_key)",
+          "ast_hash": "eec11701ebc59076122fcb4af3f12a91ec5643cdc64ab565226df06b617b42ec",
+          "lineno": 469
+        },
+        {
+          "kind": "CALL",
+          "target": null,
+          "callee": "monitor.record_job_start",
+          "source": "monitor.record_job_start(selected.task.name)",
+          "ast_hash": "5eb6526794cee55475150c2d004413627845c83adfb5f6485c1fda4af2fb00bb",
+          "lineno": 471
+        },
+        {
+          "kind": "ASSIGN",
+          "target": "state.run_started_at",
+          "callee": null,
+          "source": "state.run_started_at = now",
+          "ast_hash": "78a4f7b71ab603548c0787adc124d132b44eabe093d950455b52b7c2e6ab0e63",
+          "lineno": 473
+        },
+        {
+          "kind": "CALL",
+          "target": null,
+          "callee": "_schedule_running_job_events",
+          "source": "_schedule_running_job_events(state, queue, runtime_budgets, now, cfg)",
+          "ast_hash": "d5def96e4f78a7c481dc45f0e0915d6d2d5c085e97d9a1a5826fdafbdf2a49d5",
+          "lineno": 474
+        }
+      ],
+      "effect_ir_hash": "73858ab5b8a9b298b8d0f712ddf031b8b2163b52052b6e488d98515aeb95ed04",
+      "queue_relation": [
+        {
+          "kind": "CALL",
+          "target": null,
+          "callee": "_invalidate_job_events",
+          "source": "_invalidate_job_events(state, state.running_job)",
+          "ast_hash": "c39075d8556fc3175fbb86e7dd00257087f1bf434ebbd0fcd56db6f88caee451",
+          "lineno": 460
+        },
+        {
+          "kind": "CALL",
+          "target": null,
+          "callee": "_schedule_running_job_events",
+          "source": "_schedule_running_job_events(state, queue, runtime_budgets, now, cfg)",
+          "ast_hash": "d5def96e4f78a7c481dc45f0e0915d6d2d5c085e97d9a1a5826fdafbdf2a49d5",
+          "lineno": 474
+        }
+      ],
+      "queue_relation_hash": "66f565964c471370a2cc41e2ca1bc6dbf89079caaf4bafe4445f8207408bf0ff",
+      "path_ast_hash": "438f95c836281bec20162d0dbc5241f1a511353b0223bb6954b94c7271adda5f",
+      "handler_hash": "a098307eab6c026a86f03df3d2b5dea83a5a286d9285d77f1ebd9c398cc25c58",
+      "path_effect_hash": "438f95c836281bec20162d0dbc5241f1a511353b0223bb6954b94c7271adda5f",
+      "branch_family_hash": "438f95c836281bec20162d0dbc5241f1a511353b0223bb6954b94c7271adda5f",
+      "source_function_hash": "a098307eab6c026a86f03df3d2b5dea83a5a286d9285d77f1ebd9c398cc25c58",
+      "terminal": "FAMILY"
     },
     "service/one_tick": {
       "path_id": "service/one_tick",
@@ -3550,6 +3789,6 @@
     },
     "artifact_hash": "05fff9db3b0eeaa2334210470af5911328fc49b5a72d657c2efd46dfbe01ee48"
   },
-  "case_manifest_hash": "a7adb0436af88f758e633caf1bf688d77a94c2c937de1b16d30c701b8800272f",
-  "path_map_hash": "d58c0df4ed143f5d148f1f0f5363acc16294e3340e92b3ce9a80992d6863e037"
+  "case_manifest_hash": "1b649137ee69a4809be3c0a11990cb9a3ac6b8095fe2f2c529f5e4312dd663f0",
+  "path_map_hash": "f2fa2cddf5ee41f35f153e20488b4c15ab35c94af9b98a63cb3a2455c87c1fca"
 }

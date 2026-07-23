@@ -17,6 +17,53 @@ ARRIVAL_BATCH_ALTERNATIVES = (
     {"alternative_id": "ARRIVAL_BATCH_SWITCH_S0", "guard_kind": "BATCH_MODE_SWITCH_S0", "macro_case_id": "ARRIVAL_BATCH_SWITCH_S0"},
 )
 
+RESCHEDULE_ALTERNATIVES = (
+    "RESCHEDULE_KEEP_SAME", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH",
+)
+
+
+def prove_reschedule_partition() -> dict[str, object]:
+    """Machine-check the exhaustive, pairwise-disjoint reschedule partition."""
+    try:
+        import z3
+        selected_eq_previous, force, selected_is_none = z3.Bools(
+            "selected_eq_previous force selected_is_none")
+        keep = z3.And(selected_eq_previous, z3.Not(force))
+        idle = z3.And(z3.Not(keep), selected_is_none)
+        dispatch = z3.And(z3.Not(keep), z3.Not(selected_is_none))
+        solver = z3.Solver()
+        exhaustive = solver.check(z3.Not(z3.Or(keep, idle, dispatch))) == z3.unsat
+        exclusive = all(
+            z3.Solver().check(z3.And(left, right)) == z3.unsat
+            for left, right in ((keep, idle), (keep, dispatch), (idle, dispatch)))
+        status = "PASS" if exhaustive and exclusive else "FAIL"
+    except ImportError:
+        return {"status": "UNRESOLVED", "failure": "Z3_REQUIRED",
+                "cases": list(RESCHEDULE_ALTERNATIVES), "exhaustive": False,
+                "pairwise_exclusive": False}
+    return {"status": status, "cases": list(RESCHEDULE_ALTERNATIVES),
+            "exhaustive": exhaustive, "pairwise_exclusive": exclusive}
+
+
+def prove_handler_reschedule_unreachability() -> dict[str, object]:
+    """Discharge context-excluded family alternatives as UNSAT, not PASS."""
+    try:
+        import z3
+        previous_none, selected_none, selected_eq_previous, force = z3.Bools(
+            "handler_previous_none handler_selected_none handler_selected_eq_previous handler_force")
+        keep = z3.And(selected_eq_previous, z3.Not(force))
+        idle = z3.And(z3.Not(keep), selected_none)
+        checks = {
+            "completion_to_idle": z3.And(previous_none, selected_none, selected_eq_previous, z3.Not(force), idle),
+            "controller_force_keep": z3.And(force, keep),
+        }
+        result = {name: "UNSAT" if z3.Solver().check(formula) == z3.unsat else "SAT"
+                  for name, formula in checks.items()}
+        return {"status": "PASS" if all(value == "UNSAT" for value in result.values()) else "FAIL",
+                "proofs": result}
+    except ImportError:
+        return {"status": "UNRESOLVED", "failure": "Z3_REQUIRED"}
+
 EVENT_HANDLER_ALTERNATIVES = (
     {"alternative_id": "CONTROLLER_NO_ACTION", "case_ids": ("CONTROLLER_NO_ACTION",)},
     {"alternative_id": "CONTROLLER_SELECTED_ACTION", "case_ids": ("CONTROLLER_SELECTED_ACTION",)},
@@ -24,10 +71,10 @@ EVENT_HANDLER_ALTERNATIVES = (
     {"alternative_id": "JOB_ARRIVAL_SWITCH_S0", "case_ids": ("ARRIVAL_BATCH_SWITCH_S0",)},
     {"alternative_id": "DEADLINE_NO_MISS", "case_ids": ("DEADLINE_OBSERVATION_NO_MISS",)},
     {"alternative_id": "DEADLINE_FIRST_HI_MISS", "case_ids": ("DEADLINE_OBSERVATION_FIRST_HI_MISS",)},
-    {"alternative_id": "NORMAL_COMPLETION", "case_ids": ("NORMAL_COMPLETION", "PREEMPTION_DISPATCH")},
-    {"alternative_id": "DEGRADED_COMPLETION", "case_ids": ("DEGRADED_COMPLETION", "PREEMPTION_DISPATCH")},
-    {"alternative_id": "HI_COMPLETION", "case_ids": ("HI_COMPLETION", "PREEMPTION_DISPATCH")},
-    {"alternative_id": "PRIMARY_LO_CANCELLATION", "case_ids": ("PRIMARY_LO_CANCELLATION", "PREEMPTION_DISPATCH")},
+    {"alternative_id": "NORMAL_COMPLETION", "case_ids": ("NORMAL_COMPLETION", "RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH")},
+    {"alternative_id": "DEGRADED_COMPLETION", "case_ids": ("DEGRADED_COMPLETION", "RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH")},
+    {"alternative_id": "HI_COMPLETION", "case_ids": ("HI_COMPLETION", "RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH")},
+    {"alternative_id": "PRIMARY_LO_CANCELLATION", "case_ids": ("PRIMARY_LO_CANCELLATION", "RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH")},
     {"alternative_id": "IDLE_RECOVERY", "case_ids": ("IDLE_RECOVERY",)},
 )
 
@@ -88,8 +135,16 @@ class CompositeSequenceResult:
     formula: str
     declarations: str
     state_ids: tuple[str, ...]
-    solver_result: str
+    feasibility_result: str
+    precondition_chain_result: str
+    relation_chain_result: str
+    step_precondition_results: tuple[dict[str, object], ...]
     failure: str | None = None
+
+    @property
+    def solver_result(self) -> str:
+        """兼容旧报告字段；这里只表示整体 sequence 的可满足性。"""
+        return self.feasibility_result
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,97 +374,277 @@ def rename_transition_formula(formula: str, *, concrete_pre: str, concrete_post:
     return _rename_state_namespace(result, namespace="r", pre_prefix=reference_pre, post_prefix=reference_post)
 
 
-def _check_sequence_with_z3(*, formula: str, declarations: str,
-                            state_ids: tuple[str, ...]) -> CompositeSequenceResult:
+def _prepare_sequence_declarations(*, formulas: Sequence[str], declarations: str) -> str:
+    """补齐重命名后未显式声明的有限状态变量。"""
+    declared = set(re.findall(r"\(declare-\w+\s+([^\s()]+)", declarations))
+    text = "\n".join(formulas)
+    inferred = {
+        token
+        for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", text)
+        if token.startswith(("c_s", "r_s")) and token not in declared
+    }
+    extra = "\n".join(
+        f"(declare-fun {token} () Int)"
+        for token in sorted(inferred)
+    )
+    if not extra:
+        return declarations
+    return declarations + ("\n" if declarations else "") + extra
+
+
+def _run_sequence_z3_query(*, declarations: str, assertion: str) -> tuple[str, str | None, str]:
     try:
         import z3
     except ImportError:
-        return CompositeSequenceResult("UNRESOLVED", formula, declarations, state_ids, "NOT_AVAILABLE", "SEQUENCE_Z3_NOT_AVAILABLE")
-    # Unit-level callers may provide only deltas.  The production path carries
-    # declarations from the child certificates; for the former, infer the
-    # renamed state symbols as integer variables so the same Z3 gate applies.
-    declared = set(re.findall(r"\(declare-\w+\s+([^\s()]+)", declarations))
-    inferred = {
-        token for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", formula)
-        if token.startswith(("c_s", "r_s")) and token not in declared
-    }
-    declarations = declarations + ("\n" if declarations else "") + "\n".join(
-        f"(declare-fun {token} () Int)" for token in sorted(inferred)
+        return "NOT_AVAILABLE", "SEQUENCE_Z3_NOT_AVAILABLE", declarations
+
+    prepared = _prepare_sequence_declarations(
+        formulas=(assertion,),
+        declarations=declarations,
     )
-    query = declarations + "\n(assert " + formula + ")\n"
     solver = z3.Solver()
+    query = prepared + "\n(assert " + assertion + ")\n"
     try:
         solver.from_string(query)
     except z3.Z3Exception as exc:
-        return CompositeSequenceResult("UNRESOLVED", formula, declarations, state_ids, "PARSE_FAILED", "SEQUENCE_SMT_PARSE_FAILED:" + str(exc))
+        return "PARSE_FAILED", "SEQUENCE_SMT_PARSE_FAILED:" + str(exc), prepared
+
     result = solver.check()
+    if result == z3.sat:
+        return "SAT", None, prepared
     if result == z3.unsat:
-        return CompositeSequenceResult("UNRESOLVED", formula, declarations, state_ids, "UNSAT", "SEQUENCE_INTERMEDIATE_STATE_CONTRADICTION")
-    if result == z3.unknown:
-        return CompositeSequenceResult("UNRESOLVED", formula, declarations, state_ids, "UNKNOWN", "SEQUENCE_SOLVER_UNKNOWN")
-    return CompositeSequenceResult("PASS", formula, declarations, state_ids, "SAT")
+        return "UNSAT", None, prepared
+    return "UNKNOWN", "SEQUENCE_SOLVER_UNKNOWN", prepared
+
+
+def _sequence_unresolved(
+    failure: str,
+    *,
+    formula: str = "",
+    declarations: str = "",
+    states: tuple[str, ...] = (),
+    feasibility_result: str = "NOT_RUN",
+    precondition_chain_result: str = "NOT_RUN",
+    relation_chain_result: str = "NOT_RUN",
+    step_precondition_results: Sequence[Mapping[str, object]] = (),
+) -> CompositeSequenceResult:
+    return CompositeSequenceResult(
+        status="UNRESOLVED",
+        formula=formula,
+        declarations=declarations,
+        state_ids=states,
+        feasibility_result=feasibility_result,
+        precondition_chain_result=precondition_chain_result,
+        relation_chain_result=relation_chain_result,
+        step_precondition_results=tuple(dict(item) for item in step_precondition_results),
+        failure=failure,
+    )
 
 
 def compose_fixed_transition_sequence(steps: Sequence[Mapping[str, object]]) -> CompositeSequenceResult:
+    """组合固定顺序的 micro-steps。
+
+    数学门禁分三层：
+    1. 每个 child 已分别证明 concrete feasibility、reference totality 与 relation preservation；
+    2. 每一步的 relation-preservation 公式被显式放入中间状态链；
+    3. 对每个相邻阶段检查 prefix => next precondition，排除仅存在一条偶然 SAT 样例的假阳性。
+    """
     if not steps:
-        return CompositeSequenceResult("UNRESOLVED", "", "", (), "NOT_RUN", "SEQUENCE_EMPTY")
+        return _sequence_unresolved("SEQUENCE_EMPTY")
+
     case_ids = {str(step.get("case_id")) for step in steps}
     if {"ARRIVAL_BATCH_NO_SWITCH", "ARRIVAL_BATCH_SWITCH_S0"}.issubset(case_ids):
-        return CompositeSequenceResult("UNRESOLVED", "", "", (), "NOT_RUN", "MUTUALLY_EXCLUSIVE_CASES_IN_SEQUENCE")
+        return _sequence_unresolved("MUTUALLY_EXCLUSIVE_CASES_IN_SEQUENCE")
+
     for step in steps:
+        case_id = str(step.get("case_id"))
         if step.get("status") != "PASS":
-            return CompositeSequenceResult("UNRESOLVED", "", "", (), "NOT_RUN", "SEQUENCE_CHILD_NOT_PASS:" + str(step.get("case_id")))
+            return _sequence_unresolved("SEQUENCE_CHILD_NOT_PASS:" + case_id)
+        if step.get("concrete_feasibility") != "SAT":
+            return _sequence_unresolved("SEQUENCE_CHILD_CONCRETE_FEASIBILITY_MISSING:" + case_id)
+        if step.get("reference_totality") != "PASS":
+            return _sequence_unresolved("SEQUENCE_CHILD_REFERENCE_TOTALITY_MISSING:" + case_id)
+        if step.get("relation_preservation") != "PASS":
+            return _sequence_unresolved("SEQUENCE_CHILD_RELATION_PRESERVATION_MISSING:" + case_id)
         if step.get("parameterized_contract_status") != "PASS":
-            return CompositeSequenceResult("UNRESOLVED", "", "", (), "NOT_RUN", "SEQUENCE_CHILD_PARAMETERIZED_CONTRACT_NOT_PASS:" + str(step.get("case_id")))
+            return _sequence_unresolved("SEQUENCE_CHILD_PARAMETERIZED_CONTRACT_NOT_PASS:" + case_id)
+
+        required_formulas = (
+            "precondition_formula",
+            "concrete_delta",
+            "reference_delta",
+            "relation_preservation_formula",
+        )
+        missing = [
+            name
+            for name in required_formulas
+            if not isinstance(step.get(name), str) or not str(step.get(name)).strip()
+        ]
+        if missing:
+            return _sequence_unresolved(
+                "SEQUENCE_CHILD_FORMULA_MISSING:"
+                + case_id
+                + ":"
+                + ",".join(missing)
+            )
+
     states = tuple(f"s{i}" for i in range(len(steps) + 1))
-    relation_hashes = {str(step.get("parameterized_relation_schema_hash", "")) for step in steps}
+    relation_hashes = {
+        str(step.get("parameterized_relation_schema_hash", ""))
+        for step in steps
+    }
     if len(relation_hashes) != 1 or "" in relation_hashes:
-        return CompositeSequenceResult("UNRESOLVED", "", "", states, "NOT_RUN", "SEQUENCE_RELATION_SCHEMA_MISMATCH")
-    formulas = []
-    prefix_formulas: list[str] = []
+        return _sequence_unresolved(
+            "SEQUENCE_RELATION_SCHEMA_MISMATCH",
+            states=states,
+        )
+
+    transition_bodies: list[str] = []
     preconditions: list[str] = []
     declaration_lines: set[str] = set()
-    for i, step in enumerate(steps):
-        c = str(step.get("concrete_delta", "")); r = str(step.get("reference_delta", ""))
-        precondition = str(step.get("precondition_formula", ""))
-        if not c or not r or not precondition or "_post" not in c or "_post" not in r:
-            return CompositeSequenceResult("UNRESOLVED", "", "", states, "NOT_RUN", "INTERMEDIATE_STATE_BINDING_MISSING")
-        c_formula = rename_transition_formula(c, concrete_pre=f"c_{states[i]}", concrete_post=f"c_{states[i + 1]}", reference_pre=f"r_{states[i]}", reference_post=f"r_{states[i + 1]}")
-        r_formula = rename_transition_formula(r, concrete_pre=f"c_{states[i]}", concrete_post=f"c_{states[i + 1]}", reference_pre=f"r_{states[i]}", reference_post=f"r_{states[i + 1]}")
-        pre_formula = rename_transition_formula(precondition, concrete_pre=f"c_{states[i]}", concrete_post=f"c_{states[i + 1]}", reference_pre=f"r_{states[i]}", reference_post=f"r_{states[i + 1]}")
+
+    for index, step in enumerate(steps):
+        concrete_pre = f"c_{states[index]}"
+        concrete_post = f"c_{states[index + 1]}"
+        reference_pre = f"r_{states[index]}"
+        reference_post = f"r_{states[index + 1]}"
+
+        pre_formula = rename_transition_formula(
+            str(step["precondition_formula"]),
+            concrete_pre=concrete_pre,
+            concrete_post=concrete_post,
+            reference_pre=reference_pre,
+            reference_post=reference_post,
+        )
+        concrete_formula = rename_transition_formula(
+            str(step["concrete_delta"]),
+            concrete_pre=concrete_pre,
+            concrete_post=concrete_post,
+            reference_pre=reference_pre,
+            reference_post=reference_post,
+        )
+        reference_formula = rename_transition_formula(
+            str(step["reference_delta"]),
+            concrete_pre=concrete_pre,
+            concrete_post=concrete_post,
+            reference_pre=reference_pre,
+            reference_post=reference_post,
+        )
+        relation_post_formula = rename_transition_formula(
+            str(step["relation_preservation_formula"]),
+            concrete_pre=concrete_pre,
+            concrete_post=concrete_post,
+            reference_pre=reference_pre,
+            reference_post=reference_post,
+        )
+
+        if "_post" in " ".join((concrete_formula, reference_formula, relation_post_formula)):
+            return _sequence_unresolved(
+                "INTERMEDIATE_STATE_RENAMING_INCOMPLETE:" + str(step.get("case_id")),
+                states=states,
+            )
+
         preconditions.append(pre_formula)
-        prefix_formulas.append(f"(and {pre_formula} {c_formula} {r_formula})")
-        formulas.append(prefix_formulas[-1])
+        transition_bodies.append(
+            "(and "
+            + pre_formula
+            + " "
+            + concrete_formula
+            + " "
+            + reference_formula
+            + " "
+            + relation_post_formula
+            + ")"
+        )
+
         renamed_declarations = rename_transition_formula(
             str(step.get("declarations", "")),
-            concrete_pre=f"c_{states[i]}", concrete_post=f"c_{states[i + 1]}",
-            reference_pre=f"r_{states[i]}", reference_post=f"r_{states[i + 1]}",
+            concrete_pre=concrete_pre,
+            concrete_post=concrete_post,
+            reference_pre=reference_pre,
+            reference_post=reference_post,
         )
         for line in renamed_declarations.splitlines():
-            if line.strip().startswith("(declare-"):
-                declaration_lines.add(line.strip())
+            stripped = line.strip()
+            if stripped.startswith("(declare-"):
+                declaration_lines.add(stripped)
+
     declarations = "\n".join(sorted(declaration_lines))
-    for index in range(1, len(steps)):
-        counterexample = "(and " + " ".join(prefix_formulas[:index]) + " (not " + preconditions[index] + "))"
-        entailment = _check_sequence_with_z3(
-            formula=counterexample,
-            declarations=declarations,
-            state_ids=states,
+    combined_formula = "(and " + " ".join(transition_bodies) + ")"
+
+    feasibility_result, failure, prepared_declarations = _run_sequence_z3_query(
+        declarations=declarations,
+        assertion=combined_formula,
+    )
+    if feasibility_result == "UNSAT":
+        return _sequence_unresolved(
+            "SEQUENCE_INTERMEDIATE_STATE_CONTRADICTION",
+            formula=combined_formula,
+            declarations=prepared_declarations,
+            states=states,
+            feasibility_result="UNSAT",
+            relation_chain_result="PASS",
         )
-        if entailment.solver_result == "SAT":
-            return CompositeSequenceResult(
-                "UNRESOLVED", counterexample, entailment.declarations, states,
-                "COUNTEREXAMPLE_SAT",
-                "SEQUENCE_NEXT_PRECONDITION_NOT_ENTAILED:" + str(steps[index].get("case_id")),
+    if feasibility_result != "SAT":
+        return _sequence_unresolved(
+            failure or "SEQUENCE_FEASIBILITY_UNKNOWN",
+            formula=combined_formula,
+            declarations=prepared_declarations,
+            states=states,
+            feasibility_result=feasibility_result,
+            relation_chain_result="PASS",
+        )
+
+    precondition_results: list[dict[str, object]] = []
+    for index in range(1, len(steps)):
+        prefix_formula = "(and " + " ".join(transition_bodies[:index]) + ")"
+        counterexample = "(and " + prefix_formula + " (not " + preconditions[index] + "))"
+        result, entailment_failure, prepared_declarations = _run_sequence_z3_query(
+            declarations=prepared_declarations,
+            assertion=counterexample,
+        )
+        item = {
+            "from_case_id": str(steps[index - 1].get("case_id")),
+            "to_case_id": str(steps[index].get("case_id")),
+            "solver_result": result,
+        }
+        precondition_results.append(item)
+        if result == "SAT":
+            return _sequence_unresolved(
+                "SEQUENCE_NEXT_PRECONDITION_NOT_ENTAILED:"
+                + str(steps[index].get("case_id")),
+                formula=combined_formula,
+                declarations=prepared_declarations,
+                states=states,
+                feasibility_result="SAT",
+                precondition_chain_result="FAIL",
+                relation_chain_result="PASS",
+                step_precondition_results=precondition_results,
             )
-        if entailment.solver_result != "UNSAT":
-            return CompositeSequenceResult(
-                "UNRESOLVED", counterexample, entailment.declarations, states,
-                entailment.solver_result,
-                "SEQUENCE_PRECONDITION_ENTAILMENT_CHECK_FAILED:" + str(steps[index].get("case_id")),
+        if result != "UNSAT":
+            return _sequence_unresolved(
+                entailment_failure
+                or "SEQUENCE_PRECONDITION_ENTAILMENT_CHECK_FAILED:"
+                + str(steps[index].get("case_id")),
+                formula=combined_formula,
+                declarations=prepared_declarations,
+                states=states,
+                feasibility_result="SAT",
+                precondition_chain_result="UNRESOLVED",
+                relation_chain_result="PASS",
+                step_precondition_results=precondition_results,
             )
-    formula = "(and " + " ".join(formulas) + ")"
-    return _check_sequence_with_z3(formula=formula, declarations=declarations, state_ids=states)
+
+    return CompositeSequenceResult(
+        status="PASS",
+        formula=combined_formula,
+        declarations=prepared_declarations,
+        state_ids=states,
+        feasibility_result="SAT",
+        precondition_chain_result="PASS",
+        relation_chain_result="PASS",
+        step_precondition_results=tuple(precondition_results),
+    )
 
 
 def _function(tree: ast.Module, qualified: str) -> ast.FunctionDef | None:
@@ -523,20 +758,25 @@ def build_handler_decomposition_certificate(
     # actually call it in the runtime.
     composition_cases = {
         "boot": ("BOOT_TO_PRECLOSED_0",),
-        "arrival_no_switch": ("ARRIVAL_BATCH_NO_SWITCH",),
-        "arrival_switch_s0": ("ARRIVAL_BATCH_SWITCH_S0",),
-        "controller_no_action": ("CONTROLLER_NO_ACTION",),
-        "controller_selected_action": ("CONTROLLER_SELECTED_ACTION",),
+        "arrival_no_switch": ("ARRIVAL_BATCH_NO_SWITCH", "RESCHEDULE_KEEP_SAME", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH"),
+        "arrival_switch_s0": ("ARRIVAL_BATCH_SWITCH_S0", "RESCHEDULE_KEEP_SAME", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH"),
+        "controller_no_action": ("CONTROLLER_NO_ACTION", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH"),
+        "controller_selected_action": ("CONTROLLER_SELECTED_ACTION", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH"),
         "deadline_no_miss": ("DEADLINE_OBSERVATION_NO_MISS",),
         "deadline_first_hi_miss": ("DEADLINE_OBSERVATION_FIRST_HI_MISS",),
-        "normal_completion": ("NORMAL_COMPLETION", "PREEMPTION_DISPATCH"),
-        "degraded_completion": ("DEGRADED_COMPLETION", "PREEMPTION_DISPATCH"),
-        "hi_completion": ("HI_COMPLETION", "PREEMPTION_DISPATCH"),
-        "primary_lo_cancellation": ("PRIMARY_LO_CANCELLATION", "PREEMPTION_DISPATCH"),
+        "normal_completion": ("NORMAL_COMPLETION", "RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH"),
+        "degraded_completion": ("DEGRADED_COMPLETION", "RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH"),
+        "hi_completion": ("HI_COMPLETION", "RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH"),
+        "primary_lo_cancellation": ("PRIMARY_LO_CANCELLATION", "RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH"),
         "idle_recovery": ("IDLE_RECOVERY",),
         "service_tick": ("ONE_SERVICE_TICK",),
     }
     compositions = {}
+    reschedule_partition = prove_reschedule_partition()
+    unreachable_reschedule = prove_handler_reschedule_unreachability()
+    if reschedule_partition.get("status") != "PASS":
+        failures.append({"component": "reschedule_partition",
+                         "missing": [reschedule_partition.get("failure", "PASS") ]})
     for component, case_ids in composition_cases.items():
         missing = [case_id for case_id in case_ids if case_id not in proofs]
         invalid = [case_id for case_id in case_ids
@@ -547,28 +787,35 @@ def build_handler_decomposition_certificate(
         steps = []
         for case_id in case_ids:
             proof = proofs.get(case_id, {})
-            steps.append({"case_id": case_id,
-                          "status": proof.get("z3_proof_result", proof.get("witness", {}).get("z3_proof_result")),
-                          "parameterized_contract_status": proof.get("parameterized_contract_status", proof.get("witness", {}).get("parameterized_contract_status")),
-                          "parameterized_relation_schema_hash": proof.get("parameterized_relation_schema_hash", proof.get("witness", {}).get("parameterized_relation_schema_hash", "")),
-                          "precondition_formula": proof.get("precondition_formula", proof.get("witness", {}).get("precondition_formula", "")),
-                          "declarations": proof.get("declarations", proof.get("witness", {}).get("declarations", "")),
-                          "concrete_delta_hash": proof.get("concrete_delta_hash",
-                              proof.get("witness", {}).get("concrete_delta_hash")),
-                          "reference_delta_hash": proof.get("projected_reference_delta_hash",
-                              proof.get("witness", {}).get("projected_reference_delta_hash")),
-                          "relation_preservation": proof.get("relation_preservation",
-                              proof.get("witness", {}).get("relation_preservation")),
-                          "concrete_delta": proof.get("concrete_delta",
-                              proof.get("witness", {}).get("concrete_delta", "")),
-                          "reference_delta": proof.get("projected_reference_delta",
-                              proof.get("witness", {}).get("projected_reference_delta", ""))})
+            witness = proof.get("witness", {}) if isinstance(proof.get("witness"), Mapping) else {}
+            steps.append({
+                "case_id": case_id,
+                "status": proof.get("z3_proof_result", witness.get("z3_proof_result")),
+                "concrete_feasibility": proof.get("concrete_feasibility", witness.get("concrete_feasibility")),
+                "reference_totality": proof.get("reference_totality", witness.get("reference_totality")),
+                "relation_preservation": proof.get("relation_preservation", witness.get("relation_preservation")),
+                "parameterized_contract_status": proof.get("parameterized_contract_status", witness.get("parameterized_contract_status")),
+                "parameterized_relation_schema_hash": proof.get("parameterized_relation_schema_hash", witness.get("parameterized_relation_schema_hash", "")),
+                "precondition_formula": proof.get("precondition_formula", witness.get("precondition_formula", "")),
+                "declarations": proof.get("declarations", witness.get("declarations", "")),
+                "concrete_delta_hash": proof.get("concrete_delta_hash", witness.get("concrete_delta_hash")),
+                "reference_delta_hash": proof.get("projected_reference_delta_hash", witness.get("projected_reference_delta_hash")),
+                "concrete_delta": proof.get("concrete_delta", witness.get("concrete_delta", "")),
+                "reference_delta": proof.get("projected_reference_delta", witness.get("projected_reference_delta", "")),
+                "relation_preservation_formula": proof.get("relation_preservation_formula", witness.get("relation_preservation_formula", "")),
+            })
         complete_state_equations = all(
-            step["concrete_delta"] and step["reference_delta"]
+            step["concrete_delta"]
+            and step["reference_delta"]
+            and step["relation_preservation_formula"]
             and "_post" in step["concrete_delta"]
             and "_post" in step["reference_delta"]
+            and "_post" in step["relation_preservation_formula"]
+            and step["concrete_feasibility"] == "SAT"
+            and step["reference_totality"] == "PASS"
             and step["relation_preservation"] == "PASS"
-            for step in steps)
+            for step in steps
+        )
         # 这里不是把 hash 当成证明结论：每个 child 的实际 concrete/reference
         # 方程和既有 SMT relation-preservation 结果都被重新检查，并按调用顺序
         # 形成组合 obligation。公式正文保留在 witness 中供独立 checker 重放。
@@ -587,6 +834,10 @@ def build_handler_decomposition_certificate(
             "proof_status": "PASS" if not missing and not invalid and complete_state_equations and sequence.status == "PASS" else "UNRESOLVED",
             "sequence_status": sequence.status,
             "solver_result": sequence.solver_result,
+            "feasibility_result": sequence.feasibility_result,
+            "precondition_chain_result": sequence.precondition_chain_result,
+            "relation_chain_result": sequence.relation_chain_result,
+            "step_precondition_results": list(sequence.step_precondition_results),
             "declarations": sequence.declarations,
             "state_ids": sequence.state_ids,
             "sequence_failure": sequence.failure,
@@ -596,21 +847,20 @@ def build_handler_decomposition_certificate(
     elif any(item["proof_status"] != "PASS" for item in compositions.values()):
         failures.append({"component": "micro_step_composition", "missing": [
             name for name, item in compositions.items() if item["proof_status"] != "PASS"]})
-    preclosed_alternative_groups = (
-        ("BOOT_TO_PRECLOSED_0",),
-        ("ARRIVAL_BATCH_NO_SWITCH", "PRIMARY_LO_RELEASE", "DEGRADED_LO_RELEASE", "HI_RELEASE", "PREEMPTION_DISPATCH"),
-        ("ARRIVAL_BATCH_SWITCH_S0", "PRIMARY_LO_RELEASE", "DEGRADED_LO_RELEASE", "HI_RELEASE", "PREEMPTION_DISPATCH"),
-    )
-    preclosed = compositions["boot"]["proof_status"] == "PASS" and all(
-        proofs.get(case_id, {}).get("z3_proof_result",
-            proofs.get(case_id, {}).get("witness", {}).get("z3_proof_result")) == "PASS"
-        for group in preclosed_alternative_groups for case_id in group)
+    preclosed_alternative_groups = (("BOOT_TO_PRECLOSED_0",),)
+    preclosed = (compositions["boot"]["proof_status"] == "PASS"
+                 and reschedule_partition.get("status") == "PASS"
+                 and all(item.get("proof_status") == "PASS"
+                         for item in (compositions["arrival_no_switch"],
+                                      compositions["arrival_switch_s0"])))
     if not preclosed:
         failures.append({"component": "preclosed0_composition", "missing": [case_id for group in preclosed_alternative_groups for case_id in group]})
-    all_fixed_sequences_sat = all(
+    all_fixed_sequences_proved = all(
         item.get("proof_status") == "PASS"
         and item.get("sequence_status") == "PASS"
-        and item.get("solver_result") == "SAT"
+        and item.get("feasibility_result") == "SAT"
+        and item.get("precondition_chain_result") == "PASS"
+        and item.get("relation_chain_result") == "PASS"
         for item in compositions.values()
     )
     all_alternatives_pass = all(
@@ -652,8 +902,8 @@ def build_handler_decomposition_certificate(
     source_bindings = {"event_runtime": sha256_object(source), "handler_decomposition": sha256_object(Path(__file__).read_text(encoding="utf-8"))}
     if not all_alternatives_pass:
         failures.append({"component": "handler_alternatives", "missing": ["ALL_ALTERNATIVES_PASS"]})
-    if not all_fixed_sequences_sat:
-        failures.append({"component": "fixed_sequences", "missing": ["ALL_FIXED_SEQUENCES_SAT"]})
+    if not all_fixed_sequences_proved:
+        failures.append({"component": "fixed_sequences", "missing": ["ALL_FIXED_SEQUENCES_PROVED"]})
     result = {"status": "PASS" if not failures else "UNRESOLVED",
               "schema_version": "handler_decomposition_v3_math_fixed", "backend_receipt_status": "PASS" if not failures else "UNRESOLVED", "context_hash": context_hash,
               "handlers": handlers,
@@ -666,8 +916,11 @@ def build_handler_decomposition_certificate(
                              "mode_switch": ["release_loop"], "release_loop": ["dispatch"],
                              "dispatch": ["child_events"], "child_events": []},
               "failures": failures, "compositions": compositions,
+              "reschedule_partition": reschedule_partition,
+              "unreachable_reschedule_branches": unreachable_reschedule,
               "all_alternatives_pass": all_alternatives_pass,
-              "all_fixed_sequences_sat": all_fixed_sequences_sat,
+              "all_fixed_sequences_proved": all_fixed_sequences_proved,
+              "all_fixed_sequences_sat": all_fixed_sequences_proved,
               "preclosed0_composition": {
                   "alternative_groups": [list(group) for group in preclosed_alternative_groups],
                   "alternatives_exclusive": True,

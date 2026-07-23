@@ -9,7 +9,12 @@ from typing import Any, Mapping
 
 from formal_toolchain.core.artifact import obligation_certificate, verify_obligation_certificate
 from formal_toolchain.core.predecessor_contract import validate_verified_predecessor
-from formal_toolchain.bridge.state_relation import validate_n6_relation_interface
+from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.bridge.state_relation import (
+    N6_REQUIRED_QUANTITIES,
+    parameterized_state_relation_schema_hash,
+    validate_n6_relation_interface,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +106,34 @@ def _theory(theorem_id: str) -> dict[str, str]:
     return json.loads((Path(__file__).resolve().parents[1] / "theory" / "hashes.json").read_text(encoding="utf-8"))["statements"][theorem_id]
 
 
+def _validate_n6_theorem_receipt(
+    theorem_statement: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+) -> None:
+    proof_object = theorem_statement.get("proof_object", {})
+    expected_body = {
+        "backend_id": "finite-hi-bad-prefix-z3-v1",
+        "proof_object_hash": proof_object.get("sha256"),
+        "theorem_statement_hash": theorem_statement.get("statement_hash"),
+        "theorem_assumption_hash": theorem_statement.get("assumption_hash"),
+        "source_bindings": receipt.get("source_bindings"),
+        "relation_interface": "n6_closed_prefix_relation_interface_v2",
+        "parameterized_relation_schema_hash": parameterized_state_relation_schema_hash(),
+        "required_quantities": list(N6_REQUIRED_QUANTITIES),
+        "solver_obligations": receipt.get("solver_obligations"),
+        "z3_version": receipt.get("z3_version"),
+    }
+    if receipt.get("status") != "PASS":
+        raise ValueError("N6_THEOREM_RECEIPT_INVALID")
+    if any(value is None for value in expected_body.values()):
+        raise ValueError("N6_THEOREM_RECEIPT_INCOMPLETE")
+    for key, value in expected_body.items():
+        if receipt.get(key) != value:
+            raise ValueError(f"N6_THEOREM_RECEIPT_BINDING_MISMATCH:{key}")
+    if receipt.get("receipt_hash") != sha256_object(expected_body):
+        raise ValueError("N6_THEOREM_RECEIPT_HASH_INVALID")
+
+
 def _closed_prefix_relation_interface(
     certificate: Mapping[str, Any],
 ) -> Mapping[str, Any]:
@@ -181,6 +214,27 @@ def build_hi_bad_prefix_reflection_certificate(
         )
     )
 
+    prefix_extension_certificate = verified_predecessors[
+        "REFERENCE_PREFIX_EXTENSION"
+    ]
+    prefix_extension_inputs = prefix_extension_certificate.get(
+        "inputs", {}
+    )
+    reference_taskset_fingerprint = (
+        prefix_extension_inputs.get(
+            "reference_taskset_fingerprint"
+        )
+        if isinstance(prefix_extension_inputs, Mapping)
+        else None
+    )
+    if (
+        not isinstance(reference_taskset_fingerprint, str)
+        or not reference_taskset_fingerprint
+    ):
+        raise ValueError(
+            "N6_REFERENCE_TASKSET_FINGERPRINT_MISSING"
+        )
+
     deadline_witness = (
         verified_predecessors[
             "DEADLINE_OBSERVATION"
@@ -222,11 +276,13 @@ def build_hi_bad_prefix_reflection_certificate(
         )
     if theorem_statement.get("theorem_id") != "FINITE_HI_BAD_PREFIX_REFLECTION":
         raise ValueError("N6_THEOREM_STATEMENT_REQUIRED")
-    if theorem_proof_receipt.get("status") != "PASS":
-        raise ValueError("N6_THEOREM_RECEIPT_INVALID")
     proof_object = theorem_statement.get("proof_object", {})
-    if theorem_proof_receipt.get("receipt_hash") is None or proof_object.get("sha256") is None:
-        raise ValueError("N6_THEOREM_RECEIPT_INVALID")
+    if proof_object.get("backend") != "finite-hi-bad-prefix-z3-v1":
+        raise ValueError("N6_THEOREM_BACKEND_INVALID")
+    _validate_n6_theorem_receipt(
+        theorem_statement,
+        theorem_proof_receipt,
+    )
     first_miss = None
     if concrete_snapshot is not None:
         first_miss = select_first_hi_miss_set(
@@ -254,6 +310,8 @@ def build_hi_bad_prefix_reflection_certificate(
             dict(relation_interface),
         "reference_transition_system_id":
             "FIXED_EXECUTABLE_REFERENCE_P0_V3",
+        "reference_taskset_fingerprint":
+            reference_taskset_fingerprint,
         "proof_decomposition": {
             "pointwise_relation_source":
                 "CLOSED_PREFIX_REFINEMENT",

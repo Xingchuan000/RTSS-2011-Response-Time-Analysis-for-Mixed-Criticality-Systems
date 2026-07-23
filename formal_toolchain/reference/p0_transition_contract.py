@@ -15,6 +15,8 @@ REFERENCE_P0_CASE_IDS = (
     "PRIMARY_LO_RELEASE",
     "DEGRADED_LO_RELEASE",
     "HI_RELEASE",
+    "RESCHEDULE_KEEP_SAME",
+    "RESCHEDULE_TO_IDLE",
     "PREEMPTION_DISPATCH",
     "ONE_SERVICE_TICK",
     "NORMAL_COMPLETION",
@@ -199,9 +201,6 @@ def _dispatch_job_overrides(prefix: str, bounds: P0ModelBounds) -> dict[str, str
             f"(= {base}key selected_job_key))"
         )
         result[f"job_{slot}_running"] = f"(ite {selected} 1 0)"
-        result[f"job_{slot}_ready"] = (
-            f"(ite {selected} 0 (ite (= {base}present 1) 1 0))"
-        )
     return result
 
 
@@ -263,9 +262,17 @@ def render_reference_p0_delta(
         c["mode"] = "1"
     elif case_id == "IDLE_RECOVERY":
         c["mode"] = "0"
+    elif case_id == "RESCHEDULE_KEEP_SAME":
+        pass
+    elif case_id == "RESCHEDULE_TO_IDLE":
+        c.update(running="0", running_job_key="0", affected_job_running="0",
+                 queue_token_epoch="(+ r_queue_token_epoch 1)")
+        c.update({f"job_{slot}_running": "0" for slot in range(bounds.job_slots)})
     elif case_id == "PREEMPTION_DISPATCH":
-        c.update(running="selected_job_key", affected_job_key="selected_job_key",
-                 affected_job_running="1")
+        c.update(running="1", running_job_key="selected_job_key", affected_job_key="selected_job_key",
+                 affected_job_running="1",
+                 queue_token_epoch="(+ r_queue_token_epoch 1)",
+                 queue_event_count="(+ r_queue_event_count 2)")
         c.update(_dispatch_job_overrides("r", bounds))
     elif case_id == "CONTROLLER_SELECTED_ACTION":
         c.update(future_budget="release_budget", affected_task_budget="release_budget")
@@ -337,7 +344,7 @@ def legacy_reference_p0_numeric_delta(
         after["job_key"] = env.release_job_key
         after["affected_job_key"] = env.release_job_key
         after["affected_job_active"] = 1
-        after["affected_job_ready"] = 1
+        after["affected_job_ready"] = 0
         after["affected_job_running"] = int(
             env.selected_job_key == env.release_job_key
         )
@@ -348,7 +355,7 @@ def legacy_reference_p0_numeric_delta(
         after["affected_job_budget"] = env.release_budget
         after["affected_job_demand"] = env.expected_demand
         after["affected_job_service"] = 0
-        after["running"] = env.selected_job_key
+        after["running"] = 1
         after["running_job_key"] = env.selected_job_key
         after["selected_job_key"] = env.selected_job_key
         after["event_job_key"] = env.event_job_key
@@ -388,7 +395,7 @@ def legacy_reference_p0_numeric_delta(
         after["ready"] = before["ready"] - 1
         after["running"] = 0
         after["affected_job_active"] = 0
-        after["affected_job_ready"] = 0
+        after["affected_job_ready"] = 1
         after["affected_job_running"] = 0
         for slot in range(bounds.job_slots):
             key = f"job_{slot}_key"
@@ -424,11 +431,21 @@ def legacy_reference_p0_numeric_delta(
         after["mode"] = 1
     elif case_id == "IDLE_RECOVERY":
         after["mode"] = 0
+    elif case_id == "RESCHEDULE_KEEP_SAME":
+        pass
+    elif case_id == "RESCHEDULE_TO_IDLE":
+        after["running"] = 0
+        after["running_job_key"] = 0
+        after["affected_job_running"] = 0
+        for slot in range(bounds.job_slots):
+            after[f"job_{slot}_running"] = 0
     elif case_id == "PREEMPTION_DISPATCH":
         after["running"] = env.selected_job_key
+        after["running_job_key"] = env.selected_job_key
+        after["selected_job_key"] = env.selected_job_key
         after["affected_job_key"] = env.selected_job_key
         after["affected_job_active"] = 1
-        after["affected_job_ready"] = 0
+        after["affected_job_ready"] = 1
         after["affected_job_running"] = 1
         for slot in range(bounds.job_slots):
             key = f"job_{slot}_key"

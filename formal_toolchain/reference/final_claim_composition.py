@@ -13,8 +13,26 @@ def build_final_claim_composition(
     composition_context_hash: str,
     claim: str = "DEPLOYED_HI_SAFETY",
 ) -> dict[str, Any]:
+    contradiction_witness = finite_bad_prefix_contradiction_certificate.get(
+        "witness", {}
+    )
+    theorem_bound = (
+        theorem.get("theorem_id")
+        == "FINAL_DEPLOYED_HI_SAFETY_COMPOSITION"
+    )
+    contradiction_bound = (
+        isinstance(contradiction_witness, Mapping)
+        and contradiction_witness.get("theorem_id")
+        == "FINITE_BAD_PREFIX_CONTRADICTION"
+        and contradiction_witness.get("conclusion")
+        == "NO_CONCRETE_HI_DEADLINE_MISS"
+    )
+    claim_bound = claim == "DEPLOYED_HI_SAFETY"
     status = "PASS" if (
-        finite_bad_prefix_contradiction_certificate.get("obligation_status") == "PASS"
+        theorem_bound
+        and contradiction_bound
+        and claim_bound
+        and finite_bad_prefix_contradiction_certificate.get("obligation_status") == "PASS"
     ) else "UNRESOLVED"
 
     witness = {
@@ -25,6 +43,9 @@ def build_final_claim_composition(
         "statement_hash": theorem.get("statement_hash"),
         "finite_contradiction_hash": finite_bad_prefix_contradiction_certificate["artifact_hash"],
         "composition": "FINAL_CLAIM_COMPOSITION <= FINITE_BAD_PREFIX_CONTRADICTION",
+        "theorem_binding_checked": theorem_bound,
+        "contradiction_conclusion_bound": contradiction_bound,
+        "claim_binding_checked": claim_bound,
     }
 
     return obligation_certificate(

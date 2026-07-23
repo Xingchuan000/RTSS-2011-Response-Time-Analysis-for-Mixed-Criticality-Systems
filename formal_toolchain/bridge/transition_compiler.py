@@ -7,7 +7,7 @@ from typing import Any, Mapping
 from .case_templates import compile_case_template
 from .effect_compiler import (
     build_phase_k_static_effect_bindings,
-    compile_effect_ir,
+    compile_effect_ir, compile_reschedule_family_effect,
 )
 from .model_bounds import P0ModelBounds
 from .state_relation import p0_state_relation_schema_hash, p0_smt_relation_fields
@@ -201,9 +201,23 @@ def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,
             template = compile_case_template(row["case_id"], bounds=bounds)
             compiled_guard = compile_source_guards(
                 row["guard_ir"], static_guard_bindings=static_guard_bindings)
-            compiled_effect = compile_effect_ir(
-                row["effect_ir"], bounds=bounds, guard_ir=row["guard_ir"],
-                static_effect_bindings=static_effect_bindings)
+            if row.get("case_id") in {"RESCHEDULE_KEEP_SAME", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH"}:
+                from .runtime_branch_map import bind_reschedule_branch_families
+                bindings = bind_reschedule_branch_families(branch_map.get("source_root", "")) if branch_map.get("source_root") else None
+                if bindings is None:
+                    # The branch map embeds the source-bound family IR; rebuild
+                    # a lightweight binding from it so proof replay remains
+                    # independent of a caller-provided CFG path.
+                    from types import SimpleNamespace
+                    binding = SimpleNamespace(effect_ir=tuple(row["effect_ir"]))
+                else:
+                    binding = bindings[row["case_id"]]
+                compiled_effect = compile_reschedule_family_effect(
+                    case_id=row["case_id"], branch_binding=binding, bounds=bounds)
+            else:
+                compiled_effect = compile_effect_ir(
+                    row["effect_ir"], bounds=bounds, guard_ir=row["guard_ir"],
+                    static_effect_bindings=static_effect_bindings)
             source_precondition = "(and " + template.precondition[5:-1] + " " + compiled_guard.formula + ")"
             concrete_delta = compiled_effect.to_smt()
             # queue summary 是 concrete 与 reference 共同的 timing projection；

@@ -215,7 +215,11 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
     if not certs or any(c.get("obligation_status") != "PASS" or not verify_obligation_certificate(c) for c in certs):
         return {"status": "UNRESOLVED", "failure": "TRANSITION_CASE_CERTIFICATES_REQUIRED"}
     rows = [c.get("witness", c) for c in certs]
-    if {r.get("case_id") for r in rows} != set(__import__("formal_toolchain.bridge.transition_cases", fromlist=["REQUIRED_P0_CASE_IDS"]).REQUIRED_P0_CASE_IDS):
+    required_cases = set(__import__("formal_toolchain.bridge.transition_cases", fromlist=["REQUIRED_P0_CASE_IDS"]).REQUIRED_P0_CASE_IDS)
+    present_cases = {r.get("case_id") for r in rows}
+    if not {"RESCHEDULE_KEEP_SAME", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH"} <= present_cases:
+        return {"status": "UNRESOLVED", "failure": "RESCHEDULE_CASE_PARTITION_INCOMPLETE"}
+    if present_cases != required_cases:
         return {"status": "UNRESOLVED", "failure": "CASEWISE_PROOF_INCOMPLETE"}
     branches = branch_map.get("paths", [])
     branch_ids = [b.get("path_id") for b in branches]
@@ -239,6 +243,8 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
         return {"status": "UNRESOLVED", "failure": "PARAMETERIZED_CASE_CONTRACTS_INCOMPLETE"}
     if not isinstance(handler_decomposition_certificate, Mapping) or handler_decomposition_certificate.get("status") != "PASS" or handler_decomposition_certificate.get("schema_version") != "handler_decomposition_v3_math_fixed":
         return {"status": "UNRESOLVED", "failure": "HANDLER_DECOMPOSITION_MATH_FIXED_REQUIRED"}
+    if handler_decomposition_certificate.get("reschedule_partition", {}).get("status") != "PASS":
+        return {"status": "UNRESOLVED", "failure": "RESCHEDULE_PARTITION_PROOF_REQUIRED"}
     identity_hash = reference_transition_identity_certificate.get("artifact_hash", sha256_object(reference_transition_identity_certificate))
     witness = {
         "schema_version": "closed_prefix_refinement_v2",

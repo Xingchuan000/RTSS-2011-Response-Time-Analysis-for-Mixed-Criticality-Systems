@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Any
 
 from formal_toolchain.core.hashing import sha256_file, sha256_object
+from formal_toolchain.bridge.state_relation import (
+    N6_REQUIRED_QUANTITIES,
+    parameterized_state_relation_schema_hash,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_N6_SOLVER_OBLIGATIONS = (
@@ -279,8 +283,12 @@ class FiniteHIBadPrefixBackend:
             return {"status": "FAIL", "code": "THEOREM_STATEMENT_HASH_MISMATCH"}
         if proof.get("theorem_assumption_hash") != theorem.get("assumption_hash"):
             return {"status": "FAIL", "code": "THEOREM_ASSUMPTION_HASH_MISMATCH"}
-        if proof.get("relation_interface") != "n6_closed_prefix_relation_interface_v1":
+        if proof.get("relation_interface") != "n6_closed_prefix_relation_interface_v2":
             return {"status": "FAIL", "code": "RELATION_INTERFACE_MISMATCH"}
+        if proof.get("parameterized_relation_schema_hash") != parameterized_state_relation_schema_hash():
+            return {"status": "FAIL", "code": "PARAMETERIZED_RELATION_SCHEMA_MISMATCH"}
+        if proof.get("required_quantities") != list(N6_REQUIRED_QUANTITIES):
+            return {"status": "FAIL", "code": "N6_REQUIRED_QUANTITIES_MISMATCH"}
         if proof.get("proof_scope") != "POINTWISE_RELATION_SPECIALIZATION_OVER_FINITE_CLOSED_PREFIXES":
             return {"status": "FAIL", "code": "PROOF_SCOPE_MISMATCH"}
         if proof.get("source_bindings") != current_n6_source_bindings():
@@ -295,9 +303,16 @@ class FiniteHIBadPrefixBackend:
         proof_hash = sha256_file(proof_path)
         if theorem.get("proof_object", {}).get("sha256") != proof_hash:
             return {"status": "FAIL", "code": "PROOF_OBJECT_HASH_MISMATCH"}
-        receipt_body = {"backend_id": "finite-hi-bad-prefix-z3-v1", "proof_object_hash": proof_hash,
-                        "theorem_statement_hash": theorem["statement_hash"],
-                        "theorem_assumption_hash": theorem["assumption_hash"],
-                        "source_bindings": proof["source_bindings"],
-                        "solver_obligations": math["obligations"], "z3_version": math["z3_version"]}
+        receipt_body = {
+            "backend_id": "finite-hi-bad-prefix-z3-v1",
+            "proof_object_hash": proof_hash,
+            "theorem_statement_hash": theorem["statement_hash"],
+            "theorem_assumption_hash": theorem["assumption_hash"],
+            "source_bindings": proof["source_bindings"],
+            "relation_interface": proof["relation_interface"],
+            "parameterized_relation_schema_hash": proof["parameterized_relation_schema_hash"],
+            "required_quantities": proof["required_quantities"],
+            "solver_obligations": math["obligations"],
+            "z3_version": math["z3_version"],
+        }
         return {"status": "PASS", **receipt_body, "receipt_hash": sha256_object(receipt_body)}
