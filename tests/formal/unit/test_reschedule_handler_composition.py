@@ -1,3 +1,5 @@
+import pytest
+
 from pathlib import Path
 
 from formal_toolchain.bridge.effect_compiler import compile_reschedule_family_effect
@@ -28,6 +30,7 @@ def test_reschedule_effects_are_compiled_into_scheduler_state_and_frontier():
 
 
 def test_handler_context_excluded_reschedule_alternatives_are_unsat():
+    pytest.importorskip("z3")
     result = prove_handler_reschedule_unreachability()
     assert result["status"] == "PASS"
     assert result["proofs"] == {

@@ -64,6 +64,99 @@ def prove_handler_reschedule_unreachability() -> dict[str, object]:
     except ImportError:
         return {"status": "UNRESOLVED", "failure": "Z3_REQUIRED"}
 
+
+
+def prove_arrival_reschedule_partition(
+    arrival_batch_certificate: Mapping[str, object],
+) -> dict[str, object]:
+    """Prove the post-arrival reschedule partition for C-AMC-sem.
+
+    ``events`` is initialized with ``first_event``, so the batch is non-empty.
+    Under the P0 C-AMC-sem primitive partition every batch element creates one
+    fresh active unfinished job.  Consequently ``selected is None`` is
+    unreachable after the fold; the final reschedule is exactly KEEP or
+    DISPATCH depending on whether the selected job equals the previous runner.
+    """
+    fold = arrival_batch_certificate.get("fold_certificate", {})
+    if not isinstance(fold, Mapping):
+        return {
+            "status": "UNRESOLVED",
+            "failure": "ARRIVAL_FOLD_CERTIFICATE_REQUIRED",
+        }
+
+    structural = (
+        arrival_batch_certificate.get("status") == "PASS"
+        and arrival_batch_certificate.get("batch_nonempty") is True
+        and arrival_batch_certificate.get("one_release_substep_per_event") is True
+        and arrival_batch_certificate.get("release_keys_unique") is True
+        and fold.get("status") == "PASS"
+        and fold.get("iterable_is_finite") is True
+        and fold.get("body_called_once_per_element") is True
+        and fold.get("loop_has_no_early_exit") is True
+        and fold.get("element_case_partition_complete") is True
+        and fold.get("element_case_partition_exclusive") is True
+        and fold.get("fold_extends_job_map") is True
+        and fold.get("fold_preserves_relation") is True
+        and arrival_batch_certificate.get("every_element_creates_fresh_job") is True
+    )
+    if not structural:
+        return {
+            "status": "UNRESOLVED",
+            "failure": "ARRIVAL_POST_FOLD_NONEMPTY_READY_NOT_PROVED",
+            "idle_unreachable": False,
+            "keep_dispatch_exhaustive": False,
+            "keep_dispatch_exclusive": False,
+        }
+
+    try:
+        import z3
+    except ImportError:
+        return {
+            "status": "UNRESOLVED",
+            "failure": "Z3_REQUIRED",
+            "idle_unreachable": False,
+            "keep_dispatch_exhaustive": False,
+            "keep_dispatch_exclusive": False,
+        }
+
+    selected_eq_previous = z3.Bool("arrival_selected_eq_previous")
+    selected_is_none = z3.Bool("arrival_selected_is_none")
+    selected_nonempty = z3.Not(selected_is_none)
+    keep = z3.And(selected_nonempty, selected_eq_previous)
+    dispatch = z3.And(selected_nonempty, z3.Not(selected_eq_previous))
+    idle = selected_is_none
+
+    idle_solver = z3.Solver()
+    idle_solver.add(selected_nonempty, idle)
+    idle_unreachable = idle_solver.check() == z3.unsat
+
+    exhaustive_solver = z3.Solver()
+    exhaustive_solver.add(selected_nonempty, z3.Not(z3.Or(keep, dispatch)))
+    exhaustive = exhaustive_solver.check() == z3.unsat
+
+    exclusive_solver = z3.Solver()
+    exclusive_solver.add(keep, dispatch)
+    exclusive = exclusive_solver.check() == z3.unsat
+
+    passed = idle_unreachable and exhaustive and exclusive
+    return {
+        "status": "PASS" if passed else "UNRESOLVED",
+        "idle_unreachable": idle_unreachable,
+        "keep_dispatch_exhaustive": exhaustive,
+        "keep_dispatch_exclusive": exclusive,
+        "reachable_cases": [
+            "RESCHEDULE_KEEP_SAME",
+            "PREEMPTION_DISPATCH",
+        ],
+        "unreachable_cases": ["RESCHEDULE_TO_IDLE"],
+        "basis": (
+            "NONEMPTY_FINITE_RELEASE_FOLD_"
+            "PLUS_HIGHEST_PRIORITY_SELECTION"
+        ),
+        "failure": None if passed else "ARRIVAL_RESCHEDULE_PARTITION_FAILED",
+    }
+
+
 EVENT_HANDLER_ALTERNATIVES = (
     {"alternative_id": "CONTROLLER_NO_ACTION_IDLE",
      "component": "controller_no_action_idle"},
@@ -75,14 +168,10 @@ EVENT_HANDLER_ALTERNATIVES = (
      "component": "controller_selected_action_dispatch"},
     {"alternative_id": "JOB_ARRIVAL_NO_SWITCH_KEEP",
      "component": "arrival_no_switch_keep"},
-    {"alternative_id": "JOB_ARRIVAL_NO_SWITCH_IDLE",
-     "component": "arrival_no_switch_idle"},
     {"alternative_id": "JOB_ARRIVAL_NO_SWITCH_DISPATCH",
      "component": "arrival_no_switch_dispatch"},
     {"alternative_id": "JOB_ARRIVAL_SWITCH_KEEP",
      "component": "arrival_switch_s0_keep"},
-    {"alternative_id": "JOB_ARRIVAL_SWITCH_IDLE",
-     "component": "arrival_switch_s0_idle"},
     {"alternative_id": "JOB_ARRIVAL_SWITCH_DISPATCH",
      "component": "arrival_switch_s0_dispatch"},
     {"alternative_id": "DEADLINE_NO_MISS",
@@ -119,15 +208,11 @@ HANDLER_COMPOSITION_CASES = {
 
     "arrival_no_switch_keep":
         ("ARRIVAL_BATCH_NO_SWITCH", "RESCHEDULE_KEEP_SAME"),
-    "arrival_no_switch_idle":
-        ("ARRIVAL_BATCH_NO_SWITCH", "RESCHEDULE_TO_IDLE"),
     "arrival_no_switch_dispatch":
         ("ARRIVAL_BATCH_NO_SWITCH", "PREEMPTION_DISPATCH"),
 
     "arrival_switch_s0_keep":
         ("ARRIVAL_BATCH_SWITCH_S0", "RESCHEDULE_KEEP_SAME"),
-    "arrival_switch_s0_idle":
-        ("ARRIVAL_BATCH_SWITCH_S0", "RESCHEDULE_TO_IDLE"),
     "arrival_switch_s0_dispatch":
         ("ARRIVAL_BATCH_SWITCH_S0", "PREEMPTION_DISPATCH"),
 
@@ -425,9 +510,55 @@ def build_arrival_batch_decomposition_certificate(*, source_root: str | Path, br
     ) if loop else None
     ir = build_composite_handler_ir(source_root, "EventRuntimeEngine._process_job_arrival_batch")
     reschedule_calls = [n for n in ast.walk(node) if isinstance(n, ast.Call) and "_reschedule" in ast.unparse(n.func)] if node else []
-    passed = bool(fold and fold.status == "PASS" and ir.alternatives_exhaustive and ir.alternatives_mutually_exclusive and len(reschedule_calls) == 1)
+    assignments = [n for n in ast.walk(node) if isinstance(n, (ast.Assign, ast.AnnAssign))]
+    batch_nonempty = any(
+        "events = [first_event]" in ast.unparse(item)
+        for item in assignments
+    )
+    every_element_creates_fresh_job = bool(
+        fold
+        and fold.status == "PASS"
+        and fold.fold_extends_job_map
+        and fold.input_keys_unique
+        and len(fold.child_certificate_hashes) == len(RELEASE_ELEMENT_CASES)
+    )
+    passed = bool(
+        fold
+        and fold.status == "PASS"
+        and batch_nonempty
+        and every_element_creates_fresh_job
+        and ir.alternatives_exhaustive
+        and ir.alternatives_mutually_exclusive
+        and len(reschedule_calls) == 1
+    )
     fold_payload = asdict(fold) if fold else None
-    result = {"status": "PASS" if passed else "UNRESOLVED", "schema_version": "arrival_batch_release_decomposition_v1", "loop_callee": "_process_single_arrival_in_priority_order", "finite_batch": bool(loop), "one_release_substep_per_event": bool(fold and fold.body_called_once_per_element), "release_keys_unique": unique.get("status") == "PASS", "component_case_ids": list(RELEASE_ELEMENT_CASES), "fold_theorem": "FINITE_SEQUENCE_INDUCTION_OVER_FRESH_RELEASE_MAP_EXTENSIONS", "source_effect_hash": fold.loop_source_hash if fold else "", "fold_certificate": fold_payload, "fold_certificate_hash": sha256_object(fold_payload) if fold_payload is not None else "", "handler_ir": asdict(ir), "final_reschedule_once": len(reschedule_calls) == 1, "context_hash": context_hash}
+    result = {
+        "status": "PASS" if passed else "UNRESOLVED",
+        "schema_version": "arrival_batch_release_decomposition_v1",
+        "loop_callee": "_process_single_arrival_in_priority_order",
+        "finite_batch": bool(loop),
+        "batch_nonempty": batch_nonempty,
+        "one_release_substep_per_event": bool(
+            fold and fold.body_called_once_per_element
+        ),
+        "release_keys_unique": unique.get("status") == "PASS",
+        "every_element_creates_fresh_job": every_element_creates_fresh_job,
+        "component_case_ids": list(RELEASE_ELEMENT_CASES),
+        "fold_theorem": (
+            "FINITE_SEQUENCE_INDUCTION_OVER_"
+            "FRESH_RELEASE_MAP_EXTENSIONS"
+        ),
+        "source_effect_hash": fold.loop_source_hash if fold else "",
+        "fold_certificate": fold_payload,
+        "fold_certificate_hash": (
+            sha256_object(fold_payload)
+            if fold_payload is not None
+            else ""
+        ),
+        "handler_ir": asdict(ir),
+        "final_reschedule_once": len(reschedule_calls) == 1,
+        "context_hash": context_hash,
+    }
     result["artifact_hash"] = sha256_object(result)
     return result
 
@@ -533,7 +664,11 @@ def _sequence_unresolved(
     )
 
 
-def compose_fixed_transition_sequence(steps: Sequence[Mapping[str, object]]) -> CompositeSequenceResult:
+def compose_fixed_transition_sequence(
+    steps: Sequence[Mapping[str, object]],
+    *,
+    guarded_branch_boundaries: Sequence[int] = (),
+) -> CompositeSequenceResult:
     """组合固定顺序的 micro-steps。
 
     数学门禁分三层：
@@ -581,6 +716,12 @@ def compose_fixed_transition_sequence(steps: Sequence[Mapping[str, object]]) -> 
             )
 
     states = tuple(f"s{i}" for i in range(len(steps) + 1))
+    guarded_boundaries = set(int(index) for index in guarded_branch_boundaries)
+    if any(index <= 0 or index >= len(steps) for index in guarded_boundaries):
+        return _sequence_unresolved(
+            "INVALID_GUARDED_BRANCH_BOUNDARY",
+            states=states,
+        )
     relation_hashes = {
         str(step.get("parameterized_relation_schema_hash", ""))
         for step in steps
@@ -690,7 +831,56 @@ def compose_fixed_transition_sequence(steps: Sequence[Mapping[str, object]]) -> 
     precondition_results: list[dict[str, object]] = []
     for index in range(1, len(steps)):
         prefix_formula = "(and " + " ".join(transition_bodies[:index]) + ")"
-        counterexample = "(and " + prefix_formula + " (not " + preconditions[index] + "))"
+        if index in guarded_boundaries:
+            # This boundary is an explicit handler alternative.  The preceding
+            # macro-step need not imply one particular mutually exclusive
+            # reschedule guard.  Soundness comes from:
+            #   (a) SAT of prefix ∧ selected branch precondition,
+            #   (b) the separately machine-checked exhaustive/exclusive
+            #       partition, and
+            #   (c) the primitive case theorem for that branch.
+            guarded_formula = (
+                "(and "
+                + prefix_formula
+                + " "
+                + preconditions[index]
+                + ")"
+            )
+            result, entailment_failure, prepared_declarations = (
+                _run_sequence_z3_query(
+                    declarations=prepared_declarations,
+                    assertion=guarded_formula,
+                )
+            )
+            item = {
+                "from_case_id": str(steps[index - 1].get("case_id")),
+                "to_case_id": str(steps[index].get("case_id")),
+                "solver_result": result,
+                "check_kind": "GUARDED_HANDLER_ALTERNATIVE",
+            }
+            precondition_results.append(item)
+            if result != "SAT":
+                return _sequence_unresolved(
+                    entailment_failure
+                    or "SEQUENCE_GUARDED_BRANCH_INFEASIBLE:"
+                    + str(steps[index].get("case_id")),
+                    formula=combined_formula,
+                    declarations=prepared_declarations,
+                    states=states,
+                    feasibility_result="SAT",
+                    precondition_chain_result="UNRESOLVED",
+                    relation_chain_result="PASS",
+                    step_precondition_results=precondition_results,
+                )
+            continue
+
+        counterexample = (
+            "(and "
+            + prefix_formula
+            + " (not "
+            + preconditions[index]
+            + "))"
+        )
         result, entailment_failure, prepared_declarations = _run_sequence_z3_query(
             declarations=prepared_declarations,
             assertion=counterexample,
@@ -699,6 +889,7 @@ def compose_fixed_transition_sequence(steps: Sequence[Mapping[str, object]]) -> 
             "from_case_id": str(steps[index - 1].get("case_id")),
             "to_case_id": str(steps[index].get("case_id")),
             "solver_result": result,
+            "check_kind": "UNIVERSAL_PRECONDITION_ENTAILMENT",
         }
         precondition_results.append(item)
         if result == "SAT":
@@ -852,6 +1043,9 @@ def build_handler_decomposition_certificate(
     compositions = {}
     reschedule_partition = prove_reschedule_partition()
     unreachable_reschedule = prove_handler_reschedule_unreachability()
+    arrival_reschedule_partition = prove_arrival_reschedule_partition(
+        arrival_batch
+    )
     if reschedule_partition.get("status") != "PASS":
         failures.append({"component": "reschedule_partition",
                          "missing": [reschedule_partition.get("failure", "PASS") ]})
@@ -859,6 +1053,16 @@ def build_handler_decomposition_certificate(
         failures.append({
             "component": "handler_reschedule_unreachability",
             "missing": [unreachable_reschedule.get("failure", "UNREACHABILITY_NOT_PROVED")],
+        })
+    if arrival_reschedule_partition.get("status") != "PASS":
+        failures.append({
+            "component": "arrival_reschedule_partition",
+            "missing": [
+                arrival_reschedule_partition.get(
+                    "failure",
+                    "ARRIVAL_RESCHEDULE_PARTITION_NOT_PROVED",
+                )
+            ],
         })
     for component, case_ids in composition_cases.items():
         missing = [case_id for case_id in case_ids if case_id not in proofs]
@@ -902,7 +1106,16 @@ def build_handler_decomposition_certificate(
         # 这里不是把 hash 当成证明结论：每个 child 的实际 concrete/reference
         # 方程和既有 SMT relation-preservation 结果都被重新检查，并按调用顺序
         # 形成组合 obligation。公式正文保留在 witness 中供独立 checker 重放。
-        sequence = compose_fixed_transition_sequence(steps)
+        guarded_boundaries = (
+            (1,)
+            if len(case_ids) == 2
+            and case_ids[1] in RESCHEDULE_ALTERNATIVES
+            else ()
+        )
+        sequence = compose_fixed_transition_sequence(
+            steps,
+            guarded_branch_boundaries=guarded_boundaries,
+        )
         sequential_formula = sequence.formula
         compositions[component] = {
             "ordered_case_ids": list(case_ids), "steps": steps,
@@ -923,6 +1136,7 @@ def build_handler_decomposition_certificate(
             "step_precondition_results": list(sequence.step_precondition_results),
             "declarations": sequence.declarations,
             "state_ids": sequence.state_ids,
+            "guarded_branch_boundaries": list(guarded_boundaries),
             "sequence_failure": sequence.failure,
         }
     if transition_case_certificates is None:
@@ -932,12 +1146,10 @@ def build_handler_decomposition_certificate(
             name for name, item in compositions.items() if item["proof_status"] != "PASS"]})
     arrival_no_switch_components = (
         "arrival_no_switch_keep",
-        "arrival_no_switch_idle",
         "arrival_no_switch_dispatch",
     )
     arrival_switch_components = (
         "arrival_switch_s0_keep",
-        "arrival_switch_s0_idle",
         "arrival_switch_s0_dispatch",
     )
     preclosed_alternative_groups = (
@@ -948,6 +1160,7 @@ def build_handler_decomposition_certificate(
         compositions["boot"]["proof_status"] == "PASS"
         and arrival_batch.get("status") == "PASS"
         and reschedule_partition.get("status") == "PASS"
+        and arrival_reschedule_partition.get("status") == "PASS"
         and all(
             compositions[name].get("proof_status") == "PASS"
             for name in arrival_no_switch_components + arrival_switch_components
@@ -974,15 +1187,48 @@ def build_handler_decomposition_certificate(
         item.get("proof_status") == "PASS"
         for item in compositions.values()
     )
-    def aggregate_components(names: Sequence[str]) -> dict[str, object]:
+    def aggregate_components(
+        names: Sequence[str],
+        *,
+        partition: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
         component_results = {name: compositions[name] for name in names}
-        passed = all(item.get("proof_status") == "PASS"
-                     for item in component_results.values())
+        partition_ok = (
+            True
+            if partition is None
+            else partition.get("status") == "PASS"
+        )
+        passed = (
+            partition_ok
+            and all(
+                item.get("proof_status") == "PASS"
+                for item in component_results.values()
+            )
+        )
         return {
             "proof_status": "PASS" if passed else "UNRESOLVED",
             "components": component_results,
-            "alternatives_exclusive": True,
-            "alternatives_exhaustive": True,
+            "alternatives_exclusive": (
+                True
+                if partition is None
+                else bool(
+                    partition.get(
+                        "keep_dispatch_exclusive",
+                        partition.get("pairwise_exclusive"),
+                    )
+                )
+            ),
+            "alternatives_exhaustive": (
+                True
+                if partition is None
+                else bool(
+                    partition.get(
+                        "keep_dispatch_exhaustive",
+                        partition.get("exhaustive"),
+                    )
+                )
+            ),
+            "partition": dict(partition) if partition is not None else None,
         }
 
     handlers = {
@@ -993,8 +1239,14 @@ def build_handler_decomposition_certificate(
             "fold_status": arrival_batch.get("fold_certificate", {}).get("status", "UNRESOLVED"),
             "fold_theorem": arrival_batch.get("fold_theorem"),
             "alternative_results": {
-                "ARRIVAL_BATCH_NO_SWITCH": aggregate_components(arrival_no_switch_components),
-                "ARRIVAL_BATCH_SWITCH_S0": aggregate_components(arrival_switch_components),
+                "ARRIVAL_BATCH_NO_SWITCH": aggregate_components(
+                    arrival_no_switch_components,
+                    partition=arrival_reschedule_partition,
+                ),
+                "ARRIVAL_BATCH_SWITCH_S0": aggregate_components(
+                    arrival_switch_components,
+                    partition=arrival_reschedule_partition,
+                ),
             },
             "fold_certificate_hash": arrival_batch.get("fold_certificate_hash", ""),
             "final_reschedule_once": arrival_batch.get("final_reschedule_once") is True,

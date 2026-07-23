@@ -15,10 +15,7 @@ def test_arrival_controller_and_completion_outcomes_are_separate_alternatives():
         "ARRIVAL_BATCH_NO_SWITCH",
         "RESCHEDULE_KEEP_SAME",
     )
-    assert HANDLER_COMPOSITION_CASES["arrival_no_switch_idle"] == (
-        "ARRIVAL_BATCH_NO_SWITCH",
-        "RESCHEDULE_TO_IDLE",
-    )
+    assert "arrival_no_switch_idle" not in HANDLER_COMPOSITION_CASES
     assert HANDLER_COMPOSITION_CASES["arrival_no_switch_dispatch"] == (
         "ARRIVAL_BATCH_NO_SWITCH",
         "PREEMPTION_DISPATCH",

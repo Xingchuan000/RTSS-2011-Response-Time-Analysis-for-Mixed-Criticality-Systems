@@ -245,6 +245,13 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
         return {"status": "UNRESOLVED", "failure": "HANDLER_DECOMPOSITION_MATH_FIXED_REQUIRED"}
     if handler_decomposition_certificate.get("reschedule_partition", {}).get("status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "RESCHEDULE_PARTITION_PROOF_REQUIRED"}
+    if handler_decomposition_certificate.get(
+        "arrival_reschedule_partition", {}
+    ).get("status") != "PASS":
+        return {
+            "status": "UNRESOLVED",
+            "failure": "ARRIVAL_RESCHEDULE_PARTITION_PROOF_REQUIRED",
+        }
     identity_hash = reference_transition_identity_certificate.get("artifact_hash", sha256_object(reference_transition_identity_certificate))
     witness = {
         "schema_version": "closed_prefix_refinement_v2",
