@@ -6,7 +6,10 @@ from typing import Any, Mapping
 from formal_toolchain.core.artifact import obligation_certificate
 from formal_toolchain.core.hashing import sha256_file, sha256_object
 from formal_toolchain.core.predecessor_contract import validate_verified_predecessor
-from formal_toolchain.theory.backends.reference_prefix_extension import EXPECTED_CASE_IDS, EXPECTED_SOLVER_OBLIGATIONS
+from formal_toolchain.theory.backends.reference_prefix_extension import (
+    EXPECTED_CASE_IDS, EXPECTED_SOLVER_OBLIGATIONS,
+    current_prefix_extension_source_bindings,
+)
 
 
 def _receipt_is_valid(
@@ -68,6 +71,21 @@ def build_parameterized_prefix_extension_certificate(
     proof_path = (Path(__file__).resolve().parents[1] / "theory" / proof_object.get("path", "")).resolve()
     if not proof_path.is_file() or not _receipt_is_valid(theorem_proof_receipt, theorem_statement, proof_path):
         raise ValueError("REFERENCE_PREFIX_THEOREM_RECEIPT_INVALID")
+
+    source_bindings = (
+        current_prefix_extension_source_bindings()
+    )
+
+    if (
+        theorem_proof_receipt.get(
+            "source_bindings"
+        )
+        != source_bindings
+    ):
+        raise ValueError(
+            "REFERENCE_PREFIX_SOURCE_BINDINGS_MISMATCH"
+        )
+
     tasks = reference_taskset.get("tasks", [])
     if not isinstance(tasks, list) or not tasks:
         raise ValueError("REFERENCE_PREFIX_REFERENCE_TASKSET_EMPTY")
@@ -90,6 +108,16 @@ def build_parameterized_prefix_extension_certificate(
             "theorem_proof_object_hash": proof_object["sha256"],
             "reference_state_source_hash": ref_state_source_hash,
             "executable_semantics_source_hash": exec_source_hash,
+            "c_amc_sem_semantics_source_hash":
+                source_bindings[
+                    "formal_toolchain/reference/"
+                    "c_amc_sem_semantics.py"
+                ],
+            "logical_events_source_hash":
+                source_bindings[
+                    "formal_toolchain/bridge/"
+                    "logical_events.py"
+                ],
         },
         witness={
             "schema_version": "reference_prefix_extension_v4",

@@ -182,6 +182,19 @@ def _verify_cases(candidate: Mapping[str, Any], obligation_id: str,
     if obligation_id == "CLOSED_PREFIX_REFINEMENT":
         fresh_witness["case_count"] = len(case_ids or [])
         fresh_witness["fresh_replay"] = replay
+        candidate_witness = candidate.get("witness", {})
+        if isinstance(candidate_witness, Mapping):
+            if "pointwise_closed_prefix_relation" in candidate_witness:
+                fresh_witness["pointwise_closed_prefix_relation"] = (
+                    candidate_witness["pointwise_closed_prefix_relation"]
+                )
+            if isinstance(
+                candidate_witness.get("n6_relation_interface"),
+                Mapping,
+            ):
+                fresh_witness["n6_relation_interface"] = dict(
+                    candidate_witness["n6_relation_interface"]
+                )
     else:
         fresh_witness["reused_closed_prefix_case_replay"] = True
     return {"status": "PASS", "route": None, "code": None, "witness": fresh_witness}
@@ -259,33 +272,35 @@ def verify_prefix_extension_proof_object(*, candidate: Mapping[str, Any],
 
 
 def verify_bad_prefix_proof_object(*, candidate: Mapping[str, Any],
-                                   bridge_context_hash: str, **kwargs: Any) -> dict[str, Any]:
+                                   bridge_context_hash: str,
+                                   contexts: Mapping[str, Mapping[str, Any]],
+                                   predecessors: Mapping[str, Mapping[str, Any]],
+                                   **kwargs: Any) -> dict[str, Any]:
     failure = _base(candidate, "HI_BAD_CLOSED_PREFIX_REFLECTION", bridge_context_hash)
     if failure:
         return failure
-    theorem = _THEORY_HASHES.get("FINITE_HI_BAD_PREFIX_REFLECTION", {})
-    theorem_input = candidate.get("inputs", {}).get("theorem", {})
-    if theorem_input.get("theorem_id") not in (None, "FINITE_HI_BAD_PREFIX_REFLECTION"):
-        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "BAD_PREFIX_THEOREM_OR_SCHEMA_MISMATCH"}
-    if theorem_input.get("statement_hash") != theorem.get("statement_hash"):
-        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "BAD_PREFIX_THEOREM_OR_SCHEMA_MISMATCH"}
-    if theorem_input.get("assumption_hash", theorem.get("assumption_hash")) != theorem.get("assumption_hash"):
-        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "BAD_PREFIX_THEOREM_OR_SCHEMA_MISMATCH"}
-    required = {"job_key", "release_time", "deadline", "service", "miss_time"}
-    if not required <= set(candidate.get("witness", {}).get("required_quantities", [])):
-        return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "BAD_PREFIX_QUANTIFIED_WITNESS_INCOMPLETE"}
-    expected_predecessors = {
-        "CLOSED_PREFIX_REFINEMENT",
-        "REFERENCE_PREFIX_EXTENSION",
-        "RELEASE_FIXED_REMOVAL_MAPPING",
-        "DEADLINE_OBSERVATION",
-        "HI_NONTRUNCATION",
-        "EFFECTIVE_EVENT_FRONTIER_RELATION",
-        "EARLY_STOP_CONFIGURATION_GATE",
-    }
-    if set(candidate.get("direct_predecessor_hashes", {})) != expected_predecessors:
-        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "BAD_PREFIX_THEOREM_OR_SCHEMA_MISMATCH"}
-    return {"status": "PASS", "route": None, "code": None, "witness": dict(candidate.get("witness", {}))}
+    from formal_toolchain.theory.loader import TCB_BACKENDS, load_verified_theory_statement
+    from formal_toolchain.bridge.bad_prefix import build_hi_bad_prefix_reflection_certificate
+
+    theory_dir = Path(__file__).resolve().parents[1] / "theory"
+    try:
+        theorem = load_verified_theory_statement(theory_dir, "FINITE_HI_BAD_PREFIX_REFLECTION")
+        proof_path = theory_dir / theorem["proof_object"]["path"]
+        backend = TCB_BACKENDS[theorem["proof_object"]["backend"]]
+        receipt = backend.verify(proof_path, theorem=theorem)
+        if receipt.get("status") != "PASS":
+            return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "N6_THEOREM_BACKEND_REJECTED"}
+        rebuilt = build_hi_bad_prefix_reflection_certificate(
+            verified_predecessors=predecessors, contexts=contexts,
+            context_hash=bridge_context_hash, theorem_statement=theorem,
+            theorem_proof_receipt=receipt,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                "code": "N6_FRESH_REBUILD_FAILED", "failure": str(exc)}
+    if candidate.get("obligation_status") == "PASS" and candidate != rebuilt:
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "N6_REPLAY_MISMATCH"}
+    return {"status": "PASS", "route": None, "code": None, "witness": dict(rebuilt.get("witness", {}))}
 
 
 def verify_prefix_extension_proof_object(*, candidate: Mapping[str, Any],

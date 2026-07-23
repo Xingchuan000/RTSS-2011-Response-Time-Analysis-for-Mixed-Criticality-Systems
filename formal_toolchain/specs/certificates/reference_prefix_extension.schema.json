@@ -22,7 +22,7 @@
     "checker_version": {"type": "string"},
     "inputs": {
       "type": "object", "additionalProperties": false,
-      "required": ["theorem_id", "reference_taskset_fingerprint", "theorem_statement_hash", "theorem_assumption_hash", "theorem_proof_object_hash", "reference_state_source_hash", "executable_semantics_source_hash"],
+      "required": ["theorem_id", "reference_taskset_fingerprint", "theorem_statement_hash", "theorem_assumption_hash", "theorem_proof_object_hash", "reference_state_source_hash", "executable_semantics_source_hash", "c_amc_sem_semantics_source_hash", "logical_events_source_hash"],
       "properties": {
         "theorem_id": {"const": "REFERENCE_PREFIX_EXTENSION"},
         "reference_taskset_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -30,7 +30,9 @@
         "theorem_assumption_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "theorem_proof_object_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "reference_state_source_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "executable_semantics_source_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "executable_semantics_source_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "c_amc_sem_semantics_source_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "logical_events_source_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
     "witness": {

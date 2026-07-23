@@ -7,6 +7,46 @@ from typing import Any, Mapping
 from formal_toolchain.core.hashing import sha256_file, sha256_object
 
 
+PREFIX_EXTENSION_SOURCE_FILES = {
+    "formal_toolchain/reference/reference_state.py":
+        (
+            Path(__file__).resolve().parents[2]
+            / "reference"
+            / "reference_state.py"
+        ),
+
+    "formal_toolchain/reference/executable_semantics.py":
+        (
+            Path(__file__).resolve().parents[2]
+            / "reference"
+            / "executable_semantics.py"
+        ),
+
+    "formal_toolchain/reference/c_amc_sem_semantics.py":
+        (
+            Path(__file__).resolve().parents[2]
+            / "reference"
+            / "c_amc_sem_semantics.py"
+        ),
+
+    "formal_toolchain/bridge/logical_events.py":
+        (
+            Path(__file__).resolve().parents[2]
+            / "bridge"
+            / "logical_events.py"
+        ),
+}
+
+
+def current_prefix_extension_source_bindings(
+) -> dict[str, str]:
+    return {
+        relative_path: sha256_file(path)
+        for relative_path, path
+        in PREFIX_EXTENSION_SOURCE_FILES.items()
+    }
+
+
 EXPECTED_CASE_IDS = (
     "SAME_TIMESTAMP_CLOSURE",
     "READY_SERVICE_OR_EARLIER_BOUNDARY",
@@ -229,14 +269,17 @@ class ReferencePrefixExtensionBackend:
         if proof.get("case_ids") != list(EXPECTED_CASE_IDS):
             return {"status": "FAIL", "code": "PROOF_CASE_IDS_MISMATCH"}
         source_bindings = proof.get("source_bindings")
-        expected_bindings = {
-            "formal_toolchain/reference/reference_state.py": sha256_file(
-                Path(__file__).resolve().parents[2] / "reference" / "reference_state.py"),
-            "formal_toolchain/reference/executable_semantics.py": sha256_file(
-                Path(__file__).resolve().parents[2] / "reference" / "executable_semantics.py"),
-        }
+        expected_bindings = (
+            current_prefix_extension_source_bindings()
+        )
         if source_bindings != expected_bindings:
-            return {"status": "FAIL", "code": "SOURCE_BINDINGS_MISMATCH"}
+            return {
+                "status": "FAIL",
+                "code":
+                    "SOURCE_BINDINGS_MISMATCH",
+                "expected": expected_bindings,
+                "actual": source_bindings,
+            }
         if proof.get("theorem_statement_hash") != theorem.get("statement_hash"):
             return {"status": "FAIL", "code": "THEOREM_STATEMENT_HASH_MISMATCH"}
         if proof.get("theorem_assumption_hash") != theorem.get("assumption_hash"):

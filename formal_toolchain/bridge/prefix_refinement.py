@@ -12,12 +12,21 @@ from formal_toolchain.core.artifact import verify_obligation_certificate
 from formal_toolchain.core.hashing import sha256_object
 
 from .event_projection import project_events
-from .state_relation import P0ConcreteState, P0Event, P0ReferenceState, relation_holds
+from .model_bounds import P0ModelBounds
+from .state_relation import (
+    P0ConcreteState,
+    P0Event,
+    P0ReferenceState,
+    build_n6_relation_interface,
+    p0_state_relation_schema_hash,
+    relation_holds,
+)
 from .transition_cases import TransitionCaseProof, check_handler_coverage
 
 
 def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
-                              cases: Sequence[TransitionCaseProof], source_hash: str,
+                              cases: Sequence[TransitionCaseProof],
+                              model_bounds: P0ModelBounds, source_hash: str,
                               bridge_context_hash: str | None = None,
                               source_branch_ids: Sequence[str] | None = None,
                               branch_map: Mapping[str, Any] | None = None,
@@ -79,6 +88,16 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
         return {"status": "UNRESOLVED", "failure": "TRANSITION_CASE_CERTIFICATES_REQUIRED"}
     if any(not isinstance(case, TransitionCaseProof) for case in cases):
         return {"status": "UNRESOLVED", "failure": "CASE_OBJECT_REQUIRED"}
+    expected_relation_hash = p0_state_relation_schema_hash(model_bounds)
+    if any(
+        case.state_relation_schema_hash != expected_relation_hash
+        for case in cases
+    ):
+        return {
+            "status": "FAIL",
+            "failure": "N6_STATE_RELATION_SCHEMA_MISMATCH",
+        }
+    n6_interface = build_n6_relation_interface(model_bounds)
     if any(case.bound_source_hash != source_hash for case in cases):
         return {"status": "FAIL", "failure": "CASE_SOURCE_HASH_MISMATCH"}
     expected_case = {branch["path_id"]: branch.get("case_id") for branch in branches}
@@ -111,9 +130,17 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
                                   "release_mapping": release_mapping_certificate.get("artifact_hash", sha256_object(release_mapping_certificate)),
                                   **{f"case:{index}": case_artifact["artifact_hash"]
                                      for index, case_artifact in enumerate(transition_case_certificates)}},
-        witness={"case_ids": result["case_ids"], "coverage": coverage,
-                 "proof_kind": "BOUNDED_REGRESSION",
-                 "transition_case_certificates": [dict(item) for item in transition_case_certificates]},
+        witness={
+            "case_ids": result["case_ids"],
+            "coverage": coverage,
+            "proof_kind": "BOUNDED_CASEWISE_INDUCTIVE_PREFIX_REFINEMENT",
+            "pointwise_closed_prefix_relation": True,
+            "n6_relation_interface": n6_interface,
+            "transition_case_certificates": [
+                dict(item)
+                for item in transition_case_certificates
+            ],
+        },
         checker_id="formal_toolchain.bridge.prefix_refinement", checker_version="phase-k-v2",
     ))
     return result

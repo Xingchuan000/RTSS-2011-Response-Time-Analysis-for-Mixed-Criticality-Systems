@@ -22,7 +22,9 @@ def build_early_stop_configuration_gate(
             checker_version="early-stop-gate-v1",
         )
 
-    if closure_completion_certificate is None or closure_completion_certificate.get("obligation_status") != "PASS":
+    if (closure_completion_certificate is None
+            or closure_completion_certificate.get("obligation_id") != "EARLY_STOP_CLOSURE_COMPLETION"
+            or closure_completion_certificate.get("obligation_status") != "PASS"):
         return obligation_certificate(
             obligation_id="EARLY_STOP_CONFIGURATION_GATE",
             status="UNRESOLVED",

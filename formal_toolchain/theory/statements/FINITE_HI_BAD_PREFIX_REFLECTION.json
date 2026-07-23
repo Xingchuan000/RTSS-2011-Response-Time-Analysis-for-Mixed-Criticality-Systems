@@ -1,17 +1,34 @@
 {
-  "assumption_hash": "3a16d7804f5e096d7cbf835894fc335e23eab6f7cec788f00475ed45fb2b9cc4",
+  "assumption_hash": "2d3440a1b918dad591777af83002e4b1fd83ba2b815fdaa6b92a29e41755473c",
   "assumptions": [
-    "first_finite_concrete_hi_bad_prefix",
-    "closed_prefix_refinement",
-    "reference_prefix_extension",
-    "deadline_observation_projection",
-    "event_mapping"
+    "closed_prefix_refinement_holds_pointwise_at_every_reachable_closed_prefix",
+    "closed_prefix_relation_preserves_time_and_release_fixed_job_identity",
+    "closed_prefix_relation_preserves_criticality_release_deadline_service_demand_and_hi_miss_flag",
+    "deadline_observation_sets_hi_miss_at_the_absolute_deadline_without_removing_the_job",
+    "release_fixed_removal_mapping_defines_the_reference_demand",
+    "hi_nontruncation_preserves_full_hi_demand",
+    "effective_event_frontier_relation_preserves_same_timestamp_closure",
+    "early_stop_is_disabled_or_same_timestamp_closure_is_completed"
   ],
-  "assurance_level": "DECLARED_AXIOM_TCB",
+  "assurance_level": "MACHINE_CHECKED_PROJECT_LEMMA",
   "conclusion": "a first concrete HI bad closed prefix maps to a legal reference prefix containing a corresponding HI bad event",
-  "exact_statement": "Let pi be the first finite concrete closed prefix containing an observed HI deadline miss. If pi has a legal reference-prefix extension and the concrete/reference event projection preserves the corresponding HI deadline observation, then the mapped reference prefix contains a corresponding HI bad event; this theorem performs only the concrete-to-reference bad-prefix mapping and does not prove the reference WCRT or protected-HI corollary.",
+  "exact_statement": "For every first finite concrete HI bad closed prefix, the closed-prefix refinement, reference-prefix extension, release-fixed removal mapping, deadline observation, HI nontruncation, effective event frontier relation, and early-stop configuration gate imply a corresponding first finite reference HI bad prefix. N6 only proves the concrete first HI bad prefix maps to the reference first HI bad prefix; it does not assume or prove reference safety or schedulability.",
+  "premise_obligation_ids": [
+    "CLOSED_PREFIX_REFINEMENT",
+    "REFERENCE_PREFIX_EXTENSION",
+    "RELEASE_FIXED_REMOVAL_MAPPING",
+    "DEADLINE_OBSERVATION",
+    "HI_NONTRUNCATION",
+    "EFFECTIVE_EVENT_FRONTIER_RELATION",
+    "EARLY_STOP_CONFIGURATION_GATE"
+  ],
+  "proof_object": {
+    "backend": "finite-hi-bad-prefix-z3-v1",
+    "path": "proofs/FINITE_HI_BAD_PREFIX_REFLECTION.proof.json",
+    "sha256": "b3e1a3407bf1d364ebacb00d4241b0345f704ac77fa65da8c76357380ab37cf3"
+  },
   "source_reference": "This framework theorem interface, finite HI bad-prefix reflection",
-  "statement_hash": "2c00844cbaebe5df77392f4dc45c977ba6c116f0cbe5bb703fc8e502dffc7e93",
+  "statement_hash": "4973d2d07c965ee6ffc216d774325533f600e2fa39a0392059f5fb65c9d3badc",
   "theorem_id": "FINITE_HI_BAD_PREFIX_REFLECTION",
-  "version": "p0-theory-r2"
+  "version": "p0-theory-r4"
 }

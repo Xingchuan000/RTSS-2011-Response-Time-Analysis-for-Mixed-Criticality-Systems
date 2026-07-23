@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any
@@ -110,23 +111,133 @@ def _release_fixed_removal_demand(job: Any) -> int:
     return raw
 
 
-def _release_class(job: Any, mode: str) -> str:
-    criticality = str(getattr(getattr(job.task, "criticality", job.task), "value", getattr(job.task, "criticality", "LO")))
-    is_degraded = bool(getattr(job, "is_degraded", False))
-    released_in_mode = str(getattr(job, "released_in_mode", "LO"))
+def _mode_name(
+    value: Any,
+    *,
+    default: str = "LO",
+) -> str:
+    if value is None:
+        return default
+
+    raw = getattr(
+        value,
+        "name",
+        getattr(value, "value", value),
+    )
+
+    result = str(raw)
+
+    if result not in {"LO", "HI"}:
+        raise ValueError(
+            f"FORMAL_RELEASE_MODE_INVALID:{result}"
+        )
+
+    return result
+
+
+def _job_key_of(job: Any) -> tuple[str, int]:
+    return (
+        str(job.task.name),
+        int(job.release_index),
+    )
+
+
+def _switch_trigger_keys(engine: Any) -> frozenset[tuple[str, int]]:
+    return frozenset(
+        (
+            str(event.triggering_task),
+            int(event.triggering_release_index),
+        )
+        for event in getattr(
+            engine.result,
+            "mode_switches",
+            (),
+        )
+    )
+
+
+def _switch_times(engine: Any) -> frozenset[int]:
+    return frozenset(
+        int(event.switch_time)
+        for event in getattr(
+            engine.result,
+            "mode_switches",
+            (),
+        )
+    )
+
+
+def _release_class_from_provenance(
+    job: Any,
+    *,
+    switch_trigger_keys: frozenset[tuple[str, int]],
+    switch_times: frozenset[int],
+    cancellations: Mapping[tuple[str, int], Any],
+    losses: Mapping[tuple[str, int], Any],
+) -> str:
+    key = _job_key_of(job)
+
+    criticality = str(
+        getattr(
+            getattr(
+                job.task,
+                "criticality",
+                job.task,
+            ),
+            "value",
+            getattr(
+                job.task,
+                "criticality",
+                "LO",
+            ),
+        )
+    )
+
+    released_in_mode = _mode_name(
+        getattr(
+            job,
+            "released_in_mode",
+            "LO",
+        )
+    )
+
+    release_time = int(job.release_time)
+
     if criticality == "HI":
-        if mode == "HI" and released_in_mode == "LO":
-            return ReleaseClass.HI_ABNORMAL_SWITCH_TRIGGER
-        return ReleaseClass.HI_NORMAL
-    if mode == "HI":
-        if released_in_mode == "HI":
-            return ReleaseClass.LO_DEGRADED_HI_MODE
-        return ReleaseClass.LO_DROPPED_HI_MODE
-    if is_degraded:
-        return ReleaseClass.LO_DEGRADED_HI_MODE
-    if released_in_mode == "HI":
-        return ReleaseClass.LO_PRIMARY_SAME_BATCH_SWITCH_TIME
-    return ReleaseClass.LO_PRIMARY_NORMAL
+        return (
+            ReleaseClass.HI_ABNORMAL_SWITCH_TRIGGER.value
+            if key in switch_trigger_keys
+            else ReleaseClass.HI_NORMAL.value
+        )
+
+    if bool(getattr(job, "is_degraded", False)):
+        return ReleaseClass.LO_DEGRADED_HI_MODE.value
+
+    cancellation = cancellations.get(key)
+    loss = losses.get(key)
+
+    if cancellation is not None or loss is not None:
+        reason = str(
+            getattr(
+                cancellation or loss,
+                "reason",
+                "",
+            )
+        ).upper()
+
+        if (
+            "RELEASE_DROPPED" in reason
+            or "DROPPED_IN_DEGRADED_MODE" in reason
+        ):
+            return ReleaseClass.LO_DROPPED_HI_MODE.value
+
+    if (
+        release_time in switch_times
+        and released_in_mode == "LO"
+    ):
+        return ReleaseClass.LO_PRIMARY_SAME_BATCH_SWITCH_TIME.value
+
+    return ReleaseClass.LO_PRIMARY_NORMAL.value
 
 
 def _terminal_kind(job: Any, cancellations: dict, losses: dict) -> str:
@@ -158,7 +269,9 @@ def build_formal_runtime_snapshot(
     engine: Any,
     priority_map: dict[str, int] | None = None,
 ) -> FormalRuntimeSnapshot:
-    mode = str(getattr(engine.state.mode, "name", engine.state.mode))
+    mode = _mode_name(
+        engine.state.mode
+    )
     cancellations = {
         (str(e.task), int(e.release_index)): e
         for e in getattr(getattr(engine, "result", engine), "job_cancellations", ())
@@ -167,6 +280,8 @@ def build_formal_runtime_snapshot(
         (str(e.task), int(e.release_index)): e
         for e in getattr(getattr(engine, "result", engine), "lo_job_losses", ())
     }
+    trigger_keys = _switch_trigger_keys(engine)
+    switch_times = _switch_times(engine)
     raw_released = []
     for job in tuple(getattr(engine, "jobs_by_key", {}).values()):
         pidx = _priority_index(job, priority_map)
@@ -175,8 +290,20 @@ def build_formal_runtime_snapshot(
             release_time=int(job.release_time),
             absolute_deadline=int(job.absolute_deadline),
             criticality=str(getattr(getattr(job.task, "criticality", job.task), "value", getattr(job.task, "criticality", "LO"))),
-            released_mode=str(getattr(job, "released_in_mode", "LO")),
-            release_class=_release_class(job, mode),
+            released_mode=_mode_name(
+                getattr(
+                    job,
+                    "released_in_mode",
+                    "LO",
+                )
+            ),
+            release_class=_release_class_from_provenance(
+                job,
+                switch_trigger_keys=trigger_keys,
+                switch_times=switch_times,
+                cancellations=cancellations,
+                losses=losses,
+            ),
             release_budget=None if job.runtime_budget_at_release is None else int(job.runtime_budget_at_release),
             raw_actual_cost=int(getattr(job, "original_actual_cost", job.actual_cost)),
             removal_demand=_release_fixed_removal_demand(job),

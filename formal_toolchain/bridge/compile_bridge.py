@@ -49,6 +49,14 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
         return {"status": "UNRESOLVED", "failure": "REFERENCE_PREFIX_THEOREM_RECEIPT_MISSING"}
     if reference_prefix_theorem.get("theorem_id") != "REFERENCE_PREFIX_EXTENSION":
         return {"status": "UNRESOLVED", "failure": "REFERENCE_PREFIX_EXTENSION_THEOREM_REQUIRED"}
+    from formal_toolchain.theory.loader import TCB_BACKENDS, load_verified_theory_statement
+    theory_dir = Path(__file__).resolve().parents[1] / "theory"
+    n6_theorem = load_verified_theory_statement(theory_dir, "FINITE_HI_BAD_PREFIX_REFLECTION")
+    n6_proof_path = theory_dir / n6_theorem["proof_object"]["path"]
+    n6_backend = TCB_BACKENDS.get(n6_theorem["proof_object"]["backend"])
+    n6_receipt = n6_backend.verify(n6_proof_path, theorem=n6_theorem) if n6_backend else {"status": "FAIL"}
+    if n6_receipt.get("status") != "PASS":
+        return {"status": "UNRESOLVED", "failure": "N6_THEOREM_BACKEND_FAILED", "backend": n6_receipt}
     bounds = model_bounds or derive_p0_model_bounds(reference_taskset)
     compiled = compile_and_prove_all_transition_cases(
         branch_map, bridge_context_hash=bridge_context_hash, bounds=bounds,
@@ -137,7 +145,8 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
     proofs = [TransitionCaseProof(**row) for row in compiled["proofs"]]
     closed = closed_prefix_certificate(
         base_relation_certificate=prereqs["base_relation"],
-        cases=proofs, source_hash=str(branch_map["source_hash"]), bridge_context_hash=bridge_context_hash,
+        cases=proofs, model_bounds=bounds,
+        source_hash=str(branch_map["source_hash"]), bridge_context_hash=bridge_context_hash,
         branch_map=branch_map, prerequisite_certificates=prereqs,
         theorem_hash=_theory("CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT")["statement_hash"],
         upstream_certificates=upstream_certificates,
@@ -158,21 +167,24 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
     if extension.get("inputs", {}).get("theorem_id") != "REFERENCE_PREFIX_EXTENSION":
         return {"status": "UNRESOLVED", "failure": "REFERENCE_PREFIX_EXTENSION_THEOREM_REQUIRED",
                 "transition_cases": compiled, "closed_prefix": closed, "reference_extension": extension}
-    deadline = build_deadline_observation_certificate(context_hash=bridge_context_hash,
-                                                      removal_binding=removal_binding)
-    nontruncation = build_hi_nontruncation_certificate(context_hash=bridge_context_hash,
-                                                       removal_binding=removal_binding)
-    bad_prefix = build_hi_bad_prefix_reflection_certificate(
-        closed_prefix_certificate=closed, prefix_extension_certificate=extension,
-        release_mapping_certificate=release_mapping_certificate,
-        deadline_observation_certificate=deadline, hi_nontruncation_certificate=nontruncation,
-        effective_frontier_certificate=prereqs["event_projection"],
-        early_stop_gate_certificate=build_early_stop_configuration_gate(
+    deadline = upstream_certificates["DEADLINE_OBSERVATION"]
+    nontruncation = upstream_certificates["HI_NONTRUNCATION"]
+    n6_predecessors = {
+        "CLOSED_PREFIX_REFINEMENT": closed,
+        "REFERENCE_PREFIX_EXTENSION": extension,
+        "RELEASE_FIXED_REMOVAL_MAPPING": release_mapping_certificate,
+        "DEADLINE_OBSERVATION": deadline,
+        "HI_NONTRUNCATION": nontruncation,
+        "EFFECTIVE_EVENT_FRONTIER_RELATION": prereqs["event_projection"],
+        "EARLY_STOP_CONFIGURATION_GATE": build_early_stop_configuration_gate(
             runtime_config=runtime_config, context_hash=bridge_context_hash,
             closure_completion_certificate=closure_completion_certificate,
         ),
-        state_relation_schema=p0_state_relation_schema_hash(bounds), context_hash=bridge_context_hash,
-        theorem_manifest=_theory("FINITE_HI_BAD_PREFIX_REFLECTION"))
+    }
+    bad_prefix = build_hi_bad_prefix_reflection_certificate(
+        verified_predecessors=n6_predecessors, contexts=contexts,
+        context_hash=bridge_context_hash,
+        theorem_statement=n6_theorem, theorem_proof_receipt=n6_receipt)
     if bad_prefix.get("obligation_status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "BAD_PREFIX_REFLECTION_INCOMPLETE",
                 "transition_cases": compiled, "prerequisites": prereqs,

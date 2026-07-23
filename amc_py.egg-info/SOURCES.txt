@@ -232,7 +232,9 @@ formal_toolchain/theory/hashes.json
 formal_toolchain/theory/loader.py
 formal_toolchain/theory/theory_manifest.json
 formal_toolchain/theory/backends/__init__.py
+formal_toolchain/theory/backends/finite_hi_bad_prefix.py
 formal_toolchain/theory/backends/reference_prefix_extension.py
+formal_toolchain/theory/proofs/FINITE_HI_BAD_PREFIX_REFLECTION.proof.json
 formal_toolchain/theory/proofs/REFERENCE_PREFIX_EXTENSION.proof.json
 formal_toolchain/theory/statements/ARRIVAL_BATCH_LOOP_DECOMPOSITION.json
 formal_toolchain/theory/statements/CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT.json

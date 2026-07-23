@@ -9,8 +9,9 @@ from formal_toolchain.reference.reference_state import (
     ReferenceModeSwitch,
 )
 from formal_toolchain.reference.c_amc_sem_semantics import (
-    classify_arrival_batch, release_class_and_budget,
+    classify_arrival_batch, decide_reference_release,
 )
+from formal_toolchain.reference.semantics_contract import recovery_is_legal
 from formal_toolchain.bridge.logical_events import LogicalEvent, LogicalEventKind, PHASE_RANK
 from formal_toolchain.adapters.formal_runtime_snapshot import (
     ReleasedJobRecord, TerminalRecord, MissRecord,
@@ -239,9 +240,14 @@ def apply_removal(state: ReferenceState, event: LogicalEvent, taskset: Any) -> R
 
 
 def apply_recovery(state: ReferenceState, event: LogicalEvent, taskset: Any) -> ReferenceState:
-    if state.mode != "HI":
-        raise ValueError("REFERENCE_RECOVERY_OUTSIDE_HI")
-    if state.jobs or state.running is not None or state.pending_releases:
+    if not recovery_is_legal(
+        mode=state.mode,
+        active_job_count=len(state.jobs),
+        running_job_present=state.running is not None,
+        pending_release_count=len(state.pending_releases),
+    ):
+        if state.mode != "HI":
+            raise ValueError("REFERENCE_RECOVERY_OUTSIDE_HI")
         raise ValueError("REFERENCE_RECOVERY_NOT_QUIESCENT")
     return pop_event(replace(state, mode="LO"), event, taskset)
 
@@ -295,11 +301,12 @@ def apply_arrival_batch(state: ReferenceState, event: LogicalEvent, taskset: Any
         release_time = event.time
         if jk in state.released or jk in state.jobs or jk in state.terminal or jk in pending:
             raise ValueError(f"REFERENCE_DUPLICATE_RELEASE:{jk[0]}:{jk[1]}")
-        release_class, effective_mode, budget = release_class_and_budget(
+        decision = decide_reference_release(
             task=task,
             mode_before_batch=classification.mode_before,
             mode_after_batch=classification.mode_after,
             abnormal_hi=jk in classification.abnormal_hi_jobs,
+            is_switch_trigger=jk == classification.switch_trigger,
             switched_in_this_batch=classification.switch_trigger is not None,
             primary_on_switch_time=state.primary_on_switch_time,
         )
@@ -310,9 +317,9 @@ def apply_arrival_batch(state: ReferenceState, event: LogicalEvent, taskset: Any
             criticality=str(_field(task, "criticality")),
             priority_index=priority,
             abnormal_hi=jk in classification.abnormal_hi_jobs,
-            effective_release_mode=effective_mode,
-            release_class=release_class,
-            release_budget=budget,
+            effective_release_mode=decision.effective_release_mode,
+            release_class=decision.release_class,
+            release_budget=decision.release_budget,
         )
         next_arrival = _arrival_event_for_job(
             task=task,
@@ -601,6 +608,32 @@ def validate_reference_state(
             or not 0 <= job.executed <= job.budget
         ):
             raise ValueError(f"REFERENCE_JOB_LEDGER_MISMATCH:{jk}")
+
+    for record in state.released.values():
+        if (
+            record.release_class == "LO_PRIMARY_SAME_BATCH_SWITCH_TIME"
+            and record.released_mode != "LO"
+        ):
+            raise ValueError(
+                "REFERENCE_SAME_BATCH_PRIMARY_MODE_INVALID"
+            )
+
+        if (
+            record.release_class == "HI_ABNORMAL_SWITCH_TRIGGER"
+            and state.primary_on_switch_time
+            and record.released_mode != "LO"
+        ):
+            raise ValueError(
+                "REFERENCE_ABNORMAL_TRIGGER_RELEASE_MODE_INVALID"
+            )
+
+        if (
+            record.release_class == "LO_DEGRADED_HI_MODE"
+            and record.released_mode != "HI"
+        ):
+            raise ValueError(
+                "REFERENCE_DEGRADED_RELEASE_MODE_INVALID"
+            )
 
     ready_set = set(state.ready_order)
     if len(ready_set) != len(state.ready_order):

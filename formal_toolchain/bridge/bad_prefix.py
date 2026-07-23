@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from formal_toolchain.core.artifact import obligation_certificate, verify_obligation_certificate
+from formal_toolchain.core.predecessor_contract import validate_verified_predecessor
+from formal_toolchain.bridge.state_relation import validate_n6_relation_interface
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,83 +101,161 @@ def _theory(theorem_id: str) -> dict[str, str]:
     return json.loads((Path(__file__).resolve().parents[1] / "theory" / "hashes.json").read_text(encoding="utf-8"))["statements"][theorem_id]
 
 
-def build_hi_bad_prefix_reflection_certificate(*, closed_prefix_certificate: Mapping[str, Any],
-                                               prefix_extension_certificate: Mapping[str, Any],
-                                               release_mapping_certificate: Mapping[str, Any],
-                                               deadline_observation_certificate: Mapping[str, Any],
-                                               hi_nontruncation_certificate: Mapping[str, Any],
-                                               effective_frontier_certificate: Mapping[str, Any],
-                                               early_stop_gate_certificate: Mapping[str, Any],
-                                               state_relation_schema: str,
-                                               context_hash: str,
-                                               concrete_snapshot: Any = None,
-                                               reference_snapshot: Any = None,
-                                               theorem_manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    required = (
-        closed_prefix_certificate,
-        prefix_extension_certificate,
-        release_mapping_certificate,
-        deadline_observation_certificate,
-        hi_nontruncation_certificate,
-        effective_frontier_certificate,
-        early_stop_gate_certificate,
+def _closed_prefix_relation_interface(
+    certificate: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    witness = certificate.get(
+        "witness",
+        {},
     )
-    if any(not verify_obligation_certificate(item) or item.get("obligation_status") != "PASS"
-           or item.get("certificate_context_hash") != context_hash for item in required):
-        raise ValueError("bad-prefix reflection 前置证书无效")
-    theorem = theorem_manifest or _theory("FINITE_HI_BAD_PREFIX_REFLECTION")
-    if theorem.get("theorem_id") not in (None, "FINITE_HI_BAD_PREFIX_REFLECTION"):
-        raise ValueError("bad-prefix theorem manifest 不匹配")
 
-    miss_relation_formula = (
-        "forall job_key, release_time, deadline, service, miss_time: "
-        "StateRelationAtFirstMiss(job_key, release_time, deadline, service, miss_time) "
-        "implies (ConcreteHIMiss(job_key, release_time, deadline, service, miss_time) "
-        "iff ReferenceHIMiss(job_key, release_time, deadline, service, miss_time))"
+    if not isinstance(witness, Mapping):
+        raise ValueError(
+            "N6_CLOSED_PREFIX_WITNESS_MISSING"
+        )
+
+    if (
+        witness.get(
+            "pointwise_closed_prefix_relation"
+        )
+        is not True
+    ):
+        raise ValueError(
+            "N6_POINTWISE_PREFIX_RELATION_MISSING"
+        )
+
+    interface = witness.get(
+        "n6_relation_interface"
     )
-    predecessors = {
-        "CLOSED_PREFIX_REFINEMENT": closed_prefix_certificate["artifact_hash"],
-        "REFERENCE_PREFIX_EXTENSION": prefix_extension_certificate["artifact_hash"],
-        "RELEASE_FIXED_REMOVAL_MAPPING": release_mapping_certificate["artifact_hash"],
-        "DEADLINE_OBSERVATION": deadline_observation_certificate["artifact_hash"],
-        "HI_NONTRUNCATION": hi_nontruncation_certificate["artifact_hash"],
-        "EFFECTIVE_EVENT_FRONTIER_RELATION": effective_frontier_certificate["artifact_hash"],
-        "EARLY_STOP_CONFIGURATION_GATE": early_stop_gate_certificate["artifact_hash"],
+
+    if not isinstance(interface, Mapping):
+        raise ValueError(
+            "N6_RELATION_INTERFACE_MISSING"
+        )
+
+    validate_n6_relation_interface(
+        interface
+    )
+
+    return interface
+
+
+def build_hi_bad_prefix_reflection_certificate(
+    *, verified_predecessors: Mapping[str, Mapping[str, Any]],
+    contexts: Mapping[str, Mapping[str, Any]], context_hash: str,
+    theorem_statement: Mapping[str, Any], theorem_proof_receipt: Mapping[str, Any],
+    concrete_snapshot: Any = None, reference_snapshot: Any = None,
+) -> dict[str, Any]:
+    expected_ids = {
+        "CLOSED_PREFIX_REFINEMENT", "REFERENCE_PREFIX_EXTENSION",
+        "RELEASE_FIXED_REMOVAL_MAPPING", "DEADLINE_OBSERVATION", "HI_NONTRUNCATION",
+        "EFFECTIVE_EVENT_FRONTIER_RELATION", "EARLY_STOP_CONFIGURATION_GATE",
     }
+    if set(verified_predecessors) != expected_ids:
+        raise ValueError("N6_PREDECESSOR_SET_MISMATCH")
+    for obligation_id in sorted(expected_ids):
+        validate_verified_predecessor(
+            predecessors=verified_predecessors, obligation_id=obligation_id, contexts=contexts,
+        )
+    relation_interface = (
+        _closed_prefix_relation_interface(
+            verified_predecessors[
+                "CLOSED_PREFIX_REFINEMENT"
+            ]
+        )
+    )
+
+    deadline_witness = (
+        verified_predecessors[
+            "DEADLINE_OBSERVATION"
+        ].get("witness", {})
+    )
+
+    if (
+        deadline_witness.get(
+            "deadline_is_observation_only"
+        )
+        is not True
+        or deadline_witness.get(
+            "completion_precedes_equal_deadline"
+        )
+        is not True
+    ):
+        raise ValueError(
+            "N6_DEADLINE_OBSERVATION_INTERFACE_INVALID"
+        )
+
+    nontruncation_witness = (
+        verified_predecessors[
+            "HI_NONTRUNCATION"
+        ].get("witness", {})
+    )
+
+    contract = nontruncation_witness.get(
+        "contract",
+        {},
+    )
+
+    if (
+        not isinstance(contract, Mapping)
+        or contract.get("hi_nontruncation")
+        is not True
+    ):
+        raise ValueError(
+            "N6_HI_NONTRUNCATION_INTERFACE_INVALID"
+        )
+    if theorem_statement.get("theorem_id") != "FINITE_HI_BAD_PREFIX_REFLECTION":
+        raise ValueError("N6_THEOREM_STATEMENT_REQUIRED")
+    if theorem_proof_receipt.get("status") != "PASS":
+        raise ValueError("N6_THEOREM_RECEIPT_INVALID")
+    proof_object = theorem_statement.get("proof_object", {})
+    if theorem_proof_receipt.get("receipt_hash") is None or proof_object.get("sha256") is None:
+        raise ValueError("N6_THEOREM_RECEIPT_INVALID")
     first_miss = None
     if concrete_snapshot is not None:
-        priority_map = getattr(concrete_snapshot, "priority_map", {})
-        try:
-            first_miss = select_first_hi_miss_set(concrete_snapshot, priority_map)
-        except ValueError:
-            first_miss = None
-    if first_miss is None:
-        checks = {"no_hi_miss_available": True}
-    else:
-        checks = {
-            "job_identity": True,
-            "release_time": True,
-            "deadline": True,
-            "service": True,
-            "frontier_before_miss": True,
-            "ddl_observation": True,
-            "earliest": True,
-            "first_miss_count": len(first_miss.jobs),
-        }
-        for job in first_miss.jobs:
-            key = str(job.get("job_key", job))
-            checks[f"job_{key}_identity"] = True
-            checks[f"job_{key}_miss_time_{job.get('miss_time', 0)}"] = True
+        first_miss = select_first_hi_miss_set(
+            concrete_snapshot, getattr(concrete_snapshot, "priority_map", {}))
+    witness = {
+        "schema_version": "finite_hi_bad_prefix_reflection_v2",
+        "quantification": "FOR_ALL_FIRST_FINITE_CONCRETE_HI_BAD_CLOSED_PREFIXES",
+        "theorem_id": theorem_statement["theorem_id"],
+        "theorem_statement_hash": theorem_statement["statement_hash"],
+        "theorem_assumption_hash": theorem_statement["assumption_hash"],
+        "theorem_proof_object_hash": proof_object["sha256"],
+        "backend_receipt_hash": theorem_proof_receipt["receipt_hash"],
+        "preserved_quantities": [
+            "job_key", "release_time", "absolute_deadline", "executed_service",
+            "removal_demand", "miss_time",
+        ],
+        "logical_steps": [
+            "select_finite_first_concrete_hi_miss_set", "apply_closed_prefix_refinement",
+            "specialize_state_relation", "derive_reference_service_deficit",
+            "apply_reference_deadline_observation", "preserve_first_miss_time_and_set",
+        ],
+        "trace_diagnostic": {"status": "NOT_RUN", "reason": "UNIVERSAL_THEOREM_INSTANCE"},
+        "first_miss_set": first_miss,
+        "closed_prefix_relation_interface":
+            dict(relation_interface),
+        "proof_decomposition": {
+            "pointwise_relation_source":
+                "CLOSED_PREFIX_REFINEMENT",
 
-    result = obligation_certificate(
+            "demand_source":
+                "RELEASE_FIXED_REMOVAL_MAPPING"
+                "+HI_NONTRUNCATION",
+
+            "miss_observation_source":
+                "DEADLINE_OBSERVATION",
+
+            "firstness_argument":
+                "POINTWISE_NONMISS_REFLECTION_OVER_ALL_EARLIER_CLOSED_PREFIXES",
+        },
+    }
+    return obligation_certificate(
         obligation_id="HI_BAD_CLOSED_PREFIX_REFLECTION", status="PASS", context_hash=context_hash,
-        inputs={"theorem": theorem, "state_relation_schema": state_relation_schema},
-        witness={"formula_language": "first_order_contract_v1",
-                 "first_miss": "earliest PreClosed(t)",
-                 "miss_relation_formula": miss_relation_formula,
-                 "required_quantities": ["job_key", "release_time", "deadline", "service", "miss_time"],
-                 "theorem": theorem,
-                 "checks": checks,
-                 "first_miss_set": first_miss}, direct_predecessor_hashes=predecessors,
-        checker_id=__name__, checker_version="phase-k-v2")
-    return result
+        inputs={"theorem_id": theorem_statement["theorem_id"],
+                "theorem_statement_hash": theorem_statement["statement_hash"],
+                "theorem_assumption_hash": theorem_statement["assumption_hash"]},
+        witness=witness,
+        direct_predecessor_hashes={key: value["artifact_hash"] for key, value in verified_predecessors.items()},
+        checker_id=__name__, checker_version="finite-hi-bad-prefix-reflection-v2")

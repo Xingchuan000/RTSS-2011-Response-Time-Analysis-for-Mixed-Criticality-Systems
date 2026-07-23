@@ -437,64 +437,6 @@ def _fresh_bridge_proofs(*, inputs: Any, fresh_certificates: Mapping[str, Mappin
     }, None
 
 
-def _fresh_bad_prefix_proof(*, inputs: Any, fresh_certificates: Mapping[str, Mapping[str, Any]],
-                            fresh_reference: Any | None,
-                            phase_k_cache: Mapping[str, Mapping[str, Any]] | None = None) -> tuple[dict[str, Mapping[str, Any]], dict[str, Any] | None]:
-    """在 corollary PASS 后，从已缓存的 Phase K bridge 中取 bad-prefix proof object。"""
-
-    if fresh_reference is None:
-        return {}, {"route": "REFERENCE_CERTIFICATE_FAILED", "code": "FRESH_REFERENCE_TASKSET_MISSING"}
-    reference_prefix_theorem, reference_prefix_receipt, backend_error = _fresh_reference_prefix_backend()
-    if backend_error:
-        return {}, backend_error
-    reference_hi = fresh_certificates.get("REFERENCE_HI_SUBSET_SAFETY")
-    if not isinstance(reference_hi, Mapping) or reference_hi.get("obligation_status") != "PASS":
-        return {}, {"route": "UNRESOLVED", "code": "REFERENCE_HI_SUBSET_SAFETY_UNRESOLVED"}
-    if phase_k_cache is not None and "HI_BAD_CLOSED_PREFIX_REFLECTION" in phase_k_cache:
-        return {"HI_BAD_CLOSED_PREFIX_REFLECTION": phase_k_cache["HI_BAD_CLOSED_PREFIX_REFLECTION"]}, None
-    bridge_context_hash = str(inputs.contexts["bridge_context"]["hash"])
-    case_map_path = Path(inputs.workspace) / "request" / "inputs" / "formal_inputs" / "phase_k_case_map.json"
-    if not case_map_path.is_file():
-        return {}, {"route": "UNRESOLVED", "code": "PHASE_K_CASE_MAP_MISSING"}
-    release_mapping = fresh_certificates.get("RELEASE_FIXED_REMOVAL_MAPPING")
-    if not isinstance(release_mapping, Mapping) or release_mapping.get("obligation_status") != "PASS":
-        return {}, {"route": "UNRESOLVED", "code": "RELEASE_MAPPING_CANDIDATE_MISSING"}
-    from formal_toolchain.bridge.compile_bridge import compile_phase_k
-    from formal_toolchain.bridge.model_bounds import derive_p0_model_bounds
-    from formal_toolchain.bridge.phase_k_runtime_states import build_preclosed_runtime_states
-    from formal_toolchain.bridge.runtime_branch_map import build_runtime_branch_map
-
-    case_map = json.loads(case_map_path.read_text(encoding="utf-8"))
-    src_root = _fresh_source_root(inputs)
-    branch_map = build_runtime_branch_map(
-        src_root, source_hash=str(inputs.source_manifest.get("semantic_hash", "")),
-        path_map=case_map)
-    if branch_map.get("status") != "PASS":
-        return {}, {"route": "UNRESOLVED", "code": "PHASE_K_BRANCH_MAP_UNRESOLVED"}
-    reference_taskset = fresh_reference.to_dict()
-    concrete_base, reference_base = build_preclosed_runtime_states(inputs.target, reference_taskset)
-    model_bounds = derive_p0_model_bounds(reference_taskset)
-    bridge = compile_phase_k(
-        source_root=src_root, branch_map=branch_map, reference_taskset=reference_taskset,
-        bridge_context_hash=bridge_context_hash, model_bounds=model_bounds,
-        contexts=inputs.contexts, reference_prefix_theorem=reference_prefix_theorem,
-        reference_prefix_proof_receipt=reference_prefix_receipt,
-        concrete_base=concrete_base, reference_base=reference_base,
-        upstream_certificates={name: fresh_certificates[name] for name in (
-            "SCHEDULER_MODEL", "MODE_SEMANTICS_CONFORMANCE", "DEMAND_ORACLE_BATCH_CONTRACT",
-            "HI_EXECUTION_CONTRACT", "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION",
-            "DEADLINE_OBSERVATION", "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE",
-            "CONTROLLER_POSTCLOSURE", "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION",
-            "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET",
-        )},
-        release_mapping_certificate=release_mapping,
-        closure_completion_certificate=reference_hi, runtime_config=inputs.target.runtime_config,
-    )
-    if bridge.get("status") != "PASS" or "bad_prefix_reflection" not in bridge:
-        return {}, {"route": "UNRESOLVED", "code": str(bridge.get("failure", "PHASE_K_UNRESOLVED"))}
-    return {"HI_BAD_CLOSED_PREFIX_REFLECTION": bridge["bad_prefix_reflection"]}, None
-
-
 def _semantic_certificate(*, obligation_id: str, candidate: Mapping[str, Any],
                           status: str, context_hash: str,
                           predecessors: Mapping[str, Mapping[str, Any]],
@@ -667,8 +609,6 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
     fresh: dict[str, dict[str, Any]] = {}
     bridge_generation_cache: dict[str, Mapping[str, Any]] | None = None
     bridge_generation_failure: dict[str, Any] | None = None
-    bad_bridge_generation_cache: dict[str, Mapping[str, Any]] | None = None
-    bad_bridge_generation_failure: dict[str, Any] | None = None
     for obligation_id in order:
         if obligation_id not in active or obligation_id in closure.structural:
             continue
@@ -692,35 +632,56 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
             continue
         if obligation_id in BRIDGE_OBLIGATION_IDS:
             if obligation_id == "HI_BAD_CLOSED_PREFIX_REFLECTION":
-                if bad_bridge_generation_cache is None and bad_bridge_generation_failure is None:
-                    bad_bridge_generation_cache, bad_bridge_generation_failure = _fresh_bad_prefix_proof(
-                        inputs=inputs, fresh_certificates=fresh,
-                        fresh_reference=fresh_reference)
-                if bad_bridge_generation_failure is not None or bad_bridge_generation_cache is None:
-                    fresh[obligation_id] = _semantic_certificate(
-                        obligation_id=obligation_id, candidate=candidate, status="UNRESOLVED",
-                        context_hash=expected_context_for_obligation(obligation_id, inputs.contexts),
-                        predecessors=predecessors,
-                        failure=bad_bridge_generation_failure or {"route": "UNRESOLVED", "code": "PHASE_K_UNRESOLVED"},
-                        witness={"bridge_generation": bad_bridge_generation_failure or {"route": "UNRESOLVED", "code": "PHASE_K_UNRESOLVED"}})
-                    continue
                 checked = verify_bad_prefix_proof_object(
-                    candidate=bad_bridge_generation_cache[obligation_id],
-                    bridge_context_hash=inputs.contexts["bridge_context"]["hash"],
-                    raw_inputs=inputs,
-                    reference_taskset=(fresh_reference.to_dict() if fresh_reference is not None else {}),
-                    certified_envelope=envelope_state.certified_envelope,
+                    candidate=candidate,
+
+                    bridge_context_hash=
+                        inputs.contexts[
+                            "bridge_context"
+                        ]["hash"],
+
+                    contexts=inputs.contexts,
+
+                    predecessors=predecessors,
                 )
+
                 status = checked.get("status", "UNRESOLVED")
-                failure = None if status == "PASS" else {
-                    "route": checked.get("route", "UNRESOLVED"),
-                    "code": checked.get("code", "BRIDGE_PROOF_CHECK_FAILED"),
-                }
-                witness = checked.get("witness")
-                fresh[obligation_id] = _semantic_certificate(
-                    obligation_id=obligation_id, candidate=bad_bridge_generation_cache[obligation_id],
-                    status=status, context_hash=expected_context_for_obligation(obligation_id, inputs.contexts),
-                    predecessors=predecessors, failure=failure, witness=witness)
+
+                failure = (
+                    None
+                    if status == "PASS"
+                    else {
+                        "route":
+                            checked.get(
+                                "route",
+                                "UNRESOLVED",
+                            ),
+                        "code":
+                            checked.get(
+                                "code",
+                                "N6_CHECK_FAILED",
+                            ),
+                    }
+                )
+
+                fresh[obligation_id] = (
+                    _semantic_certificate(
+                        obligation_id=obligation_id,
+                        candidate=candidate,
+                        status=status,
+
+                        context_hash=
+                            expected_context_for_obligation(
+                                obligation_id,
+                                inputs.contexts,
+                            ),
+
+                        predecessors=predecessors,
+                        failure=failure,
+                        witness=checked.get("witness"),
+                    )
+                )
+
                 continue
             if bridge_generation_cache is None and bridge_generation_failure is None:
                 bridge_generation_cache, bridge_generation_failure = _fresh_bridge_proofs(

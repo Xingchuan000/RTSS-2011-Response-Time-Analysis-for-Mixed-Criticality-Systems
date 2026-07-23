@@ -30,6 +30,13 @@ class ReferenceBatchClassification:
     abnormal_hi_jobs: tuple[JobKey, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ReferenceReleaseDecision:
+    release_class: str
+    effective_release_mode: str
+    release_budget: int
+
+
 def classify_arrival_batch(
     *,
     mode_before: str,
@@ -54,24 +61,87 @@ def classify_arrival_batch(
     )
 
 
-def release_class_and_budget(
+def decide_reference_release(
     *,
     task: Any,
     mode_before_batch: str,
     mode_after_batch: str,
     abnormal_hi: bool,
+    is_switch_trigger: bool,
     switched_in_this_batch: bool,
     primary_on_switch_time: bool,
-) -> tuple[str, str, int]:
+) -> ReferenceReleaseDecision:
     criticality = str(_field(task, "criticality"))
     c_lo = int(_field(task, "c_lo"))
     c_hi = int(_field(task, "c_hi"))
+
+    same_switch_batch_uses_lo_mode = (
+        switched_in_this_batch
+        and primary_on_switch_time
+        and mode_before_batch == "LO"
+        and mode_after_batch == "HI"
+    )
+
+    effective_mode = (
+        "LO"
+        if same_switch_batch_uses_lo_mode
+        else mode_after_batch
+    )
+
     if criticality == "HI":
-        if abnormal_hi and mode_before_batch == "LO" and mode_after_batch == "HI":
-            return "HI_ABNORMAL_SWITCH_TRIGGER", mode_after_batch, c_hi
-        return "HI_NORMAL", mode_after_batch, c_hi if mode_after_batch == "HI" else c_lo
-    if mode_after_batch == "HI":
-        if switched_in_this_batch and primary_on_switch_time:
-            return "LO_PRIMARY_SAME_BATCH_SWITCH_TIME", mode_after_batch, c_lo
-        return "LO_DEGRADED_HI_MODE", mode_after_batch, c_hi
-    return "LO_PRIMARY_NORMAL", mode_after_batch, c_lo
+        if is_switch_trigger:
+            if not (
+                abnormal_hi
+                and mode_before_batch == "LO"
+                and mode_after_batch == "HI"
+                and switched_in_this_batch
+            ):
+                raise ValueError(
+                    "REFERENCE_SWITCH_TRIGGER_COMBINATION_INVALID"
+                )
+
+            return ReferenceReleaseDecision(
+                release_class="HI_ABNORMAL_SWITCH_TRIGGER",
+                effective_release_mode=effective_mode,
+                release_budget=c_hi,
+            )
+
+        return ReferenceReleaseDecision(
+            release_class="HI_NORMAL",
+            effective_release_mode=effective_mode,
+            release_budget=(
+                c_hi
+                if effective_mode == "HI"
+                else c_lo
+            ),
+        )
+
+    if criticality != "LO":
+        raise ValueError(
+            "REFERENCE_CRITICALITY_INVALID"
+        )
+
+    if abnormal_hi or is_switch_trigger:
+        raise ValueError(
+            "REFERENCE_LO_CANNOT_BE_ABNORMAL_HI"
+        )
+
+    if same_switch_batch_uses_lo_mode:
+        return ReferenceReleaseDecision(
+            release_class="LO_PRIMARY_SAME_BATCH_SWITCH_TIME",
+            effective_release_mode="LO",
+            release_budget=c_lo,
+        )
+
+    if effective_mode == "HI":
+        return ReferenceReleaseDecision(
+            release_class="LO_DEGRADED_HI_MODE",
+            effective_release_mode="HI",
+            release_budget=c_hi,
+        )
+
+    return ReferenceReleaseDecision(
+        release_class="LO_PRIMARY_NORMAL",
+        effective_release_mode="LO",
+        release_budget=c_lo,
+    )

@@ -5,14 +5,14 @@ from pathlib import Path
 
 from formal_toolchain.core.hashing import sha256_file
 from formal_toolchain.theory.backends.reference_prefix_extension import (
-    EXPECTED_CASE_IDS, verify_reference_prefix_extension_math,
+    EXPECTED_CASE_IDS,
+    current_prefix_extension_source_bindings,
+    verify_reference_prefix_extension_math,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
 PROOF_PATH = ROOT / "formal_toolchain/theory/proofs/REFERENCE_PREFIX_EXTENSION.proof.json"
 STATEMENT_PATH = ROOT / "formal_toolchain/theory/statements/REFERENCE_PREFIX_EXTENSION.json"
-REF_STATE_PATH = ROOT / "formal_toolchain/reference/reference_state.py"
-EXEC_SEM_PATH = ROOT / "formal_toolchain/reference/executable_semantics.py"
 
 
 def main() -> None:
@@ -24,10 +24,8 @@ def main() -> None:
         "schema_version": "reference_prefix_extension_proof_v3",
         "theorem_id": "REFERENCE_PREFIX_EXTENSION",
         "case_ids": list(EXPECTED_CASE_IDS),
-        "source_bindings": {
-            "formal_toolchain/reference/reference_state.py": sha256_file(REF_STATE_PATH),
-            "formal_toolchain/reference/executable_semantics.py": sha256_file(EXEC_SEM_PATH),
-        },
+        "source_bindings":
+            current_prefix_extension_source_bindings(),
         "theorem_statement_hash": statement["statement_hash"],
         "theorem_assumption_hash": statement["assumption_hash"],
         "solver_backend": "z3",

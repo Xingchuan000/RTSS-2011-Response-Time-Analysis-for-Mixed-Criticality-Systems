@@ -1,0 +1,41 @@
+{
+  "proof_scope": "POINTWISE_RELATION_SPECIALIZATION_OVER_FINITE_CLOSED_PREFIXES",
+  "relation_interface": "n6_closed_prefix_relation_interface_v1",
+  "schema_version": "finite_hi_bad_prefix_reflection_proof_v2",
+  "solver_backend": "z3",
+  "solver_obligation_receipts": {
+    "EARLIER_CLOSED_PREFIX_NONMISS_REFLECTS": {
+      "result": "UNSAT",
+      "smt2_hash": "16522768643e04dbe3956b3aa6aa79311912dc56034263bfaaf27ebc248aa9aa"
+    },
+    "FIRST_MISS_SET_MEMBERSHIP_REFLECTS": {
+      "result": "UNSAT",
+      "smt2_hash": "501f91bd675045ab0414892c62d619b236f381cdc1d80d4eac1638c70abce0f6"
+    },
+    "HI_BAD_JOB_POINTWISE_REFLECTS": {
+      "result": "UNSAT",
+      "smt2_hash": "ec5238714da69c660dbabaa357a6843ee59febb54ecc49d9921ad6e006230865"
+    },
+    "HI_DEADLINE_TIME_REFLECTS": {
+      "result": "UNSAT",
+      "smt2_hash": "904b8507cccb7aadd08998ee3dedd4ed4506cf56781e2775fc765b89b21c0829"
+    },
+    "HI_SERVICE_DEFICIT_REFLECTS": {
+      "result": "UNSAT",
+      "smt2_hash": "e162254e2e6cf29591971405f075fc74886beb5f8c02f74f3ae3e14e3f47da0c"
+    }
+  },
+  "source_bindings": {
+    "formal_toolchain/adapters/formal_runtime_snapshot.py": "b9062d883fe98ea3a04fed956eff70d4c84ded8bf3b91839f246e403c89eccff",
+    "formal_toolchain/bridge/bad_prefix.py": "a13f9d84bedc645f6cf2013ba202ddbe95ca3c7e79bf93e86ad865b43905d5cc",
+    "formal_toolchain/bridge/case_templates.py": "37368363af66d3a5542054924b4e077ea9adbd7e8c1acfd27fbec50b7d0308b3",
+    "formal_toolchain/bridge/event_projection.py": "122786952059a08fb36f6bc0d0bb3c3cc847b65303d7e37bd6cfd1e539a2fb1e",
+    "formal_toolchain/bridge/prefix_refinement.py": "7da07ee338e374cdcd51add90aef64a68b7d43932f1a01a9b99e116a933cc262",
+    "formal_toolchain/bridge/state_relation.py": "b699fd251a5e2b3e065923eeaa58b5c1c8396001973949f626cdbac6dd1b5fa0",
+    "formal_toolchain/bridge/transition_cases.py": "50751a730e8e7fd030bcea237cb1488ba9bfcd222545e060e2709b764941bf34",
+    "formal_toolchain/reference/executable_semantics.py": "074d57da5d9b8701645c2d403b567a651a3ca394d35b5cb80a8732dc8e438eff"
+  },
+  "theorem_assumption_hash": "2d3440a1b918dad591777af83002e4b1fd83ba2b815fdaa6b92a29e41755473c",
+  "theorem_id": "FINITE_HI_BAD_PREFIX_REFLECTION",
+  "theorem_statement_hash": "4973d2d07c965ee6ffc216d774325533f600e2fa39a0392059f5fb65c9d3badc"
+}

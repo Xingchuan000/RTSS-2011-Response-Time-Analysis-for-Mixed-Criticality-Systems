@@ -3,10 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.bridge.model_bounds import P0ModelBounds
+
+
+N6_JOB_RELATION_SUFFIXES = (
+    "present",
+    "key",
+    "criticality",
+    "release",
+    "deadline",
+    "demand",
+    "service",
+    "hi_miss",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,14 +233,128 @@ def p0_smt_relation_fields(bounds: P0ModelBounds) -> tuple[str, ...]:
     return scalar_fields + job_fields + task_fields
 
 
+def n6_relation_projection_fields(
+    bounds: P0ModelBounds,
+) -> tuple[str, ...]:
+    fields = ["time", "miss"]
+
+    for slot in range(bounds.job_slots):
+        fields.extend(
+            f"job_{slot}_{suffix}"
+            for suffix in N6_JOB_RELATION_SUFFIXES
+        )
+
+    return tuple(fields)
+
+
 def p0_state_relation_schema_hash(bounds: P0ModelBounds) -> str:
     # This list is also consumed by case_templates when it builds the actual SMT
     # declarations.  Keeping the hash here prevents a descriptive Python-only
     # schema from being mistaken for the proved relation.
     return sha256_object({"schema": "p0_state_relation_v5_dynamic",
                           "model_bounds": bounds.to_dict(),
-                          "smt_fields": p0_smt_relation_fields(bounds),
-                          "python_relation_fields": p0_state_relation_schema()})
+                           "smt_fields": p0_smt_relation_fields(bounds),
+                           "python_relation_fields": p0_state_relation_schema()})
+
+
+def build_n6_relation_interface(
+    bounds: P0ModelBounds,
+) -> dict[str, Any]:
+    all_fields = set(
+        p0_smt_relation_fields(bounds)
+    )
+
+    required_fields = (
+        n6_relation_projection_fields(bounds)
+    )
+
+    missing = sorted(
+        set(required_fields) - all_fields
+    )
+
+    if missing:
+        raise ValueError(
+            "N6_RELATION_FIELDS_MISSING:"
+            + ",".join(missing)
+        )
+
+    return {
+        "schema_version":
+            "n6_closed_prefix_relation_interface_v1",
+
+        "scope":
+            "EVERY_REACHABLE_CLOSED_PREFIX",
+
+        "relation_direction":
+            "CONCRETE_FIELD_EQUALS_REFERENCE_FIELD",
+
+        "state_relation_schema_hash":
+            p0_state_relation_schema_hash(bounds),
+
+        "model_bounds_hash":
+            bounds.fingerprint,
+
+        "job_slots":
+            bounds.job_slots,
+
+        "required_fields":
+            list(required_fields),
+
+        "required_job_suffixes":
+            list(N6_JOB_RELATION_SUFFIXES),
+    }
+
+
+def validate_n6_relation_interface(
+    interface: Mapping[str, Any],
+) -> None:
+    if (
+        interface.get("schema_version")
+        != "n6_closed_prefix_relation_interface_v1"
+    ):
+        raise ValueError(
+            "N6_RELATION_INTERFACE_SCHEMA_INVALID"
+        )
+
+    if (
+        interface.get("scope")
+        != "EVERY_REACHABLE_CLOSED_PREFIX"
+    ):
+        raise ValueError(
+            "N6_RELATION_INTERFACE_SCOPE_INVALID"
+        )
+
+    if (
+        interface.get("relation_direction")
+        != "CONCRETE_FIELD_EQUALS_REFERENCE_FIELD"
+    ):
+        raise ValueError(
+            "N6_RELATION_INTERFACE_DIRECTION_INVALID"
+        )
+
+    job_slots = interface.get("job_slots")
+
+    if (
+        isinstance(job_slots, bool)
+        or not isinstance(job_slots, int)
+        or job_slots <= 0
+    ):
+        raise ValueError(
+            "N6_RELATION_INTERFACE_JOB_SLOTS_INVALID"
+        )
+
+    expected = ["time", "miss"]
+
+    for slot in range(job_slots):
+        expected.extend(
+            f"job_{slot}_{suffix}"
+            for suffix in N6_JOB_RELATION_SUFFIXES
+        )
+
+    if interface.get("required_fields") != expected:
+        raise ValueError(
+            "N6_RELATION_INTERFACE_FIELDS_INVALID"
+        )
 
 
 def p0_state_from_runtime_engine(engine: Any) -> P0ConcreteState:
