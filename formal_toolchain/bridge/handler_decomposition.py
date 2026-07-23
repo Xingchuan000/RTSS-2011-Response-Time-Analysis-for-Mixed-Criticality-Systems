@@ -65,18 +65,110 @@ def prove_handler_reschedule_unreachability() -> dict[str, object]:
         return {"status": "UNRESOLVED", "failure": "Z3_REQUIRED"}
 
 EVENT_HANDLER_ALTERNATIVES = (
-    {"alternative_id": "CONTROLLER_NO_ACTION", "case_ids": ("CONTROLLER_NO_ACTION",)},
-    {"alternative_id": "CONTROLLER_SELECTED_ACTION", "case_ids": ("CONTROLLER_SELECTED_ACTION",)},
-    {"alternative_id": "JOB_ARRIVAL_NO_SWITCH", "case_ids": ("ARRIVAL_BATCH_NO_SWITCH",)},
-    {"alternative_id": "JOB_ARRIVAL_SWITCH_S0", "case_ids": ("ARRIVAL_BATCH_SWITCH_S0",)},
-    {"alternative_id": "DEADLINE_NO_MISS", "case_ids": ("DEADLINE_OBSERVATION_NO_MISS",)},
-    {"alternative_id": "DEADLINE_FIRST_HI_MISS", "case_ids": ("DEADLINE_OBSERVATION_FIRST_HI_MISS",)},
-    {"alternative_id": "NORMAL_COMPLETION", "case_ids": ("NORMAL_COMPLETION", "RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH")},
-    {"alternative_id": "DEGRADED_COMPLETION", "case_ids": ("DEGRADED_COMPLETION", "RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH")},
-    {"alternative_id": "HI_COMPLETION", "case_ids": ("HI_COMPLETION", "RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH")},
-    {"alternative_id": "PRIMARY_LO_CANCELLATION", "case_ids": ("PRIMARY_LO_CANCELLATION", "RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH")},
-    {"alternative_id": "IDLE_RECOVERY", "case_ids": ("IDLE_RECOVERY",)},
+    {"alternative_id": "CONTROLLER_NO_ACTION_IDLE",
+     "component": "controller_no_action_idle"},
+    {"alternative_id": "CONTROLLER_NO_ACTION_DISPATCH",
+     "component": "controller_no_action_dispatch"},
+    {"alternative_id": "CONTROLLER_SELECTED_ACTION_IDLE",
+     "component": "controller_selected_action_idle"},
+    {"alternative_id": "CONTROLLER_SELECTED_ACTION_DISPATCH",
+     "component": "controller_selected_action_dispatch"},
+    {"alternative_id": "JOB_ARRIVAL_NO_SWITCH_KEEP",
+     "component": "arrival_no_switch_keep"},
+    {"alternative_id": "JOB_ARRIVAL_NO_SWITCH_IDLE",
+     "component": "arrival_no_switch_idle"},
+    {"alternative_id": "JOB_ARRIVAL_NO_SWITCH_DISPATCH",
+     "component": "arrival_no_switch_dispatch"},
+    {"alternative_id": "JOB_ARRIVAL_SWITCH_KEEP",
+     "component": "arrival_switch_s0_keep"},
+    {"alternative_id": "JOB_ARRIVAL_SWITCH_IDLE",
+     "component": "arrival_switch_s0_idle"},
+    {"alternative_id": "JOB_ARRIVAL_SWITCH_DISPATCH",
+     "component": "arrival_switch_s0_dispatch"},
+    {"alternative_id": "DEADLINE_NO_MISS",
+     "component": "deadline_no_miss"},
+    {"alternative_id": "DEADLINE_FIRST_HI_MISS",
+     "component": "deadline_first_hi_miss"},
+    {"alternative_id": "NORMAL_COMPLETION_KEEP",
+     "component": "normal_completion_keep"},
+    {"alternative_id": "NORMAL_COMPLETION_DISPATCH",
+     "component": "normal_completion_dispatch"},
+    {"alternative_id": "DEGRADED_COMPLETION_KEEP",
+     "component": "degraded_completion_keep"},
+    {"alternative_id": "DEGRADED_COMPLETION_DISPATCH",
+     "component": "degraded_completion_dispatch"},
+    {"alternative_id": "HI_COMPLETION_KEEP",
+     "component": "hi_completion_keep"},
+    {"alternative_id": "HI_COMPLETION_DISPATCH",
+     "component": "hi_completion_dispatch"},
+    {"alternative_id": "PRIMARY_LO_CANCELLATION_KEEP",
+     "component": "primary_lo_cancellation_keep"},
+    {"alternative_id": "PRIMARY_LO_CANCELLATION_DISPATCH",
+     "component": "primary_lo_cancellation_dispatch"},
+    {"alternative_id": "IDLE_RECOVERY",
+     "component": "idle_recovery"},
+    {"alternative_id": "SERVICE_TICK",
+     "component": "service_tick"},
 )
+
+
+# Each value is one executable sequence.  Mutually exclusive reschedule
+# outcomes are deliberately represented by different dictionary entries.
+HANDLER_COMPOSITION_CASES = {
+    "boot": ("BOOT_TO_PRECLOSED_0",),
+
+    "arrival_no_switch_keep":
+        ("ARRIVAL_BATCH_NO_SWITCH", "RESCHEDULE_KEEP_SAME"),
+    "arrival_no_switch_idle":
+        ("ARRIVAL_BATCH_NO_SWITCH", "RESCHEDULE_TO_IDLE"),
+    "arrival_no_switch_dispatch":
+        ("ARRIVAL_BATCH_NO_SWITCH", "PREEMPTION_DISPATCH"),
+
+    "arrival_switch_s0_keep":
+        ("ARRIVAL_BATCH_SWITCH_S0", "RESCHEDULE_KEEP_SAME"),
+    "arrival_switch_s0_idle":
+        ("ARRIVAL_BATCH_SWITCH_S0", "RESCHEDULE_TO_IDLE"),
+    "arrival_switch_s0_dispatch":
+        ("ARRIVAL_BATCH_SWITCH_S0", "PREEMPTION_DISPATCH"),
+
+    # apply_budget_updates invokes _reschedule(..., force=True), hence KEEP
+    # is unreachable and only IDLE/DISPATCH are executable.
+    "controller_no_action_idle":
+        ("CONTROLLER_NO_ACTION", "RESCHEDULE_TO_IDLE"),
+    "controller_no_action_dispatch":
+        ("CONTROLLER_NO_ACTION", "PREEMPTION_DISPATCH"),
+    "controller_selected_action_idle":
+        ("CONTROLLER_SELECTED_ACTION", "RESCHEDULE_TO_IDLE"),
+    "controller_selected_action_dispatch":
+        ("CONTROLLER_SELECTED_ACTION", "PREEMPTION_DISPATCH"),
+
+    "deadline_no_miss": ("DEADLINE_OBSERVATION_NO_MISS",),
+    "deadline_first_hi_miss":
+        ("DEADLINE_OBSERVATION_FIRST_HI_MISS",),
+
+    # Completion/cancellation clears running_job before _reschedule(force=False).
+    # selected=None is therefore KEEP-SAME (None==None); TO_IDLE is unreachable.
+    "normal_completion_keep":
+        ("NORMAL_COMPLETION", "RESCHEDULE_KEEP_SAME"),
+    "normal_completion_dispatch":
+        ("NORMAL_COMPLETION", "PREEMPTION_DISPATCH"),
+    "degraded_completion_keep":
+        ("DEGRADED_COMPLETION", "RESCHEDULE_KEEP_SAME"),
+    "degraded_completion_dispatch":
+        ("DEGRADED_COMPLETION", "PREEMPTION_DISPATCH"),
+    "hi_completion_keep":
+        ("HI_COMPLETION", "RESCHEDULE_KEEP_SAME"),
+    "hi_completion_dispatch":
+        ("HI_COMPLETION", "PREEMPTION_DISPATCH"),
+    "primary_lo_cancellation_keep":
+        ("PRIMARY_LO_CANCELLATION", "RESCHEDULE_KEEP_SAME"),
+    "primary_lo_cancellation_dispatch":
+        ("PRIMARY_LO_CANCELLATION", "PREEMPTION_DISPATCH"),
+
+    "idle_recovery": ("IDLE_RECOVERY",),
+    "service_tick": ("ONE_SERVICE_TICK",),
+}
+
 
 ARRIVAL_BATCH_STAGES = (
     "INITIALIZE_BATCH", "POP_SAME_TIME_ARRIVALS", "PRIORITY_SORT",
@@ -756,27 +848,18 @@ def build_handler_decomposition_certificate(
     # In particular, the two batch macros and different event kinds are
     # mutually exclusive.  Dispatch is sequenced only inside branches that
     # actually call it in the runtime.
-    composition_cases = {
-        "boot": ("BOOT_TO_PRECLOSED_0",),
-        "arrival_no_switch": ("ARRIVAL_BATCH_NO_SWITCH", "RESCHEDULE_KEEP_SAME", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH"),
-        "arrival_switch_s0": ("ARRIVAL_BATCH_SWITCH_S0", "RESCHEDULE_KEEP_SAME", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH"),
-        "controller_no_action": ("CONTROLLER_NO_ACTION", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH"),
-        "controller_selected_action": ("CONTROLLER_SELECTED_ACTION", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH"),
-        "deadline_no_miss": ("DEADLINE_OBSERVATION_NO_MISS",),
-        "deadline_first_hi_miss": ("DEADLINE_OBSERVATION_FIRST_HI_MISS",),
-        "normal_completion": ("NORMAL_COMPLETION", "RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH"),
-        "degraded_completion": ("DEGRADED_COMPLETION", "RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH"),
-        "hi_completion": ("HI_COMPLETION", "RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH"),
-        "primary_lo_cancellation": ("PRIMARY_LO_CANCELLATION", "RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH"),
-        "idle_recovery": ("IDLE_RECOVERY",),
-        "service_tick": ("ONE_SERVICE_TICK",),
-    }
+    composition_cases = HANDLER_COMPOSITION_CASES
     compositions = {}
     reschedule_partition = prove_reschedule_partition()
     unreachable_reschedule = prove_handler_reschedule_unreachability()
     if reschedule_partition.get("status") != "PASS":
         failures.append({"component": "reschedule_partition",
                          "missing": [reschedule_partition.get("failure", "PASS") ]})
+    if unreachable_reschedule.get("status") != "PASS":
+        failures.append({
+            "component": "handler_reschedule_unreachability",
+            "missing": [unreachable_reschedule.get("failure", "UNREACHABILITY_NOT_PROVED")],
+        })
     for component, case_ids in composition_cases.items():
         missing = [case_id for case_id in case_ids if case_id not in proofs]
         invalid = [case_id for case_id in case_ids
@@ -847,14 +930,38 @@ def build_handler_decomposition_certificate(
     elif any(item["proof_status"] != "PASS" for item in compositions.values()):
         failures.append({"component": "micro_step_composition", "missing": [
             name for name, item in compositions.items() if item["proof_status"] != "PASS"]})
-    preclosed_alternative_groups = (("BOOT_TO_PRECLOSED_0",),)
-    preclosed = (compositions["boot"]["proof_status"] == "PASS"
-                 and reschedule_partition.get("status") == "PASS"
-                 and all(item.get("proof_status") == "PASS"
-                         for item in (compositions["arrival_no_switch"],
-                                      compositions["arrival_switch_s0"])))
+    arrival_no_switch_components = (
+        "arrival_no_switch_keep",
+        "arrival_no_switch_idle",
+        "arrival_no_switch_dispatch",
+    )
+    arrival_switch_components = (
+        "arrival_switch_s0_keep",
+        "arrival_switch_s0_idle",
+        "arrival_switch_s0_dispatch",
+    )
+    preclosed_alternative_groups = (
+        tuple(HANDLER_COMPOSITION_CASES[name] for name in arrival_no_switch_components),
+        tuple(HANDLER_COMPOSITION_CASES[name] for name in arrival_switch_components),
+    )
+    preclosed = (
+        compositions["boot"]["proof_status"] == "PASS"
+        and arrival_batch.get("status") == "PASS"
+        and reschedule_partition.get("status") == "PASS"
+        and all(
+            compositions[name].get("proof_status") == "PASS"
+            for name in arrival_no_switch_components + arrival_switch_components
+        )
+    )
     if not preclosed:
-        failures.append({"component": "preclosed0_composition", "missing": [case_id for group in preclosed_alternative_groups for case_id in group]})
+        failures.append({
+            "component": "preclosed0_composition",
+            "missing": [
+                name
+                for name in arrival_no_switch_components + arrival_switch_components
+                if compositions[name].get("proof_status") != "PASS"
+            ],
+        })
     all_fixed_sequences_proved = all(
         item.get("proof_status") == "PASS"
         and item.get("sequence_status") == "PASS"
@@ -867,6 +974,17 @@ def build_handler_decomposition_certificate(
         item.get("proof_status") == "PASS"
         for item in compositions.values()
     )
+    def aggregate_components(names: Sequence[str]) -> dict[str, object]:
+        component_results = {name: compositions[name] for name in names}
+        passed = all(item.get("proof_status") == "PASS"
+                     for item in component_results.values())
+        return {
+            "proof_status": "PASS" if passed else "UNRESOLVED",
+            "components": component_results,
+            "alternatives_exclusive": True,
+            "alternatives_exhaustive": True,
+        }
+
     handlers = {
         "arrival_batch": {
             "alternatives": [item["alternative_id"] for item in ARRIVAL_BATCH_ALTERNATIVES],
@@ -875,8 +993,8 @@ def build_handler_decomposition_certificate(
             "fold_status": arrival_batch.get("fold_certificate", {}).get("status", "UNRESOLVED"),
             "fold_theorem": arrival_batch.get("fold_theorem"),
             "alternative_results": {
-                "ARRIVAL_BATCH_NO_SWITCH": compositions["arrival_no_switch"],
-                "ARRIVAL_BATCH_SWITCH_S0": compositions["arrival_switch_s0"],
+                "ARRIVAL_BATCH_NO_SWITCH": aggregate_components(arrival_no_switch_components),
+                "ARRIVAL_BATCH_SWITCH_S0": aggregate_components(arrival_switch_components),
             },
             "fold_certificate_hash": arrival_batch.get("fold_certificate_hash", ""),
             "final_reschedule_once": arrival_batch.get("final_reschedule_once") is True,
@@ -884,13 +1002,12 @@ def build_handler_decomposition_certificate(
         "event_handler": {
             "alternatives": list(EVENT_HANDLER_ALTERNATIVES),
             "alternative_results": {
-                alternative["alternative_id"]: next(
-                    (
-                        compositions[component]
-                        for component, case_ids in composition_cases.items()
-                        if tuple(case_ids) == tuple(alternative["case_ids"])
-                    ),
-                    {"proof_status": "UNRESOLVED", "sequence_failure": "ALTERNATIVE_RESULT_NOT_BOUND"},
+                alternative["alternative_id"]: compositions.get(
+                    str(alternative["component"]),
+                    {
+                        "proof_status": "UNRESOLVED",
+                        "sequence_failure": "ALTERNATIVE_RESULT_NOT_BOUND",
+                    },
                 )
                 for alternative in EVENT_HANDLER_ALTERNATIVES
             },
@@ -913,8 +1030,13 @@ def build_handler_decomposition_certificate(
               "boot_preclosed0_bound": boot_preclosed_bound,
               "theorem_refs": {item: statements[item] for item in theorem_ids if item in statements},
               "phase_dag": {"batch_pop": ["batch_sort"], "batch_sort": ["mode_switch"],
-                             "mode_switch": ["release_loop"], "release_loop": ["dispatch"],
-                             "dispatch": ["child_events"], "child_events": []},
+                             "mode_switch": ["release_loop"],
+                             "release_loop": ["reschedule_partition"],
+                             "reschedule_partition": ["keep", "idle", "dispatch"],
+                             "keep": ["child_events"],
+                             "idle": ["child_events"],
+                             "dispatch": ["child_events"],
+                             "child_events": []},
               "failures": failures, "compositions": compositions,
               "reschedule_partition": reschedule_partition,
               "unreachable_reschedule_branches": unreachable_reschedule,
@@ -927,10 +1049,16 @@ def build_handler_decomposition_certificate(
                   "alternatives_exhaustive": True,
                   "status": "PASS" if preclosed else "UNRESOLVED",
                   "composition_formula_hash": sha256_object({
-                      "steps": [compositions["boot"].get("composition_formula_hash")]
-                               + [proofs.get(case_id, {}).get("concrete_delta_hash")
-                                  for group in preclosed_alternative_groups[1:]
-                                  for case_id in group]}),
+                      "boot": compositions["boot"].get("composition_formula_hash"),
+                      "arrival_no_switch": [
+                          compositions[name].get("composition_formula_hash")
+                          for name in arrival_no_switch_components
+                      ],
+                      "arrival_switch_s0": [
+                          compositions[name].get("composition_formula_hash")
+                          for name in arrival_switch_components
+                      ],
+                  }),
               },
               "transition_proof_hashes": {
                   case_id: {"concrete_delta_hash": proof.get("concrete_delta_hash"),

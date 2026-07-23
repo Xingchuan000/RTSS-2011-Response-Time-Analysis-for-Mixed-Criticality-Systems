@@ -87,7 +87,7 @@ def project_executable_reference_state(
     result["mode"] = mode_val
     result["active"] = len(state.jobs)
     result["ready"] = len(state.ready_order)
-    result["running"] = _encode_job_key(state.running) if state.running is not None else 0
+    result["running"] = 1 if state.running is not None else 0
     running_record = (
         state.released.get(state.running)
         if state.running is not None

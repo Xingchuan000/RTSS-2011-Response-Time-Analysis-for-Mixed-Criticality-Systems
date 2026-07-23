@@ -410,7 +410,7 @@ def compile_effect_ir(effect_ir: list[Mapping[str, Any]], *, bounds: P0ModelBoun
     if "running_job = None" in joined or "running_job=None" in joined:
         equations.extend(["(= c_running_post 0)", "(= c_affected_job_running_post 0)"])
     if "running_job = selected" in joined or "running_job=selected" in joined:
-        equations.extend(["(= c_running_post selected_job_key)",
+        equations.extend(["(= c_running_post 1)",
                           "(= c_affected_job_key_post selected_job_key)",
                           "(= c_affected_job_running_post 1)"])
         for slot in range(bounds.job_slots):

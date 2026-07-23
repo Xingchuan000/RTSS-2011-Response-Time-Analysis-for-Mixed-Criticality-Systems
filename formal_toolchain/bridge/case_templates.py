@@ -288,7 +288,7 @@ def compile_bound_path_effect(row: Mapping[str, Any], *, bounds: P0ModelBounds |
         o["ready"] = "(- c_ready 1)"
         o.update(affected_job_active="0", affected_job_ready="0")
     if "running_clear" in effects: o.update(running="0", affected_job_running="0")
-    if "running_update" in effects: o.update(running="selected_job_key", affected_job_key="selected_job_key", affected_job_running="1")
+    if "running_update" in effects: o.update(running="1", affected_job_key="selected_job_key", affected_job_running="1")
     if "hi_complete" in effects: o.update(hi_complete="1", affected_job_hi_complete="1")
     if "hi_miss_flag" in effects: o.update(miss="1", affected_job_hi_miss="1")
     if "future_budget_update" in effects: o.update(future_budget="release_budget", affected_task_budget="release_budget")

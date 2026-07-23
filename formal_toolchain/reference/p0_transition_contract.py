@@ -440,7 +440,9 @@ def legacy_reference_p0_numeric_delta(
         for slot in range(bounds.job_slots):
             after[f"job_{slot}_running"] = 0
     elif case_id == "PREEMPTION_DISPATCH":
-        after["running"] = env.selected_job_key
+        # ``running`` is the Boolean occupancy projection; the selected job
+        # identity is carried separately by ``running_job_key``.
+        after["running"] = 1
         after["running_job_key"] = env.selected_job_key
         after["selected_job_key"] = env.selected_job_key
         after["affected_job_key"] = env.selected_job_key
