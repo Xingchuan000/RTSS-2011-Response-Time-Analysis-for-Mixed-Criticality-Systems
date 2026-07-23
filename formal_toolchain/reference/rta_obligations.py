@@ -38,10 +38,33 @@ def build_worst_case_start_evidence(rta: Mapping[str, Any]) -> dict[str, Any]:
 def build_case1_domain_evidence(rta: Mapping[str, Any]) -> dict[str, Any]:
     checks = []
     for row in _tasks(rta):
-        r_lo = int(row["lo"]["r_lo"])
+        lo = row.get("lo")
+        if (
+            not isinstance(lo, Mapping)
+            or lo.get("status") != "PASS"
+            or not isinstance(lo.get("r_lo"), int)
+        ):
+            checks.append({
+                "task": row.get("task", {}).get("name"),
+                "r_lo": lo.get("r_lo") if isinstance(lo, Mapping) else None,
+                "expected_count": None,
+                "actual_count": len(row.get("case1", [])),
+                "match": False,
+                "reason": "LO_RTA_PREREQUISITE_NOT_PASS",
+            })
+            continue
+        r_lo = int(lo["r_lo"])
         starts = [int(item["start"]) for item in row.get("case1", [])]
-        expected = list(range(r_lo))
-        checks.append({"task": row["task"]["name"], "r_lo": r_lo, "expected_starts": expected, "actual_starts": starts, "match": starts == expected})
+        match = len(starts) == r_lo and all(value == index for index, value in enumerate(starts))
+        checks.append({
+            "task": row["task"]["name"],
+            "r_lo": r_lo,
+            "expected_count": r_lo,
+            "actual_count": len(starts),
+            "first_start": starts[0] if starts else None,
+            "last_start": starts[-1] if starts else None,
+            "match": match,
+        })
     ok = bool(checks) and all(item["match"] for item in checks)
     return {"status": "PASS" if ok else "FAIL", "route": None if ok else "REFERENCE_CERTIFICATE_FAILED", "failure": None if ok else {"code": "CASE1_INTEGER_DOMAIN_MISMATCH"}, "checks": checks}
 
@@ -50,9 +73,19 @@ def build_case2_domain_evidence(rta: Mapping[str, Any]) -> dict[str, Any]:
     checks = []
     for row in _tasks(rta):
         start = row.get("start")
-        if not isinstance(start, Mapping):
-            checks.append({"task": row["task"]["name"], "w_lo": None, "expected": None,
-                           "actual": None, "match": False})
+        if (
+            not isinstance(start, Mapping)
+            or start.get("status") != "PASS"
+            or not isinstance(start.get("w_lo"), int)
+        ):
+            checks.append({
+                "task": row["task"]["name"],
+                "w_lo": start.get("w_lo") if isinstance(start, Mapping) else None,
+                "expected_count": None,
+                "actual_count": len(row.get("case2", [])),
+                "match": False,
+                "reason": "WORST_CASE_START_PREREQUISITE_NOT_PASS",
+            })
             continue
         w_lo = int(start["w_lo"])
         case2 = row.get("case2", [])
@@ -70,9 +103,17 @@ def build_case2_domain_evidence(rta: Mapping[str, Any]) -> dict[str, Any]:
                 "zero_boundary": zero_boundary,
             }
         else:
-            expected = list(range(w_lo))
-            actual = [int(item["start"]) for item in case2]
-            ok = actual == expected
+            actual_starts = [int(item["start"]) for item in case2]
+            ok = (
+                len(actual_starts) == w_lo
+                and all(value == index for index, value in enumerate(actual_starts))
+            )
+            expected = {"start_count": w_lo}
+            actual = {
+                "start_count": len(actual_starts),
+                "first_start": actual_starts[0] if actual_starts else None,
+                "last_start": actual_starts[-1] if actual_starts else None,
+            }
         checks.append({"task": row["task"]["name"], "w_lo": w_lo, "expected": expected, "actual": actual, "match": ok})
     passed = bool(checks) and all(item["match"] for item in checks)
     return {"status": "PASS" if passed else "FAIL", "route": None if passed else "REFERENCE_CERTIFICATE_FAILED", "failure": None if passed else {"code": "CASE2_INTEGER_DOMAIN_MISMATCH"}, "checks": checks}
@@ -82,7 +123,11 @@ def build_zero_relative_start_evidence(rta: Mapping[str, Any]) -> dict[str, Any]
     checks = []
     for row in _tasks(rta):
         start = row.get("start")
-        if not isinstance(start, Mapping):
+        if (
+            not isinstance(start, Mapping)
+            or start.get("status") != "PASS"
+            or not isinstance(start.get("w_lo"), int)
+        ):
             checks.append({"task": row["task"]["name"], "applicable": False, "status": "NOT_APPLICABLE"})
             continue
         w_lo = int(start["w_lo"])

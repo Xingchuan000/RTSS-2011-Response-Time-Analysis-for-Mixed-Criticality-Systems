@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from fractions import Fraction
 from typing import Any, Sequence
 
 from formal_toolchain.core.artifact import obligation_certificate
@@ -80,8 +81,22 @@ def lo_postfixed(task: ReferenceTask, higher: Sequence[ReferenceTask], *, max_it
     return {"status": "UNRESOLVED", "trace": trace, "failure": "ITERATION_LIMIT"}
 
 
+def _higher_priority_lo_utilization(higher: Sequence[ReferenceTask]) -> Fraction:
+    return sum((Fraction(int(task.c_lo), int(task.period)) for task in higher), Fraction(0, 1))
+
+
 def worst_case_start(task: ReferenceTask, higher: Sequence[ReferenceTask], *, max_iter: int = 100000) -> dict[str, Any]:
-    """Compute W_i(LO)."""
+    """Compute W_i(LO), failing immediately when no finite post-fixed point can exist."""
+
+    utilization = _higher_priority_lo_utilization(higher)
+    if utilization >= 1:
+        return {
+            "status": "FAIL",
+            "trace": [],
+            "failure": "HIGHER_PRIORITY_LO_UTILIZATION_NOT_BELOW_ONE",
+            "utilization_numerator": int(utilization.numerator),
+            "utilization_denominator": int(utilization.denominator),
+        }
 
     w = 0
     trace: list[dict[str, Any]] = []
@@ -233,11 +248,42 @@ def analyze_reference_task(task: ReferenceTask, higher: Sequence[ReferenceTask])
     """Generate a full task certificate with LO, Case1 and Case2 witnesses."""
 
     lo = lo_postfixed(task, higher)
-    start_result = worst_case_start(task, higher)
     if lo["status"] != "PASS":
-        return {"status": lo["status"], "task": asdict(task), "lo": lo, "start": start_result}
+        return {
+            "status": lo["status"],
+            "task": asdict(task),
+            "lo": lo,
+            "start": {
+                "status": "NOT_APPLICABLE",
+                "reason": "LO_RTA_NOT_PASS",
+                "trace": [],
+            },
+            "case1": [],
+            "case2": [],
+            "zero_relative_start_boundary": {"applicable": False},
+            "r_lo": int(lo.get("r_lo", 0)),
+            "r_hi": 0,
+            "r_star": int(lo.get("r_lo", 0)),
+            "lo_deadline_holds": False,
+            "hi_deadline_holds": False,
+        }
+
+    start_result = worst_case_start(task, higher)
     if start_result["status"] != "PASS":
-        return {"status": start_result["status"], "task": asdict(task), "lo": lo, "start": start_result}
+        return {
+            "status": start_result["status"],
+            "task": asdict(task),
+            "lo": lo,
+            "start": start_result,
+            "case1": [],
+            "case2": [],
+            "zero_relative_start_boundary": {"applicable": False},
+            "r_lo": int(lo["r_lo"]),
+            "r_hi": 0,
+            "r_star": int(lo["r_lo"]),
+            "lo_deadline_holds": int(lo["r_lo"]) <= task.deadline,
+            "hi_deadline_holds": False,
+        }
 
     higher_lo = [j for j in higher if j.criticality == "LO"]
     higher_hi = [j for j in higher if j.criticality == "HI"]
@@ -286,11 +332,60 @@ def analyze_reference_task(task: ReferenceTask, higher: Sequence[ReferenceTask])
     }
 
 
+
+
+def _lo_only_task_analysis(task: ReferenceTask, lo: dict[str, Any]) -> dict[str, Any]:
+    """Return a complete fail-closed row without evaluating switch-time domains.
+
+    The all-task theorem is conjunctive.  Once any task's LO recurrence is not
+    PASS, Case1/Case2 witnesses cannot authorize schedulability and need not be
+    materialized for any task.
+    """
+
+    own_status = str(lo.get("status", "UNRESOLVED"))
+    return {
+        "status": own_status if own_status != "PASS" else "UNRESOLVED",
+        "task": asdict(task),
+        "lo": lo,
+        "start": {
+            "status": "NOT_APPLICABLE",
+            "reason": (
+                "LO_RTA_NOT_PASS"
+                if own_status != "PASS"
+                else "GLOBAL_LO_RTA_NOT_PASS"
+            ),
+            "trace": [],
+        },
+        "case1": [],
+        "case2": [],
+        "zero_relative_start_boundary": {"applicable": False},
+        "r_lo": int(lo.get("r_lo", 0)),
+        "r_hi": 0,
+        "r_star": int(lo.get("r_lo", 0)),
+        "lo_deadline_holds": bool(
+            own_status == "PASS"
+            and int(lo.get("r_lo", 0)) <= int(task.deadline)
+        ),
+        "hi_deadline_holds": False,
+        "analysis_stage": "LO_ONLY",
+    }
+
 def all_task_reference_rta(taskset: ReferenceTaskset) -> dict[str, Any]:
-    task_rows = [
-        _task_row_payload(task, analyze_reference_task(task, taskset.tasks[:index]))
+    lo_results = [
+        lo_postfixed(task, taskset.tasks[:index])
         for index, task in enumerate(taskset.tasks)
     ]
+
+    if any(result.get("status") != "PASS" for result in lo_results):
+        task_rows = [
+            _task_row_payload(task, _lo_only_task_analysis(task, lo_results[index]))
+            for index, task in enumerate(taskset.tasks)
+        ]
+    else:
+        task_rows = [
+            _task_row_payload(task, analyze_reference_task(task, taskset.tasks[:index]))
+            for index, task in enumerate(taskset.tasks)
+        ]
 
     if len(task_rows) != len(taskset.tasks):
         status, route = "UNRESOLVED", "UNRESOLVED"

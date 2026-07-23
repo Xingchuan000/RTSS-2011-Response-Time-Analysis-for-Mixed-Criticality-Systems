@@ -11,23 +11,57 @@ from formal_toolchain.core.schema_loader import load_schema
 from formal_toolchain.core.registry import load_registry
 
 
+_CERTIFICATE_SCHEMA_BASE_URI = "https://formal-toolchain/specs/certificates/"
+
+
+def _schema_retrieval_uri(path: Path) -> str:
+    """Return the canonical retrieval URI used for relative certificate refs."""
+    return f"{_CERTIFICATE_SCHEMA_BASE_URI}{path.name}"
+
+
+def _schema_with_retrieval_id(path: Path) -> dict[str, Any]:
+    """Load one schema and give legacy no-$id schemas a stable base URI.
+
+    Several certificate schemas intentionally use relative ``$ref`` values but
+    predate the explicit ``$id`` convention.  Registering those documents under
+    ``file://`` while validating a root document with no base URI makes the
+    relative references unresolvable.  Supplying the canonical in-repository
+    retrieval URI preserves the schema content while giving every relative ref
+    an unambiguous base.
+    """
+    schema = json.loads(path.read_text(encoding="utf-8"))
+    if "$id" not in schema:
+        schema = {"$id": _schema_retrieval_uri(path), **schema}
+    return schema
+
+
 def _build_schema_registry(schema_root: Path):
-    """Build a referencing.Registry from all schema files in directory."""
+    """Build a referencing.Registry from all certificate schema files."""
     from referencing import Registry, Resource
+
     registry = Registry()
     for path in sorted(schema_root.glob("*.schema.json")):
-        schema = json.loads(path.read_text(encoding="utf-8"))
-        uri = schema.get("$id", path.as_uri())
-        registry = registry.with_resource(uri, Resource.from_contents(schema))
+        schema = _schema_with_retrieval_id(path)
+        declared_uri = str(schema["$id"])
+        resource = Resource.from_contents(schema)
+        registry = registry.with_resource(declared_uri, resource)
+        canonical_uri = _schema_retrieval_uri(path)
+        if canonical_uri != declared_uri:
+            registry = registry.with_resource(canonical_uri, resource)
     return registry
 
 
 def verify_certificate(certificate: dict[str, Any], *, schema_name: str = "common_certificate.schema.json") -> dict[str, Any]:
     """校验标准证书结构，并返回可写入 bundle 的明确状态。"""
     try:
-        schema = load_schema(Path(__file__).parents[1] / "specs/certificates" / schema_name)
-        from jsonschema import Draft202012Validator
         schema_root = Path(__file__).parents[1] / "specs/certificates"
+        schema_path = schema_root / schema_name
+        # Keep load_schema's existence/JSON validation, then attach a stable
+        # retrieval ID for legacy schemas whose relative refs otherwise have no
+        # base URI.
+        load_schema(schema_path)
+        schema = _schema_with_retrieval_id(schema_path)
+        from jsonschema import Draft202012Validator
         ref_registry = _build_schema_registry(schema_root)
         validator = Draft202012Validator(schema, registry=ref_registry)
         errors = sorted(validator.iter_errors(certificate), key=lambda e: list(e.path))

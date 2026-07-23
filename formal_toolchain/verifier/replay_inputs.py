@@ -126,8 +126,11 @@ def load_verifier_inputs(request_path: Path, *, source_root: Path) -> VerifierIn
         invariant_context_hash=invariant["hash"], reference_input_mode="FROZEN_FORMAL_INPUTS")
     bridge = build_bridge_context(reference_context_hash=reference["hash"],
                                   source_manifest_hash=source_manifest["semantic_hash"])
-    composition = build_composition_context(bridge_context_hash=bridge["hash"],
-                                            composition_mode="standard")
+    composition = build_composition_context(
+        bridge_context_hash=bridge["hash"],
+        mathematical_root_id="FINAL_CLAIM_COMPOSITION",
+        claim="DEPLOYED_HI_SAFETY",
+    )
     bundle = build_bundle_context(composition_context_hash=composition["hash"],
                                   target_id=request.get("target_id"), claim="DEPLOYED_HI_SAFETY")
     contexts = {"bootstrap_context": bootstrap, "implementation_context": implementation,

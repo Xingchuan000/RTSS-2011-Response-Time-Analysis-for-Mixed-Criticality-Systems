@@ -14,7 +14,7 @@ from typing import Any, Mapping
 from formal_toolchain.core.artifact import obligation_certificate, verify_obligation_certificate
 from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.core.contexts import expected_context_for_obligation, context_layer_for_obligation
-from formal_toolchain.core.registry import load_registry
+from formal_toolchain.core.registry import load_registry, artifact_path_for
 from formal_toolchain.verifier.aggregator import aggregate_for_claim, _check_proof_role_invariants
 from formal_toolchain.verifier.checker_context import FreshVerifierState, CheckerContext
 from formal_toolchain.verifier.bootstrap_checks import (
@@ -97,6 +97,15 @@ def _load_candidate(bundle: Path, active: list[str]) -> tuple[dict[str, Mapping[
         return None, {}, {"code": "CANDIDATE_COMPONENT_CONTEXTS_MISSING"}
     for obligation_id in active:
         entry = by_id.get(obligation_id)
+        # Structural obligations are produced by this fresh verifier from the
+        # bundle as a whole.  They are active claim gates, but they are not
+        # candidate certificates and therefore must not be required under
+        # ``bundle/artifacts`` before their checks have run.
+        if obligation_id in STRUCTURAL_IDS or (
+            entry is not None
+            and str(entry.get("producer", {}).get("kind", "")) == "structural_verifier"
+        ):
+            continue
         if entry is not None:
             path = artifact_path_for(entry, bundle)
         else:
@@ -108,16 +117,24 @@ def _load_candidate(bundle: Path, active: list[str]) -> tuple[dict[str, Mapping[
             return None, {}, {"code": "CANDIDATE_CERTIFICATE_INVALID", "obligation_id": obligation_id}
         if certificate.get("obligation_id") != obligation_id:
             return None, {}, {"code": "CANDIDATE_CERTIFICATE_ID_MISMATCH", "obligation_id": obligation_id}
-        # 专用 Schema 校验（仅验证形状，predecessor 在后续阶段校验）
-        schema_name = entry.get("artifact_schema", "common_certificate.schema.json").split("/")[-1] if entry else "common_certificate.schema.json"
+        # PASS candidate 必须满足 obligation 的专用 witness schema。FAIL/
+        # UNRESOLVED candidate 只是一份 fail-closed envelope；强迫它伪造
+        # PASS-only witness 字段会把正常的数学失败误报成 bundle schema 错误。
+        schema_name = "common_certificate.schema.json"
+        if certificate.get("obligation_status") == "PASS" and entry is not None:
+            schema_name = str(entry.get("artifact_schema", schema_name)).split("/")[-1]
         schema_result = verify_certificate(certificate, schema_name=schema_name)
         if schema_result.get("status") != "PASS":
             return None, {}, {"code": "CANDIDATE_CERTIFICATE_SCHEMA_INVALID",
                               "obligation_id": obligation_id, "schema_error": schema_result.get("failure")}
-        try:
-            layer = context_layer_for_obligation(obligation_id)
-        except KeyError:
-            return None, {}, {"code": "CANDIDATE_CONTEXT_LAYER_UNDECLARED", "obligation_id": obligation_id}
+        registry_layer = str(entry.get("context_layer", "")) if entry is not None else ""
+        if registry_layer:
+            layer = registry_layer
+        else:
+            try:
+                layer = context_layer_for_obligation(obligation_id)
+            except KeyError:
+                return None, {}, {"code": "CANDIDATE_CONTEXT_LAYER_UNDECLARED", "obligation_id": obligation_id}
         expected = candidate_contexts.get(layer)
         if not isinstance(expected, Mapping) or certificate.get("certificate_context_hash") != expected.get("hash"):
             return None, {}, {"code": "CANDIDATE_CERTIFICATE_CONTEXT_LAYER_MISMATCH", "obligation_id": obligation_id}
@@ -312,7 +329,17 @@ def _fresh_source_root(inputs: Any) -> Path:
 def _fresh_reference_prefix_backend() -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
     from formal_toolchain.theory.loader import TCB_BACKENDS, load_verified_theory_statement
     theory_dir = Path(__file__).resolve().parents[1] / "theory"
-    theorem = load_verified_theory_statement(theory_dir, "REFERENCE_PREFIX_EXTENSION")
+    try:
+        theorem = load_verified_theory_statement(theory_dir, "REFERENCE_PREFIX_EXTENSION")
+    except (OSError, ValueError) as exc:
+        # A stale or unavailable proof backend is an explicit unresolved proof
+        # obligation, not a verifier-process crash.  This distinction also
+        # preserves an earlier mathematical failure such as reference RTA FAIL.
+        return None, None, {
+            "route": "UNRESOLVED",
+            "code": "REFERENCE_PREFIX_THEORY_LOAD_FAILED",
+            "message": str(exc),
+        }
     proof_object = theorem.get("proof_object", {})
     backend = TCB_BACKENDS.get(proof_object.get("backend"))
     if backend is None:
@@ -506,6 +533,7 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     registry_path = Path(__file__).parents[1] / "specs/obligation_registry.json"
+    registry = load_registry(registry_path)
     try:
         closure = build_claim_closure(registry, "DEPLOYED_HI_SAFETY")
         active = sorted(closure.verified_artifacts)

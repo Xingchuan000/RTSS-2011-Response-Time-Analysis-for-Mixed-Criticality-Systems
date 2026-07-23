@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from fractions import Fraction
 from typing import Any, Mapping
 
 from formal_toolchain.core.artifact import verify_obligation_certificate
@@ -33,7 +34,21 @@ def _replay_lo_postfixed(task: ReferenceTask, higher: tuple[ReferenceTask, ...],
     return {"status": "UNRESOLVED", "trace": trace, "failure": "ITERATION_LIMIT"}
 
 
+def _higher_priority_lo_utilization(higher: tuple[ReferenceTask, ...]) -> Fraction:
+    return sum((Fraction(int(task.c_lo), int(task.period)) for task in higher), Fraction(0, 1))
+
+
 def _replay_start_time(higher: tuple[ReferenceTask, ...], *, max_iter: int = 100000) -> dict[str, Any]:
+    utilization = _higher_priority_lo_utilization(higher)
+    if utilization >= 1:
+        return {
+            "status": "FAIL",
+            "trace": [],
+            "failure": "HIGHER_PRIORITY_LO_UTILIZATION_NOT_BELOW_ONE",
+            "utilization_numerator": int(utilization.numerator),
+            "utilization_denominator": int(utilization.denominator),
+        }
+
     current = 0
     trace: list[dict[str, Any]] = []
     for iteration in range(max_iter):
@@ -210,20 +225,40 @@ def _compare_task_witness(candidate: Mapping[str, Any], replay: Mapping[str, Any
 
 def _replay_task_independently(task: ReferenceTask, higher: tuple[ReferenceTask, ...]) -> dict[str, Any]:
     lo = _replay_lo_postfixed(task, higher)
-    start = _replay_start_time(higher)
-    if lo.get("status") != "PASS" or start.get("status") != "PASS":
+    if lo.get("status") != "PASS":
         return {
-            "status": lo.get("status") if lo.get("status") != "PASS" else start.get("status"),
+            "status": lo.get("status"),
             "task": asdict(task),
             "lo": lo,
-            "start": start,
+            "start": {
+                "status": "NOT_APPLICABLE",
+                "reason": "LO_RTA_NOT_PASS",
+                "trace": [],
+            },
             "case1": [],
             "case2": [],
             "zero_relative_start_boundary": {"applicable": False},
             "r_lo": int(lo.get("r_lo", 0)),
             "r_hi": 0,
             "r_star": int(lo.get("r_lo", 0)),
-            "lo_deadline_holds": bool(lo.get("status") == "PASS" and int(lo.get("r_lo", 0)) <= task.deadline),
+            "lo_deadline_holds": False,
+            "hi_deadline_holds": False,
+        }
+
+    start = _replay_start_time(higher)
+    if start.get("status") != "PASS":
+        return {
+            "status": start.get("status"),
+            "task": asdict(task),
+            "lo": lo,
+            "start": start,
+            "case1": [],
+            "case2": [],
+            "zero_relative_start_boundary": {"applicable": False},
+            "r_lo": int(lo["r_lo"]),
+            "r_hi": 0,
+            "r_star": int(lo["r_lo"]),
+            "lo_deadline_holds": int(lo["r_lo"]) <= task.deadline,
             "hi_deadline_holds": False,
         }
 
@@ -268,11 +303,53 @@ def _replay_task_independently(task: ReferenceTask, higher: tuple[ReferenceTask,
     }
 
 
+
+
+def _lo_only_replay_row(task: ReferenceTask, lo: dict[str, Any]) -> dict[str, Any]:
+    own_status = str(lo.get("status", "UNRESOLVED"))
+    return {
+        "status": own_status if own_status != "PASS" else "UNRESOLVED",
+        "task": asdict(task),
+        "lo": lo,
+        "start": {
+            "status": "NOT_APPLICABLE",
+            "reason": (
+                "LO_RTA_NOT_PASS"
+                if own_status != "PASS"
+                else "GLOBAL_LO_RTA_NOT_PASS"
+            ),
+            "trace": [],
+        },
+        "case1": [],
+        "case2": [],
+        "zero_relative_start_boundary": {"applicable": False},
+        "r_lo": int(lo.get("r_lo", 0)),
+        "r_hi": 0,
+        "r_star": int(lo.get("r_lo", 0)),
+        "lo_deadline_holds": bool(
+            own_status == "PASS"
+            and int(lo.get("r_lo", 0)) <= int(task.deadline)
+        ),
+        "hi_deadline_holds": False,
+        "analysis_stage": "LO_ONLY",
+    }
+
 def replay_all_task_rta_independently(taskset: ReferenceTaskset) -> dict[str, Any]:
-    replay_rows = [
-        _replay_task_independently(task, taskset.tasks[:index])
+    lo_results = [
+        _replay_lo_postfixed(task, taskset.tasks[:index])
         for index, task in enumerate(taskset.tasks)
     ]
+
+    if any(result.get("status") != "PASS" for result in lo_results):
+        replay_rows = [
+            _lo_only_replay_row(task, lo_results[index])
+            for index, task in enumerate(taskset.tasks)
+        ]
+    else:
+        replay_rows = [
+            _replay_task_independently(task, taskset.tasks[:index])
+            for index, task in enumerate(taskset.tasks)
+        ]
     witness = {
         "schema_version": "all_task_rta_v3",
         "reference_taskset_fingerprint": taskset.to_dict().get("fingerprint"),

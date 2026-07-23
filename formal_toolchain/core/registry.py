@@ -91,6 +91,7 @@ def build_claim_closure(entries: list[dict[str, Any]], claim: str) -> ClaimClosu
     authorization = {
         str(e["id"]) for e in entries
         if e["proof_role"] == "authorization_gate"
+        and e.get("activation") == "active"
         and claim in e.get("authorization_for", [])
     }
     structural = {str(e["id"]) for e in entries
