@@ -35,8 +35,8 @@ CANONICAL_CASES: tuple[PrimitiveTransitionSchema, ...] = (
     ),
     PrimitiveTransitionSchema(
         case_id="RECOVERY",
-        guard_fields=("mode_ne_hi", "lo_tasks_idle", "no_switch_trigger_pending"),
-        read_fields=("mode", "active_lo_jobs", "switch_trigger"),
+        guard_fields=("mode_is_hi", "no_active_jobs", "no_running_job", "no_pending_releases"),
+        read_fields=("mode", "active_job_count", "running", "pending_release_count"),
         write_fields=("mode", "primary_on_switch_time"),
         protected_frame_fields=(
             "release_time", "absolute_deadline", "criticality",
@@ -59,7 +59,7 @@ CANONICAL_CASES: tuple[PrimitiveTransitionSchema, ...] = (
         case_id="ARRIVAL_BATCH_OPEN",
         guard_fields=("arrival_event_at_time",),
         read_fields=("release_demand_overrides", "abnormal_hi_releases", "ghost_future_budgets"),
-        write_fields=("active", "ready", "released_ledger"),
+        write_fields=("pending_releases", "frontier"),
         protected_frame_fields=(
             "key_identity", "release_time", "release_index", "criticality",
         ),
@@ -67,8 +67,8 @@ CANONICAL_CASES: tuple[PrimitiveTransitionSchema, ...] = (
     ),
     PrimitiveTransitionSchema(
         case_id="MODE_SWITCH",
-        guard_fields=("switch_trigger_active",),
-        read_fields=("mode", "switch_trigger"),
+        guard_fields=("mode_is_lo", "pending_abnormal_switch_trigger"),
+        read_fields=("mode", "pending_releases", "switch_trigger"),
         write_fields=("mode",),
         protected_frame_fields=(
             "release_time", "absolute_deadline", "criticality",
@@ -89,8 +89,8 @@ CANONICAL_CASES: tuple[PrimitiveTransitionSchema, ...] = (
     ),
     PrimitiveTransitionSchema(
         case_id="FINAL_DISPATCH",
-        guard_fields=("ready_set_nonempty",),
-        read_fields=("ready_set", "priority_index", "job_key"),
+        guard_fields=("active_set_nonempty",),
+        read_fields=("active_set", "priority_index", "release_time", "job_key"),
         write_fields=("running",),
         protected_frame_fields=(
             "release_time", "absolute_deadline", "criticality",

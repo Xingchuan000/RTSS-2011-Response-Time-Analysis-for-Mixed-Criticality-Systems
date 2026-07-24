@@ -107,18 +107,3 @@ class ProtectedPrefixSimulationBackend:
                 "quantified protected-prefix theorem."
             ),
         }
-
-        receipt = {
-            "status": "PASS",
-            "backend_id": self.backend_id,
-            "theorem_id": theorem["theorem_id"],
-            "required_lemmas": list(self.REQUIRED_LEMMAS),
-            "protected_observable_schema_hash": relation_hash,
-            "quantification": quantified,
-            "quantifier_order": proof.get("quantifier_order"),
-            "dependencies": {k: v.get("receipt_hash") if isinstance(v, dict) else None for k, v in dependencies.items()},
-            "full_taskset_fingerprint": full_fp,
-            "prefix_taskset_fingerprint": prefix_fp,
-        }
-        receipt["receipt_hash"] = sha256_object(receipt)
-        return receipt

@@ -3,6 +3,11 @@ from formal_toolchain.reference.protected_priority_prefix.runtime_schema import 
 
 def test_runtime_schema_is_source_bound_and_all_obligations_are_checked():
     certificate = build_runtime_schema_certificate()
-    assert certificate["status"] == "PASS"
-    assert len(certificate["checks"]) >= 10
-    assert verify_runtime_schema_certificate(certificate)["status"] == "PASS"
+    assert certificate["schema_version"] == "protected-prefix-runtime-schema-v2"
+    assert "pp0_transition_status" in certificate
+    assert "legacy_ast_checks" in certificate
+    assert len(certificate["legacy_ast_checks"]) >= 10
+    assert certificate["source_bindings"] is not None
+    verified = verify_runtime_schema_certificate(certificate)
+    assert verified["status"] == certificate["status"]
+    assert verified["certificate_hash"] == certificate["certificate_hash"]

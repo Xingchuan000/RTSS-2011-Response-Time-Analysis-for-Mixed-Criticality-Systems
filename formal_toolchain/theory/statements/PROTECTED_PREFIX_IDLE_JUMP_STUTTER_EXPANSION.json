@@ -1,0 +1,18 @@
+{
+  "theorem_id": "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION",
+  "version": "protected-prefix-v8",
+  "assurance_level": "MACHINE_CHECKED_PROJECT_LEMMA",
+  "assumptions": [
+    "integer_time",
+    "canonical_closed_execution",
+    "idle_jump_has_no_protected_active_or_running_job",
+    "protected_observable_excludes_global_tail_state"
+  ],
+  "exact_statement": "Every executable idle jump from t to u is expanded by CloseAt into observations at every integer time in [t,u], and every inserted observation preserves the protected observable.",
+  "conclusion": "forall integer t, CloseAt(execution,t) is defined and protected idle ticks stutter",
+  "source_reference": "formal_toolchain/reference/protected_priority_prefix/time_indexed_close.py",
+  "proof_object": {
+    "backend": "protected-prefix-idle-jump-v8",
+    "path": "proofs/PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION.proof.json"
+  }
+}

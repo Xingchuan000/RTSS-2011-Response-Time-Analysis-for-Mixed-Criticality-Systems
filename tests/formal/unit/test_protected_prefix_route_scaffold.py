@@ -27,13 +27,11 @@ def test_protected_prefix_rta_and_theorem_nodes_bind_the_transformed_taskset():
     assert "SATURATED_PROTECTED_PREFIX_REFERENCE" in by_id[
         "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"
     ]["depends_on"]
-    assert set(by_id["PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE"]["depends_on"]) == {
-        "REFERENCE_MODEL_CONFORMANCE",
-        "THEORY_LIBRARY_VERSION",
-        "PROTECTED_PREFIX_PARAMETER_PRESERVATION",
-        "PROTECTED_PREFIX_LO_SATURATION",
-        "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC",
-    }
+    deps = set(by_id["PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE"]["depends_on"])
+    assert "PROTECTED_PREFIX_REFERENCE_MODEL_CONFORMANCE" in deps
+    assert "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC" in deps
+    assert "THEORY_LIBRARY_VERSION" in deps
+    assert len(deps) == 3
 
 
 def test_route_checker_collision_is_rejected_before_dispatch():

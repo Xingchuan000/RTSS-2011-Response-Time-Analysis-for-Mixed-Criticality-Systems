@@ -101,16 +101,3 @@ class ProtectedPrefixBadPrefixBackend:
                 "quantified protected-prefix theorem."
             ),
         }
-
-        receipt = {
-            "status": "PASS",
-            "backend_id": self.backend_id,
-            "theorem_id": theorem["theorem_id"],
-            "reflection_fields": dict(reflection_fields),
-            "global_mode_equality_required": False,
-            "simulation_receipt_hash": simulation_receipt.get("receipt_hash"),
-            "observable_schema_receipt_hash": observable_schema_receipt.get("receipt_hash"),
-            "deadline_batch_receipt_hash": deadline_batch_receipt.get("receipt_hash"),
-        }
-        receipt["receipt_hash"] = sha256_object(receipt)
-        return receipt

@@ -1,0 +1,10 @@
+{
+  "theorem_id": "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION",
+  "schema_version": "protected-prefix-idle-jump-v1",
+  "solver_backend": "executable-close-at-verifier",
+  "required_receipt_fields": [
+    "all_integer_times_observable",
+    "time_indexed_closed_observation_defined",
+    "protected_observable_stutters_on_expanded_idle_ticks"
+  ]
+}

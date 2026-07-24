@@ -34,6 +34,7 @@ class PrefixModelConformanceWitness:
     lo_version_selected_at_release: bool
     recurring_history_preserved: bool
     candidate_enumeration_complete: bool
+    zero_relative_start_lemma_required: bool
 
 
 def derive_prefix_model_conformance(
@@ -44,6 +45,7 @@ def derive_prefix_model_conformance(
     runtime_schema_certificate: Mapping[str, Any],
     execution_existence_receipt: Mapping[str, Any] | None = None,
     candidate_enumeration_receipt: Mapping[str, Any] | None = None,
+    zero_relative_start_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     prefix_tasks_list = list(prefix_taskset.tasks)
     full_by_name = {str(task.name): task for task in full_taskset.tasks}
@@ -107,17 +109,55 @@ def derive_prefix_model_conformance(
     lo_version_selected_at_release = executable_semantics_shared and pp0_witness.get("lo_version_selected_at_release") is True
 
     execution_receipt = execution_existence_receipt or {}
+    execution_payload = (
+        execution_receipt.get("witness", execution_receipt)
+        if isinstance(execution_receipt, Mapping) else {}
+    )
+    execution_status = (
+        execution_receipt.get("status", execution_receipt.get("obligation_status"))
+        if isinstance(execution_receipt, Mapping) else None
+    )
+    if execution_status is None and isinstance(execution_payload, Mapping):
+        execution_status = execution_payload.get("status")
     recurring_history_preserved = (
-        isinstance(execution_receipt, Mapping)
-        and execution_receipt.get("status") == "PASS"
-        and execution_receipt.get("recurring_history_preserved") is True
+        execution_status == "PASS"
+        and isinstance(execution_payload, Mapping)
+        and execution_payload.get("recurring_history_preserved") is True
     )
+
     enumeration_receipt = candidate_enumeration_receipt or {}
-    candidate_enumeration_complete = (
-        isinstance(enumeration_receipt, Mapping)
-        and enumeration_receipt.get("status") == "PASS"
-        and enumeration_receipt.get("complete_integer_candidate_domains") is True
+    enumeration_payload = (
+        enumeration_receipt.get("witness", enumeration_receipt)
+        if isinstance(enumeration_receipt, Mapping) else {}
     )
+    enumeration_status = (
+        enumeration_receipt.get("status", enumeration_receipt.get("obligation_status"))
+        if isinstance(enumeration_receipt, Mapping) else None
+    )
+    if enumeration_status is None and isinstance(enumeration_payload, Mapping):
+        enumeration_status = enumeration_payload.get("status")
+    candidate_enumeration_complete = (
+        enumeration_status == "PASS"
+        and isinstance(enumeration_payload, Mapping)
+        and enumeration_payload.get("complete_integer_candidate_domains") is True
+    )
+
+    # ZERO_RELATIVE_START is already a common mathematical predecessor of the
+    # selected all-task RTA chain.  Prefix conformance must consume that verified
+    # predecessor explicitly; it must not look for an unrelated receipt hidden
+    # inside the runtime-schema certificate.
+    zero_receipt = zero_relative_start_receipt or {}
+    zero_status = (
+        zero_receipt.get("status", zero_receipt.get("obligation_status"))
+        if isinstance(zero_receipt, Mapping) else None
+    )
+    zero_payload = (
+        zero_receipt.get("witness", zero_receipt)
+        if isinstance(zero_receipt, Mapping) else {}
+    )
+    if zero_status is None and isinstance(zero_payload, Mapping):
+        zero_status = zero_payload.get("status")
+    zero_relative_start_lemma_required = zero_status == "PASS"
 
     witness = PrefixModelConformanceWitness(
         finite_nonempty_taskset=finite_nonempty,
@@ -135,6 +175,7 @@ def derive_prefix_model_conformance(
         lo_version_selected_at_release=lo_version_selected_at_release,
         recurring_history_preserved=recurring_history_preserved,
         candidate_enumeration_complete=candidate_enumeration_complete,
+        zero_relative_start_lemma_required=zero_relative_start_lemma_required,
     )
 
     all_flags = asdict(witness)
@@ -144,7 +185,18 @@ def derive_prefix_model_conformance(
         "lo_wcet_relation", "hi_wcet_relation", "all_hi_tasks_preserved",
     }
     static_ok = all(all_flags[name] for name in static_fields)
-    ok = all(all_flags.values())
+
+    # Zero-relative-start lemma absence means the conformance is semantically
+    # incomplete (Section 6.3).  Missing ZERO_RELATIVE_START_LEMMA produces
+    # UNRESOLVED, not FAIL, because the lemma is disclosed as external TCB.
+    if not zero_relative_start_lemma_required:
+        semantic_flags = {
+            k for k, v in all_flags.items()
+            if k not in static_fields and k != "zero_relative_start_lemma_required" and not v
+        }
+        ok = False
+    else:
+        ok = all(all_flags.values())
 
     payload = {
         "schema_version": "prefix_model_conformance_v1",

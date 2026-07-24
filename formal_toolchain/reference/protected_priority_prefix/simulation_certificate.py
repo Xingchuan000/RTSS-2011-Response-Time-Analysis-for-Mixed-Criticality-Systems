@@ -21,6 +21,7 @@ def build_simulation_certificate(
     transition_totality_receipt: dict[str, Any] | None = None,
     base_case_receipt: dict[str, Any] | None = None,
     single_witness_receipt: dict[str, Any] | None = None,
+    proof_kernel_receipt: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     macro = prove_protected_macro_step_preservation(
         construction=construction, full_taskset=full_taskset, prefix_taskset=prefix_taskset,
@@ -55,6 +56,7 @@ def build_simulation_certificate(
             "base_case": base_case_receipt or {"status": "UNRESOLVED", "code": "BASE_CASE_NOT_GENERATED"},
             "macro_step_induction": {"status": macro["status"], "macro_step": macro},
             "single_witness_compatibility": single_witness_receipt or {"status": "UNRESOLVED", "code": "SINGLE_WITNESS_NOT_VERIFIED"},
+        "proof_kernel": proof_kernel_receipt or {"status": "UNRESOLVED", "code": "WEAK_SIMULATION_PROOF_KERNEL_NOT_IMPLEMENTED"},
         },
     }
 
@@ -64,6 +66,12 @@ def build_simulation_certificate(
         "base_case": str((base_case_receipt or {}).get("status", "UNRESOLVED")),
         "macro_step": str(macro.get("status", "UNRESOLVED")),
         "single_witness": str((single_witness_receipt or {}).get("status", "UNRESOLVED")),
+        "proof_kernel": (
+            "PASS" if isinstance(proof_kernel_receipt, dict)
+            and proof_kernel_receipt.get("status") == "PASS"
+            and proof_kernel_receipt.get("theorem_id") == "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION"
+            else "UNRESOLVED"
+        ),
     }
     if all(value == "PASS" for value in dependency_statuses.values()):
         status = "PASS"

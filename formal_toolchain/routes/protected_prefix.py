@@ -14,6 +14,11 @@ from .protected_prefix_checkers import (
     check_selected_safety, check_runtime_schema_conformance, check_simulation_domain,
     check_weak_forward_simulation, check_hi_bad_prefix_reflection,
     check_reference_hi_safety_from_protected_prefix, check_prefix_model_conformance,
+    check_full_reference_recurring_input_oracle, check_protected_input_stream_projection,
+    check_protected_input_demand_receptiveness, check_prefix_reference_prefix_extension,
+    check_prefix_canonical_successor_total, check_prefix_same_time_closure_terminates,
+    check_prefix_time_divergence, check_prefix_idle_jump_stutter_expansion,
+    check_prefix_complete_execution_exists,
 )
 
 
@@ -73,6 +78,15 @@ class ProtectedPrefixRoute:
             "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED": check_weak_forward_simulation,
             "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION": check_hi_bad_prefix_reflection,
             "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX": check_reference_hi_safety_from_protected_prefix,
+            "FULL_REFERENCE_RECURRING_INPUT_ORACLE": check_full_reference_recurring_input_oracle,
+            "PROTECTED_INPUT_STREAM_PROJECTION": check_protected_input_stream_projection,
+            "PROTECTED_INPUT_DEMAND_RECEPTIVENESS": check_protected_input_demand_receptiveness,
+            "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION": check_prefix_reference_prefix_extension,
+            "PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL": check_prefix_canonical_successor_total,
+            "PROTECTED_PREFIX_SAME_TIME_CLOSURE_TERMINATES": check_prefix_same_time_closure_terminates,
+            "PROTECTED_PREFIX_TIME_DIVERGENCE": check_prefix_time_divergence,
+            "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION": check_prefix_idle_jump_stutter_expansion,
+            "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS": check_prefix_complete_execution_exists,
         }
 
 

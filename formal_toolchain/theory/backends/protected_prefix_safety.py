@@ -101,17 +101,3 @@ class ProtectedPrefixSafetyBackend:
                 "quantified protected-prefix theorem."
             ),
         }
-
-        receipt = {
-            "status": "PASS",
-            "backend_id": self.backend_id,
-            "theorem_id": theorem["theorem_id"],
-            "conclusion": proof["conclusion"],
-            "conclusion_scope": proof.get("conclusion_scope"),
-            "contradiction_steps": proof.get("contradiction_steps"),
-            "components": {k: v for k, v in components.items()},
-            "full_taskset_fingerprint": full_fp,
-            "prefix_taskset_fingerprint": prefix_fp,
-        }
-        receipt["receipt_hash"] = sha256_object(receipt)
-        return receipt

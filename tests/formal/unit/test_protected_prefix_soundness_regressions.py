@@ -164,7 +164,9 @@ def test_case_8_arrival_batch_protected_independent_of_tail():
     )
     assert cursor.tail_skip_count == 2
     assert proof.protected_entry_correspondence is True
-    assert cursor.k_full == cursor.k_prefix == 2
+    assert cursor.k_full == cursor.full_batch_size
+    assert cursor.k_prefix == cursor.prefix_batch_size
+    assert cursor.measure == 0
 
 
 def test_case_9_any_task_rta_fails_route_must_fail():

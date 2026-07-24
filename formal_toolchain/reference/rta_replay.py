@@ -334,6 +334,27 @@ def _lo_only_replay_row(task: ReferenceTask, lo: dict[str, Any]) -> dict[str, An
         "analysis_stage": "LO_ONLY",
     }
 
+
+def _candidate_domains_complete(replay_rows: Sequence[dict[str, Any]]) -> bool:
+    for row in replay_rows:
+        if row.get("status") != "PASS":
+            return False
+        r_lo = int(row.get("r_lo", 0))
+        if [int(item.get("start", -1)) for item in row.get("case1", [])] != list(range(r_lo)):
+            return False
+        start = row.get("start", {})
+        if start.get("status") != "PASS":
+            return False
+        w_lo = int(start.get("w_lo", -1))
+        case2 = [int(item.get("start", -1)) for item in row.get("case2", [])]
+        zero = row.get("zero_relative_start_boundary", {})
+        if w_lo == 0:
+            if case2 or zero.get("applicable") is not True:
+                return False
+        elif case2 != list(range(w_lo)) or zero.get("applicable") is not False:
+            return False
+    return True
+
 def replay_all_task_rta_independently(taskset: ReferenceTaskset) -> dict[str, Any]:
     lo_results = [
         _replay_lo_postfixed(task, taskset.tasks[:index])
@@ -363,6 +384,7 @@ def replay_all_task_rta_independently(taskset: ReferenceTaskset) -> dict[str, An
             all(row["lo_deadline_holds"] for row in replay_rows)
             and all(row["hi_deadline_holds"] for row in replay_rows)
         ),
+        "complete_integer_candidate_domains": _candidate_domains_complete(replay_rows),
         "tasks": replay_rows,
     }
     if any(item["status"] == "UNRESOLVED" for item in replay_rows):
@@ -381,6 +403,7 @@ def replay_all_task_rta_independently(taskset: ReferenceTaskset) -> dict[str, An
         "all_lo_deadlines_hold": witness["all_lo_deadlines_hold"],
         "all_hi_deadlines_hold": witness["all_hi_deadlines_hold"],
         "all_deadlines_met": witness["all_deadlines_met"],
+        "complete_integer_candidate_domains": witness["complete_integer_candidate_domains"],
         "tasks": replay_rows,
         "witness": witness,
     }
@@ -463,6 +486,14 @@ def replay_all_task_rta(taskset: ReferenceTaskset, production: Mapping[str, Any]
             "comparisons": comparisons,
             "witness": replay["witness"],
         }
+    # Candidate-domain completeness is a premise of a successful imported-RTA
+    # application.  It is not a more specific failure reason when the
+    # sufficient test has already failed (for example, LO RTA misses a
+    # deadline before HI candidates are enumerated).
+    if candidate_witness.get("complete_integer_candidate_domains") is not True:
+        return {"status": "FAIL", "code": "ALL_TASK_RTA_CANDIDATE_DOMAIN_INCOMPLETE"}
+    if replay.get("complete_integer_candidate_domains") is not True:
+        return {"status": "FAIL", "code": "ALL_TASK_RTA_REPLAY_CANDIDATE_DOMAIN_INCOMPLETE"}
     return {
         "status": "PASS",
         "code": None,

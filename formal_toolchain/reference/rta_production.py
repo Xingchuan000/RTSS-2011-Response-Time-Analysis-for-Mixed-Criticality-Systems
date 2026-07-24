@@ -372,6 +372,36 @@ def _lo_only_task_analysis(task: ReferenceTask, lo: dict[str, Any]) -> dict[str,
         "analysis_stage": "LO_ONLY",
     }
 
+
+def _candidate_domains_complete(task_rows: Sequence[dict[str, Any]]) -> bool:
+    """Check exact finite integer domains used by the imported formulas.
+
+    Case 1 must enumerate every integer ``0 <= s < R_i(LO)``.  Case 2
+    must enumerate every integer ``0 <= s < W_i(LO)``; when ``W_i(LO)=0``
+    the Case-2 list is empty and the separately disclosed zero-start boundary
+    record must be present.
+    """
+    for row in task_rows:
+        if row.get("status") != "PASS":
+            return False
+        r_lo = int(row.get("r_lo", 0))
+        case1_starts = [int(item.get("start", -1)) for item in row.get("case1", [])]
+        if case1_starts != list(range(r_lo)):
+            return False
+        start_info = row.get("start", row.get("worst_case_start", {}))
+        if start_info.get("status") != "PASS":
+            return False
+        w_lo = int(start_info.get("w_lo", -1))
+        case2_starts = [int(item.get("start", -1)) for item in row.get("case2", [])]
+        zero_boundary = row.get("zero_relative_start_boundary", {})
+        if w_lo == 0:
+            if case2_starts or zero_boundary.get("applicable") is not True:
+                return False
+        else:
+            if case2_starts != list(range(w_lo)) or zero_boundary.get("applicable") is not False:
+                return False
+    return True
+
 def compute_all_task_rta(taskset: ReferenceTaskset) -> dict[str, Any]:
     """Pure all-task arithmetic; no route or obligation identity is attached."""
     lo_results = [
@@ -425,6 +455,7 @@ def compute_all_task_rta(taskset: ReferenceTaskset) -> dict[str, Any]:
             all(row["lo_deadline_holds"] for row in task_rows)
             and all(row["hi_deadline_holds"] for row in task_rows)
         ),
+        "complete_integer_candidate_domains": _candidate_domains_complete(task_rows),
         "tasks": task_rows,
     }
     return {
@@ -439,6 +470,7 @@ def compute_all_task_rta(taskset: ReferenceTaskset) -> dict[str, Any]:
         "all_lo_deadlines_hold": witness["all_lo_deadlines_hold"],
         "all_hi_deadlines_hold": witness["all_hi_deadlines_hold"],
         "all_deadlines_met": witness["all_deadlines_met"],
+        "complete_integer_candidate_domains": witness["complete_integer_candidate_domains"],
         "tasks": task_rows,
         "witness": witness,
     }
