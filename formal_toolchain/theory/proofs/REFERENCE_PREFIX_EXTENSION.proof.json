@@ -39,7 +39,7 @@
   },
   "source_bindings": {
     "formal_toolchain/bridge/logical_events.py": "87c4ec04755534cd4ffc82b3f7682341bb49d9fc276313da370afd943ae5041f",
-    "formal_toolchain/reference/c_amc_sem_semantics.py": "8cb7147b0aaad25267200b676d5a6bed9f6ec2c9523280c05c7aff569b70187e",
+    "formal_toolchain/reference/c_amc_sem_semantics.py": "d0ae27dcb954a278aadaf061df130c907960ea2385123445ad4759fb527bfe7c",
     "formal_toolchain/reference/executable_semantics.py": "49b09f87507ba957f6e35c58f5e61baefdf4f3f1de8f83faa6cd9cf05792f1c4",
     "formal_toolchain/reference/p0_projection.py": "4b4057d67c064cd82e79e0f37cdcdecd5e5d940c53ab548ca4435dc55d4ef21f",
     "formal_toolchain/reference/p0_transition_contract.py": "02d1803851d0219e09476df6c07ad54910f265f23a9771a3a02c6004b7e3d29b",

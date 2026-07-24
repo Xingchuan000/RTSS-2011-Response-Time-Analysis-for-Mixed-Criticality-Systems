@@ -497,22 +497,35 @@ def _verify_schema_file_obligation(obligation_id: str, schema_filename: str, *, 
 def _verify_theory_library_obligation(obligation_id: str, *, raw_inputs=None,
                                       candidate_evidence=None, expected_context_hash=None, **kwargs):
     raw, error = _raw_inputs({"raw_inputs": raw_inputs, "evidence": kwargs.get("evidence"),
-                              "candidate_evidence": candidate_evidence}, obligation_id)
+                               "candidate_evidence": candidate_evidence}, obligation_id)
     if error:
         return error
+
+    context = kwargs.get("context")
+    route_id = None
+    if context is not None:
+        fresh_state = getattr(context, "fresh_state", None)
+        if fresh_state is not None:
+            route_id = getattr(fresh_state, "selected_route_id", None)
+
     try:
-        result = verify_theory_library(_theory_root(raw))
+        if route_id is not None:
+            result = verify_theory_library(_theory_root(raw), route_id=route_id)
+        else:
+            result = verify_theory_library(_theory_root(raw))
     except (OSError, KeyError, TypeError, ValueError) as exc:
         result = {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
                   "failure": {"code": "THEORY_LIBRARY_INVALID", "detail": str(exc)}}
     if result.get("status") != "PASS":
-        return _finish(obligation_id, {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+        route = "UNRESOLVED" if result.get("status") == "UNRESOLVED" else "PROOF_BUNDLE_INVALID"
+        return _finish(obligation_id, {"status": result.get("status"), "route": route,
                                        "failure": {"code": "THEORY_LIBRARY_INVALID",
                                                    "detail": result}},
                        expected_context_hash=expected_context_hash, candidate_evidence=candidate_evidence)
     witness = {"library_version": result.get("library_version"),
                "theorem_count": result.get("theorem_count"),
-               "theorem_ids": result.get("theorem_ids")}
+               "theorem_ids": result.get("theorem_ids"),
+               "route_id": result.get("route_id")}
     if obligation_id == "ASSURANCE_POLICY":
         policy = _read_json(_theory_root(raw) / "assurance_policy.json")
         witness["assurance_policy"] = policy

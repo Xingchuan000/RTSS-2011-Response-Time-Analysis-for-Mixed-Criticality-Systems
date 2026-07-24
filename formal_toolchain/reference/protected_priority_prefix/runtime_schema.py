@@ -1,4 +1,12 @@
-"""Structural conformance checks for the fixed reference executable semantics."""
+"""Structural conformance checks for the fixed reference executable semantics.
+
+NOTE: The old AST/source-shape checks have been superseded by the PP0
+transition schema checker in pp0_checker.py.  This module retains the
+legacy checks for regression comparison only.
+
+All new verification should use build_pp0_transition_certificate() from
+formal_toolchain.reference.protected_priority_prefix.pp0_checker.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +15,9 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from formal_toolchain.core.hashing import sha256_file, sha256_object
+from formal_toolchain.reference.protected_priority_prefix.pp0_checker import (
+    build_pp0_transition_certificate,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE_FILES = (
@@ -42,7 +53,12 @@ def _function_has(name: str, *needles: str) -> bool:
 
 
 def runtime_schema_checks() -> dict[str, bool]:
-    """Return proof obligations, not a finite execution result."""
+    """Legacy AST-based proof obligations.  Superseded by pp0_checker.
+
+    These checks can only prove that code contains certain fields or
+    function patterns; they cannot prove quantified properties over
+    all reachable full/prefix states.
+    """
     return {
         "strict_fixed_priority_dispatch": _function_has("_normalize_dispatch", "sorted(", "_job_schedule_key")
         and _function_has("_job_schedule_key", "_task_priority(task)"),
@@ -64,12 +80,35 @@ def runtime_schema_checks() -> dict[str, bool]:
 
 
 def build_runtime_schema_certificate() -> dict[str, Any]:
-    checks = runtime_schema_checks()
+    """Build runtime schema certificate using PP0 transition schema checker.
+
+    The old AST-based checks are included for regression comparison but
+    the certificate status is determined by the PP0 transition query results.
+    """
+    pp0_result = build_pp0_transition_certificate()
+    legacy_checks = runtime_schema_checks()
     bindings = {name: sha256_file(ROOT / name) for name in SOURCE_FILES}
-    payload = {"schema_version": "protected-prefix-runtime-schema-v1", "checks": checks, "source_bindings": bindings}
-    return {**payload, "certificate_hash": sha256_object(payload),
-            "status": "PASS" if all(checks.values()) else "FAIL",
-            "failure": None if all(checks.values()) else {"code": "RUNTIME_SCHEMA_CONFORMANCE_FAILED", "checks": [k for k, v in checks.items() if not v]}}
+
+    payload = {
+        "schema_version": "protected-prefix-runtime-schema-v2",
+        "pp0_transition_status": pp0_result.get("status"),
+        "pp0_certificate_hash": pp0_result.get("certificate_hash"),
+        "pp0_case_count": pp0_result.get("query_count", 0),
+        "pp0_pass_count": pp0_result.get("pass_count", 0),
+        "pp0_unresolved_count": pp0_result.get("unresolved_count", 0),
+        "legacy_ast_checks": legacy_checks,
+        "source_bindings": bindings,
+    }
+
+    status = pp0_result.get("status", "UNRESOLVED")
+    failure = None if status == "PASS" else pp0_result.get("failure")
+
+    return {
+        **payload,
+        "certificate_hash": sha256_object(payload),
+        "status": status,
+        "failure": failure,
+    }
 
 
 def verify_runtime_schema_certificate(certificate: Mapping[str, Any]) -> dict[str, Any]:
@@ -79,4 +118,6 @@ def verify_runtime_schema_certificate(certificate: Mapping[str, Any]) -> dict[st
     if certificate.get("source_bindings") != rebuilt["source_bindings"]:
         return {"status": "FAIL", "code": "RUNTIME_SCHEMA_SOURCE_BINDING_MISMATCH"}
     return {"status": rebuilt["status"], "certificate_hash": rebuilt["certificate_hash"],
-            "checks": rebuilt["checks"], "failure": rebuilt.get("failure")}
+            "checks": rebuilt.get("legacy_ast_checks", {}),
+            "pp0_transition_status": rebuilt.get("pp0_transition_status"),
+            "failure": rebuilt.get("failure")}

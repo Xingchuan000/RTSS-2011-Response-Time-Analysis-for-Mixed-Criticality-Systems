@@ -58,13 +58,47 @@ INTEGRITY_ONLY_DEPENDENCIES = {
     "REFERENCE_TASKSET_SCHEDULABLE": {"THEORY_LIBRARY_VERSION"},
 }
 
+PROTECTED_PREFIX_THEOREM_IDS = {
+    "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION",
+    "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
+    "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
+}
+
+
+def _load_manifest(theory_dir: Path) -> dict[str, Any]:
+    return json.loads((theory_dir / "theory_manifest.json").read_text(encoding="utf-8"))
+
+
+def _all_required_theorems(manifest: dict[str, Any]) -> tuple[str, ...]:
+    """Extract the union of all required theorem IDs from the manifest."""
+    if "common_required_theorems" in manifest:
+        common = tuple(manifest.get("common_required_theorems", []))
+        route_map = manifest.get("route_required_theorems", {})
+        route_theorems: set[str] = set()
+        for route_list in route_map.values():
+            if isinstance(route_list, list):
+                route_theorems.update(route_list)
+        return tuple(sorted(set(common) | route_theorems))
+    return tuple(manifest.get("required_theorems", []))
+
+
+def required_theorems_for_route(
+    theory_dir: Path,
+    route_id: str,
+) -> tuple[str, ...]:
+    """Return the tuple of required theorem IDs for a specific proof route."""
+    theory_dir = theory_dir.resolve(strict=True)
+    manifest = _load_manifest(theory_dir)
+    if "route_required_theorems" in manifest:
+        common = tuple(manifest.get("common_required_theorems", []))
+        route_map = manifest.get("route_required_theorems", {})
+        route_specific = tuple(route_map.get(route_id, []))
+        return common + route_specific
+    return tuple(manifest.get("required_theorems", []))
+
 
 def registry_dependencies_for_theorem(theory_dir: Path, theorem_id: str) -> set[str]:
-    if theorem_id in {
-        "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION",
-        "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
-        "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
-    }:
+    if theorem_id in PROTECTED_PREFIX_THEOREM_IDS:
         return set(MACHINE_PREMISES[theorem_id])
     from formal_toolchain.core.registry import load_registry
     registry_entries = load_registry(theory_dir.parent / "specs" / "obligation_registry.json")
@@ -79,10 +113,9 @@ def registry_dependencies_for_theorem(theory_dir: Path, theorem_id: str) -> set[
 
 def load_verified_theory_statement(theory_dir: Path, theorem_id: str) -> dict[str, Any]:
     theory_dir = theory_dir.resolve(strict=True)
-    manifest = json.loads(
-        (theory_dir / "theory_manifest.json").read_text(encoding="utf-8")
-    )
-    if theorem_id not in set(manifest.get("required_theorems", [])):
+    manifest = _load_manifest(theory_dir)
+    all_required = set(_all_required_theorems(manifest))
+    if theorem_id not in all_required:
         raise ValueError(f"theorem is not required by current library: {theorem_id}")
 
     statement_path = theory_dir / "statements" / f"{theorem_id}.json"
@@ -96,11 +129,7 @@ def load_verified_theory_statement(theory_dir: Path, theorem_id: str) -> dict[st
             raise ValueError(f"THEOREM_MACHINE_PREMISES_INVALID:{theorem_id}")
         from formal_toolchain.core.registry import load_registry
         registry_ids = {row["id"] for row in load_registry(theory_dir.parent / "specs" / "obligation_registry.json")}
-        synthetic_route_theorem = theorem_id in {
-            "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION",
-            "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
-            "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
-        }
+        synthetic_route_theorem = theorem_id in PROTECTED_PREFIX_THEOREM_IDS
         if not synthetic_route_theorem and not set(premises) <= registry_ids:
             raise ValueError(f"THEOREM_MACHINE_PREMISE_UNKNOWN:{theorem_id}")
         registry_dependencies = registry_dependencies_for_theorem(theory_dir, theorem_id)
@@ -173,8 +202,8 @@ def verify_theory_library(theory_dir: Path) -> dict[str, Any]:
     manifest_path = theory_dir / "theory_manifest.json"
     if not manifest_path.is_file():
         return {"status": "FAIL", "code": "THEORY_MANIFEST_MISSING"}
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    for theorem_id in manifest.get("required_theorems", []):
+    manifest = _load_manifest(theory_dir)
+    for theorem_id in _all_required_theorems(manifest):
         try:
             load_verified_theory_statement(theory_dir, theorem_id)
         except (ValueError, FileNotFoundError, KeyError) as exc:
@@ -184,4 +213,53 @@ def verify_theory_library(theory_dir: Path) -> dict[str, Any]:
                 "theorem_id": theorem_id,
                 "message": str(exc),
             }
-    return {"status": "PASS", "checked_theorems": list(manifest.get("required_theorems", []))}
+    return {"status": "PASS", "checked_theorems": list(_all_required_theorems(manifest))}
+
+
+def verify_theory_library_for_route(
+    theory_dir: Path,
+    route_id: str,
+) -> dict[str, Any]:
+    """验证指定 route 所需的全部 theorem。
+
+    规则：
+    - strict_full 不验证 PP theorem backend。
+    - protected_prefix 必须验证 PP theorem backend，未实现返回 UNRESOLVED。
+    """
+    theory_dir = theory_dir.resolve(strict=True)
+    manifest_path = theory_dir / "theory_manifest.json"
+    if not manifest_path.is_file():
+        return {"status": "FAIL", "code": "THEORY_MANIFEST_MISSING"}
+
+    manifest = _load_manifest(theory_dir)
+    if "route_required_theorems" not in manifest:
+        return verify_theory_library(theory_dir)
+
+    theorem_ids = list(required_theorems_for_route(theory_dir, route_id))
+    checked: list[str] = []
+    for theorem_id in theorem_ids:
+        try:
+            load_verified_theory_statement(theory_dir, theorem_id)
+            checked.append(theorem_id)
+        except (ValueError, FileNotFoundError, KeyError) as exc:
+            if theorem_id in PROTECTED_PREFIX_THEOREM_IDS:
+                return {
+                    "status": "UNRESOLVED",
+                    "code": "PROTECTED_PREFIX_THEOREM_UNRESOLVED",
+                    "theorem_id": theorem_id,
+                    "route_id": route_id,
+                    "message": str(exc),
+                    "checked_theorems": checked,
+                }
+            return {
+                "status": "FAIL",
+                "code": "THEOREM_LOAD_FAILED",
+                "theorem_id": theorem_id,
+                "message": str(exc),
+            }
+
+    return {
+        "status": "PASS",
+        "route_id": route_id,
+        "checked_theorems": checked,
+    }

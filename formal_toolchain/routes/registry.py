@@ -73,7 +73,8 @@ def resolve_registry(route: ProofRoute | str) -> ResolvedRegistry:
         prefix_ids = [
             "PROTECTED_PRIORITY_PREFIX_PARTITION", "SATURATED_PROTECTED_PREFIX_REFERENCE",
             "PROTECTED_PREFIX_PARAMETER_PRESERVATION", "PROTECTED_PREFIX_LO_SATURATION",
-            "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC", "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE",
+            "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC", "PROTECTED_PREFIX_REFERENCE_MODEL_CONFORMANCE",
+            "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE",
             "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE", "FULL_TO_PREFIX_SIMULATION_DOMAIN",
             "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED", "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
             "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
@@ -90,16 +91,20 @@ def resolve_registry(route: ProofRoute | str) -> ResolvedRegistry:
         by["PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"]["depends_on"] = [
             "SATURATED_PROTECTED_PREFIX_REFERENCE", *rta_deps,
         ]
-        # This node discharges the imported all-task theorem for the prefix.  It
-        # therefore needs the construction lemmas, full-reference conformance
-        # inherited by parameter preservation, the theorem library, and the
-        # prefix arithmetic result.
-        by["PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE"]["depends_on"] = [
-            "REFERENCE_MODEL_CONFORMANCE",
-            "THEORY_LIBRARY_VERSION",
+        # This node discharges prefix-specific reference model conformance.
+        # It proves that the saturated prefix satisfies all model assumptions
+        # required by the C-AMC-sem all-task theorem; it is NOT a copy of
+        # the full-reference conformance.
+        by["PROTECTED_PREFIX_REFERENCE_MODEL_CONFORMANCE"]["depends_on"] = [
+            "SATURATED_PROTECTED_PREFIX_REFERENCE",
             "PROTECTED_PREFIX_PARAMETER_PRESERVATION",
             "PROTECTED_PREFIX_LO_SATURATION",
+            "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
+        ]
+        by["PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE"]["depends_on"] = [
+            "PROTECTED_PREFIX_REFERENCE_MODEL_CONFORMANCE",
             "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC",
+            "THEORY_LIBRARY_VERSION",
         ]
         by["PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE"]["depends_on"] = [
             "SATURATED_PROTECTED_PREFIX_REFERENCE",
@@ -168,7 +173,8 @@ def resolve_registry(route: ProofRoute | str) -> ResolvedRegistry:
         "FINITE_BAD_PREFIX_CONTRADICTION", "FINAL_CLAIM_COMPOSITION",
         "PROTECTED_PRIORITY_PREFIX_PARTITION", "SATURATED_PROTECTED_PREFIX_REFERENCE",
         "PROTECTED_PREFIX_PARAMETER_PRESERVATION", "PROTECTED_PREFIX_LO_SATURATION",
-        "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC", "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE",
+        "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC", "PROTECTED_PREFIX_REFERENCE_MODEL_CONFORMANCE",
+        "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE",
         "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE", "FULL_TO_PREFIX_SIMULATION_DOMAIN",
         "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED", "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
         "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX", "SELECTED_REFERENCE_HI_SAFETY",

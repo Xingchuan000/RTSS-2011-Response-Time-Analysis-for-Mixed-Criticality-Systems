@@ -252,7 +252,10 @@ def _build_n6_obligations(
 
 
 def verify_finite_hi_bad_prefix_math() -> dict[str, Any]:
-    import z3
+    try:
+        import z3
+    except ImportError:
+        return {"status": "UNRESOLVED", "code": "Z3_NOT_AVAILABLE"}
 
     context = z3.Context()
     obligations = _build_n6_obligations(z3, context)

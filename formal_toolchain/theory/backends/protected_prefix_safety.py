@@ -1,4 +1,9 @@
-"""Backend for the prefix-schedulability to full-reference-HI-safety contradiction."""
+"""Backend for the prefix-schedulability to full-reference-HI-safety contradiction.
+
+The certificate must be constructed from verified predecessor receipts, not from
+a three-step text list.  Every ingredient of the contradiction argument must have
+an independently verifiable hash.
+"""
 
 from __future__ import annotations
 
@@ -12,14 +17,101 @@ from formal_toolchain.core.hashing import sha256_object
 class ProtectedPrefixSafetyBackend:
     backend_id = "protected-prefix-safety-v1"
 
+    REQUIRED_COMPONENTS = (
+        "prefix_model_conformance_hash",
+        "prefix_all_task_rta_hash",
+        "imported_theorem_receipt_hash",
+        "weak_simulation_hash",
+        "bad_prefix_reflection_hash",
+    )
+    REQUIRED_CONCLUSION = "ALL_REFERENCE_HI_JOBS_MEET_DEADLINES"
+
     def verify(self, proof_path: Path, *, theorem: Mapping[str, Any]) -> dict[str, Any]:
         proof = json.loads(Path(proof_path).read_text(encoding="utf-8"))
         statement_payload = {key: theorem[key] for key in ("theorem_id", "exact_statement", "conclusion", "source_reference", "assurance_level", "version")}
         assumption_payload = {"theorem_id": theorem["theorem_id"], "assumptions": theorem["assumptions"], "premise_obligation_ids": theorem.get("premise_obligation_ids", []), "version": theorem["version"]}
         if proof.get("theorem_id") != theorem.get("theorem_id") or proof.get("theorem_statement_hash") != sha256_object(statement_payload) or proof.get("theorem_assumption_hash") != sha256_object(assumption_payload):
             return {"status": "FAIL", "code": "THEOREM_HASH_BINDING_INVALID"}
-        if proof.get("proof_by_contradiction") != ["full reference HI miss", "reflected prefix HI miss", "prefix all-task schedulability contradiction"] or proof.get("conclusion") != "ALL_REFERENCE_HI_JOBS_MEET_DEADLINES":
+
+
+        if proof.get("conclusion") != self.REQUIRED_CONCLUSION:
+            return {"status": "FAIL", "code": "PREFIX_SAFETY_CONCLUSION_INVALID"}
+
+        components = proof.get("components", {})
+        if not isinstance(components, dict):
+            return {"status": "UNRESOLVED",
+                    "code": "SAFETY_COMPOSITION_COMPONENTS_MISSING",
+                    "reason": (
+                        "The proof must contain a components dict with independently "
+                        "verifiable receipt hashes for each ingredient of the "
+                        "contradiction argument."
+                    )}
+
+        missing = set(self.REQUIRED_COMPONENTS) - set(components)
+        if missing:
+            return {"status": "UNRESOLVED",
+                    "code": "SAFETY_COMPOSITION_COMPONENT_HASHES_MISSING",
+                    "expected": list(self.REQUIRED_COMPONENTS),
+                    "missing": sorted(missing),
+                    "reason": (
+                        "Each component receipt hash must be provided to construct "
+                        "the contradiction chain."
+                    )}
+
+        for comp in self.REQUIRED_COMPONENTS:
+            value = components.get(comp)
+            if not isinstance(value, str) or len(value) != 64:
+                return {"status": "UNRESOLVED",
+                        "code": f"SAFETY_COMPOSITION_{comp.upper()}_INVALID",
+                        "reason": f"Component {comp} must be a 64-char hex receipt hash."}
+
+        if proof.get("contradiction_steps") != [
+            "full reference HI miss",
+            "reflected prefix HI miss",
+            "prefix all-task schedulability contradiction",
+        ]:
             return {"status": "FAIL", "code": "PREFIX_SAFETY_CONTRADICTION_INVALID"}
-        receipt = {"status": "PASS", "backend_id": self.backend_id, "theorem_id": theorem["theorem_id"], "proof_by_contradiction": list(proof["proof_by_contradiction"]), "conclusion": proof["conclusion"]}
+
+        full_fp = proof.get("full_taskset_fingerprint")
+        prefix_fp = proof.get("prefix_taskset_fingerprint")
+        if not isinstance(full_fp, str) or not isinstance(prefix_fp, str):
+            return {"status": "UNRESOLVED",
+                    "code": "SAFETY_TASKSET_FINGERPRINTS_MISSING",
+                    "reason": (
+                        "The conclusion must bind full and prefix taskset fingerprints "
+                        "to prevent conclusion reuse across different task sets."
+                    )}
+
+        if proof.get("conclusion_scope") not in ("ALL_REFERENCE_HI_JOBS_MEET_DEADLINES",):
+            return {"status": "UNRESOLVED",
+                    "code": "SAFETY_CONCLUSION_SCOPE_UNVERIFIED",
+                    "reason": (
+                        "The conclusion must only claim full-reference HI safety; "
+                        "it must NOT extend to tail LO safety."
+                    )}
+
+        # All structural checks above are necessary but not sufficient.  The
+        # backend still lacks a code-bound parametric proof kernel, so it must
+        # not turn self-asserted JSON receipts into a theorem PASS.
+        return {
+            "status": "UNRESOLVED",
+            "code": "PROTECTED_PREFIX_SAFETY_PROOF_KERNEL_NOT_IMPLEMENTED",
+            "reason": (
+                "Static PASS fields and receipt-looking hashes do not prove the "
+                "quantified protected-prefix theorem."
+            ),
+        }
+
+        receipt = {
+            "status": "PASS",
+            "backend_id": self.backend_id,
+            "theorem_id": theorem["theorem_id"],
+            "conclusion": proof["conclusion"],
+            "conclusion_scope": proof.get("conclusion_scope"),
+            "contradiction_steps": proof.get("contradiction_steps"),
+            "components": {k: v for k, v in components.items()},
+            "full_taskset_fingerprint": full_fp,
+            "prefix_taskset_fingerprint": prefix_fp,
+        }
         receipt["receipt_hash"] = sha256_object(receipt)
         return receipt

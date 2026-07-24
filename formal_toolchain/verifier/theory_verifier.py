@@ -33,9 +33,28 @@ def _load(path: Path) -> dict[str, Any]:
     return data
 
 
-def verify_theory_library(theory_dir: Path) -> dict[str, Any]:
-    """校验 manifest、每个 theorem 的两类 hash、必需 theorem 集合以及 proof object 加载。"""
-    from formal_toolchain.theory.loader import verify_theory_library as loader_verify
+def _all_required_theorem_ids(manifest: dict[str, Any]) -> list[str]:
+    """Return the union of all required theorem IDs across all routes."""
+    if "common_required_theorems" in manifest:
+        common = list(manifest.get("common_required_theorems", []))
+        route_map = manifest.get("route_required_theorems", {})
+        route_ids: set[str] = set()
+        for route_list in route_map.values():
+            if isinstance(route_list, list):
+                route_ids.update(route_list)
+        return sorted(set(common) | route_ids)
+    return list(manifest.get("required_theorems", []))
+
+
+def verify_theory_library(theory_dir: Path, *, route_id: str | None = None) -> dict[str, Any]:
+    """校验 manifest、每个 theorem 的两类 hash、必需 theorem 集合以及 proof object 加载。
+
+    当 route_id 提供时，使用 route-specific 验证；否则验证全部 theorem。
+    """
+    from formal_toolchain.theory.loader import (
+        verify_theory_library as loader_verify,
+        verify_theory_library_for_route,
+    )
 
     manifest = _load(theory_dir / "theory_manifest.json")
     policy = _load(theory_dir / "assurance_policy.json")
@@ -51,9 +70,11 @@ def verify_theory_library(theory_dir: Path) -> dict[str, Any]:
     from formal_toolchain.core.registry import load_registry, registry_fingerprint
     if registry_available and manifest.get("registry_fingerprint") != registry_fingerprint(load_registry(registry_path)):
         raise ValueError("theory manifest 与当前 Registry 不匹配")
-    required = manifest.get("required_theorems", [])
+
+    required = _all_required_theorem_ids(manifest)
     if len(required) != len(set(required)):
         raise ValueError("required_theorems 存在重复 ID")
+
     statements_dir = theory_dir / "statements"
     objects = [_load(path) for path in sorted(statements_dir.glob("*.json"))]
     hashes = _load(theory_dir / "hashes.json").get("statements", {})
@@ -102,12 +123,21 @@ def verify_theory_library(theory_dir: Path) -> dict[str, Any]:
             raise ValueError(f"{obj['theorem_id']} 与 theory/hashes.json 不一致")
     if not registry_available:
         raise ValueError("theory manifest 校验缺少当前 Registry")
-    # 使用 loader 执行 proof object 加载和验证
-    loader_result = loader_verify(theory_dir)
+
+    if route_id is not None:
+        loader_result = verify_theory_library_for_route(theory_dir, route_id)
+    else:
+        loader_result = loader_verify(theory_dir)
+
     if loader_result["status"] != "PASS":
-        raise ValueError(f"theory proof object 加载失败: {loader_result.get('code')}: {loader_result.get('message')}")
+        code = loader_result.get("code", "THEORY_LIBRARY_INVALID")
+        msg = loader_result.get("message", "theory proof object 加载失败")
+        raise ValueError(f"theory proof object 加载失败: {code}: {msg}")
+
+    route_theorem_ids = loader_result.get("checked_theorems", sorted(ids))
     return {"status": "PASS", "library_version": manifest.get("library_version"),
-            "theorem_count": len(objects), "theorem_ids": sorted(ids)}
+            "theorem_count": len(route_theorem_ids), "theorem_ids": sorted(route_theorem_ids),
+            "route_id": route_id}
 
 
 def write_theory_certificate(theory_dir: Path, output_path: Path) -> dict[str, Any]:
@@ -119,8 +149,6 @@ def write_theory_certificate(theory_dir: Path, output_path: Path) -> dict[str, A
         "obligation_id": "THEORY_LIBRARY_VERSION",
         "obligation_status": "PASS",
         "certificate_context_hash": sha256_object({"theory_manifest": manifest}),
-        # THEORY_LIBRARY_VERSION 是理论输入根；其 predecessor 集合必须与
-        # registry 的 depends_on 精确一致，不能凭空增加未注册的 hash 名称。
         "direct_predecessor_hashes": {},
         "checker_id": "formal_toolchain.verifier.theory_verifier",
         "checker_version": "phase-c-v1",

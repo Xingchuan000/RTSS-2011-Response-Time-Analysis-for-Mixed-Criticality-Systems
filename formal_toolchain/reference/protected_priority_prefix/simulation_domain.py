@@ -12,6 +12,7 @@ from .input_projection import check_projected_demands_legal, project_protected_r
 from .observable import observable_schema
 from .runtime_schema import build_runtime_schema_certificate
 from .types import ProtectedPrefixBuildResult
+from .execution_builder import build_complete_prefix_execution_witness
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,47 +38,64 @@ def check_full_to_prefix_simulation_domain(**kwargs: Any) -> dict[str, Any]:
                 "witness": {"expected": sorted(required), "actual": sorted(predecessors)}}
     if state is None or state.prepared_route is None:
         return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "PROTECTED_PREFIX_TASKSET_MISSING", "witness": {}}
+
     construction: ProtectedPrefixBuildResult = state.prepared_route.construction_witnesses["build_result"]
     full = state.full_reference_taskset
     prefix = state.analysis_taskset
-    full_initial = initial_reference_state(full)
-    projected = project_protected_release_stream(
-        full_initial, protected_task_names=frozenset(construction.protected_task_names))
-    legality = check_projected_demands_legal(projected, prefix)
-    partition = construction.partition_witness
-    saturation = construction.saturation_witness
-    runtime = build_runtime_schema_certificate()
-    try:
-        prefix_initial = initial_reference_state(prefix)
-        close_timestamp(prefix_initial, prefix)
-        execution_exists = True
-    except (TypeError, ValueError, RuntimeError):
-        execution_exists = False
+    input_projection_receipt = kwargs.get("input_projection_receipt") or {}
+    execution_existence_receipt = kwargs.get("execution_existence_receipt") or {}
+
     witness = FullToPrefixSimulationDomainWitness(
-        reference_model_conformance=predecessors["REFERENCE_MODEL_CONFORMANCE"].get("obligation_status") == "PASS",
-        partition_valid=all(partition.get(k) is True for k in ("tail_all_lo", "all_hi_protected", "partition_complete", "order_preserved")),
-        saturation_valid=saturation.get("hi_fields_equal") is True and saturation.get("timing_fields_equal") is True,
-        runtime_schema_valid=runtime["status"] == "PASS",
-        protected_input_independence=all(item.job_key[0] in construction.protected_task_names for item in projected),
-        projected_demands_legal=legality["status"] == "PASS",
-        complete_prefix_execution_exists=execution_exists,
+        reference_model_conformance=(
+            predecessors["REFERENCE_MODEL_CONFORMANCE"].get("obligation_status") == "PASS"
+        ),
+        partition_valid=(
+            predecessors["PROTECTED_PRIORITY_PREFIX_PARTITION"].get("obligation_status") == "PASS"
+        ),
+        saturation_valid=(
+            predecessors["PROTECTED_PREFIX_LO_SATURATION"].get("obligation_status") == "PASS"
+        ),
+        runtime_schema_valid=(
+            predecessors["PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE"].get("obligation_status") == "PASS"
+        ),
+        protected_input_independence=(
+            isinstance(input_projection_receipt, dict)
+            and input_projection_receipt.get("status") == "PASS"
+            and input_projection_receipt.get("complete_recurring_stream") is True
+            and input_projection_receipt.get("protected_input_independence") is True
+        ),
+        projected_demands_legal=(
+            isinstance(input_projection_receipt, dict)
+            and input_projection_receipt.get("status") == "PASS"
+            and input_projection_receipt.get("all_projected_demands_legal") is True
+        ),
+        complete_prefix_execution_exists=(
+            isinstance(execution_existence_receipt, dict)
+            and execution_existence_receipt.get("status") == "PASS"
+            and execution_existence_receipt.get("single_complete_execution") is True
+            and execution_existence_receipt.get("time_divergent") is True
+        ),
     )
-    payload = asdict(witness)
-    payload.update({
+    flags = asdict(witness)
+    payload = {
+        **flags,
         "full_taskset_fingerprint": full.to_dict()["fingerprint"],
         "prefix_taskset_fingerprint": prefix.to_dict()["fingerprint"],
         "cutoff_task_name": construction.cutoff_task_name,
         "protected_task_names": list(construction.protected_task_names),
         "tail_task_names": list(construction.tail_task_names),
-        "input_projection_schema_hash": sha256_object({"version": "protected-release-input-v1", "fields": list(ProtectedInputFields)}),
         "protected_observable_schema_hash": sha256_object(observable_schema()),
-        "runtime_schema_certificate_hash": runtime["certificate_hash"],
-        "projected_inputs": [asdict(item) for item in projected],
-        "demand_legality": legality,
-    })
-    ok = all(asdict(witness).values())
-    return {"status": "PASS" if ok else "FAIL", "route": None if ok else "UNRESOLVED",
-            "code": None if ok else "FULL_TO_PREFIX_SIMULATION_DOMAIN_FAILED", "witness": payload}
-
-
-ProtectedInputFields = ("job_key", "task_name", "release_time", "actual_demand", "hi_class")
+        "input_projection_receipt_hash": sha256_object(input_projection_receipt),
+        "execution_existence_receipt_hash": sha256_object(execution_existence_receipt),
+    }
+    if all(flags.values()):
+        return {"status": "PASS", "route": None, "code": None, "witness": payload}
+    if any(
+        predecessors[name].get("obligation_status") == "FAIL"
+        for name in required
+    ):
+        status, code = "FAIL", "FULL_TO_PREFIX_SIMULATION_DOMAIN_PREDECESSOR_FAILED"
+    else:
+        status, code = "UNRESOLVED", "FULL_TO_PREFIX_SIMULATION_DOMAIN_PROOF_MISSING"
+    return {"status": status, "route": "UNRESOLVED", "code": code,
+            "witness": {**payload, "missing_flags": [k for k, v in flags.items() if not v]}}

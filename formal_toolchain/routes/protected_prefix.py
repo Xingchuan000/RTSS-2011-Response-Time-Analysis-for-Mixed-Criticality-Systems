@@ -13,7 +13,7 @@ from .protected_prefix_checkers import (
     check_lo_saturation, check_prefix_rta, check_mathematical_conformance,
     check_selected_safety, check_runtime_schema_conformance, check_simulation_domain,
     check_weak_forward_simulation, check_hi_bad_prefix_reflection,
-    check_reference_hi_safety_from_protected_prefix,
+    check_reference_hi_safety_from_protected_prefix, check_prefix_model_conformance,
 )
 
 
@@ -65,6 +65,7 @@ class ProtectedPrefixRoute:
             "PROTECTED_PREFIX_PARAMETER_PRESERVATION": check_parameter_preservation,
             "PROTECTED_PREFIX_LO_SATURATION": check_lo_saturation,
             "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC": check_prefix_rta,
+            "PROTECTED_PREFIX_REFERENCE_MODEL_CONFORMANCE": check_prefix_model_conformance,
             "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE": check_mathematical_conformance,
             "SELECTED_REFERENCE_HI_SAFETY": check_selected_safety,
             "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE": check_runtime_schema_conformance,

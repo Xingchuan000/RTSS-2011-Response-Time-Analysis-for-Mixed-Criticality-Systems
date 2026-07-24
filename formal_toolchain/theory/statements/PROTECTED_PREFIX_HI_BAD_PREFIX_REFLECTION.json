@@ -14,7 +14,7 @@
   "proof_object": {
     "backend": "protected-prefix-bad-prefix-v1",
     "path": "proofs/PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION.proof.json",
-    "sha256": "1bcd256a17ff46105f407f1cc8d17a11fd68f0c1448ef259fb1f92cd5db0de3c"
+    "sha256": "c6cf86914260f736d0dab1f747cc24790b7bfa3139251f246ecc0c05623afffa"
   },
   "source_reference": "Protected observable HI bad-prefix reflection",
   "statement_hash": "b5b51eeab534affea80542b06f23bd4fac7378107c9b52d0718cc371ae12da40",

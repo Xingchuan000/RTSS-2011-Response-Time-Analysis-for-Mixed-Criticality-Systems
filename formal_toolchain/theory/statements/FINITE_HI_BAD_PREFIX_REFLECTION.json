@@ -25,7 +25,7 @@
   "proof_object": {
     "backend": "finite-hi-bad-prefix-z3-v1",
     "path": "proofs/FINITE_HI_BAD_PREFIX_REFLECTION.proof.json",
-    "sha256": "b50e3ade2ca905a2542aff86cf30f5e3b71ac5c0b459895fd7ab83a40ef2240d"
+    "sha256": "e84ab32a4807f0543b2a4f7314889ef29b04bb96af9c403cfadc6f8a87b13927"
   },
   "source_reference": "This framework theorem interface, finite HI bad-prefix reflection",
   "statement_hash": "4973d2d07c965ee6ffc216d774325533f600e2fa39a0392059f5fb65c9d3badc",

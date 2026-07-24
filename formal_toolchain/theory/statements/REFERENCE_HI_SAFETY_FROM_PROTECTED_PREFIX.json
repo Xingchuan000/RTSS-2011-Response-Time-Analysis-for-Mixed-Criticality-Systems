@@ -15,7 +15,7 @@
   "proof_object": {
     "backend": "protected-prefix-safety-v1",
     "path": "proofs/REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX.proof.json",
-    "sha256": "2877440436da55e1ff6a09248d07991648c3537c7292a6203771e936b23d38ed"
+    "sha256": "c376db341c0449c41673d420947178fd8dfbf1a884c1d207a38dcc5ee45ae370"
   },
   "source_reference": "Protected-prefix schedulability contradiction",
   "statement_hash": "7f450bae7bd31a638bb89b844f384cb99b8c687989126b34d761f1b6fd5f7f18",

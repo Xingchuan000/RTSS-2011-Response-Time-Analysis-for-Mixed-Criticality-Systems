@@ -1,10 +1,25 @@
 {
   "conclusion": "ALL_REFERENCE_HI_JOBS_MEET_DEADLINES",
+  "conclusion_scope": "ALL_REFERENCE_HI_JOBS_MEET_DEADLINES",
   "proof_by_contradiction": [
     "full reference HI miss",
     "reflected prefix HI miss",
     "prefix all-task schedulability contradiction"
   ],
+  "contradiction_steps": [
+    "full reference HI miss",
+    "reflected prefix HI miss",
+    "prefix all-task schedulability contradiction"
+  ],
+  "components": {
+    "prefix_model_conformance_hash": null,
+    "prefix_all_task_rta_hash": null,
+    "imported_theorem_receipt_hash": null,
+    "weak_simulation_hash": null,
+    "bad_prefix_reflection_hash": null
+  },
+  "full_taskset_fingerprint": null,
+  "prefix_taskset_fingerprint": null,
   "schema_version": "reference_hi_safety_from_protected_prefix_proof_v1",
   "theorem_assumption_hash": "6d5d0c74f29a8b15db2e852a910da20762df9763eb74143d8ab50a13a273b247",
   "theorem_id": "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",

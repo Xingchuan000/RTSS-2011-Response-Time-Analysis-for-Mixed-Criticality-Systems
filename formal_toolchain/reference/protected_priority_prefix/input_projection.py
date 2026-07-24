@@ -43,10 +43,11 @@ def project_protected_release_stream(
         for key in event.batch_jobs:
             if key[0] not in protected_task_names:
                 continue
+            if key not in full_initial_state.release_demand_overrides:
+                raise ValueError(f"PROTECTED_INPUT_DEMAND_NOT_FIXED:{key[0]}:{key[1]}")
             result.append(ProtectedReleaseInput(
                 job_key=key, task_name=key[0], release_time=int(event.time),
-                actual_demand=int(full_initial_state.release_demand_overrides.get(
-                    key, full_initial_state.ghost_future_budgets.get(key[0], 0))),
+                actual_demand=int(full_initial_state.release_demand_overrides[key]),
                 hi_class=("ABNORMAL" if key in full_initial_state.abnormal_hi_releases else None),
             ))
     return tuple(sorted(result, key=lambda item: (item.release_time, item.job_key[0], item.job_key[1])))
