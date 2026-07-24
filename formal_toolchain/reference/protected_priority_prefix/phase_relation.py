@@ -227,3 +227,64 @@ def relation_preserves_field(field_name: str) -> bool:
         or field_name in JOB_FIELDS
         or field_name in PENDING_RELEASE_FIELDS
     )
+
+
+def check_protected_pending_release_sensitivity(
+    baseline_full: Mapping[str, Any],
+    baseline_prefix: Mapping[str, Any],
+    phase: str,
+    k_full: int = 0,
+    k_prefix: int = 0,
+) -> dict[str, Any]:
+    """Verify that changing any pending release field breaks the relation.
+
+    Acceptance criteria (Commit 1):
+    Changing any protected pending release's demand, deadline, job key or
+    HI class must cause the relation to FAIL.  This test mutates each
+    pending release field in turn and confirms the relation fails.
+    """
+    sensitive_fields = ("actual_demand", "absolute_deadline", "job_key", "hi_class")
+    failing: list[dict[str, Any]] = []
+
+    import copy
+    for field in sensitive_fields:
+        mutated = copy.deepcopy(baseline_prefix)
+        pending = mutated.get("pending_releases", ())
+        if not pending:
+            continue
+        first_pending = dict(pending[0]) if isinstance(pending[0], Mapping) else {}
+        if field not in first_pending:
+            continue
+        original = first_pending[field]
+        try:
+            if field == "actual_demand":
+                first_pending[field] = (original if isinstance(original, int) else 99999) + 1
+            elif field == "absolute_deadline":
+                first_pending[field] = (original if isinstance(original, int) else 99999) + 1
+            elif field == "job_key":
+                orig_key = tuple(original) if isinstance(original, (tuple, list)) else ("mutated", -1)
+                first_pending[field] = (orig_key[0] + "_mut", orig_key[1])
+            elif field == "hi_class":
+                first_pending[field] = "DIFFERENT" if original != "DIFFERENT" else "ALSO_DIFFERENT"
+            mutated_pending = list(pending)
+            mutated_pending[0] = first_pending
+            mutated["pending_releases"] = tuple(mutated_pending)
+        except (TypeError, ValueError, IndexError):
+            continue
+
+        result = check_phase_relation(baseline_full, mutated, phase, k_full, k_prefix)
+        if result.get("status") == "FAIL":
+            failing.append({"field": field, "original": str(original), "failed_correctly": True})
+        else:
+            failing.append({"field": field, "original": str(original), "failed_correctly": False})
+
+    all_sensitive = len(failing) > 0 and all(f.get("failed_correctly") for f in failing)
+    return {
+        "schema_version": "phase_relation_sensitivity_v1",
+        "phase": phase,
+        "tested_fields": sensitive_fields,
+        "sensitivity_results": failing,
+        "all_fields_sensitive": all_sensitive,
+        "status": "PASS" if all_sensitive else "FAIL",
+        "code": None if all_sensitive else "PHASE_RELATION_NOT_SENSITIVE_TO_PENDING_RELEASE_CHANGES",
+    }

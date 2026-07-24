@@ -25,6 +25,10 @@ from .executable_transition_compiler import (
 from .transition_ir_validation import (
     validate_compiled_ir, validate_all_compiled_ir,
 )
+from .relational_state_ir import (
+    ProtectedRelationalStateIR, ProtectedJobIR, PendingReleaseIR,
+    SetExpr, rel_pp_close as rel_pp_close_smt, rel_pp_phase,
+)
 
 __all__ = [
     "ProtectedJobObservable", "ProtectedStateObservable", "ProtectedReleaseInput",
@@ -34,4 +38,6 @@ __all__ = [
     "CompiledTransitionIR", "BoolExpr", "IntExpr", "Assignment", "GeneratedEventRule",
     "compile_all_transitions", "compiled_ir_map", "compiled_ir_for_case",
     "validate_compiled_ir", "validate_all_compiled_ir",
+    "ProtectedRelationalStateIR", "ProtectedJobIR", "PendingReleaseIR",
+    "SetExpr", "rel_pp_close_smt", "rel_pp_phase",
 ]

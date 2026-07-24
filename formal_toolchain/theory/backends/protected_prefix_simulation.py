@@ -101,7 +101,7 @@ class ProtectedPrefixSimulationBackend:
         # not turn self-asserted JSON receipts into a theorem PASS.
         return {
             "status": "UNRESOLVED",
-            "code": "PROTECTED_PREFIX_SIMULATION_PROOF_KERNEL_NOT_IMPLEMENTED",
+            "code": "PROTECTED_PREFIX_SIMULATION_SOURCE_BOUND_RECEIPTS_REQUIRED",
             "reason": (
                 "Static PASS fields and receipt-looking hashes do not prove the "
                 "quantified protected-prefix theorem."

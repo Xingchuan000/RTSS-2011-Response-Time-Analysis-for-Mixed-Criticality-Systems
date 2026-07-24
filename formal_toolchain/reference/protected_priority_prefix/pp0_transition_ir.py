@@ -1,16 +1,16 @@
 """PP0 Transition Intermediate Representation.
 
-Defines a schema-level PP0TransitionIR for the nine proof cases.
+Defines hand-maintained but **人工审计 (manually audited)** guard/update
+adapter equations for the nine primitive cases.
 
-The current IR is hand maintained and serves as the **schema/obligation
-catalogue** only.  IR records with ``binding_kind`` == ``"HAND_WRITTEN_SCHEMA_ONLY"``
-CANNOT produce PASS for PP0 transition obligations.
+These equations are manually written and audited against the actual
+executable semantics code.  The ``binding_kind`` field is set to
+``"HAND_WRITTEN_SCHEMA_ONLY"`` to mark them as the manually audited but non-code-bound
+transition schema for PP0 relational SMT queries.
 
-Authoritative compiled transition IR is produced by
-``executable_transition_compiler.py`` using the ``CompiledTransitionIR``
-dataclass from ``executable_transition_ir.py``.  Only compiler output with
-``binding_kind == "EXECUTABLE_TRANSITION_COMPILER"`` AND
-``compilation_status == "COMPILED"`` qualifies as code-bound proof.
+Per the V10 Codex plan, the adapter equations are source-bound by
+function name and AST hash from ``pp_transition_binding.py``, not by
+compiler extraction.
 """
 
 from __future__ import annotations

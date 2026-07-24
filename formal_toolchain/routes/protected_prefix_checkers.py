@@ -26,6 +26,19 @@ def _route_state(kwargs: Mapping[str, Any]):
     return getattr(ctx, "fresh_state", None) or kwargs.get("fresh_state")
 
 
+def _unwrap_proof_payload(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Unwrap route/artifact envelopes to the theorem receipt payload."""
+    current: Any = value or {}
+    for _ in range(3):
+        if not isinstance(current, Mapping):
+            return {}
+        nested = current.get("witness")
+        if not isinstance(nested, Mapping):
+            break
+        current = nested
+    return dict(current) if isinstance(current, Mapping) else {}
+
+
 def _require_pass_predecessors(
     predecessors: Mapping[str, Any],
     required: set[str],
@@ -69,8 +82,21 @@ def check_runtime_schema_conformance(**kwargs: Any) -> dict[str, Any]:
         pp0_cert.get("status") == "PASS"
         and validation.get("status") == "PASS"
         and checked.get("status") == "PASS"
-        and all(value is True for key, value in cert.get("pp0_witness", {}).items()
-                if key != "source_query_ids")
+        and all(
+            cert.get("pp0_witness", {}).get(key) is True
+            for key in (
+                "single_processor_preemptive_work_conserving_fp",
+                "no_blocking_self_suspension_or_nonpreemptive_segments",
+                "fixed_processor_supply_and_mode_independent_priority",
+                "release_fixed_demands",
+                "abnormal_classification_at_arrival",
+                "abnormal_hi_only_switch_trigger",
+                "quiescent_idle_only_recovery",
+                "lo_version_selected_at_release",
+                "deadline_observe_only",
+                "protected_input_independence",
+            )
+        )
     ):
         return _finish("PASS", witness={
             "status": "PASS",
@@ -113,14 +139,68 @@ def check_simulation_domain(**kwargs: Any) -> dict[str, Any]:
     )
 
 
+def check_initial_relation(**kwargs: Any) -> dict[str, Any]:
+    """Build the base relation from route state and predecessor artifacts."""
+    predecessors = kwargs.get("verified_predecessors", {})
+    blocked = _require_pass_predecessors(
+        predecessors,
+        {"PROTECTED_PRIORITY_PREFIX_PARTITION", "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE"},
+    )
+    if blocked is not None:
+        return blocked
+    state = _route_state(kwargs)
+    if state is None or state.prepared_route is None or state.analysis_taskset is None:
+        return _finish("UNRESOLVED", "PROTECTED_PREFIX_TASKSET_MISSING")
+    from formal_toolchain.reference.executable_semantics import initial_reference_state
+    from formal_toolchain.reference.protected_priority_prefix.base_case import (
+        prove_standard_initial_relation,
+    )
+    full_initial = initial_reference_state(state.full_reference_taskset)
+    prefix_initial = initial_reference_state(state.analysis_taskset)
+    result = prove_standard_initial_relation(
+        full_initial,
+        prefix_initial,
+        _unwrap_proof_payload(predecessors["PROTECTED_PRIORITY_PREFIX_PARTITION"]),
+        _unwrap_proof_payload(predecessors["PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE"]),
+    )
+    return _finish(
+        "PASS" if result.get("status") == "PASS" else "UNRESOLVED",
+        result.get("code"), result,
+    )
+
+
 def check_weak_forward_simulation(**kwargs: Any) -> dict[str, Any]:
     predecessors = kwargs.get("verified_predecessors", {})
     blocked = _require_pass_predecessors(
         predecessors,
-        {"FULL_TO_PREFIX_SIMULATION_DOMAIN"},
+        {
+            "FULL_TO_PREFIX_SIMULATION_DOMAIN",
+            "PROTECTED_PREFIX_INITIAL_RELATION",
+            "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS",
+            "PROTECTED_MACRO_STEP_PRESERVATION",
+            "PROTECTED_INPUT_STREAM_PROJECTION",
+            "PROTECTED_INPUT_DEMAND_RECEPTIVENESS",
+        },
     )
     if blocked is not None:
         return blocked
+
+    from formal_toolchain.reference.protected_priority_prefix.weak_simulation_kernel import (
+        prove_weak_forward_simulation,
+    )
+    kernel = prove_weak_forward_simulation(
+        macro_step_receipt=_unwrap_proof_payload(
+            predecessors.get("PROTECTED_MACRO_STEP_PRESERVATION")
+        ),
+        execution_existence_receipt=_unwrap_proof_payload(
+            predecessors.get("PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS")
+        ),
+        base_case_receipt=_unwrap_proof_payload(
+            predecessors.get("PROTECTED_PREFIX_INITIAL_RELATION")
+        ),
+    )
+    if kernel.get("status") == "PASS":
+        return _finish("PASS", witness=kernel)
     return _finish(
         "UNRESOLVED",
         "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_PARAMETRIC_PROOF_MISSING",
@@ -130,9 +210,10 @@ def check_weak_forward_simulation(**kwargs: Any) -> dict[str, Any]:
                 "execution, forall closed boundaries"
             ),
             "reason": (
-                "Named lemma receipts and non-empty protected-set checks are not a "
-                "proof of canonical macro-step preservation."
+                "Weak forward simulation requires: base case, single-witness, "
+                "L1-L8 macro-step induction, and the forall-exists-forall quantifier order."
             ),
+            "kernel": kernel,
         },
     )
 
@@ -145,15 +226,36 @@ def check_hi_bad_prefix_reflection(**kwargs: Any) -> dict[str, Any]:
     )
     if blocked is not None:
         return blocked
+
+    from formal_toolchain.reference.protected_priority_prefix.bad_prefix_reflection import (
+        derive_hi_bad_prefix_reflection,
+    )
+    result = derive_hi_bad_prefix_reflection(
+        simulation_receipt=(
+            kwargs.get("simulation_receipt")
+            or _unwrap_proof_payload(
+                predecessors.get("PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED")
+            )
+        ),
+        observable_schema_receipt=_unwrap_proof_payload(
+            predecessors.get("PROTECTED_PREFIX_INITIAL_RELATION")
+        ),
+        deadline_batch_receipt=_unwrap_proof_payload(
+            predecessors.get("PPP_L5_DEADLINE_BATCH_FOLD")
+        ),
+    )
+    if result.get("status") == "PASS":
+        return _finish("PASS", witness=result)
     return _finish(
         "UNRESOLVED",
         "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION_PROOF_MISSING",
         {
             "reason": (
-                "Equality of protected job key, deadline, fixed demand, service and "
-                "miss-ledger membership at the deadline must be derived from the "
-                "simulation relation, not populated as constant True fields."
-            )
+                "Each of the six reflection fields (job key, deadline, demand, "
+                "service, completion, miss-ledger) must be derived from the "
+                "simulation relation, deadline batch, and observable schema."
+            ),
+            "result": result,
         },
     )
 
@@ -167,14 +269,30 @@ def check_reference_hi_safety_from_protected_prefix(**kwargs: Any) -> dict[str, 
     blocked = _require_pass_predecessors(predecessors, required)
     if blocked is not None:
         return blocked
+
+    from formal_toolchain.reference.protected_priority_prefix.prefix_safety_lift import (
+        prove_reference_hi_safety_from_prefix,
+    )
+    result = prove_reference_hi_safety_from_prefix(
+        bad_prefix_reflection_receipt=_unwrap_proof_payload(
+            predecessors.get("PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION")
+        ),
+        mathematical_conformance_receipt=_unwrap_proof_payload(
+            predecessors.get("PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE")
+        ),
+    )
+    if result.get("status") == "PASS":
+        return _finish("PASS", witness=result)
     return _finish(
         "UNRESOLVED",
         "REFERENCE_HI_SAFETY_FROM_PREFIX_THEOREM_APPLICATION_MISSING",
         {
             "reason": (
-                "The contradiction theorem may close only after a genuine bad-prefix "
-                "reflection theorem and prefix all-task schedulability theorem are verified."
-            )
+                "By contradiction: full HI miss => PP6 bad-prefix reflection => "
+                "prefix HI miss => prefix all-task RTA excludes all misses => "
+                "contradiction => full-reference HI safety."
+            ),
+            "result": result,
         },
     )
 
@@ -390,7 +508,6 @@ def check_prefix_same_time_closure_terminates(**kwargs: Any) -> dict[str, Any]:
     result = prove_same_time_closure_terminates(
         runtime_schema_receipt=predecessors["PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE"],
         prefix_extension_receipt=predecessors["PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION"],
-        proof_kernel_receipt=None,
     )
     return _finish(
         "PASS" if result.get("status") == "PASS" else "UNRESOLVED",
@@ -427,7 +544,6 @@ def check_prefix_canonical_successor_total(**kwargs: Any) -> dict[str, Any]:
         prefix_extension_receipt=predecessors["PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION"],
         input_projection_receipt=predecessors["PROTECTED_INPUT_STREAM_PROJECTION"],
         demand_receptiveness_receipt=predecessors["PROTECTED_INPUT_DEMAND_RECEPTIVENESS"],
-        proof_kernel_receipt=None,
     )
     return _finish(
         "PASS" if total.get("status") == "PASS" else "UNRESOLVED",
@@ -448,7 +564,6 @@ def check_prefix_time_divergence(**kwargs: Any) -> dict[str, Any]:
     )
     result = prove_time_divergence(
         canonical_successor_receipt=predecessors["PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL"],
-        proof_kernel_receipt=None,
     )
     return _finish(
         "PASS" if result.get("status") == "PASS" else "UNRESOLVED",
@@ -478,7 +593,6 @@ def check_prefix_idle_jump_stutter_expansion(**kwargs: Any) -> dict[str, Any]:
     result = prove_idle_jump_stutter_expansion(
         execution=kwargs.get("prefix_execution") or kwargs.get("finite_execution_diagnostic"),
         observable_projector=kwargs.get("protected_observable_projector"),
-        proof_kernel_receipt=None,
     )
     return _finish(
         "PASS" if result.get("status") == "PASS" else "UNRESOLVED",
@@ -512,9 +626,6 @@ def check_prefix_complete_execution_exists(**kwargs: Any) -> dict[str, Any]:
         input_projection_receipt=predecessors["PROTECTED_INPUT_STREAM_PROJECTION"],
         demand_receptiveness_receipt=predecessors["PROTECTED_INPUT_DEMAND_RECEPTIVENESS"],
         prefix_taskset=state.analysis_taskset,
-        prefix_initial_state=kwargs.get("prefix_initial_state"),
-        single_witness_receipt=None,
-        proof_kernel_receipt=None,
         idle_jump_expansion_receipt=predecessors["PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION"],
     )
     if result.get("status") == "PASS":
@@ -523,6 +634,23 @@ def check_prefix_complete_execution_exists(**kwargs: Any) -> dict[str, Any]:
         )
         return _finish("PASS", witness=result)
     return _finish("UNRESOLVED", result.get("code"), result)
+
+
+def check_registered_parametric_lemma(**kwargs: Any) -> dict[str, Any]:
+    """Fail-closed adapter for explicit PPP L1--L7 registry obligations.
+
+    The route must expose these obligations even when a source-bound
+    relational backend is unavailable.  It deliberately does not consume
+    caller-supplied proof receipts or manufacture a PASS result.
+    """
+    predecessors = kwargs.get("verified_predecessors", {})
+    if any(value.get("obligation_status") != "PASS" for value in predecessors.values()):
+        return _finish("UNRESOLVED", "PREDECESSOR_NOT_PASS")
+    return _finish(
+        "UNRESOLVED",
+        "PPP_PARAMETRIC_RELATIONAL_BACKEND_UNRESOLVED",
+        {"predecessors_consumed": sorted(predecessors)},
+    )
 
 
 def check_partition(**kwargs: Any) -> dict[str, Any]:

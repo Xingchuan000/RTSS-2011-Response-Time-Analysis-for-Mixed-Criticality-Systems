@@ -1,9 +1,3 @@
-"""PP0 runtime schema checker — validates primitive transition equations.
-
-Fresh regenerates the PP0 Transition IR and SMT2 queries for every check;
-never trusts candidate-provided SMT or solver results.
-"""
-
 from __future__ import annotations
 
 from typing import Any, Mapping
@@ -12,15 +6,9 @@ from formal_toolchain.core.hashing import sha256_object
 
 
 def _solve_code_bound_smt2(smt2: str) -> tuple[str, str | None]:
-    """Run the freshly generated code-bound query through Z3.
-
-    The checker deliberately parses the generated SMT2 text instead of
-    trusting a receipt supplied by a caller.  A query is a PP0 proof only
-    when Z3 returns UNSAT; parser/solver failures remain unresolved.
-    """
     try:
         import z3
-    except Exception as exc:  # pragma: no cover - environment dependent
+    except Exception as exc:
         return "UNRESOLVED", f"PP0_Z3_UNAVAILABLE:{type(exc).__name__}:{exc}"
     try:
         assertions = z3.parse_smt2_string(smt2)
@@ -35,275 +23,86 @@ def _solve_code_bound_smt2(smt2: str) -> tuple[str, str | None]:
         return "SAT", "PP0_NEGATED_OBLIGATION_SATISFIABLE"
     return "UNKNOWN", "PP0_Z3_RETURNED_UNKNOWN"
 
-from .transition_schema import (
-    CANONICAL_CASES,
-    canonical_case_ids,
-    transition_obligations,
+
+from .pp0_smt_encoder import (
+    generate_code_bound_queries,
+    is_trivial_query_source,
+    RELATIONAL_PP0_RECEIPTS,
 )
-from .pp0_transition_ir import build_pp0_transition_ir, ir_for_case
-from .pp0_queries import generate_all_queries, is_trivial_query_source
 
 
-#  Obligation × Case applicability table.  A True entry means the obligation
-#  applies to the case; False means it is structurally inapplicable (trivial).
-#  This table is the single source of truth for triviality — no text inference.
-CASE_OBLIGATION_APPLICABILITY: dict[str, dict[str, bool]] = {
-    "REM_COMPLETION": {
-        "FIXED_DEMAND_NOT_MODIFIED": True,
-        "PROTECTED_KEY_NOT_MODIFIED": True,
-        "MODE_ONLY_NOT_MODIFY_PROTECTED": False,
-        "TAIL_NOT_MODIFY_PROTECTED_OBSERVABLE": False,
-        "DDL_READ_ONLY_DEADLINE_COMPLETION": False,
-        "COMPLETION_GUARD_EQUIV_SERVICE_GE_DEMAND": True,
-        "DISPATCH_IS_FIXED_PRIORITY_TOTAL_SELECTION": False,
-        "SERVICE_UNIT_SINGLE_DISCRETE_RATE": False,
-        "ARRIVAL_BATCH_PROTECTED_INDEPENDENT_OF_TAIL": False,
-        "SAME_TIME_CLOSURE_FIXED_FINITE_ORDER": True,
-    },
-    "RECOVERY": {
-        "FIXED_DEMAND_NOT_MODIFIED": True,
-        "PROTECTED_KEY_NOT_MODIFIED": True,
-        "MODE_ONLY_NOT_MODIFY_PROTECTED": True,
-        "TAIL_NOT_MODIFY_PROTECTED_OBSERVABLE": False,
-        "DDL_READ_ONLY_DEADLINE_COMPLETION": False,
-        "COMPLETION_GUARD_EQUIV_SERVICE_GE_DEMAND": False,
-        "DISPATCH_IS_FIXED_PRIORITY_TOTAL_SELECTION": False,
-        "SERVICE_UNIT_SINGLE_DISCRETE_RATE": False,
-        "ARRIVAL_BATCH_PROTECTED_INDEPENDENT_OF_TAIL": False,
-        "SAME_TIME_CLOSURE_FIXED_FINITE_ORDER": True,
-    },
-    "DDL_OBSERVE": {
-        "FIXED_DEMAND_NOT_MODIFIED": True,
-        "PROTECTED_KEY_NOT_MODIFIED": True,
-        "MODE_ONLY_NOT_MODIFY_PROTECTED": False,
-        "TAIL_NOT_MODIFY_PROTECTED_OBSERVABLE": False,
-        "DDL_READ_ONLY_DEADLINE_COMPLETION": True,
-        "COMPLETION_GUARD_EQUIV_SERVICE_GE_DEMAND": False,
-        "DISPATCH_IS_FIXED_PRIORITY_TOTAL_SELECTION": False,
-        "SERVICE_UNIT_SINGLE_DISCRETE_RATE": False,
-        "ARRIVAL_BATCH_PROTECTED_INDEPENDENT_OF_TAIL": False,
-        "SAME_TIME_CLOSURE_FIXED_FINITE_ORDER": True,
-    },
-    "ARRIVAL_BATCH_OPEN": {
-        "FIXED_DEMAND_NOT_MODIFIED": True,
-        "PROTECTED_KEY_NOT_MODIFIED": True,
-        "MODE_ONLY_NOT_MODIFY_PROTECTED": False,
-        "TAIL_NOT_MODIFY_PROTECTED_OBSERVABLE": False,
-        "DDL_READ_ONLY_DEADLINE_COMPLETION": False,
-        "COMPLETION_GUARD_EQUIV_SERVICE_GE_DEMAND": False,
-        "DISPATCH_IS_FIXED_PRIORITY_TOTAL_SELECTION": False,
-        "SERVICE_UNIT_SINGLE_DISCRETE_RATE": False,
-        "ARRIVAL_BATCH_PROTECTED_INDEPENDENT_OF_TAIL": True,
-        "SAME_TIME_CLOSURE_FIXED_FINITE_ORDER": True,
-    },
-    "MODE_SWITCH": {
-        "FIXED_DEMAND_NOT_MODIFIED": True,
-        "PROTECTED_KEY_NOT_MODIFIED": True,
-        "MODE_ONLY_NOT_MODIFY_PROTECTED": True,
-        "TAIL_NOT_MODIFY_PROTECTED_OBSERVABLE": False,
-        "DDL_READ_ONLY_DEADLINE_COMPLETION": False,
-        "COMPLETION_GUARD_EQUIV_SERVICE_GE_DEMAND": False,
-        "DISPATCH_IS_FIXED_PRIORITY_TOTAL_SELECTION": False,
-        "SERVICE_UNIT_SINGLE_DISCRETE_RATE": False,
-        "ARRIVAL_BATCH_PROTECTED_INDEPENDENT_OF_TAIL": False,
-        "SAME_TIME_CLOSURE_FIXED_FINITE_ORDER": True,
-    },
-    "RELEASE": {
-        "FIXED_DEMAND_NOT_MODIFIED": False,
-        "PROTECTED_KEY_NOT_MODIFIED": True,
-        "MODE_ONLY_NOT_MODIFY_PROTECTED": False,
-        "TAIL_NOT_MODIFY_PROTECTED_OBSERVABLE": False,
-        "DDL_READ_ONLY_DEADLINE_COMPLETION": False,
-        "COMPLETION_GUARD_EQUIV_SERVICE_GE_DEMAND": False,
-        "DISPATCH_IS_FIXED_PRIORITY_TOTAL_SELECTION": False,
-        "SERVICE_UNIT_SINGLE_DISCRETE_RATE": False,
-        "ARRIVAL_BATCH_PROTECTED_INDEPENDENT_OF_TAIL": False,
-        "SAME_TIME_CLOSURE_FIXED_FINITE_ORDER": True,
-    },
-    "FINAL_DISPATCH": {
-        "FIXED_DEMAND_NOT_MODIFIED": True,
-        "PROTECTED_KEY_NOT_MODIFIED": True,
-        "MODE_ONLY_NOT_MODIFY_PROTECTED": False,
-        "TAIL_NOT_MODIFY_PROTECTED_OBSERVABLE": False,
-        "DDL_READ_ONLY_DEADLINE_COMPLETION": False,
-        "COMPLETION_GUARD_EQUIV_SERVICE_GE_DEMAND": False,
-        "DISPATCH_IS_FIXED_PRIORITY_TOTAL_SELECTION": True,
-        "SERVICE_UNIT_SINGLE_DISCRETE_RATE": False,
-        "ARRIVAL_BATCH_PROTECTED_INDEPENDENT_OF_TAIL": False,
-        "SAME_TIME_CLOSURE_FIXED_FINITE_ORDER": True,
-    },
-    "SERVICE_UNIT": {
-        "FIXED_DEMAND_NOT_MODIFIED": True,
-        "PROTECTED_KEY_NOT_MODIFIED": True,
-        "MODE_ONLY_NOT_MODIFY_PROTECTED": False,
-        "TAIL_NOT_MODIFY_PROTECTED_OBSERVABLE": False,
-        "DDL_READ_ONLY_DEADLINE_COMPLETION": False,
-        "COMPLETION_GUARD_EQUIV_SERVICE_GE_DEMAND": False,
-        "DISPATCH_IS_FIXED_PRIORITY_TOTAL_SELECTION": False,
-        "SERVICE_UNIT_SINGLE_DISCRETE_RATE": True,
-        "ARRIVAL_BATCH_PROTECTED_INDEPENDENT_OF_TAIL": False,
-        "SAME_TIME_CLOSURE_FIXED_FINITE_ORDER": True,
-    },
-    "TAIL_ONLY_SERVICE": {
-        "FIXED_DEMAND_NOT_MODIFIED": True,
-        "PROTECTED_KEY_NOT_MODIFIED": True,
-        "MODE_ONLY_NOT_MODIFY_PROTECTED": False,
-        "TAIL_NOT_MODIFY_PROTECTED_OBSERVABLE": True,
-        "DDL_READ_ONLY_DEADLINE_COMPLETION": False,
-        "COMPLETION_GUARD_EQUIV_SERVICE_GE_DEMAND": False,
-        "DISPATCH_IS_FIXED_PRIORITY_TOTAL_SELECTION": False,
-        "SERVICE_UNIT_SINGLE_DISCRETE_RATE": False,
-        "ARRIVAL_BATCH_PROTECTED_INDEPENDENT_OF_TAIL": False,
-        "SAME_TIME_CLOSURE_FIXED_FINITE_ORDER": True,
-    },
-}
-
-
-def _is_case_obligation_trivial(case_id: str, obligation_key: str) -> bool:
-    """Determine triviality from the applicability table, not text content."""
-    case_applicability = CASE_OBLIGATION_APPLICABILITY.get(case_id, {})
-    return case_applicability.get(obligation_key, True) is False
+def _receipt_applicable(smt2: str) -> bool:
+    return "(declare-const" in smt2 and "(assert" in smt2 and "(check-sat)" in smt2
 
 
 def check_pp0_transition_queries() -> dict[str, Any]:
-    """Fresh generate IR, SMT queries, and return a validation report.
+    queries = generate_code_bound_queries()
 
-    Never trusts candidate-provided SMT or solver results.
-    Triviality is determined by CASE_OBLIGATION_APPLICABILITY, not text comments.
-
-    If compiled IR (from executable_transition_compiler) is available and
-    COMPILED, the results include source_function_ast_hash and compiled_ir_hash
-    in the obligation results, per the fresh verifier output format.
-    """
-    ir_list = build_pp0_transition_ir()
-    ir_map = {ir.case_id: ir for ir in ir_list}
-    queries = generate_all_queries()
-    obligations = transition_obligations()
-
-    try:
-        from .executable_transition_compiler import compiled_ir_map as _compiled_ir_map
-        compiled_map = _compiled_ir_map()
-    except (ImportError, ValueError, TypeError):
-        compiled_map = {}
-
-    case_results: list[dict[str, Any]] = []
-    all_resolved = True
+    receipt_results: list[dict[str, Any]] = []
     all_pass = True
 
-    for case in CANONICAL_CASES:
-        ir = ir_map.get(case.case_id)
-        compiled = compiled_map.get(case.case_id)
-        case_entry = {
-            "case_id": case.case_id,
-            "guard_fields": list(case.guard_fields),
-            "read_fields": list(case.read_fields),
-            "write_fields": list(case.write_fields),
-            "protected_frame_fields": list(case.protected_frame_fields),
-            "time_delta": case.time_delta,
-            "ir_hash": ir.ir_hash if ir else None,
-            "source_function": ir.source_function if ir else None,
-            "source_binding_hash": ir.source_binding if ir else None,
-            "compiled_ir_hash": compiled.ir_hash() if compiled and compiled.is_compiled() else None,
-            "compiled_source_function_ast_hash": (
-                compiled.source_function_ast_hash
-                if compiled and compiled.is_compiled() else None
-            ),
-            "compilation_status": compiled.compilation_status if compiled else "NOT_COMPILED",
-            "obligation_results": {},
-        }
+    for receipt_info in RELATIONAL_PP0_RECEIPTS:
+        receipt_id = receipt_info["receipt_id"]
+        case_id = receipt_info["case_id"]
+        query_info = queries.get(receipt_id, {})
+        smt2 = query_info.get("smt2_source", "")
+        code_bound = query_info.get("transition_equations_bound") is True
+        applicable = _receipt_applicable(smt2)
 
-        for obligation_key in obligations:
-            query_id = f"{case.case_id}_{obligation_key}"
-            query_info = queries.get(query_id, {})
-            smt2 = query_info.get("smt2_source", "")
-
-            is_trivial = _is_case_obligation_trivial(case.case_id, obligation_key)
-            code_bound = query_info.get("transition_equations_bound") is True
-            compiled_available = compiled is not None and compiled.is_compiled()
-
-            if is_trivial:
+        if not applicable:
+            status = "UNRESOLVED"
+            detail = "SMT2 query missing domain, assertions, or check-sat"
+        elif not code_bound:
+            status = "UNRESOLVED"
+            detail = "Query contains free variables without code-bound transition equations"
+        else:
+            solver_result, solver_error = _solve_code_bound_smt2(smt2)
+            if solver_result == "UNSAT":
                 status = "PASS"
-                detail = "trivial — obligation not applicable to this case"
-            elif not code_bound:
-                status = "UNRESOLVED"
-                detail = (
-                    "The query contains free pre/post variables but no equations "
-                    "binding them to the executable transition relation.  Solver "
-                    "UNSAT would therefore not prove PP0 conformance."
-                )
-                if compiled_available:
-                    detail += (
-                        f" Compiled IR for case {case.case_id} exists but SMT query "
-                        f"generation did not produce code-bound output."
-                    )
-                all_resolved = False
+                detail = "Z3 proved relational PP0 obligation UNSAT"
             else:
-                solver_result, solver_error = _solve_code_bound_smt2(smt2)
-                if solver_result == "UNSAT":
-                    status = "PASS"
-                    detail = "Z3 proved the negated executable-transition obligation UNSAT."
-                else:
-                    status = "FAIL" if solver_result in {"SAT", "UNKNOWN"} else "UNRESOLVED"
-                    detail = solver_error or "PP0 solver did not prove UNSAT."
-                    all_resolved = False if status == "UNRESOLVED" else all_resolved
+                status = "FAIL" if solver_result in {"SAT", "UNKNOWN"} else "UNRESOLVED"
+                detail = solver_error or "PP0 solver did not prove UNSAT"
 
-            case_entry["obligation_results"][obligation_key] = {
-                "query_id": query_id,
-                "smt2_hash": query_info.get("smt2_hash"),
-                "ir_hash": query_info.get("ir_hash"),
-                "compiled_ir_hash": case_entry.get("compiled_ir_hash"),
-                "source_function_ast_hash": (
-                    case_entry.get("compiled_source_function_ast_hash")
-                    if compiled_available else query_info.get("source_binding_hash")
-                ),
-                "solver_result": (
-                    "trivial" if is_trivial else (
-                        solver_result if code_bound else None
-                    )
-                ),
-                "transition_equations_bound": code_bound,
-                "proof_scope": query_info.get("proof_scope"),
-                "status": status,
-                "detail": detail,
-            }
-            if status != "PASS":
-                all_pass = False
+        if status != "PASS":
+            all_pass = False
 
-        case_results.append(case_entry)
+        receipt_results.append({
+            "receipt_id": receipt_id,
+            "case_id": case_id,
+            "smt2_hash": query_info.get("smt2_hash"),
+            "ir_hash": query_info.get("ir_hash"),
+            "source_function": query_info.get("source_function"),
+            "source_ast_hash": query_info.get("source_ast_hash"),
+            "relation_schema_hash": query_info.get("relation_schema_hash"),
+            "solver_result": solver_result if code_bound and applicable else None,
+            "transition_equations_bound": code_bound,
+            "proof_scope": query_info.get("proof_scope"),
+            "status": status,
+            "detail": detail,
+        })
+
+    pass_count = sum(1 for r in receipt_results if r["status"] == "PASS")
+    unresolved_count = sum(1 for r in receipt_results if r["status"] != "PASS" and r["status"] != "FAIL")
+    fail_count = sum(1 for r in receipt_results if r["status"] == "FAIL")
+    code_bound_query_count = sum(
+        1 for r in receipt_results if r["transition_equations_bound"] is True
+    )
 
     payload = {
-        "schema_version": "pp0_transition_schema_v2",
-        "canonical_cases": canonical_case_ids(),
-        "obligations": {k: v for k, v in obligations.items()},
-        "case_results": case_results,
-        "query_count": len(queries),
-        "pass_count": sum(
-            1 for cr in case_results
-            for orv in cr["obligation_results"].values()
-            if orv["status"] == "PASS"
-        ),
-        "code_bound_query_count": sum(
-            1 for info in queries.values()
-            if info.get("transition_equations_bound") is True
-        ),
-        "unresolved_count": sum(
-            1 for cr in case_results
-            for orv in cr["obligation_results"].values()
-            if orv["status"] == "UNRESOLVED"
-        ),
+        "schema_version": "pp0_relational_schema_v1",
+        "receipt_count": len(receipt_results),
+        "pass_count": pass_count,
+        "unresolved_count": unresolved_count,
+        "fail_count": fail_count,
+        "code_bound_query_count": code_bound_query_count,
+        "receipt_results": receipt_results,
     }
 
-    if all_pass:
-        status = "PASS"
-        code = None
-    elif all_resolved:
-        status = "FAIL"
-        code = "PP0_TRANSITION_QUERY_FAILED"
-    else:
-        status = "UNRESOLVED"
-        code = "PP0_TRANSITION_RELATION_NOT_BOUND" if not any(
-            info.get("transition_equations_bound") is True for info in queries.values()
-        ) else "PP0_TRANSITION_SOLVER_UNAVAILABLE"
+    status = "PASS" if all_pass else ("FAIL" if fail_count > 0 else "UNRESOLVED")
+    code = None if status == "PASS" else (
+        "PP0_RELATIONAL_QUERY_FAILED" if fail_count > 0 else "PP0_RELATIONAL_NOT_BOUND"
+    )
 
     return {
         **payload,
@@ -312,10 +111,7 @@ def check_pp0_transition_queries() -> dict[str, Any]:
         "certificate_hash": sha256_object(payload),
         "failure": None if status == "PASS" else {
             "code": code or "PP0_SCHEMA_UNRESOLVED",
-            "reason": (
-                "At least one primitive transition query has not been verified "
-                "by an SMT solver.  AST/source-shape checks are insufficient."
-            ),
+            "reason": "At least one relational PP0 receipt has not been verified by Z3",
         },
     }
 

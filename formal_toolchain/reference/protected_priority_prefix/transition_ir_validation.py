@@ -3,6 +3,9 @@
 Fresh recompiles every function and compares the compiled IR against
 the expected schema.  No hand-written equation can trigger a PASS;
 only compiler output that compiles successfully is accepted.
+
+Also validates the PP transition binding (BoundTransitionCase) from
+pp_transition_binding.py for the 9 canonical cases.
 """
 
 from __future__ import annotations
@@ -59,8 +62,38 @@ def validate_compiled_ir(ir: CompiledTransitionIR) -> dict[str, Any]:
     }
 
 
+def validate_bound_transition_case(case_id: str) -> dict[str, Any]:
+    """Validate that a BoundTransitionCase exists and is CODE_BOUND."""
+    try:
+        from .pp_transition_binding import bound_transition_for_case
+        case = bound_transition_for_case(case_id)
+    except (ImportError, ValueError, TypeError, AttributeError):
+        return {
+            "case_id": case_id,
+            "status": "UNRESOLVED",
+            "code": "PP_TRANSITION_BINDING_MODULE_UNAVAILABLE",
+        }
+
+    if case is None:
+        return {
+            "case_id": case_id,
+            "status": "UNRESOLVED",
+            "code": "PP_TRANSITION_BINDING_CASE_MISSING",
+        }
+
+    ok = case.binding_status == "CODE_BOUND" and bool(case.source_ast_hash)
+    return {
+        "case_id": case_id,
+        "source_function": case.source_function,
+        "source_ast_hash": case.source_ast_hash,
+        "binding_status": case.binding_status,
+        "status": "PASS" if ok else "UNRESOLVED",
+        "code": None if ok else "PP_TRANSITION_BINDING_NOT_CODE_BOUND",
+    }
+
+
 def validate_all_compiled_ir() -> dict[str, Any]:
-    """Validate all compiled transition IR records.
+    """Validate all compiled transition IR records and bound transition cases.
 
     Returns a report with per-case validation results.
     """
@@ -77,8 +110,19 @@ def validate_all_compiled_ir() -> dict[str, Any]:
         if validation["status"] != "PASS":
             all_pass = False
 
+    bound_case_ids = [
+        "REM_COMPLETION", "RECOVERY", "DEADLINE_OBSERVATION",
+        "ARRIVAL_BATCH", "MODE_SWITCH", "RELEASE",
+        "FINAL_DISPATCH", "SERVICE_UNIT", "TAIL_ONLY_SERVICE",
+    ]
+    for case_id in bound_case_ids:
+        validation = validate_bound_transition_case(case_id)
+        results.append(validation)
+        if validation["status"] != "PASS":
+            all_pass = False
+
     payload = {
-        "schema_version": "compiled_transition_ir_validation_v1",
+        "schema_version": "compiled_transition_ir_validation_v2",
         "case_count": len(results),
         "pass_count": sum(1 for r in results if r["status"] == "PASS"),
         "unresolved_count": sum(1 for r in results if r["status"] != "PASS"),
@@ -93,8 +137,8 @@ def validate_all_compiled_ir() -> dict[str, Any]:
         "failure": None if all_pass else {
             "code": "EXECUTABLE_TRANSITION_IR_VALIDATION_FAILED",
             "reason": (
-                "At least one compiled transition IR failed validation.  "
-                "AST hash mismatch or compilation status is not COMPILED."
+                "At least one compiled transition IR or bound transition case "
+                "failed validation."
             ),
             "failed_cases": [r["case_id"] for r in results if r["status"] != "PASS"],
         },

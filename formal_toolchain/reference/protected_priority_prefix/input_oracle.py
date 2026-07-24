@@ -366,7 +366,12 @@ class LazyInfiniteProtectedInputOracle:
     def project_all_protected_inputs_up_to(
         self, release_index_bound: int
     ) -> tuple[ProtectedJobInput, ...]:
-        """Project all protected inputs up to a given release index bound."""
+        """Project all protected inputs up to a given release index bound.
+
+        This provides a finite diagnostic view only.  It cannot prove
+        the universal theorem over all recurring releases.  The theorem
+        is discharged by the parameterized demand receptiveness kernel.
+        """
         results: list[ProtectedJobInput] = []
         for name in sorted(self._protected):
             for q in range(release_index_bound + 1):

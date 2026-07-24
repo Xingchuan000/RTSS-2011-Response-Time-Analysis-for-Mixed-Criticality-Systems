@@ -18,7 +18,8 @@ class ProtectedPrefixBadPrefixBackend:
 
     REQUIRED_REFLECTION_FIELDS = {
         "same_job_key", "same_absolute_deadline", "same_actual_demand",
-        "same_service_at_deadline", "same_miss_ledger_membership",
+        "same_service_at_deadline", "same_completion_state",
+        "same_miss_ledger_membership",
     }
 
     def verify(self, proof_path: Path, *, theorem: Mapping[str, Any]) -> dict[str, Any]:
@@ -95,7 +96,7 @@ class ProtectedPrefixBadPrefixBackend:
         # not turn self-asserted JSON receipts into a theorem PASS.
         return {
             "status": "UNRESOLVED",
-            "code": "PROTECTED_PREFIX_BAD_PREFIX_PROOF_KERNEL_NOT_IMPLEMENTED",
+            "code": "PROTECTED_PREFIX_BAD_PREFIX_SOURCE_BOUND_DERIVATION_REQUIRED",
             "reason": (
                 "Static PASS fields and receipt-looking hashes do not prove the "
                 "quantified protected-prefix theorem."

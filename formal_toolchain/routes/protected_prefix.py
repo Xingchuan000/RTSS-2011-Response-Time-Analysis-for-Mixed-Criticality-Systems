@@ -19,6 +19,7 @@ from .protected_prefix_checkers import (
     check_prefix_canonical_successor_total, check_prefix_same_time_closure_terminates,
     check_prefix_time_divergence, check_prefix_idle_jump_stutter_expansion,
     check_prefix_complete_execution_exists,
+    check_initial_relation, check_registered_parametric_lemma,
 )
 
 
@@ -87,6 +88,15 @@ class ProtectedPrefixRoute:
             "PROTECTED_PREFIX_TIME_DIVERGENCE": check_prefix_time_divergence,
             "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION": check_prefix_idle_jump_stutter_expansion,
             "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS": check_prefix_complete_execution_exists,
+            "PROTECTED_PREFIX_INITIAL_RELATION": check_initial_relation,
+            "PPP_L1_TAIL_SERVICE_EXCLUSION": check_registered_parametric_lemma,
+            "PPP_L2_FINAL_DISPATCH_CORRESPONDENCE": check_registered_parametric_lemma,
+            "PPP_L3_SERVICE_CORRESPONDENCE": check_registered_parametric_lemma,
+            "PPP_L4_COMPLETION_REMOVAL_CORRESPONDENCE": check_registered_parametric_lemma,
+            "PPP_L5_DEADLINE_BATCH_FOLD": check_registered_parametric_lemma,
+            "PPP_L6_ARRIVAL_BATCH_FOLD": check_registered_parametric_lemma,
+            "PPP_L7_CANONICAL_PHASE_JOIN": check_registered_parametric_lemma,
+            "PROTECTED_MACRO_STEP_PRESERVATION": check_registered_parametric_lemma,
         }
 
 

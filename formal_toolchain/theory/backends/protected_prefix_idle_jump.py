@@ -32,7 +32,7 @@ def verify_idle_jump_expansion_receipt(receipt: Mapping[str, Any]) -> dict[str, 
     payload = {
         "theorem_id": "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION",
         "status": "UNRESOLVED",
-        "code": "IDLE_JUMP_EXECUTABLE_PROOF_KERNEL_NOT_IMPLEMENTED",
+        "code": "IDLE_JUMP_SOURCE_BOUND_RECEIPT_REQUIRED",
         "required_fields": list(required_true),
         "structurally_complete_claim": structurally_complete,
         "source_receipt_hash": receipt.get("receipt_hash"),

@@ -159,10 +159,11 @@ def construct_fold_lemma(
                     end_case = False
                     break
             else:
-                if (pf.get("job_key") != pp.get("job_key")
-                        or pf.get("release_time") != pp.get("release_time")
-                        or pf.get("actual_demand") != pp.get("actual_demand")
-                        or pf.get("hi_class") != pp.get("hi_class")):
+                # ARR fold: use all PENDING_RELEASE_FIELDS from V10
+                arr_fields = ("job_key", "task_name", "criticality", "release_time",
+                              "absolute_deadline", "priority_index", "actual_demand",
+                              "hi_class")
+                if any(pf.get(f) != pp.get(f) for f in arr_fields):
                     end_case = False
                     break
 

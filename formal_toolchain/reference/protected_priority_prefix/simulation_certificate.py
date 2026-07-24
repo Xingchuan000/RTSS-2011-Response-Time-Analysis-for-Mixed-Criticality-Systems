@@ -56,7 +56,7 @@ def build_simulation_certificate(
             "base_case": base_case_receipt or {"status": "UNRESOLVED", "code": "BASE_CASE_NOT_GENERATED"},
             "macro_step_induction": {"status": macro["status"], "macro_step": macro},
             "single_witness_compatibility": single_witness_receipt or {"status": "UNRESOLVED", "code": "SINGLE_WITNESS_NOT_VERIFIED"},
-        "proof_kernel": proof_kernel_receipt or {"status": "UNRESOLVED", "code": "WEAK_SIMULATION_PROOF_KERNEL_NOT_IMPLEMENTED"},
+        "proof_kernel": proof_kernel_receipt or {"status": "UNRESOLVED", "code": "WEAK_SIMULATION_SOURCE_BOUND_RECEIPTS_REQUIRED"},
         },
     }
 

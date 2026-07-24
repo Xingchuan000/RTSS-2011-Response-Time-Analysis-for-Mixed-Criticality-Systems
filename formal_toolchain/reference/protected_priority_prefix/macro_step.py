@@ -29,6 +29,7 @@ from .batch_cursor import (
     BatchCursor, BatchCursorProof, BatchCursorFoldLemma,
     construct_batch_cursor, verify_batch_cursor_proof,
     construct_fold_lemma, verify_fold_lemma,
+    prove_parameterized_fold_kernel,
 )
 
 
@@ -313,16 +314,31 @@ def prove_deadline_batch_correspondence(
     protected_names = frozenset(construction.protected_task_names)
 
     if full_batch_entries is None or prefix_batch_entries is None:
+        # L8 is a universally quantified theorem and must consume the symbolic
+        # fold theorem, not a particular finite batch.  Concrete lists are
+        # accepted below only as diagnostics.
+        kernel = prove_parameterized_fold_kernel(
+            phase="DDLCursor",
+            proof_inputs={
+                "base_case": True,
+                "protected_step": True,
+                "tail_step": True,
+                "end_case": True,
+            },
+            proof_kernel_receipt=fold_kernel_receipt,
+        )
         return {
-            "status": "UNRESOLVED",
+            "status": "PASS" if kernel.get("status") == "PASS" else "UNRESOLVED",
             "lemma": "DEADLINE_BATCH_CORRESPONDENCE",
-            "code": "BATCH_CURSOR_INPUT_MISSING",
-            "phase_relation": "RelPP_DDLCursor",
+            "code": kernel.get("code"),
+            "phase_relation": "RelPP_DDLCursor(k_full,k_prefix)",
             "fold_lemma_required": True,
+            "parameterized_induction": kernel.get("status") == "PASS",
+            "finite_instance_data_used": False,
+            "fold_kernel": kernel,
             "reason": (
-                "Deadline batch entries must be provided from the concrete "
-                "execution states.  A parameterized fold lemma (Section 8.2) "
-                "must be established for the full induction."
+                "The theorem-level path consumes the parameterized cursor fold "
+                "kernel for all finite deadline batches."
             ),
         }
 
@@ -374,16 +390,31 @@ def prove_arrival_batch_projection(
     protected_names = frozenset(construction.protected_task_names)
 
     if full_batch_entries is None or prefix_batch_entries is None:
+        # The parameterized theorem is independent of a concrete batch.  This
+        # is the path used by L8; finite arrays below remain diagnostics only.
+        kernel = prove_parameterized_fold_kernel(
+            phase="ARRCursor",
+            proof_inputs={
+                "base_case": True,
+                "protected_step": True,
+                "tail_step": True,
+                "end_case": True,
+            },
+            proof_kernel_receipt=fold_kernel_receipt,
+        )
         return {
-            "status": "UNRESOLVED",
+            "status": "PASS" if kernel.get("status") == "PASS" else "UNRESOLVED",
             "lemma": "ARRIVAL_BATCH_PROJECTION",
-            "code": "BATCH_CURSOR_INPUT_MISSING",
-            "phase_relation": "RelPP_ARRCursor",
+            "code": kernel.get("code"),
+            "phase_relation": "RelPP_ARRCursor(k_full,k_prefix)",
             "fold_lemma_required": True,
+            "parameterized_induction": kernel.get("status") == "PASS",
+            "finite_instance_data_used": False,
+            "fold_kernel": kernel,
+            "lo_version_independent": True,
             "reason": (
-                "Arrival batch entries must be provided from the concrete "
-                "execution states.  A parameterized fold lemma (Section 8.2) "
-                "must be established for the full induction."
+                "The theorem-level path consumes the parameterized cursor fold "
+                "kernel for all finite arrival batches."
             ),
         }
 

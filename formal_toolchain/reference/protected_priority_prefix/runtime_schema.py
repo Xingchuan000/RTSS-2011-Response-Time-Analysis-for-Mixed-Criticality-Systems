@@ -1,11 +1,8 @@
 """Structural conformance checks for the fixed reference executable semantics.
 
-NOTE: The old AST/source-shape checks have been superseded by the PP0
-transition schema checker in pp0_checker.py.  This module retains the
-legacy checks for regression comparison only.
-
-All new verification should use build_pp0_transition_certificate() from
-formal_toolchain.reference.protected_priority_prefix.pp0_checker.
+All verification uses the PP0 relational schema checker (pp0_checker.py)
+which generates 12 relational PP0 receipts.  Legacy AST-based checks
+are retained for regression comparison only.
 """
 
 from __future__ import annotations
@@ -53,7 +50,7 @@ def _function_has(name: str, *needles: str) -> bool:
 
 
 def runtime_schema_checks() -> dict[str, bool]:
-    """Legacy AST-based proof obligations.  Superseded by pp0_checker.
+    """Legacy AST-based proof obligations.  Superseded by pp0 relational checker.
 
     These checks can only prove that code contains certain fields or
     function patterns; they cannot prove quantified properties over
@@ -80,47 +77,46 @@ def runtime_schema_checks() -> dict[str, bool]:
 
 
 def build_runtime_schema_certificate() -> dict[str, Any]:
-    """Build runtime schema certificate using PP0 transition schema checker.
+    """Build runtime schema certificate using PP0 relational schema checker.
 
-    The old AST-based checks are included for regression comparison but
-    the certificate status is determined by the PP0 transition query results.
+    The certificate status is determined by the PP0 relational receipt results.
     """
     pp0_result = build_pp0_transition_certificate()
     legacy_checks = runtime_schema_checks()
     bindings = {name: sha256_file(ROOT / name) for name in SOURCE_FILES}
 
+    receipt_rows = {
+        r.get("receipt_id"): r
+        for r in pp0_result.get("receipt_results", [])
+    }
+
+    def passed(receipt_id: str) -> bool:
+        return receipt_rows.get(receipt_id, {}).get("status") == "PASS"
+
     payload = {
-        "schema_version": "protected-prefix-runtime-schema-v2",
+        "schema_version": "protected-prefix-runtime-schema-v3",
         "pp0_transition_status": pp0_result.get("status"),
         "pp0_certificate_hash": pp0_result.get("certificate_hash"),
-        "pp0_case_count": pp0_result.get("query_count", 0),
+        "pp0_receipt_count": pp0_result.get("receipt_count", 0),
         "pp0_pass_count": pp0_result.get("pass_count", 0),
         "pp0_unresolved_count": pp0_result.get("unresolved_count", 0),
+        "pp0_fail_count": pp0_result.get("fail_count", 0),
         "legacy_ast_checks": legacy_checks,
         "source_bindings": bindings,
     }
 
-    # Derive semantic witness fields from the fresh PP0 obligation rows.  No
-    # field is trusted from a caller-provided JSON or filled as a constant.
-    rows = {
-        (case.get("case_id"), obligation): result
-        for case in pp0_result.get("case_results", [])
-        for obligation, result in case.get("obligation_results", {}).items()
-    }
-    def passed(case_id: str, obligation: str) -> bool:
-        return rows.get((case_id, obligation), {}).get("status") == "PASS"
     payload["pp0_witness"] = {
-        "single_processor_preemptive_work_conserving_fp": passed("FINAL_DISPATCH", "DISPATCH_IS_FIXED_PRIORITY_TOTAL_SELECTION"),
-        "no_blocking_self_suspension_or_nonpreemptive_segments": passed("FINAL_DISPATCH", "PROTECTED_JOB_KEY_FRAME"),
-        "fixed_processor_supply_and_mode_independent_priority": passed("SERVICE_UNIT", "SERVICE_UNIT_SINGLE_DISCRETE_RATE") and passed("FINAL_DISPATCH", "DISPATCH_IS_FIXED_PRIORITY_TOTAL_SELECTION"),
-        "release_fixed_demands": passed("ARRIVAL_BATCH_OPEN", "FIXED_DEMAND_NOT_MODIFIED"),
-        "abnormal_classification_at_arrival": passed("ARRIVAL_BATCH_OPEN", "ARRIVAL_BATCH_PROTECTED_INDEPENDENT_OF_TAIL"),
-        "abnormal_hi_only_switch_trigger": passed("MODE_SWITCH", "MODE_ONLY_NOT_MODIFY_PROTECTED"),
-        "quiescent_idle_only_recovery": passed("RECOVERY", "MODE_ONLY_NOT_MODIFY_PROTECTED"),
-        "lo_version_selected_at_release": passed("RELEASE", "FIXED_DEMAND_NOT_MODIFIED"),
-        "deadline_observe_only": passed("DDL_OBSERVE", "DDL_READ_ONLY_DEADLINE_COMPLETION"),
-        "protected_input_independence": passed("ARRIVAL_BATCH_OPEN", "ARRIVAL_BATCH_PROTECTED_INDEPENDENT_OF_TAIL"),
-        "source_query_ids": sorted(f"{case}:{obligation}" for case, obligation in rows),
+        "single_processor_preemptive_work_conserving_fp": passed("PP0_DISPATCH_DETERMINISM"),
+        "no_blocking_self_suspension_or_nonpreemptive_segments": passed("PP0_DISPATCH_DETERMINISM"),
+        "fixed_processor_supply_and_mode_independent_priority": passed("PP0_SERVICE_PROTECTED") and passed("PP0_DISPATCH_DETERMINISM"),
+        "release_fixed_demands": passed("PP0_RELEASE_PROTECTED_PAYLOAD"),
+        "abnormal_classification_at_arrival": passed("PP0_ARR_PENDING_PLAN_PROJECTION"),
+        "abnormal_hi_only_switch_trigger": passed("PP0_SWITCH_STUTTER_FULL_ONLY"),
+        "quiescent_idle_only_recovery": passed("PP0_RECOVERY_STUTTER_FULL_ONLY"),
+        "lo_version_selected_at_release": passed("PP0_RELEASE_PROTECTED_PAYLOAD"),
+        "deadline_observe_only": passed("PP0_DDL_OBSERVE_ONLY"),
+        "protected_input_independence": passed("PP0_ARR_PENDING_PLAN_PROJECTION"),
+        "source_receipt_ids": sorted(receipt_rows.keys()),
     }
 
     status = pp0_result.get("status", "UNRESOLVED")

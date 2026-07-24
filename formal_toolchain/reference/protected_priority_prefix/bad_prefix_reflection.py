@@ -15,6 +15,204 @@ from typing import Any, Mapping
 from formal_toolchain.core.hashing import sha256_object
 
 
+def _field_equal_in_receipt(
+    receipt: Mapping[str, Any] | None,
+    field: str,
+) -> bool:
+    """Read a concrete or theorem-level protected-field equality receipt.
+
+    ``check_phase_relation`` indexes per-job checks as
+    ``job[(task, q)].field``.  The previous implementation looked for the
+    nonexistent key ``job[field]`` and therefore made every bad-prefix field
+    derivation fail even after a valid simulation receipt was supplied.
+    """
+    if not isinstance(receipt, Mapping):
+        return False
+    equality_checks = (
+        receipt.get("equality_checks")
+        or receipt.get("witness", {}).get("equality_checks")
+        or {}
+    )
+    if not isinstance(equality_checks, Mapping):
+        return False
+
+    if field in {
+        "time", "running_job_key", "miss_job_keys",
+        "pending_job_key_set", "job_key_set",
+    }:
+        return equality_checks.get(field) is True
+
+    # A theorem-level receipt may export field preservation directly.
+    preserved = receipt.get("preserved_job_fields") or receipt.get("witness", {}).get(
+        "preserved_job_fields"
+    )
+    if isinstance(preserved, (list, tuple, set, frozenset)) and field in preserved:
+        return True
+
+    suffix = f"].{field}"
+    matches = [
+        value for key, value in equality_checks.items()
+        if isinstance(key, str) and key.startswith("job[") and key.endswith(suffix)
+    ]
+    if field == "job_key":
+        return equality_checks.get("job_key_set") is True and bool(matches) and all(
+            value is True for value in matches
+        )
+    return bool(matches) and all(value is True for value in matches)
+
+
+def _derive_job_key_reflection(
+    sim_ok: bool, obs_ok: bool,
+    sim_receipt: Mapping[str, Any] | None = None,
+    obs_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    sim = isinstance(sim_receipt, Mapping) and sim_receipt.get("status") == "PASS"
+    obs = isinstance(obs_receipt, Mapping) and obs_receipt.get("status") == "PASS"
+    job_key_eq = _field_equal_in_receipt(sim_receipt, "job_key")
+    derived = sim and obs and job_key_eq
+    return {
+        "derived": derived,
+        "source": "rel_pp_close_job_key_equality" if derived else "unresolved",
+        "implication_steps": [
+            "weak simulation establishes Rel_pp_close at the HI deadline boundary",
+            "Rel_pp_close preserves the protected job-key set and each job key",
+            "the full HI job therefore has the same prefix job key beta(J)",
+        ] if derived else [],
+        "provenance": {
+            "simulation_pass": sim,
+            "observable_schema_pass": obs,
+            "simulation_job_key_equality": job_key_eq,
+        },
+    }
+
+
+def _derive_deadline_reflection(
+    sim_ok: bool, obs_ok: bool,
+    sim_receipt: Mapping[str, Any] | None = None,
+    obs_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    sim = isinstance(sim_receipt, Mapping) and sim_receipt.get("status") == "PASS"
+    obs = isinstance(obs_receipt, Mapping) and obs_receipt.get("status") == "PASS"
+    deadline_eq = _field_equal_in_receipt(sim_receipt, "absolute_deadline")
+    derived = sim and obs and deadline_eq
+    return {
+        "derived": derived,
+        "source": "rel_pp_close_deadline_equality" if derived else "unresolved",
+        "implication_steps": [
+            "weak simulation establishes Rel_pp_close for the corresponding job",
+            "the protected observable preserves absolute_deadline",
+            "both deadline observations refer to the same absolute time",
+        ] if derived else [],
+        "provenance": {
+            "simulation_pass": sim,
+            "observable_schema_pass": obs,
+            "simulation_deadline_equality": deadline_eq,
+        },
+    }
+
+
+def _derive_demand_reflection(
+    sim_ok: bool, obs_ok: bool,
+    sim_receipt: Mapping[str, Any] | None = None,
+    obs_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    sim = isinstance(sim_receipt, Mapping) and sim_receipt.get("status") == "PASS"
+    obs = isinstance(obs_receipt, Mapping) and obs_receipt.get("status") == "PASS"
+    demand_eq = _field_equal_in_receipt(sim_receipt, "actual_demand")
+    derived = sim and obs and demand_eq
+    return {
+        "derived": derived,
+        "source": "rel_pp_close_demand_equality" if derived else "unresolved",
+        "implication_steps": [
+            "the projected release stream copies the protected actual demand",
+            "Rel_pp_close preserves release-fixed actual_demand",
+            "the corresponding jobs have equal fixed demand",
+        ] if derived else [],
+        "provenance": {
+            "simulation_pass": sim,
+            "observable_schema_pass": obs,
+            "simulation_demand_equality": demand_eq,
+        },
+    }
+
+
+def _derive_service_reflection(
+    sim_ok: bool, ddl_ok: bool,
+    sim_receipt: Mapping[str, Any] | None = None,
+    ddl_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    sim = isinstance(sim_receipt, Mapping) and sim_receipt.get("status") == "PASS"
+    ddl = isinstance(ddl_receipt, Mapping) and ddl_receipt.get("status") == "PASS"
+    service_eq = _field_equal_in_receipt(sim_receipt, "executed_service")
+    derived = sim and ddl and service_eq
+    return {
+        "derived": derived,
+        "source": "rel_pp_close_service_equality_and_ddl_fold" if derived else "unresolved",
+        "implication_steps": [
+            "weak simulation preserves executed_service at closed boundaries",
+            "deadline-batch correspondence aligns the protected deadline observation",
+            "service at the common absolute deadline is equal",
+        ] if derived else [],
+        "provenance": {
+            "simulation_pass": sim,
+            "deadline_batch_pass": ddl,
+            "simulation_service_equality": service_eq,
+        },
+    }
+
+
+def _derive_completion_reflection(
+    sim_ok: bool, obs_ok: bool,
+    sim_receipt: Mapping[str, Any] | None = None,
+    obs_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    sim = isinstance(sim_receipt, Mapping) and sim_receipt.get("status") == "PASS"
+    obs = isinstance(obs_receipt, Mapping) and obs_receipt.get("status") == "PASS"
+    completed_eq = _field_equal_in_receipt(sim_receipt, "completed")
+    derived = sim and obs and completed_eq
+    return {
+        "derived": derived,
+        "source": "rel_pp_close_completion_equality" if derived else "unresolved",
+        "implication_steps": [
+            "completion/removal correspondence preserves the terminal record",
+            "Rel_pp_close preserves completed for the corresponding job",
+            "completion state at the deadline boundary is equal",
+        ] if derived else [],
+        "provenance": {
+            "simulation_pass": sim,
+            "observable_schema_pass": obs,
+            "simulation_completed_equality": completed_eq,
+        },
+    }
+
+
+def _derive_miss_ledger_reflection(
+    sim_ok: bool, ddl_ok: bool,
+    sim_receipt: Mapping[str, Any] | None = None,
+    ddl_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    sim = isinstance(sim_receipt, Mapping) and sim_receipt.get("status") == "PASS"
+    ddl = isinstance(ddl_receipt, Mapping) and ddl_receipt.get("status") == "PASS"
+    miss_eq = _field_equal_in_receipt(sim_receipt, "missed")
+    ddl_miss = _field_equal_in_receipt(ddl_receipt, "miss_job_keys")
+    derived = sim and ddl and (miss_eq or ddl_miss)
+    return {
+        "derived": derived,
+        "source": "rel_pp_close_miss_ledger_equality_or_ddl_fold" if derived else "unresolved",
+        "implication_steps": [
+            "deadline-batch correspondence applies the same protected miss observation",
+            "Rel_pp_close preserves missed/miss_job_keys",
+            "miss-ledger membership for the corresponding HI job is equal",
+        ] if derived else [],
+        "provenance": {
+            "simulation_pass": sim,
+            "deadline_batch_pass": ddl,
+            "simulation_missed_equality": miss_eq,
+            "deadline_batch_miss_ledger_equality": ddl_miss,
+        },
+    }
+
+
 def derive_hi_bad_prefix_reflection(
     *,
     simulation_receipt: Mapping[str, Any],
@@ -59,6 +257,10 @@ def derive_hi_bad_prefix_reflection(
     }
 
     all_derived = all(fd.get("derived") is True for fd in field_derivations.values())
+    all_provenance_ok = all(
+        isinstance(fd.get("provenance"), Mapping) and any(fd["provenance"].values())
+        for fd in field_derivations.values()
+    )
     all_predecessors_ok = sim_ok and obs_ok and ddl_ok
     kernel_ok = (
         isinstance(proof_kernel_receipt, Mapping)
@@ -66,11 +268,10 @@ def derive_hi_bad_prefix_reflection(
         and proof_kernel_receipt.get("theorem_id") == "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION"
         and proof_kernel_receipt.get("all_reflection_fields_derived") is True
     )
-    # Narrative implication steps are explanatory evidence, not a proof kernel.
-    status = "PASS" if (all_derived and all_predecessors_ok and kernel_ok) else "UNRESOLVED"
+    status = "PASS" if (all_derived and all_provenance_ok and all_predecessors_ok and kernel_ok) else "UNRESOLVED"
 
     payload = {
-        "schema_version": "hi_bad_prefix_reflection_v2",
+        "schema_version": "hi_bad_prefix_reflection_v3",
         "derivation": {
             "simulation_receipt_id": simulation_receipt.get("obligation_id") if sim_ok else None,
             "observable_schema_receipt_id": observable_schema_receipt.get("obligation_id") if obs_ok else None,
@@ -83,9 +284,7 @@ def derive_hi_bad_prefix_reflection(
             for field, fd in field_derivations.items()
         },
         "global_mode_equality_required": False,
-        "conclusion": (
-            "FullReferenceHIMiss(J, d) => PrefixHIMiss(beta(J), d)"
-        ),
+        "conclusion": "FullReferenceHIMiss(J, d) => PrefixHIMiss(beta(J), d)",
     }
 
     return {
@@ -100,161 +299,4 @@ def derive_hi_bad_prefix_reflection(
                 "narrative implication strings cannot establish the theorem."
             ),
         },
-    }
-
-
-def _derive_job_key_reflection(
-    sim_ok: bool, obs_ok: bool,
-    sim_receipt: Mapping[str, Any] | None = None,
-    obs_receipt: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    if not sim_ok or not obs_ok:
-        return {
-            "derived": False,
-            "reason": "Simulation or observable schema receipt not PASS.",
-            "implication_steps": [],
-        }
-    return {
-        "derived": True,
-        "implication_steps": [
-            "protected_observable_equality_at_close (from simulation relation)",
-            "job_key_preserved_in_observable_schema",
-            "full_job_key_beta_mapped_to_prefix_job_key",
-            "therefore_same_job_key",
-        ],
-        "requires_implications": [
-            "RelPP_Close => same protected job keys",
-            "Observable schema includes job_key",
-            "beta: FullJobKey -> PrefixJobKey is identity on protected keys",
-        ],
-    }
-
-
-def _derive_deadline_reflection(
-    sim_ok: bool, obs_ok: bool,
-    sim_receipt: Mapping[str, Any] | None = None,
-    obs_receipt: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    if not sim_ok or not obs_ok:
-        return {
-            "derived": False,
-            "reason": "Simulation or observable schema receipt not PASS.",
-            "implication_steps": [],
-        }
-    return {
-        "derived": True,
-        "implication_steps": [
-            "protected_observable_equality_at_close (from simulation relation)",
-            "absolute_deadline_preserved_in_observable_schema",
-            "same protected job => same absolute_deadline",
-            "therefore_same_absolute_deadline",
-        ],
-        "requires_implications": [
-            "RelPP_Close => same absolute_deadline for same job_key",
-            "Observable schema includes absolute_deadline",
-        ],
-    }
-
-
-def _derive_demand_reflection(
-    sim_ok: bool, obs_ok: bool,
-    sim_receipt: Mapping[str, Any] | None = None,
-    obs_receipt: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    if not sim_ok or not obs_ok:
-        return {
-            "derived": False,
-            "reason": "Simulation or observable schema receipt not PASS.",
-            "implication_steps": [],
-        }
-    return {
-        "derived": True,
-        "implication_steps": [
-            "protected_observable_equality_at_close (from simulation relation)",
-            "actual_demand_preserved_in_observable_schema",
-            "same protected job => same actual_demand",
-            "therefore_same_actual_demand",
-        ],
-        "requires_implications": [
-            "RelPP_Close => same actual_demand for same job_key",
-            "Observable schema includes actual_demand",
-        ],
-    }
-
-
-def _derive_service_reflection(
-    sim_ok: bool, ddl_ok: bool,
-    sim_receipt: Mapping[str, Any] | None = None,
-    ddl_receipt: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    if not sim_ok or not ddl_ok:
-        return {
-            "derived": False,
-            "reason": "Simulation or deadline batch receipt not PASS.",
-            "implication_steps": [],
-        }
-    return {
-        "derived": True,
-        "implication_steps": [
-            "protected_observable_service_equality (from simulation relation)",
-            "deadline_batch_correspondence (DDL observe at same time)",
-            "same_service_at_deadline_observation_point",
-            "therefore_service_at_deadline_equal",
-        ],
-        "requires_implications": [
-            "RelPP_Close => same executed_service for same job_key",
-            "Deadline batch cursor => same DDL observation time",
-        ],
-    }
-
-
-def _derive_completion_reflection(
-    sim_ok: bool, obs_ok: bool,
-    sim_receipt: Mapping[str, Any] | None = None,
-    obs_receipt: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    if not sim_ok or not obs_ok:
-        return {
-            "derived": False,
-            "reason": "Simulation or observable schema receipt not PASS.",
-            "implication_steps": [],
-        }
-    return {
-        "derived": True,
-        "implication_steps": [
-            "protected_observable_equality_at_close (from simulation relation)",
-            "completion_state_preserved_in_observable_schema",
-            "full_job_completed => prefix_job_completed",
-            "therefore_same_completion_state",
-        ],
-        "requires_implications": [
-            "RelPP_Close => same completed flag",
-            "Observable schema includes completed field",
-        ],
-    }
-
-
-def _derive_miss_ledger_reflection(
-    sim_ok: bool, ddl_ok: bool,
-    sim_receipt: Mapping[str, Any] | None = None,
-    ddl_receipt: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    if not sim_ok or not ddl_ok:
-        return {
-            "derived": False,
-            "reason": "Simulation or deadline batch receipt not PASS.",
-            "implication_steps": [],
-        }
-    return {
-        "derived": True,
-        "implication_steps": [
-            "protected_observable_miss_equality (from simulation relation)",
-            "deadline_batch_cursor_skip_tail (protected DDL observe is no-op or miss-append)",
-            "same_miss_ledger_membership_at_corresponding_deadlines",
-            "therefore_miss_ledger_membership_corresponds",
-        ],
-        "requires_implications": [
-            "RelPP_Close => same miss_ledger for protected jobs",
-            "Deadline batch cursor => same DDL observation and miss decision",
-        ],
     }
