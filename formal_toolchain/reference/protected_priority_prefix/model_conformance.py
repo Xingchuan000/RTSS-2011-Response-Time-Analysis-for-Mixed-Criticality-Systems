@@ -13,6 +13,7 @@ from typing import Any, Mapping
 
 from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.reference.taskset import ReferenceTaskset
+from formal_toolchain.reference.executable_semantics import initial_reference_state
 
 from .types import ProtectedPrefixBuildResult
 
@@ -49,7 +50,7 @@ def derive_prefix_model_conformance(
     prefix_taskset: ReferenceTaskset,
     construction: ProtectedPrefixBuildResult,
     runtime_schema_certificate: Mapping[str, Any],
-    execution_existence_receipt: Mapping[str, Any] | None = None,
+    prefix_extension_receipt: Mapping[str, Any] | None = None,
     demand_receptiveness_receipt: Mapping[str, Any] | None = None,
     candidate_enumeration_receipt: Mapping[str, Any] | None = None,
     zero_relative_start_receipt: Mapping[str, Any] | None = None,
@@ -132,28 +133,40 @@ def derive_prefix_model_conformance(
     quiescent_idle_only_recovery = executable_semantics_shared and pp0_witness.get("quiescent_idle_only_recovery") is True
     lo_version_selected_at_release = executable_semantics_shared and pp0_witness.get("lo_version_selected_at_release") is True
 
-    execution_receipt = execution_existence_receipt or {}
-    execution_payload = (
-        execution_receipt.get("witness", execution_receipt)
-        if isinstance(execution_receipt, Mapping) else {}
+    extension_receipt = prefix_extension_receipt or {}
+    extension_payload = (
+        extension_receipt.get("witness", extension_receipt)
+        if isinstance(extension_receipt, Mapping) else {}
     )
-    execution_status = (
-        execution_receipt.get("status", execution_receipt.get("obligation_status"))
-        if isinstance(execution_receipt, Mapping) else None
+    extension_status = (
+        extension_receipt.get("status", extension_receipt.get("obligation_status"))
+        if isinstance(extension_receipt, Mapping) else None
     )
-    if execution_status is None and isinstance(execution_payload, Mapping):
-        execution_status = execution_payload.get("status")
+    if extension_status is None and isinstance(extension_payload, Mapping):
+        extension_status = extension_payload.get("status")
     recurring_history_preserved = (
-        execution_status == "PASS"
-        and isinstance(execution_payload, Mapping)
-        and execution_payload.get("recurring_history_preserved") is True
+        extension_status == "PASS"
+        and isinstance(extension_payload, Mapping)
+        and extension_payload.get("conclusion")
+            == "EVERY_FINITE_PREFIX_EXECUTION_PREFIX_EXTENDS"
+        and all(int(task.period) > 0 for task in prefix_tasks_list)
     )
 
-    standard_empty_lo_initial_state = (
-        execution_status == "PASS"
-        and isinstance(execution_payload, Mapping)
-        and execution_payload.get("standard_empty_lo_initial_state") is True
-    )
+    try:
+        initial = initial_reference_state(prefix_taskset)
+        standard_empty_lo_initial_state = (
+            int(initial.time) == 0
+            and initial.mode == "LO"
+            and not initial.jobs
+            and not initial.released
+            and not initial.terminal
+            and not initial.misses
+            and not initial.ready_order
+            and initial.running is None
+            and not initial.pending_releases
+        )
+    except (TypeError, ValueError, AttributeError):
+        standard_empty_lo_initial_state = False
 
     demand_receipt = demand_receptiveness_receipt or {}
     demand_payload = (

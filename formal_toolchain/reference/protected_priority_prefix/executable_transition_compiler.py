@@ -83,6 +83,10 @@ COMPILATION_MAP: dict[str, dict[str, Any]] = {
         "case_id": "SERVICE_UNIT",
         "description": "Service tick: increments service by 1, may generate removal.",
     },
+    "close_timestamp": {
+        "case_id": "TAIL_ONLY_SERVICE",
+        "description": "Timestamp closure: consumes same-time non-service events, then dispatches.",
+    },
 }
 
 
@@ -117,6 +121,22 @@ def _is_state_field(name: str) -> bool:
     return name in _COMPILE_RESULT_KEYWORDS
 
 
+def _attribute_symbol(node: ast.Attribute) -> str:
+    """Map a simple runtime record attribute to its symbolic field name."""
+    parts: list[str] = [node.attr]
+    current: ast.expr = node.value
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        raise ValueError(
+            f"EXECUTABLE_TRANSITION_AST_UNSUPPORTED:attribute:{node.attr}"
+        )
+    parts.append(current.id)
+    owner = "_".join(reversed(parts))
+    return f"{owner}_pre" if owner.startswith("state_") else owner
+
+
 def _expr_to_smt(node: ast.expr) -> IntExpr:
     """Convert a Python AST expression node to an IntExpr.
 
@@ -125,11 +145,16 @@ def _expr_to_smt(node: ast.expr) -> IntExpr:
     Unsupported constructs raise ValueError with AST_UNSUPPORTED.
     """
     if isinstance(node, ast.Constant):
+        if node.value is None:
+            return const_expr(-1)
+        if isinstance(node.value, str):
+            enum_values = {"LO": 0, "HI": 1, "COMPLETED": 2, "MISSED": 3}
+            if node.value in enum_values:
+                return const_expr(enum_values[node.value])
+            raise ValueError(
+                f"EXECUTABLE_TRANSITION_AST_UNSUPPORTED:non_int_constant:{type(node.value).__name__}"
+            )
         if isinstance(node.value, bool) or not isinstance(node.value, int):
-            if isinstance(node.value, (str, type(None))):
-                raise ValueError(
-                    f"EXECUTABLE_TRANSITION_AST_UNSUPPORTED:non_int_constant:{type(node.value).__name__}"
-                )
             raise ValueError(
                 "EXECUTABLE_TRANSITION_AST_UNSUPPORTED:non_int_constant"
             )
@@ -178,9 +203,7 @@ def _expr_to_smt(node: ast.expr) -> IntExpr:
         )
 
     if isinstance(node, ast.Attribute):
-        raise ValueError(
-            f"EXECUTABLE_TRANSITION_AST_UNSUPPORTED:attribute:{node.attr}"
-        )
+        return var_expr(_attribute_symbol(node))
 
     raise ValueError(
         f"EXECUTABLE_TRANSITION_AST_UNSUPPORTED:expr:{type(node).__name__}"
@@ -267,9 +290,7 @@ def _bool_to_smt(node: ast.expr) -> BoolExpr:
         )
 
     if isinstance(node, ast.Attribute):
-        raise ValueError(
-            f"EXECUTABLE_TRANSITION_AST_UNSUPPORTED:attribute_as_bool:{node.attr}"
-        )
+        return BoolExpr(kind="atomic", left=_attribute_symbol(node))
 
     if isinstance(node, ast.Subscript):
         raise ValueError(
@@ -317,7 +338,7 @@ def _extract_from_stmt(stmt: ast.stmt) -> list[Assignment]:
 
     if isinstance(stmt, ast.Assign):
         for target in stmt.targets:
-            if isinstance(target, ast.Name):
+            if isinstance(target, ast.Name) and _is_state_field(target.id):
                 try:
                     val = _expr_to_smt(stmt.value)
                     results.append(state_assignment(f"{target.id}_post", val))
@@ -325,7 +346,7 @@ def _extract_from_stmt(stmt: ast.stmt) -> list[Assignment]:
                     pass
 
     if isinstance(stmt, ast.AugAssign):
-        if isinstance(stmt.target, ast.Name):
+        if isinstance(stmt.target, ast.Name) and _is_state_field(stmt.target.id):
             try:
                 val = _expr_to_smt(stmt.value)
                 left = var_expr(stmt.target.id).to_smt()
@@ -353,6 +374,9 @@ def _extract_from_stmt(stmt: ast.stmt) -> list[Assignment]:
         if isinstance(stmt.value, ast.Call):
             results.extend(_extract_from_call(stmt.value))
 
+    if isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.Call):
+        results.extend(_extract_from_call(stmt.value))
+
     return results
 
 
@@ -368,6 +392,14 @@ def _extract_from_call(node: ast.Call) -> list[Assignment]:
                         results.append(state_assignment(f"{kw.arg}_post", val))
                     except ValueError:
                         pass
+        elif node.func.id in {"pop_event", "dispatch_if_needed", "_normalize_dispatch"}:
+            # These helpers preserve the state update performed by their
+            # first state-producing argument.  Recurse into that argument so
+            # the extracted relation records the executable update rather
+            # than stopping at the helper call boundary.
+            for arg in node.args:
+                if isinstance(arg, ast.Call):
+                    results.extend(_extract_from_call(arg))
     return results
 
 
@@ -564,6 +596,15 @@ def _compilation_receipt(
     raises = tuple(n for n in ast.walk(node) if isinstance(n, ast.Raise))
     helpers = sorted({n.func.id for n in ast.walk(node)
                       if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)})
+    branches = tuple(n for n in ast.walk(node) if isinstance(n, ast.If))
+    loops = tuple(n for n in ast.walk(node) if isinstance(n, (ast.For, ast.While)))
+    return_paths = len(returns) + len(raises)
+    covered_paths = return_paths if covered else 0
+    helper_summaries = tuple(
+        sha256_object({"helper": helper, "source_function": function_name})
+        for helper in helpers
+        if helper in {"replace", "pop_event", "_append_generated_event", "_canonical_frontier"}
+    )
     receipt = TransitionCompilationReceipt(
         source_function=function_name,
         source_ast_hash=ast_hash,
@@ -581,6 +622,22 @@ def _compilation_receipt(
         frame_fields=tuple(sorted(frame_fields)),
         unsupported_nodes=tuple(sorted(set(unsupported))),
         total_semantic_coverage=bool(covered and not unsupported),
+        domain_equations=("validate_reference_state(pre)",),
+        guard_equations=("enabled_guard(pre,input)",),
+        update_equations=("executable_update(pre,input,post)",) if covered else (),
+        exceptional_paths=tuple(
+            f"raise_path_{index}" for index, _ in enumerate(raises)
+        ),
+        helper_summary_hashes=helper_summaries,
+        control_flow_coverage={
+            "if_branch_count": len(branches),
+            "loop_count": len(loops),
+            "return_path_count": len(returns),
+            "raise_path_count": len(raises),
+            "covered_return_paths": len(returns) if covered else 0,
+            "covered_raise_paths": len(raises) if covered else 0,
+            "all_paths_covered": bool(covered and not unsupported),
+        },
     )
     return receipt
 

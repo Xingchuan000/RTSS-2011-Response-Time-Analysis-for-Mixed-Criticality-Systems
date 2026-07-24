@@ -1,7 +1,10 @@
-"""Backend for the parameterized CloseAt idle-jump theorem.
+"""Backend boundary for the parameterized CloseAt idle-jump theorem.
 
-A receipt is accepted only when it records a source-bound proof over all legal
-idle jumps.  Boolean summaries from finite traces are deliberately insufficient.
+The current repository has the theorem statement and finite diagnostic helpers,
+but no source-bound relational proof kernel.  This backend therefore validates
+the claimed scope only for diagnostics and remains fail-closed.  A future
+backend may return PASS only after checking a receipt emitted by the executable
+transition/SMT kernel itself.
 """
 
 from __future__ import annotations
@@ -20,19 +23,25 @@ def verify_idle_jump_expansion_receipt(receipt: Mapping[str, Any]) -> dict[str, 
         "protected_observable_stutters_on_expanded_idle_ticks",
         "independent_of_complete_execution_witness",
     )
-    ok = (
-        receipt.get("theorem_id") == "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION"
-        and receipt.get("status") == "PASS"
+    structurally_complete = (
+        receipt.get("theorem_id")
+            == "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION"
         and receipt.get("proof_scope") == "ALL_LEGAL_CLOSED_IDLE_JUMPS"
         and all(receipt.get(field) is True for field in required_true)
-        and isinstance(receipt.get("receipt_hash"), str)
     )
     payload = {
         "theorem_id": "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION",
-        "status": "PASS" if ok else "UNRESOLVED",
-        "code": None if ok else "IDLE_JUMP_SOURCE_BOUND_THEOREM_NOT_VERIFIED",
+        "status": "UNRESOLVED",
+        "code": "IDLE_JUMP_EXECUTABLE_PROOF_KERNEL_NOT_IMPLEMENTED",
         "required_fields": list(required_true),
+        "structurally_complete_claim": structurally_complete,
         "source_receipt_hash": receipt.get("receipt_hash"),
+        "reason": (
+            "Self-declared Boolean fields and finite traces do not prove the "
+            "parameterized CloseAt idle-jump frame theorem.  PASS requires a "
+            "receipt produced and independently checked by the executable "
+            "transition/SMT kernel."
+        ),
     }
     payload["receipt_hash"] = sha256_object(payload)
     return payload

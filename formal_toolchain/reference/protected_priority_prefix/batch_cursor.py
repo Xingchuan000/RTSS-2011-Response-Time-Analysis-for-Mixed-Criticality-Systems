@@ -93,7 +93,7 @@ def prove_parameterized_fold_kernel(
     """
     required = ("base_case", "protected_step", "tail_step", "end_case")
     cases = {name: proof_inputs.get(name) is True for name in required}
-    relation_schema_hash = sha256_object({"schema": "phase_relation_v3"})
+    relation_schema_hash = sha256_object({"schema": "phase_relation_v4_close_at"})
     kernel_ok = (
         phase in {"ARRCursor", "DDLCursor"}
         and all(cases.values())
@@ -170,7 +170,7 @@ def construct_fold_lemma(
 
     # Concrete arrays remain diagnostics.  Only an independently supplied
     # proof-kernel receipt may discharge the universally quantified fold.
-    expected_relation_hash = sha256_object({"schema": "phase_relation_v3"})
+    expected_relation_hash = sha256_object({"schema": "phase_relation_v4_close_at"})
     kernel_ok = (
         isinstance(proof_kernel_receipt, Mapping)
         and proof_kernel_receipt.get("status") == "PASS"
@@ -184,6 +184,15 @@ def construct_fold_lemma(
         and proof_kernel_receipt.get("finite_instance_data_used") is False
         and proof_kernel_receipt.get("relation_schema_hash") == expected_relation_hash
     )
+    # A valid symbolic kernel discharges the four induction cases for all
+    # batches independently of the supplied finite diagnostic arrays.  Without
+    # it, concrete booleans remain diagnostics and cannot form a theorem.
+    if kernel_ok:
+        base_case = True
+        protected_step = True
+        tail_step = True
+        end_case = True
+        cursor_order_preserved = True
     parameterized = kernel_ok
 
     return BatchCursorFoldLemma(
@@ -228,11 +237,14 @@ def construct_batch_cursor(
     prefix_batch_entries: list[dict[str, Any]],
     protected_task_names: frozenset[str],
     phase: str,
+    proof_kernel_receipt: Mapping[str, Any] | None = None,
 ) -> tuple[BatchCursor, BatchCursorProof]:
     """Construct a batch cursor and inductive proof object.
 
     Uses the measure (full_batch_size - k_full) + (prefix_batch_size - k_prefix)
-    which strictly decreases at each induction step.
+    which strictly decreases at each induction step.  ``proof_kernel_receipt``
+    is accepted only for API compatibility; this legacy function remains a
+    finite-instance diagnostic and never validates the universal fold theorem.
     """
     protected_full = [
         entry for entry in full_batch_entries

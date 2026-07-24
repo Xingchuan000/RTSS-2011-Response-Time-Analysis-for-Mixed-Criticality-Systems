@@ -34,6 +34,7 @@ class PhaseRelationState:
     phase: str
     time: int
     protected_jobs: tuple[ProtectedJobRelationState, ...]
+    protected_pending_releases: tuple[Mapping[str, Any], ...]
     running_job_key: tuple[str, int] | None
     miss_job_keys: frozenset[tuple[str, int]]
 
@@ -42,15 +43,20 @@ PHASE_ORDER = (
     "SvcEnd", "AfterREM", "AfterREC", "DDLCursor", "ARRCursor", "PreDisp", "Close",
 )
 
-STATE_FIELDS = ("time", "running_job_key", "miss_job_keys")
+STATE_FIELDS = ("time", "pending_releases", "running_job_key", "miss_job_keys")
 JOB_FIELDS = (
     "job_key", "task_name", "criticality", "release_time", "absolute_deadline",
     "priority_index", "actual_demand", "hi_class", "executed_service", "active",
     "ready", "running", "completed", "missed",
 )
+PENDING_RELEASE_FIELDS = (
+    "job_key", "task_name", "criticality", "release_time", "absolute_deadline",
+    "priority_index", "actual_demand", "hi_class",
+)
 EXCLUDED_FIELDS = (
     "global_mode", "primary_degraded_label", "protected_lo_primary_degraded_label",
     "tail_jobs", "tail_only_event", "switch_trigger_identity",
+    "pending_effective_release_mode", "pending_lo_version_label",
 )
 
 
@@ -96,6 +102,28 @@ def _job_map(observable: Mapping[str, Any]) -> dict[tuple[str, int], dict[str, A
         result[key] = job
     return result
 
+
+
+
+def _pending_release_map(observable: Mapping[str, Any]) -> dict[tuple[str, int], dict[str, Any]]:
+    raw_pending = observable.get("pending_releases", ())
+    if not isinstance(raw_pending, (tuple, list)):
+        raise ValueError("PROTECTED_PENDING_RELEASES_INVALID")
+    result: dict[tuple[str, int], dict[str, Any]] = {}
+    for raw in raw_pending:
+        pending = _mapping(raw)
+        missing = [name for name in PENDING_RELEASE_FIELDS if name not in pending]
+        if missing:
+            raise ValueError(f"PROTECTED_PENDING_FIELDS_MISSING:{','.join(missing)}")
+        raw_key = pending["job_key"]
+        if not isinstance(raw_key, (tuple, list)) or len(raw_key) != 2:
+            raise ValueError("PROTECTED_PENDING_JOB_KEY_INVALID")
+        key = (str(raw_key[0]), int(raw_key[1]))
+        if key in result:
+            raise ValueError(f"PROTECTED_PENDING_JOB_KEY_DUPLICATE:{key[0]}:{key[1]}")
+        pending["job_key"] = key
+        result[key] = pending
+    return result
 
 def _normalize_key_set(value: Any) -> tuple[tuple[str, int], ...] | None:
     if value is None:
@@ -147,10 +175,22 @@ def check_phase_relation(
                 continue
             for field in JOB_FIELDS:
                 checks[f"job[{key}].{field}"] = full_jobs[key][field] == prefix_jobs[key][field]
+
+        full_pending = _pending_release_map(full)
+        prefix_pending = _pending_release_map(prefix)
+        checks["pending_job_key_set"] = set(full_pending) == set(prefix_pending)
+        for key in sorted(set(full_pending) | set(prefix_pending)):
+            if key not in full_pending or key not in prefix_pending:
+                checks[f"pending[{key}].present"] = False
+                continue
+            for field in PENDING_RELEASE_FIELDS:
+                checks[f"pending[{key}].{field}"] = (
+                    full_pending[key][field] == prefix_pending[key][field]
+                )
     except (TypeError, ValueError, KeyError, IndexError) as exc:
         return {
             "phase": phase, "k_full": k_full, "k_prefix": k_prefix,
-            "schema_version": "phase_relation_v3", "status": "FAIL",
+            "schema_version": "phase_relation_v4_close_at", "status": "FAIL",
             "equality_checks": checks, "failed_fields": [str(exc)],
             "failure": {"code": "PROTECTED_PHASE_RELATION_INPUT_INVALID", "reason": str(exc)},
         }
@@ -160,7 +200,7 @@ def check_phase_relation(
         "phase": phase,
         "k_full": k_full if phase in ("DDLCursor", "ARRCursor") else None,
         "k_prefix": k_prefix if phase in ("DDLCursor", "ARRCursor") else None,
-        "schema_version": "phase_relation_v3",
+        "schema_version": "phase_relation_v4_close_at",
         "status": "PASS" if all_equal else "FAIL",
         "equality_checks": checks,
         "failed_fields": [name for name, value in checks.items() if not value],
@@ -182,4 +222,8 @@ def relation_includes_field(field_name: str) -> bool:
 
 
 def relation_preserves_field(field_name: str) -> bool:
-    return field_name in STATE_FIELDS or field_name in JOB_FIELDS
+    return (
+        field_name in STATE_FIELDS
+        or field_name in JOB_FIELDS
+        or field_name in PENDING_RELEASE_FIELDS
+    )

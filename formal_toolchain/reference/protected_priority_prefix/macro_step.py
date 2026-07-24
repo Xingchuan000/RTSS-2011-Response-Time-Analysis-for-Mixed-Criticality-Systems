@@ -180,6 +180,7 @@ def prove_protected_service_correspondence(
     construction: ProtectedPrefixBuildResult,
     pp0_receipts: Mapping[str, Any] | None = None,
     idle_jump_receipt: Mapping[str, Any] | None = None,
+    service_relation_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """L3: Protected service correspondence.
 
@@ -198,7 +199,16 @@ def prove_protected_service_correspondence(
         and idle_jump_receipt.get("parameterized") is True
         and idle_jump_receipt.get("independent_of_complete_execution_witness") is True
     )
-    established = service_ok and tail_ok and idle_ok
+    relation_ok = (
+        isinstance(service_relation_receipt, Mapping)
+        and service_relation_receipt.get("status") == "PASS"
+        and service_relation_receipt.get("same_protected_running_job") is True
+        and service_relation_receipt.get("same_unit_service_increment") is True
+        and service_relation_receipt.get("tail_service_is_protected_stutter") is True
+        and service_relation_receipt.get("relation_schema")
+            == "phase_relation_v4_close_at"
+    )
+    established = service_ok and tail_ok and idle_ok and relation_ok
     return {
         "status": "PASS" if established else "UNRESOLVED",
         "lemma": "PROTECTED_SERVICE_CORRESPONDENCE",
@@ -221,6 +231,7 @@ def prove_protected_service_correspondence(
         "requires_pp0_smt2": True,
         "transition_cases": ["SERVICE_UNIT", "TAIL_ONLY_SERVICE"],
         "idle_jump_stutter_theorem_consumed": idle_ok,
+        "relational_kernel_consumed": relation_ok,
         "reason": (
             "This obligation requires verifying SERVICE_UNIT and TAIL_ONLY_SERVICE "
             "transition schemas via SMT2 queries over the compiled transition IR."
@@ -237,6 +248,7 @@ def prove_completion_removal_correspondence(
     *,
     construction: ProtectedPrefixBuildResult,
     pp0_receipts: Mapping[str, Any] | None = None,
+    removal_relation_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """L4: Completion/removal correspondence.
 
@@ -244,7 +256,17 @@ def prove_completion_removal_correspondence(
     After removal, protected ledger relation holds.
     """
     pp0 = pp0_receipts or {}
-    ok = pp0.get("REM_COMPLETION", {}).get("status") == "PASS"
+    pp0_ok = pp0.get("REM_COMPLETION", {}).get("status") == "PASS"
+    relation_ok = (
+        isinstance(removal_relation_receipt, Mapping)
+        and removal_relation_receipt.get("status") == "PASS"
+        and removal_relation_receipt.get("same_removal_guard") is True
+        and removal_relation_receipt.get("same_terminal_record") is True
+        and removal_relation_receipt.get("relation_reestablished_after_removal") is True
+        and removal_relation_receipt.get("relation_schema")
+            == "phase_relation_v4_close_at"
+    )
+    ok = pp0_ok and relation_ok
     return {
         "status": "PASS" if ok else "UNRESOLVED",
         "lemma": "COMPLETION_REMOVAL_CORRESPONDENCE",
@@ -262,6 +284,7 @@ def prove_completion_removal_correspondence(
         },
         "requires_pp0_smt2": True,
         "transition_case": "REM_COMPLETION",
+        "relational_kernel_consumed": relation_ok,
         "reason": (
             "This obligation requires verifying the REM_COMPLETION transition "
             "schema via SMT2 queries over the compiled transition IR."
@@ -279,6 +302,7 @@ def prove_deadline_batch_correspondence(
     construction: ProtectedPrefixBuildResult,
     full_batch_entries: list[dict[str, Any]] | None = None,
     prefix_batch_entries: list[dict[str, Any]] | None = None,
+    fold_kernel_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """L5: Deadline batch correspondence.
 
@@ -304,13 +328,14 @@ def prove_deadline_batch_correspondence(
 
     cursor, proof = construct_batch_cursor(
         full_batch_entries, prefix_batch_entries,
-        protected_names, "DDLCursor",
+        protected_names, "DDLCursor", proof_kernel_receipt=fold_kernel_receipt,
     )
     verification = verify_batch_cursor_proof(cursor, proof)
 
     fold_lemma = construct_fold_lemma(
         full_batch_entries, prefix_batch_entries,
         protected_names, "DDLCursor",
+        proof_kernel_receipt=fold_kernel_receipt,
     )
     fold_verification = verify_fold_lemma(fold_lemma)
 
@@ -336,6 +361,7 @@ def prove_arrival_batch_projection(
     construction: ProtectedPrefixBuildResult,
     full_batch_entries: list[dict[str, Any]] | None = None,
     prefix_batch_entries: list[dict[str, Any]] | None = None,
+    fold_kernel_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """L6: Arrival batch projection.
 
@@ -363,13 +389,14 @@ def prove_arrival_batch_projection(
 
     cursor, proof = construct_batch_cursor(
         full_batch_entries, prefix_batch_entries,
-        protected_names, "ARRCursor",
+        protected_names, "ARRCursor", proof_kernel_receipt=fold_kernel_receipt,
     )
     verification = verify_batch_cursor_proof(cursor, proof)
 
     fold_lemma = construct_fold_lemma(
         full_batch_entries, prefix_batch_entries,
         protected_names, "ARRCursor",
+        proof_kernel_receipt=fold_kernel_receipt,
     )
     fold_verification = verify_fold_lemma(fold_lemma)
 
@@ -394,6 +421,9 @@ def prove_arrival_batch_projection(
 def prove_mode_tail_phase_join(
     *,
     construction: ProtectedPrefixBuildResult,
+    pp0_receipts: Mapping[str, Any] | None = None,
+    idle_jump_receipt: Mapping[str, Any] | None = None,
+    phase_join_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """L7: Mode/tail phase join.
 
@@ -405,10 +435,18 @@ def prove_mode_tail_phase_join(
     - SW: full applies SW, prefix identity skips (mode difference excluded from ObsP)
     - TAIL_ONLY_SERVICE: full tail service, prefix identity stutter
     """
+    pp0 = pp0_receipts or {}
+    required_pp0 = all(pp0.get(case, {}).get("status") == "PASS"
+                       for case in ("RECOVERY", "MODE_SWITCH", "TAIL_ONLY_SERVICE"))
+    idle_ok = isinstance(idle_jump_receipt, Mapping) and idle_jump_receipt.get("status") == "PASS"
+    kernel_ok = (isinstance(phase_join_receipt, Mapping)
+                 and phase_join_receipt.get("status") == "PASS"
+                 and phase_join_receipt.get("all_symmetric_cases") is True)
+    established = required_pp0 and idle_ok and kernel_ok
     return {
-        "status": "UNRESOLVED",
+        "status": "PASS" if established else "UNRESOLVED",
         "lemma": "MODE_TAIL_PHASE_JOIN",
-        "code": "PARAMETRIC_TRANSITION_PROOF_MISSING",
+        "code": None if established else "PARAMETRIC_TRANSITION_PROOF_MISSING",
         "phase_relation": "RelPP_AfterREC | RelPP_Close",
         "identity_skip_cases": {
             "FULL_ONLY_RECOVERY": {
@@ -434,6 +472,7 @@ def prove_mode_tail_phase_join(
             },
         },
         "requires_pp0_smt2": True,
+        "symmetric_cases_verified": kernel_ok,
         "transition_cases": [
             "FULL_ONLY_RECOVERY", "PREFIX_ONLY_RECOVERY",
             "FULL_ONLY_MODE_SWITCH", "PREFIX_ONLY_MODE_SWITCH",
@@ -460,6 +499,11 @@ def prove_protected_macro_step_preservation(
     pp0_receipts: Mapping[str, Any] | None = None,
     fold_receipts: Mapping[str, Any] | None = None,
     idle_jump_receipt: Mapping[str, Any] | None = None,
+    scheduler_semantics_receipt: Mapping[str, Any] | None = None,
+    dispatch_semantics_receipt: Mapping[str, Any] | None = None,
+    phase_join_receipt: Mapping[str, Any] | None = None,
+    service_relation_receipt: Mapping[str, Any] | None = None,
+    removal_relation_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """L8: Canonical macro-step preservation.
 
@@ -470,20 +514,39 @@ def prove_protected_macro_step_preservation(
 
     Section 9 L8 receipt must list L1–L7 artifact hashes and same relation schema hash.
     """
-    tail = prove_tail_service_exclusion(full_taskset=full_taskset, construction=construction)
+    tail = prove_tail_service_exclusion(
+        full_taskset=full_taskset, construction=construction,
+        scheduler_semantics_receipt=scheduler_semantics_receipt,
+    )
     lemmas = [
         prove_final_dispatch_correspondence(
             construction=construction,
             tail_service_exclusion_receipt=tail,
+            dispatch_semantics_receipt=dispatch_semantics_receipt,
         ),
         prove_protected_service_correspondence(
             construction=construction, pp0_receipts=pp0_receipts,
             idle_jump_receipt=idle_jump_receipt,
+            service_relation_receipt=service_relation_receipt,
         ),
-        prove_completion_removal_correspondence(construction=construction, pp0_receipts=pp0_receipts),
-        prove_deadline_batch_correspondence(construction=construction),
-        prove_arrival_batch_projection(construction=construction),
-        prove_mode_tail_phase_join(construction=construction),
+        prove_completion_removal_correspondence(
+            construction=construction,
+            pp0_receipts=pp0_receipts,
+            removal_relation_receipt=removal_relation_receipt,
+        ),
+        prove_deadline_batch_correspondence(
+            construction=construction,
+            fold_kernel_receipt=(fold_receipts or {}).get("DDLCursor"),
+        ),
+        prove_arrival_batch_projection(
+            construction=construction,
+            fold_kernel_receipt=(fold_receipts or {}).get("ARRCursor"),
+        ),
+        prove_mode_tail_phase_join(
+            construction=construction, pp0_receipts=pp0_receipts,
+            idle_jump_receipt=idle_jump_receipt,
+            phase_join_receipt=phase_join_receipt,
+        ),
     ]
 
     lemma_hashes = [sha256_object(lm) for lm in [tail] + lemmas]
@@ -513,7 +576,7 @@ def prove_protected_macro_step_preservation(
             "Rel_pp_close(CloseAt_full(t),CloseAt_pp(t)) -> "
             "Rel_pp_close(CloseAt_full(t+1),CloseAt_pp(t+1))"
         ),
-        "integer_time_induction": True,
+        "integer_time_induction": all_pass,
         "idle_jump_stutter_theorem_consumed": idle_ok,
         "phase_relation_schema": "phase_relation_v4_close_at",
     }

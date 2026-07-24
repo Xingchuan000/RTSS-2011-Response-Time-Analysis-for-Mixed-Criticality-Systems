@@ -98,7 +98,7 @@ def test_macro_step_theorem_uses_common_integer_close_at_domain():
     )
     assert receipt["status"] == "UNRESOLVED"
     assert "CloseAt_full(t+1)" in receipt["conclusion"]
-    assert receipt["integer_time_induction"] is True
+    assert receipt["integer_time_induction"] is False
     assert receipt["idle_jump_stutter_theorem_consumed"] is False
 
 

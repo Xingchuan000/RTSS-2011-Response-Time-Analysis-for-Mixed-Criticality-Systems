@@ -9,7 +9,7 @@ IR in pp0_transition_ir.py serves as schema/obligation catalogue only.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 from formal_toolchain.core.hashing import sha256_object
 
@@ -96,6 +96,12 @@ class TransitionCompilationReceipt:
     frame_fields: tuple[str, ...] = ()
     unsupported_nodes: tuple[str, ...] = ()
     total_semantic_coverage: bool = False
+    domain_equations: tuple[str, ...] = ()
+    guard_equations: tuple[str, ...] = ()
+    update_equations: tuple[str, ...] = ()
+    exceptional_paths: tuple[str, ...] = ()
+    helper_summary_hashes: tuple[str, ...] = ()
+    control_flow_coverage: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -113,6 +119,12 @@ class TransitionCompilationReceipt:
             "frame_fields": list(self.frame_fields),
             "unsupported_nodes": list(self.unsupported_nodes),
             "total_semantic_coverage": self.total_semantic_coverage,
+            "domain_equations": list(self.domain_equations),
+            "guard_equations": list(self.guard_equations),
+            "update_equations": list(self.update_equations),
+            "exceptional_paths": list(self.exceptional_paths),
+            "helper_summary_hashes": list(self.helper_summary_hashes),
+            "control_flow_coverage": dict(self.control_flow_coverage),
         }
 
 

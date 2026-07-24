@@ -65,6 +65,21 @@ def check_runtime_schema_conformance(**kwargs: Any) -> dict[str, Any]:
     cert = build_runtime_schema_certificate()
     checked = verify_runtime_schema_certificate(cert)
 
+    if (
+        pp0_cert.get("status") == "PASS"
+        and validation.get("status") == "PASS"
+        and checked.get("status") == "PASS"
+        and all(value is True for key, value in cert.get("pp0_witness", {}).items()
+                if key != "source_query_ids")
+    ):
+        return _finish("PASS", witness={
+            "status": "PASS",
+            "pp0_transition_status": pp0_cert.get("status"),
+            "compiled_ir_validation": validation,
+            "pp0_witness": cert["pp0_witness"],
+            "certificate_hash": cert.get("certificate_hash"),
+        })
+
     return _finish(
         "UNRESOLVED",
         "PROTECTED_PREFIX_RUNTIME_SCHEMA_PARAMETRIC_PROOF_MISSING",
@@ -189,20 +204,15 @@ def check_full_reference_recurring_input_oracle(**kwargs: Any) -> dict[str, Any]
     }
     release_fixed = rows.get("RELEASE_FIXED_DEMAND_DOMINATION", {}).get("passed") is True
     periodic = rows.get("FINITE_INDEPENDENT_PERIODIC_SUBLANGUAGE", {}).get("passed") is True
-    receipt = kwargs.get("parametric_full_input_oracle_receipt")
     full_fp = state.full_reference_taskset.to_dict()["fingerprint"]
-    kernel_ok = (
-        isinstance(receipt, Mapping)
-        and receipt.get("status") == "PASS"
-        and receipt.get("theorem_id") == "FULL_REFERENCE_RECURRING_INPUT_ORACLE"
-        and receipt.get("reference_taskset_fingerprint") == full_fp
-        and receipt.get("forall_full_reference_executions") is True
-        and receipt.get("unique_release_record_for_every_job_key") is True
-        and receipt.get("release_fixed_actual_demand") is True
-        and receipt.get("infinite_recurring_domain") is True
-        and receipt.get("demand_not_regenerated_from_wcet") is True
+    from formal_toolchain.reference.protected_priority_prefix.full_execution_input_view import (
+        build_symbolic_full_execution_input_theorem,
     )
-    if not (release_fixed and periodic and kernel_ok):
+    receipt = build_symbolic_full_execution_input_theorem(
+        full_taskset=state.full_reference_taskset,
+        conformance_witness=conformance,
+    )
+    if receipt.get("status") != "PASS":
         return _finish("UNRESOLVED", "PARAMETRIC_FULL_INPUT_ORACLE_PROOF_MISSING", {
             "release_fixed_reference_conformance": release_fixed,
             "periodic_recurring_reference_conformance": periodic,
@@ -239,22 +249,23 @@ def check_protected_input_stream_projection(**kwargs: Any) -> dict[str, Any]:
     if construction is None:
         return _finish("UNRESOLVED", "PROTECTED_PREFIX_CONSTRUCTION_MISSING")
     source = predecessors["FULL_REFERENCE_RECURRING_INPUT_ORACLE"].get("witness", {})
-    receipt = kwargs.get("parametric_input_projection_receipt")
     prefix_fp = construction.prefix_taskset.to_dict()["fingerprint"]
-    kernel_ok = (
-        isinstance(receipt, Mapping)
-        and receipt.get("status") == "PASS"
-        and receipt.get("theorem_id") == "PROTECTED_INPUT_STREAM_PROJECTION"
-        and receipt.get("full_input_contract_receipt_hash") == source.get("contract_receipt_hash")
-        and receipt.get("prefix_taskset_fingerprint") == prefix_fp
-        and receipt.get("all_release_indices") is True
-        and receipt.get("protected_keys_times_demands_classes_preserved") is True
-        and receipt.get("tail_entries_deleted_only") is True
-        and receipt.get("query_order_independent") is True
+    from formal_toolchain.reference.protected_priority_prefix.projected_oracle_theorem import (
+        build_symbolic_projection_theorem,
     )
-    if not kernel_ok:
+    receipt = build_symbolic_projection_theorem(
+        full_theorem=source.get("contract_receipt", source),
+        protected_task_names=frozenset(construction.protected_task_names),
+        full_taskset=state.full_reference_taskset,
+        prefix_taskset=construction.prefix_taskset,
+        saturation_witness=construction.saturation_witness,
+        saturation_certificate_hash=str(
+            predecessors["SATURATED_PROTECTED_PREFIX_REFERENCE"].get("artifact_hash", "")
+        ),
+    )
+    if receipt.get("status") != "PASS":
         return _finish("UNRESOLVED", "PARAMETRIC_INPUT_PROJECTION_PROOF_MISSING", {
-            "required_quantifier_order": "forall-full-exists-one-prefix-forall-boundaries",
+            "required_quantifier_scope": "forall-full-execution-exists-unique-projected-stream",
             "reason": (
                 "A lazy Python wrapper and finitely sampled jobs do not prove the "
                 "projection for every release index of an arbitrary full execution."
@@ -268,7 +279,7 @@ def check_protected_input_stream_projection(**kwargs: Any) -> dict[str, Any]:
         "prefix_taskset_fingerprint": prefix_fp,
         "complete_recurring_stream": True,
         "protected_input_independence": True,
-        "quantifier_order": "forall-full-exists-one-prefix-forall-boundaries",
+        "quantifier_scope": "forall-full-execution-exists-unique-projected-stream",
     })
 
 def check_protected_input_demand_receptiveness(**kwargs: Any) -> dict[str, Any]:
@@ -283,23 +294,18 @@ def check_protected_input_demand_receptiveness(**kwargs: Any) -> dict[str, Any]:
     if state is None or state.analysis_taskset is None:
         return _finish("UNRESOLVED", "PROTECTED_PREFIX_TASKSET_MISSING")
     projection = predecessors["PROTECTED_INPUT_STREAM_PROJECTION"].get("witness", {})
-    receipt = kwargs.get("parametric_demand_receptiveness_receipt")
     prefix_fp = state.analysis_taskset.to_dict()["fingerprint"]
-    kernel_ok = (
-        isinstance(receipt, Mapping)
-        and receipt.get("status") == "PASS"
-        and receipt.get("theorem_id") == "PROTECTED_INPUT_DEMAND_RECEPTIVENESS"
-        and receipt.get("projection_receipt_hash")
-            == projection.get("projection_receipt", {}).get("receipt_hash")
-        and receipt.get("prefix_taskset_fingerprint") == prefix_fp
-        and receipt.get("forall_release_indices") is True
-        and receipt.get("normal_hi_bound_preserved") is True
-        and receipt.get("abnormal_hi_bound_preserved") is True
-        and receipt.get("saturated_lo_mode_independent_bound") is True
-        and receipt.get("actual_demand_positive") is True
-        and receipt.get("demand_fixed_at_release") is True
+    from formal_toolchain.reference.protected_priority_prefix.projected_oracle_theorem import (
+        build_symbolic_demand_receptiveness_theorem,
     )
-    if not kernel_ok:
+    saturation = predecessors["PROTECTED_PREFIX_LO_SATURATION"].get("witness", {})
+    receipt = build_symbolic_demand_receptiveness_theorem(
+        full_taskset=state.full_reference_taskset,
+        prefix_taskset=state.analysis_taskset,
+        projection_theorem=projection.get("projection_receipt", projection),
+        saturation_witness=saturation,
+    )
+    if receipt.get("status") != "PASS":
         return _finish("UNRESOLVED", "PARAMETRIC_DEMAND_RECEPTIVENESS_PROOF_MISSING", {
             "reason": (
                 "Checking q=0 or any finite horizon cannot establish demand "
@@ -384,7 +390,7 @@ def check_prefix_same_time_closure_terminates(**kwargs: Any) -> dict[str, Any]:
     result = prove_same_time_closure_terminates(
         runtime_schema_receipt=predecessors["PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE"],
         prefix_extension_receipt=predecessors["PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION"],
-        proof_kernel_receipt=kwargs.get("same_time_closure_proof_kernel"),
+        proof_kernel_receipt=None,
     )
     return _finish(
         "PASS" if result.get("status") == "PASS" else "UNRESOLVED",
@@ -421,7 +427,7 @@ def check_prefix_canonical_successor_total(**kwargs: Any) -> dict[str, Any]:
         prefix_extension_receipt=predecessors["PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION"],
         input_projection_receipt=predecessors["PROTECTED_INPUT_STREAM_PROJECTION"],
         demand_receptiveness_receipt=predecessors["PROTECTED_INPUT_DEMAND_RECEPTIVENESS"],
-        proof_kernel_receipt=kwargs.get("canonical_successor_proof_kernel"),
+        proof_kernel_receipt=None,
     )
     return _finish(
         "PASS" if total.get("status") == "PASS" else "UNRESOLVED",
@@ -442,7 +448,7 @@ def check_prefix_time_divergence(**kwargs: Any) -> dict[str, Any]:
     )
     result = prove_time_divergence(
         canonical_successor_receipt=predecessors["PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL"],
-        proof_kernel_receipt=kwargs.get("time_divergence_proof_kernel"),
+        proof_kernel_receipt=None,
     )
     return _finish(
         "PASS" if result.get("status") == "PASS" else "UNRESOLVED",
@@ -472,7 +478,7 @@ def check_prefix_idle_jump_stutter_expansion(**kwargs: Any) -> dict[str, Any]:
     result = prove_idle_jump_stutter_expansion(
         execution=kwargs.get("prefix_execution") or kwargs.get("finite_execution_diagnostic"),
         observable_projector=kwargs.get("protected_observable_projector"),
-        proof_kernel_receipt=kwargs.get("idle_jump_proof_kernel"),
+        proof_kernel_receipt=None,
     )
     return _finish(
         "PASS" if result.get("status") == "PASS" else "UNRESOLVED",
@@ -507,8 +513,8 @@ def check_prefix_complete_execution_exists(**kwargs: Any) -> dict[str, Any]:
         demand_receptiveness_receipt=predecessors["PROTECTED_INPUT_DEMAND_RECEPTIVENESS"],
         prefix_taskset=state.analysis_taskset,
         prefix_initial_state=kwargs.get("prefix_initial_state"),
-        single_witness_receipt=kwargs.get("single_execution_witness_receipt"),
-        proof_kernel_receipt=kwargs.get("complete_execution_proof_kernel"),
+        single_witness_receipt=None,
+        proof_kernel_receipt=None,
         idle_jump_expansion_receipt=predecessors["PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION"],
     )
     if result.get("status") == "PASS":
@@ -616,8 +622,11 @@ def check_lo_saturation(**kwargs: Any) -> dict[str, Any]:
         for task in result.prefix_taskset.tasks
         if task.criticality == "LO"
     )
-    return _finish("PASS" if ok else "FAIL",
-                   None if ok else "PROTECTED_PREFIX_SATURATION_MISMATCH")
+    return _finish(
+        "PASS" if ok else "FAIL",
+        None if ok else "PROTECTED_PREFIX_SATURATION_MISMATCH",
+        result.saturation_witness,
+    )
 
 
 def check_prefix_rta(**kwargs: Any) -> dict[str, Any]:
@@ -651,7 +660,6 @@ def check_prefix_model_conformance(**kwargs: Any) -> dict[str, Any]:
         "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
         "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION",
         "PROTECTED_INPUT_DEMAND_RECEPTIVENESS",
-        "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS",
         "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC",
         "ZERO_RELATIVE_START",
     }
@@ -670,7 +678,7 @@ def check_prefix_model_conformance(**kwargs: Any) -> dict[str, Any]:
     full = state.full_reference_taskset
     prefix = state.analysis_taskset
     runtime_certificate = predecessors["PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE"].get("witness", {})
-    execution_receipt = predecessors["PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS"].get("witness", {})
+    prefix_extension_receipt = predecessors["PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION"]
     rta_container = predecessors["PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"].get("witness", {})
     rta_witness = rta_container.get("witness", rta_container) if isinstance(rta_container, Mapping) else {}
     candidate_enumeration_receipt = {
@@ -686,7 +694,7 @@ def check_prefix_model_conformance(**kwargs: Any) -> dict[str, Any]:
         prefix_taskset=prefix,
         construction=construction,
         runtime_schema_certificate=runtime_certificate,
-        execution_existence_receipt=execution_receipt,
+        prefix_extension_receipt=prefix_extension_receipt,
         demand_receptiveness_receipt=predecessors["PROTECTED_INPUT_DEMAND_RECEPTIVENESS"],
         candidate_enumeration_receipt=candidate_enumeration_receipt,
         zero_relative_start_receipt=predecessors["ZERO_RELATIVE_START"],

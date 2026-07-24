@@ -10,6 +10,31 @@ from typing import Any, Mapping
 
 from formal_toolchain.core.hashing import sha256_object
 
+
+def _solve_code_bound_smt2(smt2: str) -> tuple[str, str | None]:
+    """Run the freshly generated code-bound query through Z3.
+
+    The checker deliberately parses the generated SMT2 text instead of
+    trusting a receipt supplied by a caller.  A query is a PP0 proof only
+    when Z3 returns UNSAT; parser/solver failures remain unresolved.
+    """
+    try:
+        import z3
+    except Exception as exc:  # pragma: no cover - environment dependent
+        return "UNRESOLVED", f"PP0_Z3_UNAVAILABLE:{type(exc).__name__}:{exc}"
+    try:
+        assertions = z3.parse_smt2_string(smt2)
+        solver = z3.Solver()
+        solver.add(assertions)
+        result = solver.check()
+    except Exception as exc:
+        return "UNRESOLVED", f"PP0_SMT_PARSE_OR_SOLVE_ERROR:{type(exc).__name__}:{exc}"
+    if result == z3.unsat:
+        return "UNSAT", None
+    if result == z3.sat:
+        return "SAT", "PP0_NEGATED_OBLIGATION_SATISFIABLE"
+    return "UNKNOWN", "PP0_Z3_RETURNED_UNKNOWN"
+
 from .transition_schema import (
     CANONICAL_CASES,
     canonical_case_ids,
@@ -213,12 +238,14 @@ def check_pp0_transition_queries() -> dict[str, Any]:
                     )
                 all_resolved = False
             else:
-                status = "UNRESOLVED"
-                detail = (
-                    "Code-bound SMT2 query generated but not yet verified by an "
-                    "integrated solver.  Solver must prove UNSAT for PASS."
-                )
-                all_resolved = False
+                solver_result, solver_error = _solve_code_bound_smt2(smt2)
+                if solver_result == "UNSAT":
+                    status = "PASS"
+                    detail = "Z3 proved the negated executable-transition obligation UNSAT."
+                else:
+                    status = "FAIL" if solver_result in {"SAT", "UNKNOWN"} else "UNRESOLVED"
+                    detail = solver_error or "PP0 solver did not prove UNSAT."
+                    all_resolved = False if status == "UNRESOLVED" else all_resolved
 
             case_entry["obligation_results"][obligation_key] = {
                 "query_id": query_id,
@@ -229,7 +256,11 @@ def check_pp0_transition_queries() -> dict[str, Any]:
                     case_entry.get("compiled_source_function_ast_hash")
                     if compiled_available else query_info.get("source_binding_hash")
                 ),
-                "solver_result": None,
+                "solver_result": (
+                    "trivial" if is_trivial else (
+                        solver_result if code_bound else None
+                    )
+                ),
                 "transition_equations_bound": code_bound,
                 "proof_scope": query_info.get("proof_scope"),
                 "status": status,

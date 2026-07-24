@@ -76,18 +76,20 @@ def test_complete_execution_registry_matches_checker_predecessors():
     }
 
 
-def test_prefix_model_conformance_receives_execution_and_candidate_domain_proofs():
+def test_prefix_model_conformance_receives_prefix_extension_and_candidate_domain_proofs():
     resolved = resolve_registry("protected_prefix")
     by_id = {entry["id"]: entry for entry in resolved.entries}
     deps = set(by_id["PROTECTED_PREFIX_REFERENCE_MODEL_CONFORMANCE"]["depends_on"])
-    assert "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS" in deps
+    assert "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION" in deps
+    assert "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS" not in deps
     assert "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC" in deps
 
 
-def test_prefix_model_conformance_consumes_zero_start_and_execution_proofs():
+def test_prefix_model_conformance_consumes_zero_start_and_model_extension_proofs():
     registry = resolve_registry("protected_prefix")
     by_id = {item["id"]: item for item in registry.entries}
     deps = set(by_id["PROTECTED_PREFIX_REFERENCE_MODEL_CONFORMANCE"]["depends_on"])
     assert "ZERO_RELATIVE_START" in deps
-    assert "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS" in deps
+    assert "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION" in deps
+    assert "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS" not in deps
     assert "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC" in deps

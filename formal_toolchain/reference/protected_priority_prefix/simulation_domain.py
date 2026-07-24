@@ -89,8 +89,10 @@ def check_full_to_prefix_simulation_domain(**kwargs: Any) -> dict[str, Any]:
     execution = _predecessor_witness(predecessors, "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS")
 
     quantifier_order_correct = (
-        projection.get("quantifier_order") == "forall-full-exists-one-prefix-forall-boundaries"
-        and execution.get("quantifier_order") == "forall-full-exists-one-prefix-forall-boundaries"
+        projection.get("quantifier_scope")
+            == "forall-full-execution-exists-unique-projected-stream"
+        and execution.get("quantifier_order")
+            == "forall-full-exists-one-prefix-forall-boundaries"
     )
     projection_oracle_fp = projection.get("projected_oracle_fingerprint")
     execution_oracle_fp = execution.get("projected_oracle_fingerprint")

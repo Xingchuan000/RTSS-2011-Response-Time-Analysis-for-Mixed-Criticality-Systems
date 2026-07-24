@@ -36,9 +36,22 @@ class ProtectedJobObservable:
 
 
 @dataclass(frozen=True, slots=True)
+class ProtectedPendingReleaseObservable:
+    job_key: JobKey
+    task_name: str
+    criticality: str
+    release_time: int
+    absolute_deadline: int
+    priority_index: int
+    actual_demand: int
+    hi_class: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class ProtectedStateObservable:
     time: int
     jobs: tuple[ProtectedJobObservable, ...]
+    pending_releases: tuple[ProtectedPendingReleaseObservable, ...]
     running_job_key: JobKey | None
     miss_job_keys: tuple[JobKey, ...]
 
@@ -99,21 +112,47 @@ def project_protected_state(
             completed=completed,
             missed=key in miss_set,
         ))
+    pending: list[ProtectedPendingReleaseObservable] = []
+    for key in sorted(
+        (key for key in state.pending_releases if key[0] in protected_task_names),
+        key=lambda item: (item[1], item[0]),
+    ):
+        plan = state.pending_releases[key]
+        pending.append(ProtectedPendingReleaseObservable(
+            job_key=key,
+            task_name=key[0],
+            criticality=str(plan.criticality),
+            release_time=int(plan.release_time),
+            absolute_deadline=int(plan.absolute_deadline),
+            priority_index=int(plan.priority_index),
+            actual_demand=int(plan.removal_demand),
+            hi_class=_hi_class(str(plan.criticality), str(plan.release_class)),
+        ))
+
     running = state.running if state.running and state.running[0] in protected_task_names else None
     return ProtectedStateObservable(
-        time=int(state.time), jobs=tuple(jobs), running_job_key=running,
-        miss_job_keys=miss_keys,
+        time=int(state.time), jobs=tuple(jobs), pending_releases=tuple(pending),
+        running_job_key=running, miss_job_keys=miss_keys,
     )
 
 
 def observable_schema() -> dict[str, object]:
     return {
-        "version": "protected-observable-v1",
-        "state_fields": ["time", "jobs", "running_job_key", "miss_job_keys"],
+        "version": "protected-observable-v2-pending-release",
+        "state_fields": [
+            "time", "jobs", "pending_releases", "running_job_key", "miss_job_keys"
+        ],
         "job_fields": [
             "job_key", "task_name", "criticality", "release_time",
             "absolute_deadline", "priority_index", "actual_demand", "hi_class",
             "executed_service", "active", "ready", "running", "completed", "missed",
         ],
-        "excluded": ["global_mode", "protected_lo_primary_degraded_label", "tail_jobs"],
+        "pending_release_fields": [
+            "job_key", "task_name", "criticality", "release_time",
+            "absolute_deadline", "priority_index", "actual_demand", "hi_class",
+        ],
+        "excluded": [
+            "global_mode", "protected_lo_primary_degraded_label",
+            "pending_effective_release_mode", "pending_lo_version_label", "tail_jobs",
+        ],
     }

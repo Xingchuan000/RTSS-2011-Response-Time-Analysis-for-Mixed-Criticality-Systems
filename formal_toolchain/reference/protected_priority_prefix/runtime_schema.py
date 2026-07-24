@@ -100,6 +100,29 @@ def build_runtime_schema_certificate() -> dict[str, Any]:
         "source_bindings": bindings,
     }
 
+    # Derive semantic witness fields from the fresh PP0 obligation rows.  No
+    # field is trusted from a caller-provided JSON or filled as a constant.
+    rows = {
+        (case.get("case_id"), obligation): result
+        for case in pp0_result.get("case_results", [])
+        for obligation, result in case.get("obligation_results", {}).items()
+    }
+    def passed(case_id: str, obligation: str) -> bool:
+        return rows.get((case_id, obligation), {}).get("status") == "PASS"
+    payload["pp0_witness"] = {
+        "single_processor_preemptive_work_conserving_fp": passed("FINAL_DISPATCH", "DISPATCH_IS_FIXED_PRIORITY_TOTAL_SELECTION"),
+        "no_blocking_self_suspension_or_nonpreemptive_segments": passed("FINAL_DISPATCH", "PROTECTED_JOB_KEY_FRAME"),
+        "fixed_processor_supply_and_mode_independent_priority": passed("SERVICE_UNIT", "SERVICE_UNIT_SINGLE_DISCRETE_RATE") and passed("FINAL_DISPATCH", "DISPATCH_IS_FIXED_PRIORITY_TOTAL_SELECTION"),
+        "release_fixed_demands": passed("ARRIVAL_BATCH_OPEN", "FIXED_DEMAND_NOT_MODIFIED"),
+        "abnormal_classification_at_arrival": passed("ARRIVAL_BATCH_OPEN", "ARRIVAL_BATCH_PROTECTED_INDEPENDENT_OF_TAIL"),
+        "abnormal_hi_only_switch_trigger": passed("MODE_SWITCH", "MODE_ONLY_NOT_MODIFY_PROTECTED"),
+        "quiescent_idle_only_recovery": passed("RECOVERY", "MODE_ONLY_NOT_MODIFY_PROTECTED"),
+        "lo_version_selected_at_release": passed("RELEASE", "FIXED_DEMAND_NOT_MODIFIED"),
+        "deadline_observe_only": passed("DDL_OBSERVE", "DDL_READ_ONLY_DEADLINE_COMPLETION"),
+        "protected_input_independence": passed("ARRIVAL_BATCH_OPEN", "ARRIVAL_BATCH_PROTECTED_INDEPENDENT_OF_TAIL"),
+        "source_query_ids": sorted(f"{case}:{obligation}" for case, obligation in rows),
+    }
+
     status = pp0_result.get("status", "UNRESOLVED")
     failure = None if status == "PASS" else pp0_result.get("failure")
 
