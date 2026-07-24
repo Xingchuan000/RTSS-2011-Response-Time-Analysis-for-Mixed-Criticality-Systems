@@ -8,11 +8,12 @@ from formal_toolchain.reference.protected_priority_prefix.certificates import (
     build_partition_certificate, build_saturation_certificate,
 )
 from .protocol import PreparedRouteAnalysis
-from .checkers import unresolved_derived_checker
 from .protected_prefix_checkers import (
     check_partition, check_saturation, check_parameter_preservation,
     check_lo_saturation, check_prefix_rta, check_mathematical_conformance,
-    check_selected_safety,
+    check_selected_safety, check_runtime_schema_conformance, check_simulation_domain,
+    check_weak_forward_simulation, check_hi_bad_prefix_reflection,
+    check_reference_hi_safety_from_protected_prefix,
 )
 
 
@@ -66,29 +67,11 @@ class ProtectedPrefixRoute:
             "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC": check_prefix_rta,
             "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE": check_mathematical_conformance,
             "SELECTED_REFERENCE_HI_SAFETY": check_selected_safety,
-            "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE": unresolved_derived_checker(
-                "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
-                expected_predecessors=("SATURATED_PROTECTED_PREFIX_REFERENCE",)),
-            "FULL_TO_PREFIX_SIMULATION_DOMAIN": unresolved_derived_checker(
-                "FULL_TO_PREFIX_SIMULATION_DOMAIN",
-                expected_predecessors=(
-                    "REFERENCE_MODEL_CONFORMANCE",
-                    "PROTECTED_PRIORITY_PREFIX_PARTITION",
-                    "PROTECTED_PREFIX_LO_SATURATION",
-                    "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
-                )),
-            "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED": unresolved_derived_checker(
-                "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED",
-                expected_predecessors=("FULL_TO_PREFIX_SIMULATION_DOMAIN",)),
-            "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION": unresolved_derived_checker(
-                "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
-                expected_predecessors=("PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED",)),
-            "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX": unresolved_derived_checker(
-                "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
-                expected_predecessors=(
-                    "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
-                    "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE",
-                )),
+            "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE": check_runtime_schema_conformance,
+            "FULL_TO_PREFIX_SIMULATION_DOMAIN": check_simulation_domain,
+            "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED": check_weak_forward_simulation,
+            "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION": check_hi_bad_prefix_reflection,
+            "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX": check_reference_hi_safety_from_protected_prefix,
         }
 
 

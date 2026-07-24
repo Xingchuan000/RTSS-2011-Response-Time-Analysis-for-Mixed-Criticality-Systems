@@ -13,7 +13,7 @@
   "proof_object": {
     "backend": "finite-release-fold-v1",
     "path": "proofs/FINITE_RELEASE_FOLD_PRESERVES_RELATION.proof.json",
-    "sha256": "62bb99a1b0dd0edd7da13543a080d29527143d7a23bef1ef12df7c92e18f707b"
+    "sha256": "aec567da618372c85789af72462fdae51f2093079c271c1ffacdf99db0a05306"
   },
   "source_reference": "Phase K parameterized arrival release fold",
   "statement_hash": "f8b51e24f2692a1094bb67a381a7d9c3cff0c31241e7a5b9ae815ac028759504",

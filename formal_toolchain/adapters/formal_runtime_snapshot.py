@@ -10,6 +10,7 @@ from formal_toolchain.bridge.effective_event_frontier import effective_frontier
 
 class ReleaseClass(str, Enum):
     HI_NORMAL = "HI_NORMAL"
+    HI_ABNORMAL = "HI_ABNORMAL"
     HI_ABNORMAL_SWITCH_TRIGGER = "HI_ABNORMAL_SWITCH_TRIGGER"
     LO_PRIMARY_NORMAL = "LO_PRIMARY_NORMAL"
     LO_PRIMARY_SAME_BATCH_SWITCH_TIME = "LO_PRIMARY_SAME_BATCH_SWITCH_TIME"
@@ -204,9 +205,19 @@ def _release_class_from_provenance(
     release_time = int(job.release_time)
 
     if criticality == "HI":
+        if key in switch_trigger_keys:
+            return ReleaseClass.HI_ABNORMAL_SWITCH_TRIGGER.value
+        actual_cost = int(
+            getattr(
+                job,
+                "original_actual_cost",
+                getattr(job, "actual_cost", 0),
+            )
+        )
+        c_lo = int(getattr(job.task, "c_lo"))
         return (
-            ReleaseClass.HI_ABNORMAL_SWITCH_TRIGGER.value
-            if key in switch_trigger_keys
+            ReleaseClass.HI_ABNORMAL.value
+            if actual_cost > c_lo
             else ReleaseClass.HI_NORMAL.value
         )
 

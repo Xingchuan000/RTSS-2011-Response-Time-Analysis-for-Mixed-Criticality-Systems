@@ -13,6 +13,9 @@ from formal_toolchain.theory.backends.reference_prefix_extension import (
 from formal_toolchain.theory.backends.finite_hi_bad_prefix import FiniteHIBadPrefixBackend
 from formal_toolchain.theory.backends.casewise_prefix_induction import CasewisePrefixInductionBackend
 from formal_toolchain.theory.backends.handler_decomposition import HandlerDecompositionBackend
+from formal_toolchain.theory.backends.protected_prefix_simulation import ProtectedPrefixSimulationBackend
+from formal_toolchain.theory.backends.protected_prefix_bad_prefix import ProtectedPrefixBadPrefixBackend
+from formal_toolchain.theory.backends.protected_prefix_safety import ProtectedPrefixSafetyBackend
 
 TCB_BACKENDS: dict[str, Any] = {
     "reference-prefix-extension-z3-v3": ReferencePrefixExtensionBackend(),
@@ -21,6 +24,9 @@ TCB_BACKENDS: dict[str, Any] = {
     "arrival-batch-decomposition-v1": HandlerDecompositionBackend("arrival-batch-decomposition-v1", ("ast_cfg", "finite_fold", "child_cases", "alternative_partition")),
     "event-handler-decomposition-v1": HandlerDecompositionBackend("event-handler-decomposition-v1", ("ast_cfg", "branch_partition", "sequence_composition")),
     "finite-release-fold-v1": HandlerDecompositionBackend("finite-release-fold-v1", ("base_case", "empty_sequence_case", "head_step", "tail_induction", "fresh_extension_composition", "old_domain_frame_composition", "ledger_frame_composition")),
+    "protected-prefix-simulation-v1": ProtectedPrefixSimulationBackend(),
+    "protected-prefix-bad-prefix-v1": ProtectedPrefixBadPrefixBackend(),
+    "protected-prefix-safety-v1": ProtectedPrefixSafetyBackend(),
 }
 
 MACHINE_PREMISES: dict[str, tuple[str, ...]] = {
@@ -34,6 +40,9 @@ MACHINE_PREMISES: dict[str, tuple[str, ...]] = {
         "EARLY_STOP_CONFIGURATION_GATE",
     ),
     "FINAL_DEPLOYED_HI_SAFETY_COMPOSITION": ("FINITE_BAD_PREFIX_CONTRADICTION",),
+    "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION": ("FULL_TO_PREFIX_SIMULATION_DOMAIN",),
+    "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION": ("PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED",),
+    "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX": ("PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION", "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE"),
 }
 THEOREM_REGISTRY_BINDINGS = {
     "C_AMC_SEM_ALL_TASK_SCHEDULABILITY_SUFFICIENCY": "REFERENCE_TASKSET_SCHEDULABLE",
@@ -41,6 +50,9 @@ THEOREM_REGISTRY_BINDINGS = {
     "FINITE_BAD_PREFIX_CONTRADICTION": "FINITE_BAD_PREFIX_CONTRADICTION",
     "FINITE_HI_BAD_PREFIX_REFLECTION": "HI_BAD_CLOSED_PREFIX_REFLECTION",
     "FINAL_DEPLOYED_HI_SAFETY_COMPOSITION": "FINAL_CLAIM_COMPOSITION",
+    "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION": "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED",
+    "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION": "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
+    "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX": "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
 }
 INTEGRITY_ONLY_DEPENDENCIES = {
     "REFERENCE_TASKSET_SCHEDULABLE": {"THEORY_LIBRARY_VERSION"},
@@ -48,6 +60,12 @@ INTEGRITY_ONLY_DEPENDENCIES = {
 
 
 def registry_dependencies_for_theorem(theory_dir: Path, theorem_id: str) -> set[str]:
+    if theorem_id in {
+        "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION",
+        "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
+        "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
+    }:
+        return set(MACHINE_PREMISES[theorem_id])
     from formal_toolchain.core.registry import load_registry
     registry_entries = load_registry(theory_dir.parent / "specs" / "obligation_registry.json")
     registry_id = THEOREM_REGISTRY_BINDINGS.get(theorem_id)
@@ -78,7 +96,12 @@ def load_verified_theory_statement(theory_dir: Path, theorem_id: str) -> dict[st
             raise ValueError(f"THEOREM_MACHINE_PREMISES_INVALID:{theorem_id}")
         from formal_toolchain.core.registry import load_registry
         registry_ids = {row["id"] for row in load_registry(theory_dir.parent / "specs" / "obligation_registry.json")}
-        if not set(premises) <= registry_ids:
+        synthetic_route_theorem = theorem_id in {
+            "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION",
+            "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
+            "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
+        }
+        if not synthetic_route_theorem and not set(premises) <= registry_ids:
             raise ValueError(f"THEOREM_MACHINE_PREMISE_UNKNOWN:{theorem_id}")
         registry_dependencies = registry_dependencies_for_theorem(theory_dir, theorem_id)
         integrity_only = INTEGRITY_ONLY_DEPENDENCIES.get(

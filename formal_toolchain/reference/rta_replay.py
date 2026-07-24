@@ -187,7 +187,7 @@ def _compare_task_witness(candidate: Mapping[str, Any], replay: Mapping[str, Any
             "match": task.get(field) == replay_task.get(field),
         })
 
-    for field in ("lo", "start", "case1", "case2", "zero_relative_start_boundary", "r_lo", "r_hi", "r_star", "lo_deadline_holds", "hi_deadline_holds"):
+    for field in ("status", "lo", "start", "case1", "case2", "zero_relative_start_boundary", "r_lo", "r_hi", "r_star", "lo_deadline_holds", "hi_deadline_holds"):
         comparisons.append({
             "field": field,
             "expected": _normalize(candidate.get(field)),
@@ -365,8 +365,14 @@ def replay_all_task_rta_independently(taskset: ReferenceTaskset) -> dict[str, An
         ),
         "tasks": replay_rows,
     }
+    if any(item["status"] == "UNRESOLVED" for item in replay_rows):
+        overall_status = "UNRESOLVED"
+    elif all(item["status"] == "PASS" for item in replay_rows):
+        overall_status = "PASS"
+    else:
+        overall_status = "FAIL"
     return {
-        "status": "PASS" if all(item["status"] == "PASS" for item in replay_rows) else "FAIL",
+        "status": overall_status,
         "schema_version": "all_task_rta_v3",
         "task_order": witness["task_order"],
         "task_count_expected": witness["task_count_expected"],
@@ -432,9 +438,34 @@ def replay_all_task_rta(taskset: ReferenceTaskset, production: Mapping[str, Any]
         expected_all_met = bool(candidate_witness.get("all_lo_deadlines_hold")) and bool(candidate_witness.get("all_hi_deadlines_hold"))
     if expected_all_met != replay["all_deadlines_met"]:
         return {"status": "FAIL", "code": "ALL_TASK_RTA_SUMMARY_MISMATCH"}
+    if not ok:
+        return {
+            "status": "FAIL",
+            "code": "ALL_TASK_RTA_REPLAY_MISMATCH",
+            "replay_rows": replay_rows,
+            "comparisons": comparisons,
+            "witness": replay["witness"],
+        }
+    production_status = str(production.get("status", candidate_witness.get("status", "UNRESOLVED")))
+    if production_status == "UNRESOLVED" or replay["status"] == "UNRESOLVED":
+        return {
+            "status": "UNRESOLVED",
+            "code": "ALL_TASK_RTA_ARITHMETIC_UNRESOLVED",
+            "replay_rows": replay_rows,
+            "comparisons": comparisons,
+            "witness": replay["witness"],
+        }
+    if production_status != "PASS" or replay["status"] != "PASS" or replay["all_deadlines_met"] is not True:
+        return {
+            "status": "FAIL",
+            "code": "ALL_TASK_SUFFICIENT_TEST_FAILED",
+            "replay_rows": replay_rows,
+            "comparisons": comparisons,
+            "witness": replay["witness"],
+        }
     return {
-        "status": "PASS" if ok else "FAIL",
-        "code": None if ok else "ALL_TASK_RTA_REPLAY_MISMATCH",
+        "status": "PASS",
+        "code": None,
         "replay_rows": replay_rows,
         "comparisons": comparisons,
         "witness": replay["witness"],

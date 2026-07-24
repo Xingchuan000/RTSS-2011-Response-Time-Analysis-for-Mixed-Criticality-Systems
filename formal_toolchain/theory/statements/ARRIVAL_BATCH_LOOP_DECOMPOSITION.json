@@ -15,7 +15,7 @@
   "proof_object": {
     "backend": "arrival-batch-decomposition-v1",
     "path": "proofs/ARRIVAL_BATCH_LOOP_DECOMPOSITION.proof.json",
-    "sha256": "627d6e1145c21fe4cfe298609cba6f91868185300dcc24bc77b513b98fe9d4cf"
+    "sha256": "e87b863cfd02bb168e8389fef80021579bcbb15f750294a310401b232fd36d61"
   },
   "source_reference": "Phase I-K runtime handler decomposition contract",
   "statement_hash": "fa7794111912beafee21cd1fe6711d9198e7935a7cb7f2a33e15c6b4523a432b",

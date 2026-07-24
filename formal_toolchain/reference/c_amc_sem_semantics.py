@@ -106,14 +106,17 @@ def decide_reference_release(
                 release_budget=c_hi,
             )
 
+        if abnormal_hi:
+            return ReferenceReleaseDecision(
+                release_class="HI_ABNORMAL",
+                effective_release_mode=effective_mode,
+                release_budget=c_hi,
+            )
+
         return ReferenceReleaseDecision(
             release_class="HI_NORMAL",
             effective_release_mode=effective_mode,
-            release_budget=(
-                c_hi
-                if effective_mode == "HI"
-                else c_lo
-            ),
+            release_budget=c_lo,
         )
 
     if criticality != "LO":

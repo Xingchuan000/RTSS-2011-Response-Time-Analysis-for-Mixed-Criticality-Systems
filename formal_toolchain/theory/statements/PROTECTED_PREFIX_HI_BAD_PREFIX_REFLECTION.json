@@ -1,0 +1,23 @@
+{
+  "assumption_hash": "2f130c351d441b978976cfb6b2495cd78cb85444f81a79486138fe114fed46a7",
+  "assumptions": [
+    "weak_forward_simulation",
+    "hi_jobs_protected",
+    "observable_deadline_service_demand_miss_fields"
+  ],
+  "assurance_level": "MACHINE_CHECKED_PROJECT_LEMMA",
+  "conclusion": "full reference HI bad prefix implies protected prefix HI bad prefix",
+  "exact_statement": "Under protected observable equality along one complete prefix execution, every full-reference HI job miss at its deadline reflects to the same protected prefix job key with equal deadline, fixed actual demand, equal service, and equal miss-ledger membership.",
+  "premise_obligation_ids": [
+    "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED"
+  ],
+  "proof_object": {
+    "backend": "protected-prefix-bad-prefix-v1",
+    "path": "proofs/PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION.proof.json",
+    "sha256": "1bcd256a17ff46105f407f1cc8d17a11fd68f0c1448ef259fb1f92cd5db0de3c"
+  },
+  "source_reference": "Protected observable HI bad-prefix reflection",
+  "statement_hash": "b5b51eeab534affea80542b06f23bd4fac7378107c9b52d0718cc371ae12da40",
+  "theorem_id": "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
+  "version": "p0-theory-r1"
+}

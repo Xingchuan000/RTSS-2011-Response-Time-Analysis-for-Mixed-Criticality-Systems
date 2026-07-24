@@ -1,0 +1,12 @@
+{
+  "conclusion": "ALL_REFERENCE_HI_JOBS_MEET_DEADLINES",
+  "proof_by_contradiction": [
+    "full reference HI miss",
+    "reflected prefix HI miss",
+    "prefix all-task schedulability contradiction"
+  ],
+  "schema_version": "reference_hi_safety_from_protected_prefix_proof_v1",
+  "theorem_assumption_hash": "6d5d0c74f29a8b15db2e852a910da20762df9763eb74143d8ab50a13a273b247",
+  "theorem_id": "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
+  "theorem_statement_hash": "7f450bae7bd31a638bb89b844f384cb99b8c687989126b34d761f1b6fd5f7f18"
+}

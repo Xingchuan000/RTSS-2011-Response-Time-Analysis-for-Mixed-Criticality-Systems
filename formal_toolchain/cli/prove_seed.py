@@ -13,8 +13,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed-dir", required=True, type=Path)
     parser.add_argument("--tree-variant", required=True,
                         choices=("best_overall", "best_balanced", "best_performance"))
-    parser.add_argument("--code-root", required=True, type=Path)
-    parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--code-root", type=Path, default=Path.cwd(),
+                        help="源码根目录；默认使用当前工作区")
+    parser.add_argument("--out", type=Path,
+                        help="输出目录；默认写入 seed-dir/.formal_proof_<route>")
     parser.add_argument("--target-recipe", type=Path)
     parser.add_argument("--proof-route", choices=("protected_prefix", "strict_full"),
                         default="protected_prefix")
@@ -42,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    output_dir = args.out or (args.seed_dir / f".formal_proof_{args.proof_route}")
     nonvacuity_params = {
         key: value
         for key, value in {
@@ -56,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         seed_dir=args.seed_dir,
         tree_variant=args.tree_variant,
         code_root=args.code_root,
-        out=args.out,
+        out=output_dir,
         target_recipe=args.target_recipe,
         overwrite=args.overwrite,
         nonvacuity_profile=args.nonvacuity_profile,

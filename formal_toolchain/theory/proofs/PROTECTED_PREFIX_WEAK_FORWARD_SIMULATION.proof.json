@@ -1,0 +1,25 @@
+{
+  "protected_observable_schema_hash": "d385359cac9fd73ad91717a033052851a655b81733632e9833c245ecc06e1821",
+  "quantification": "forall full execution exists one prefix execution forall natural-number closed boundaries",
+  "required_lemmas": [
+    "TAIL_SERVICE_EXCLUSION",
+    "FINAL_DISPATCH_CORRESPONDENCE",
+    "PROTECTED_SERVICE_CORRESPONDENCE",
+    "COMPLETION_REMOVAL_CORRESPONDENCE",
+    "DEADLINE_BATCH_CORRESPONDENCE",
+    "ARRIVAL_BATCH_PROJECTION",
+    "MODE_TAIL_PHASE_JOIN",
+    "PROTECTED_MACRO_STEP_PRESERVATION"
+  ],
+  "schema_version": "protected_prefix_weak_forward_simulation_proof_v1",
+  "source_bindings": {
+    "formal_toolchain/reference/protected_priority_prefix/input_projection.py": "c4f1377ee6aedd287858d9228493e1e42cbf129e8ba3d75f5a45469859adf9a0",
+    "formal_toolchain/reference/protected_priority_prefix/macro_step.py": "f2957a14969fc69b52dad37857ce79d8b5aca0d06167385835f10de73a93b5b1",
+    "formal_toolchain/reference/protected_priority_prefix/observable.py": "f1f8ff52540f77fc7e3f6d08586a1f097d4c2d66ff5ac9697d5de8b50c6054d6",
+    "formal_toolchain/reference/protected_priority_prefix/simulation_domain.py": "5a1168a6664c22823d41341c2f97f690157ed4eebcee13f12b1a2b03ed409d98",
+    "formal_toolchain/reference/protected_priority_prefix/state_relation.py": "24fc4c26d90e8c10f67a04226e0dee2dfbf15832318a6ba8d8057175ad988129"
+  },
+  "theorem_assumption_hash": "83b4fc149c9d782d20eec574ed5d7fd46b2ac2036d8c05c305531d16b18e51c0",
+  "theorem_id": "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION",
+  "theorem_statement_hash": "81fced998f7e7c78088b8d45ecba4c1d7661c4f51a10cb67b98d4672d7b20e2b"
+}

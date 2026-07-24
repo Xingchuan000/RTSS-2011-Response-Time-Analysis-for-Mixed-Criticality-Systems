@@ -1,0 +1,24 @@
+{
+  "assumption_hash": "6d5d0c74f29a8b15db2e852a910da20762df9763eb74143d8ab50a13a273b247",
+  "assumptions": [
+    "protected_prefix_hi_bad_prefix_reflection",
+    "protected_prefix_all_task_schedulability",
+    "contradiction_on_same_job"
+  ],
+  "assurance_level": "MACHINE_CHECKED_PROJECT_LEMMA",
+  "conclusion": "ALL_REFERENCE_HI_JOBS_MEET_DEADLINES",
+  "exact_statement": "If every full-reference HI bad prefix reflects to a protected prefix HI bad prefix and all protected-prefix tasks meet deadlines under all-task C-AMC-sem RTA, then a full-reference HI miss contradicts prefix schedulability; therefore all full-reference HI jobs meet deadlines.",
+  "premise_obligation_ids": [
+    "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
+    "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE"
+  ],
+  "proof_object": {
+    "backend": "protected-prefix-safety-v1",
+    "path": "proofs/REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX.proof.json",
+    "sha256": "2877440436da55e1ff6a09248d07991648c3537c7292a6203771e936b23d38ed"
+  },
+  "source_reference": "Protected-prefix schedulability contradiction",
+  "statement_hash": "7f450bae7bd31a638bb89b844f384cb99b8c687989126b34d761f1b6fd5f7f18",
+  "theorem_id": "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
+  "version": "p0-theory-r1"
+}

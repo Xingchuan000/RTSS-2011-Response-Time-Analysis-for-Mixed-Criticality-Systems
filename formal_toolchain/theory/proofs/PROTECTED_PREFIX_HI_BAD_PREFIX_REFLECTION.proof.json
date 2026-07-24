@@ -1,0 +1,14 @@
+{
+  "global_mode_equality_required": false,
+  "reflection_fields": {
+    "same_absolute_deadline": true,
+    "same_actual_demand": true,
+    "same_job_key": true,
+    "same_miss_ledger_membership": true,
+    "same_service_at_deadline": true
+  },
+  "schema_version": "protected_prefix_hi_bad_prefix_reflection_proof_v1",
+  "theorem_assumption_hash": "2f130c351d441b978976cfb6b2495cd78cb85444f81a79486138fe114fed46a7",
+  "theorem_id": "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
+  "theorem_statement_hash": "b5b51eeab534affea80542b06f23bd4fac7378107c9b52d0718cc371ae12da40"
+}

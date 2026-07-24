@@ -152,6 +152,26 @@ def evaluate_reference_semantics_contract(reference_taskset: Mapping[str, Any]) 
             expected["HI_NORMAL_HI_MODE"] = {
                 "release_class": "HI_NORMAL",
                 "effective_release_mode": "HI",
+                "release_budget": c_lo,
+            }
+            decisions["HI_ABNORMAL_NON_TRIGGER_SAME_BATCH"] = decide_reference_release(
+                task=task, mode_before_batch="LO", mode_after_batch="HI",
+                abnormal_hi=True, is_switch_trigger=False,
+                switched_in_this_batch=True, primary_on_switch_time=True,
+            )
+            expected["HI_ABNORMAL_NON_TRIGGER_SAME_BATCH"] = {
+                "release_class": "HI_ABNORMAL",
+                "effective_release_mode": "LO",
+                "release_budget": c_hi,
+            }
+            decisions["HI_ABNORMAL_EXISTING_HI_MODE"] = decide_reference_release(
+                task=task, mode_before_batch="HI", mode_after_batch="HI",
+                abnormal_hi=True, is_switch_trigger=False,
+                switched_in_this_batch=False, primary_on_switch_time=True,
+            )
+            expected["HI_ABNORMAL_EXISTING_HI_MODE"] = {
+                "release_class": "HI_ABNORMAL",
+                "effective_release_mode": "HI",
                 "release_budget": c_hi,
             }
         elif criticality == "LO":

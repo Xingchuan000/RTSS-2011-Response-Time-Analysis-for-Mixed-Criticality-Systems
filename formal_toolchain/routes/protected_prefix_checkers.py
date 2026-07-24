@@ -5,6 +5,12 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from formal_toolchain.reference.protected_priority_prefix.certificates import verify_construction_witness
+from formal_toolchain.reference.protected_priority_prefix.runtime_schema import (
+    build_runtime_schema_certificate, verify_runtime_schema_certificate,
+)
+from formal_toolchain.reference.protected_priority_prefix.simulation_domain import check_full_to_prefix_simulation_domain
+from formal_toolchain.reference.protected_priority_prefix.macro_step import prove_protected_macro_step_preservation
+from formal_toolchain.reference.protected_priority_prefix.simulation_certificate import build_simulation_certificate
 
 
 def _finish(status: str, code: str | None = None, witness: Mapping[str, Any] | None = None):
@@ -16,6 +22,134 @@ def _route_state(kwargs: Mapping[str, Any]):
     ctx = kwargs.get("context")
     return getattr(ctx, "fresh_state", None) or kwargs.get("fresh_state")
 
+
+def _require_pass_predecessors(
+    predecessors: Mapping[str, Any],
+    required: set[str],
+) -> dict[str, Any] | None:
+    if set(predecessors) != required:
+        return _finish(
+            "UNRESOLVED",
+            "PREDECESSOR_SET_MISMATCH",
+            {"expected": sorted(required), "actual": sorted(predecessors)},
+        )
+    if any(value.get("obligation_status") != "PASS" for value in predecessors.values()):
+        return _finish("UNRESOLVED", "PREDECESSOR_NOT_PASS")
+    return None
+
+
+def check_runtime_schema_conformance(**kwargs: Any) -> dict[str, Any]:
+    predecessors = kwargs.get("verified_predecessors", {})
+    blocked = _require_pass_predecessors(
+        predecessors,
+        {"SATURATED_PROTECTED_PREFIX_REFERENCE"},
+    )
+    if blocked is not None:
+        return blocked
+    certificate = build_runtime_schema_certificate()
+    checked = verify_runtime_schema_certificate(certificate)
+    return _finish(
+        "UNRESOLVED",
+        "PROTECTED_PREFIX_RUNTIME_SCHEMA_PARAMETRIC_PROOF_MISSING",
+        {
+            "structural_certificate": certificate,
+            "structural_certificate_status": checked.get("status"),
+            "reason": (
+                "AST/source-shape checks do not prove the quantified PP0 runtime "
+                "schema obligations over all reachable full/prefix states."
+            ),
+        },
+    )
+
+
+def check_simulation_domain(**kwargs: Any) -> dict[str, Any]:
+    predecessors = kwargs.get("verified_predecessors", {})
+    required = {
+        "REFERENCE_MODEL_CONFORMANCE",
+        "PROTECTED_PRIORITY_PREFIX_PARTITION",
+        "PROTECTED_PREFIX_LO_SATURATION",
+        "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
+    }
+    blocked = _require_pass_predecessors(predecessors, required)
+    if blocked is not None:
+        return blocked
+    return _finish(
+        "UNRESOLVED",
+        "FULL_TO_PREFIX_COMPLETE_EXECUTION_DOMAIN_PROOF_MISSING",
+        {
+            "reason": (
+                "The current implementation checks only an initial batch and one "
+                "closed timestamp; it does not construct one complete prefix execution "
+                "for the complete projected protected input stream."
+            )
+        },
+    )
+
+
+def check_weak_forward_simulation(**kwargs: Any) -> dict[str, Any]:
+    predecessors = kwargs.get("verified_predecessors", {})
+    blocked = _require_pass_predecessors(
+        predecessors,
+        {"FULL_TO_PREFIX_SIMULATION_DOMAIN"},
+    )
+    if blocked is not None:
+        return blocked
+    return _finish(
+        "UNRESOLVED",
+        "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_PARAMETRIC_PROOF_MISSING",
+        {
+            "required_quantification": (
+                "forall full executions, exists one compatible complete prefix "
+                "execution, forall closed boundaries"
+            ),
+            "reason": (
+                "Named lemma receipts and non-empty protected-set checks are not a "
+                "proof of canonical macro-step preservation."
+            ),
+        },
+    )
+
+
+def check_hi_bad_prefix_reflection(**kwargs: Any) -> dict[str, Any]:
+    predecessors = kwargs.get("verified_predecessors", {})
+    blocked = _require_pass_predecessors(
+        predecessors,
+        {"PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED"},
+    )
+    if blocked is not None:
+        return blocked
+    return _finish(
+        "UNRESOLVED",
+        "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION_PROOF_MISSING",
+        {
+            "reason": (
+                "Equality of protected job key, deadline, fixed demand, service and "
+                "miss-ledger membership at the deadline must be derived from the "
+                "simulation relation, not populated as constant True fields."
+            )
+        },
+    )
+
+
+def check_reference_hi_safety_from_protected_prefix(**kwargs: Any) -> dict[str, Any]:
+    predecessors = kwargs.get("verified_predecessors", {})
+    required = {
+        "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
+        "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE",
+    }
+    blocked = _require_pass_predecessors(predecessors, required)
+    if blocked is not None:
+        return blocked
+    return _finish(
+        "UNRESOLVED",
+        "REFERENCE_HI_SAFETY_FROM_PREFIX_THEOREM_APPLICATION_MISSING",
+        {
+            "reason": (
+                "The contradiction theorem may close only after a genuine bad-prefix "
+                "reflection theorem and prefix all-task schedulability theorem are verified."
+            )
+        },
+    )
 
 def check_partition(**kwargs: Any) -> dict[str, Any]:
     state = _route_state(kwargs)
@@ -126,7 +260,8 @@ def check_prefix_rta(**kwargs: Any) -> dict[str, Any]:
     witness = replay.get("witness", replay.get("replay", {}).get("witness", {}))
     ok = (replay.get("status") == "PASS"
           and (witness.get("all_tasks_covered") is True
-               or replay.get("replay", {}).get("all_tasks_covered") is True))
+               or replay.get("replay", {}).get("all_tasks_covered") is True)
+          and witness.get("all_deadlines_met") is True)
     return _finish("PASS" if ok else "UNRESOLVED",
                    None if ok else "PROTECTED_PREFIX_RTA_REPLAY_UNRESOLVED",
                    replay)
@@ -142,7 +277,27 @@ def check_mathematical_conformance(**kwargs: Any) -> dict[str, Any]:
                        {"expected": sorted(required), "actual": sorted(predecessors)})
     if any(item.get("obligation_status") != "PASS" for item in predecessors.values()):
         return _finish("UNRESOLVED", "PREDECESSOR_NOT_PASS")
-    return _finish("PASS", witness={"conclusion": "ALL_PROTECTED_PREFIX_TASKS_MEET_DEADLINES"})
+    rta_certificate = predecessors["PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"]
+    rta_state = rta_certificate.get("witness", {})
+    rta_witness = rta_state.get("witness", {})
+    if not rta_witness:
+        rta_witness = rta_state.get("replay", {}).get("witness", {})
+    if rta_witness.get("all_tasks_covered") is not True or rta_witness.get("all_deadlines_met") is not True:
+        return _finish("FAIL", "PROTECTED_PREFIX_ALL_TASK_SCHEDULABILITY_NOT_ESTABLISHED", rta_state)
+    return _finish(
+        "UNRESOLVED",
+        "PROTECTED_PREFIX_REFERENCE_MODEL_CONFORMANCE_PROOF_MISSING",
+        {
+            "all_tasks_covered": True,
+            "all_deadlines_met": True,
+            "reason": (
+                "Full-reference model conformance is instance-specific and cannot be "
+                "reused as the conformance proof for the transformed saturated prefix. "
+                "A prefix-specific reference-model conformance certificate is required "
+                "before applying the imported all-task C-AMC-sem theorem."
+            ),
+        },
+    )
 
 
 def check_selected_safety(**kwargs: Any) -> dict[str, Any]:

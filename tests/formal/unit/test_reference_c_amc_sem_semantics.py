@@ -88,7 +88,7 @@ def test_later_hi_mode_lo_release_is_degraded():
     )
 
 
-def test_hi_mode_hi_release_uses_c_hi():
+def test_hi_mode_normal_hi_release_uses_c_lo():
     decision = decide_reference_release(
         task=TASKSET["tasks"][0],
         mode_before_batch="HI",
@@ -101,6 +101,40 @@ def test_hi_mode_hi_release_uses_c_hi():
 
     assert decision == ReferenceReleaseDecision(
         release_class="HI_NORMAL",
+        effective_release_mode="HI",
+        release_budget=2,
+    )
+
+
+def test_same_batch_abnormal_non_trigger_uses_c_hi():
+    decision = decide_reference_release(
+        task=TASKSET["tasks"][0],
+        mode_before_batch="LO",
+        mode_after_batch="HI",
+        abnormal_hi=True,
+        is_switch_trigger=False,
+        switched_in_this_batch=True,
+        primary_on_switch_time=True,
+    )
+    assert decision == ReferenceReleaseDecision(
+        release_class="HI_ABNORMAL",
+        effective_release_mode="LO",
+        release_budget=5,
+    )
+
+
+def test_existing_hi_mode_abnormal_release_uses_c_hi():
+    decision = decide_reference_release(
+        task=TASKSET["tasks"][0],
+        mode_before_batch="HI",
+        mode_after_batch="HI",
+        abnormal_hi=True,
+        is_switch_trigger=False,
+        switched_in_this_batch=False,
+        primary_on_switch_time=True,
+    )
+    assert decision == ReferenceReleaseDecision(
+        release_class="HI_ABNORMAL",
         effective_release_mode="HI",
         release_budget=5,
     )

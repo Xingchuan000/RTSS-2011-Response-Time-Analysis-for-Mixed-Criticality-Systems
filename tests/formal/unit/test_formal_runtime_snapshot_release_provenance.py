@@ -60,7 +60,7 @@ def test_normal_hi_not_reclassified_by_subsequent_switch():
     assert hi.released_mode == "LO"
 
 
-def test_only_trigger_key_is_hi_abnormal_switch_trigger():
+def test_all_abnormal_hi_jobs_keep_abnormal_class_and_only_one_is_trigger():
     taskset = {
         "tasks": (
             {
@@ -98,7 +98,7 @@ def test_only_trigger_key_is_hi_abnormal_switch_trigger():
         state, _, _ = step_reference(state, taskset)
 
     assert state.released[("hi", 0)].release_class == "HI_ABNORMAL_SWITCH_TRIGGER"
-    assert state.released[("hi2", 0)].release_class == "HI_NORMAL"
+    assert state.released[("hi2", 0)].release_class == "HI_ABNORMAL"
 
 
 def test_same_batch_lo_is_lo_primary_same_batch_switch_time():
