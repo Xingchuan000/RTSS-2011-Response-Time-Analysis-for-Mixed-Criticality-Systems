@@ -23,6 +23,8 @@ from formal_toolchain.core.contexts import (
 )
 from formal_toolchain.core.registry import load_registry, registry_fingerprint
 from formal_toolchain.core.hashing import sha256_file, sha256_object
+from formal_toolchain.routes.config import ProofRouteConfig
+from formal_toolchain.routes.registry import ResolvedRegistry, resolve_registry
 
 
 def _proof_safe(value: Any) -> Any:
@@ -52,6 +54,8 @@ class VerifierInputs:
     preflight: Mapping[str, Any]
     source_manifest: Mapping[str, Any]
     contexts: Mapping[str, Mapping[str, Any]]
+    proof_route: ProofRouteConfig
+    resolved_registry: ResolvedRegistry
 
 
 def _read(path: Path) -> Any:
@@ -73,8 +77,8 @@ def load_verifier_inputs(request_path: Path, *, source_root: Path) -> VerifierIn
     request_path = Path(request_path).resolve()
     request = _read(request_path)
     schema = request.get("schema_version")
-    if schema != "proof_request_v2":
-        raise ValueError("proof_request schema_version 不受支持")
+    from formal_toolchain.routes.config import parse_proof_route
+    proof_route = parse_proof_route(request)
     if request.get("profile") != "P0" or request.get("primary_claim") != "DEPLOYED_HI_SAFETY":
         raise ValueError("第一轮只接受 P0/DEPLOYED_HI_SAFETY")
     if request.get("target_kind") is None:
@@ -104,7 +108,8 @@ def load_verifier_inputs(request_path: Path, *, source_root: Path) -> VerifierIn
     domain = build_budget_domain(target.ordered_tasks, target.provenance.get("budget_by_task"),
                                 runtime_config=target.runtime_config)
     config_hash = sha256_object(export_formal_target_config(target))
-    registry_hash = registry_fingerprint(load_registry(Path(__file__).parents[1] / "specs/obligation_registry.json"))
+    resolved_registry = resolve_registry(proof_route.route)
+    registry_hash = resolved_registry.common_fingerprint
     bootstrap = build_bootstrap_context(registry_hash=registry_hash,
                                         profile="P0", claim="DEPLOYED_HI_SAFETY")
     implementation = build_implementation_context(
@@ -142,6 +147,7 @@ def load_verifier_inputs(request_path: Path, *, source_root: Path) -> VerifierIn
         request=request, workspace=workspace, artifact_dir=artifact_dir,
         source_root=source_root, target=target, inventory=inventory,
         preflight=preflight, source_manifest=source_manifest, contexts=contexts,
+        proof_route=proof_route, resolved_registry=resolved_registry,
     )
 
 

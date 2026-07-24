@@ -57,7 +57,12 @@ def compile_request(request_path: Path, out_dir: Path, *, source_root: Path | No
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     registry_path = Path(__file__).parents[1] / "specs/obligation_registry.json"
-    registry = load_registry(registry_path)
+    from formal_toolchain.routes.config import parse_proof_route
+    from formal_toolchain.routes.registry import resolve_registry
+    request_metadata = json.loads(Path(request_path).read_text(encoding="utf-8"))
+    route_config = parse_proof_route(request_metadata)
+    resolved_route_registry = resolve_registry(route_config.route)
+    registry = list(resolved_route_registry.entries)
     closure = build_claim_closure(registry, "DEPLOYED_HI_SAFETY")
     active = sorted(closure.candidate_artifacts)
     try:
@@ -149,6 +154,11 @@ def compile_request(request_path: Path, out_dir: Path, *, source_root: Path | No
         "result_status": "CANDIDATE",
         "profile": "P0",
         "primary_claim": "DEPLOYED_HI_SAFETY",
+        "proof_route": route_config.route.value,
+        "proof_route_schema_version": route_config.schema_version,
+        "common_registry_fingerprint": resolved_route_registry.common_fingerprint,
+        "route_registry_fingerprint": resolved_route_registry.route_fingerprint,
+        "resolved_registry_fingerprint": resolved_route_registry.resolved_fingerprint,
         "certificate_context_hash": context_hash,
         "active_obligation_ids": active,
         "obligation_statuses": {key: value["obligation_status"] for key, value in built.items()},

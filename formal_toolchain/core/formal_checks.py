@@ -38,7 +38,7 @@ from formal_toolchain.core.contexts import (
     build_bootstrap_context, build_bridge_context, build_bundle_context,
     build_composition_context, build_implementation_context,
     build_invariant_context, build_policy_context,
-    build_reference_context_layer, build_semantic_context,
+    build_reference_context_layer, build_semantic_context, build_terminal_route_context,
 )
 from formal_toolchain.core.registry import load_registry, registry_fingerprint
 from formal_toolchain.compiler.dag_runner import topological_order
@@ -87,8 +87,8 @@ def load_request_inputs(request_path: Path, *, source_root: Path | None = None) 
 
     request_path = Path(request_path)
     request = _read(request_path)
-    if request.get("schema_version") != "proof_request_v2":
-        raise ValueError("proof_request schema_version 不受支持")
+    from formal_toolchain.routes.config import parse_proof_route
+    route = parse_proof_route(request)
     if request.get("profile") != "P0" or request.get("primary_claim") != "DEPLOYED_HI_SAFETY":
         raise ValueError("第一轮只接受 P0/DEPLOYED_HI_SAFETY")
     if request.get("target_kind") is None:
@@ -107,6 +107,7 @@ def load_request_inputs(request_path: Path, *, source_root: Path | None = None) 
         "artifact_dir": artifact_dir,
         "target": target,
         "source_root": Path(source_root or Path.cwd()).resolve(),
+        "proof_route": route,
     }
 
 
@@ -290,7 +291,9 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
     # preimage。candidate 仍使用 semantic context 作为语义输入边界；
     # verifier 会按相同字段现场重算并把 context hash 纳入 outer root。
     source_manifest = build_source_manifest(inputs["source_root"])
-    registry_hash = registry_fingerprint(load_registry(Path(__file__).parents[1] / "specs/obligation_registry.json"))
+    from formal_toolchain.routes.registry import resolve_registry
+    resolved_registry = resolve_registry(inputs["proof_route"].route)
+    registry_hash = resolved_registry.common_fingerprint
     bootstrap_context = build_bootstrap_context(registry_hash=registry_hash,
                                                 profile="P0", claim="DEPLOYED_HI_SAFETY")
     implementation_context = build_implementation_context(
@@ -468,7 +471,7 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
         REFERENCE_TASKSET_SCHEDULABLE,
         REFERENCE_TRANSITION_SYSTEM_IDENTITY,
     )
-    registry_entries = load_registry(Path(__file__).parents[1] / "specs/obligation_registry.json")
+    registry_entries = list(resolved_registry.entries)
     structural_ids = {"ARTIFACT_MANIFEST", "COMPONENT_CONTEXT_INTEGRITY",
                       "DIRECT_PREDECESSOR_HASHES", "STATUS_EVIDENCE",
                       "OUTER_BUNDLE_ROOT", "INDEPENDENT_BUNDLE_VERIFICATION",
@@ -574,6 +577,46 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
             effective_runtime_config_hash=sha256_object(export_formal_target_config(target)),
             allow_unverified_candidate=True,
         )
+        from formal_toolchain.routes.resolver import resolve_route
+        from formal_toolchain.routes.registry import resolve_registry
+        route_strategy = resolve_route(inputs["proof_route"])
+        route_registry = resolve_registry(inputs["proof_route"].route)
+        prepared_route = route_strategy.prepare_analysis(
+            full_reference_taskset=reference,
+            reference_context_hash=reference_context["hash"],
+        )
+        terminal_context = build_terminal_route_context(
+            reference_context_hash=reference_context["hash"],
+            route_id=route_strategy.route_id,
+            route_config_schema_version=inputs["proof_route"].schema_version,
+            route_registry_fragment_fingerprint=route_registry.route_fingerprint,
+            route_implementation_version=prepared_route.route_implementation_version,
+            analysis_taskset_fingerprint=prepared_route.analysis_taskset.to_dict()["fingerprint"],
+        )
+        route_certificates = route_strategy.build_construction_certificates(
+            prepared=prepared_route, terminal_context_hash=terminal_context["hash"])
+        composition_context = build_composition_context(
+            bridge_context_hash=bridge_context["hash"],
+            terminal_route_context_hash=terminal_context["hash"],
+            mathematical_root_id="FINAL_CLAIM_COMPOSITION", claim="DEPLOYED_HI_SAFETY")
+        bundle_context = build_bundle_context(
+            composition_context_hash=composition_context["hash"],
+            target_id=fixture_check.get("target_id"), claim="DEPLOYED_HI_SAFETY",
+            resolved_registry_fingerprint=route_registry.resolved_fingerprint)
+        contexts.update({"terminal_route_context": terminal_context,
+                         "composition_context": composition_context,
+                         "bundle_context": bundle_context})
+        result["contexts"] = contexts
+        result["context_body"]["contexts"] = contexts
+        evidence["ROUTE"] = {
+            "status": "PASS", "route_id": route_strategy.route_id,
+            "prepared": {
+                "analysis_taskset_kind": prepared_route.analysis_taskset_kind,
+                "full_reference_taskset_fingerprint": reference.to_dict()["fingerprint"],
+                "analysis_taskset_fingerprint": prepared_route.analysis_taskset.to_dict()["fingerprint"],
+                "route_metadata": dict(prepared_route.route_metadata),
+            }, "certificates": route_certificates,
+        }
         mapping = validate_reference_mapping(
             reference, target.ordered_tasks, budget_by_task=budget_by_task,
             certified_envelope=certified, xf=target.runtime_config.c_amc_sem_lo_degradation_ratio,

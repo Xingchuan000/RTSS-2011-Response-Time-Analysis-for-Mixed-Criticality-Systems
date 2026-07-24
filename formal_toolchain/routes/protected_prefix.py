@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Mapping
+
+from formal_toolchain.reference.protected_priority_prefix.construction import build_saturated_protected_prefix
+from formal_toolchain.reference.protected_priority_prefix.certificates import (
+    build_partition_certificate, build_saturation_certificate,
+)
+from .protocol import PreparedRouteAnalysis
+from .checkers import unresolved_derived_checker
+from .protected_prefix_checkers import (
+    check_partition, check_saturation, check_parameter_preservation,
+    check_lo_saturation, check_prefix_rta, check_mathematical_conformance,
+    check_selected_safety,
+)
+
+
+class ProtectedPrefixRoute:
+    route_id = "protected_prefix"
+    route_implementation_version = "saturated-protected-prefix-v1"
+
+    def registry_fragment_path(self) -> Path:
+        return Path(__file__).parents[1] / "specs/routes/protected_prefix_registry.json"
+
+    def prepare_analysis(self, *, full_reference_taskset: Any,
+                         reference_context_hash: str) -> PreparedRouteAnalysis:
+        result = build_saturated_protected_prefix(
+            full_reference_taskset, source_context_hash=reference_context_hash)
+        return PreparedRouteAnalysis(
+            route_id=self.route_id, full_reference_taskset=full_reference_taskset,
+            analysis_taskset=result.prefix_taskset,
+            analysis_taskset_kind="saturated_protected_prefix",
+            route_implementation_version=self.route_implementation_version,
+            construction_witnesses={"build_result": result},
+            route_metadata={"analysis_taskset_kind": "saturated_protected_prefix",
+                            "cutoff_task_name": result.cutoff_task_name,
+                            "cutoff_priority_index": result.cutoff_priority_index,
+                            "protected_count": len(result.protected_task_names),
+                            "tail_count": len(result.tail_task_names)},
+        )
+
+    def build_construction_certificates(self, *, prepared: PreparedRouteAnalysis,
+                                        terminal_context_hash: str):
+        """Build immutable construction witnesses only.
+
+        Checker functions belong to :meth:`checker_catalog`; mixing callables into
+        this mapping makes the fresh verifier treat functions as certificates and
+        leaves the corresponding route obligations permanently UNRESOLVED.
+        """
+
+        result = prepared.construction_witnesses["build_result"]
+        return {
+            "PROTECTED_PRIORITY_PREFIX_PARTITION": build_partition_certificate(
+                result, context_hash=terminal_context_hash),
+            "SATURATED_PROTECTED_PREFIX_REFERENCE": build_saturation_certificate(
+                result, context_hash=terminal_context_hash),
+        }
+
+    def checker_catalog(self) -> Mapping[str, Any]:
+        return {
+            "PROTECTED_PRIORITY_PREFIX_PARTITION": check_partition,
+            "SATURATED_PROTECTED_PREFIX_REFERENCE": check_saturation,
+            "PROTECTED_PREFIX_PARAMETER_PRESERVATION": check_parameter_preservation,
+            "PROTECTED_PREFIX_LO_SATURATION": check_lo_saturation,
+            "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC": check_prefix_rta,
+            "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE": check_mathematical_conformance,
+            "SELECTED_REFERENCE_HI_SAFETY": check_selected_safety,
+            "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE": unresolved_derived_checker(
+                "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
+                expected_predecessors=("SATURATED_PROTECTED_PREFIX_REFERENCE",)),
+            "FULL_TO_PREFIX_SIMULATION_DOMAIN": unresolved_derived_checker(
+                "FULL_TO_PREFIX_SIMULATION_DOMAIN",
+                expected_predecessors=(
+                    "REFERENCE_MODEL_CONFORMANCE",
+                    "PROTECTED_PRIORITY_PREFIX_PARTITION",
+                    "PROTECTED_PREFIX_LO_SATURATION",
+                    "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
+                )),
+            "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED": unresolved_derived_checker(
+                "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED",
+                expected_predecessors=("FULL_TO_PREFIX_SIMULATION_DOMAIN",)),
+            "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION": unresolved_derived_checker(
+                "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
+                expected_predecessors=("PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED",)),
+            "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX": unresolved_derived_checker(
+                "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
+                expected_predecessors=(
+                    "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
+                    "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE",
+                )),
+        }
+
+
+ROUTE = ProtectedPrefixRoute()

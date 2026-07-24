@@ -13,8 +13,10 @@ from typing import Any, Mapping
 
 from formal_toolchain.core.artifact import obligation_certificate, verify_obligation_certificate
 from formal_toolchain.core.hashing import sha256_object
-from formal_toolchain.core.contexts import expected_context_for_obligation, context_layer_for_obligation
-from formal_toolchain.core.registry import load_registry, artifact_path_for
+from formal_toolchain.core.contexts import (expected_context_for_obligation, context_layer_for_obligation,
+                                             build_terminal_route_context, build_composition_context,
+                                             build_bundle_context)
+from formal_toolchain.core.registry import load_registry, artifact_path_for, registry_fingerprint
 from formal_toolchain.verifier.aggregator import aggregate_for_claim, _check_proof_role_invariants
 from formal_toolchain.verifier.checker_context import FreshVerifierState, CheckerContext
 from formal_toolchain.verifier.bootstrap_checks import (
@@ -23,6 +25,7 @@ from formal_toolchain.verifier.bootstrap_checks import (
     verify_obligation_registry,
 )
 from formal_toolchain.verifier.checker_catalog import VERIFIER_CHECKERS, checker_for
+from formal_toolchain.routes.resolver import resolve_route
 from formal_toolchain.verifier import independent_arithmetic
 from formal_toolchain.core.registry import load_registry, build_claim_closure
 from formal_toolchain.verifier.bridge_proof_checker import (
@@ -80,13 +83,11 @@ def _fail_summary(*, active: list[str], status: str, code: str,
     return result
 
 
-def _load_candidate(bundle: Path, active: list[str]) -> tuple[dict[str, Mapping[str, Any]] | None, dict[str, dict[str, Any]], dict[str, Any] | None]:
+def _load_candidate(bundle: Path, active: list[str], registry: list[Mapping[str, Any]]) -> tuple[dict[str, Mapping[str, Any]] | None, dict[str, dict[str, Any]], dict[str, Any] | None]:
     """加载并校验 candidate envelope，缺失任一 active artifact 立即拒绝。"""
 
-    from formal_toolchain.core.registry import load_registry, artifact_path_for
+    from formal_toolchain.core.registry import artifact_path_for
     from formal_toolchain.verifier.artifact_verifier import verify_certificate
-    registry_path = Path(__file__).parents[1] / "specs/obligation_registry.json"
-    registry = load_registry(registry_path)
     by_id = {str(entry["id"]): entry for entry in registry}
 
     artifact_dir = Path(bundle) / "artifacts"
@@ -189,12 +190,58 @@ def build_fresh_verifier_state(
     """一次性构造所有 fresh verifier 状态对象。"""
     if fresh_reference is None or envelope_state.certified_envelope is None:
         return None
+    route_strategy = resolve_route(inputs.proof_route)
     try:
-        from formal_toolchain.reference.rta_production import all_task_reference_rta
+        prepared_route = route_strategy.prepare_analysis(
+            full_reference_taskset=fresh_reference,
+            reference_context_hash=str(inputs.contexts["reference_context"]["hash"]),
+        )
+        route_registry = inputs.resolved_registry
+        terminal_context = build_terminal_route_context(
+            reference_context_hash=str(inputs.contexts["reference_context"]["hash"]),
+            route_id=route_strategy.route_id,
+            route_config_schema_version=inputs.proof_route.schema_version,
+            route_registry_fragment_fingerprint=route_registry.route_fingerprint,
+            route_implementation_version=prepared_route.route_implementation_version,
+            analysis_taskset_fingerprint=prepared_route.analysis_taskset.to_dict()["fingerprint"],
+        )
+        route_certs = route_strategy.build_construction_certificates(
+            prepared=prepared_route, terminal_context_hash=terminal_context["hash"])
+        inputs.contexts["terminal_route_context"] = terminal_context
+        inputs.contexts["composition_context"] = build_composition_context(
+            bridge_context_hash=str(inputs.contexts["bridge_context"]["hash"]),
+            terminal_route_context_hash=terminal_context["hash"],
+            mathematical_root_id="FINAL_CLAIM_COMPOSITION", claim="DEPLOYED_HI_SAFETY")
+        inputs.contexts["bundle_context"] = build_bundle_context(
+            composition_context_hash=str(inputs.contexts["composition_context"]["hash"]),
+            target_id=inputs.request.get("target_id"), claim="DEPLOYED_HI_SAFETY",
+            resolved_registry_fingerprint=route_registry.resolved_fingerprint)
+        analysis_taskset = prepared_route.analysis_taskset
+        from formal_toolchain.reference.rta_production import (
+            all_task_reference_rta, all_task_protected_prefix_rta,
+        )
         from formal_toolchain.reference.rta_replay import replay_all_task_rta
-        rta_production = all_task_reference_rta(fresh_reference)
-        rta_replay = replay_all_task_rta(fresh_reference, rta_production)
+        selected_id = ("PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"
+                       if route_strategy.route_id == "protected_prefix"
+                       else "ALL_TASK_REFERENCE_RTA_ARITHMETIC")
+        rta_production = (all_task_protected_prefix_rta(analysis_taskset,
+                          certificate_context_hash=terminal_context["hash"])
+                          if route_strategy.route_id == "protected_prefix"
+                          else all_task_reference_rta(analysis_taskset,
+                          certificate_context_hash=terminal_context["hash"]))
+        # Route context is the certificate boundary; taskset source context
+        # remains the full reference derivation context.
+        rta_production = dict(rta_production)
+        rta_replay = replay_all_task_rta(
+            analysis_taskset, rta_production,
+            expected_obligation_id=selected_id,
+            expected_route_id=route_strategy.route_id)
     except Exception:
+        prepared_route = None
+        terminal_context = None
+        route_certs = {}
+        analysis_taskset = fresh_reference
+        selected_id = None
         rta_production = {}
         rta_replay = {"status": "UNRESOLVED", "message": "RTA generation failed"}
 
@@ -248,6 +295,14 @@ def build_fresh_verifier_state(
         reference_preclosed_state=reference_preclosed_state,
         reference_runtime_snapshot=reference_runtime_snapshot,
         phase_k_objects={},
+        route_strategy=route_strategy,
+        prepared_route=prepared_route,
+        full_reference_taskset=fresh_reference,
+        analysis_taskset=analysis_taskset,
+        terminal_route_context=terminal_context,
+        route_construction_certificates=route_certs,
+        selected_rta_obligation_id=selected_id,
+        selected_route_id=route_strategy.route_id,
     )
 
 
@@ -283,7 +338,8 @@ def _fresh_reference_taskset(inputs: Any, certified_envelope: Mapping[str, Any] 
 
 def _rta_replay(*, inputs: Any, certified_envelope: Mapping[str, Any] | None,
                 candidate: Mapping[str, Mapping[str, Any]],
-                fresh_reference: Any | None = None) -> dict[str, Any]:
+                fresh_reference: Any | None = None,
+                fresh_state: FreshVerifierState | None = None) -> dict[str, Any]:
     """现场生成 production，再用 verifier 的独立整数 replay 重放。
 
     candidate 的 reference/RTA witness 只做对象一致性诊断，绝不提供 fresh
@@ -291,9 +347,19 @@ def _rta_replay(*, inputs: Any, certified_envelope: Mapping[str, Any] | None,
     """
 
     try:
-        from formal_toolchain.reference.rta_production import all_task_reference_rta
-        taskset = fresh_reference or _fresh_reference_taskset(inputs, certified_envelope)
-        production = all_task_reference_rta(taskset)
+        from formal_toolchain.reference.rta_production import (
+            all_task_reference_rta, all_task_protected_prefix_rta,
+        )
+        taskset = (fresh_state.analysis_taskset if fresh_state is not None
+                   else fresh_reference or _fresh_reference_taskset(inputs, certified_envelope))
+        route_id = fresh_state.selected_route_id if fresh_state is not None else "strict_full"
+        obligation_id = (fresh_state.selected_rta_obligation_id if fresh_state is not None
+                         else "ALL_TASK_REFERENCE_RTA_ARITHMETIC")
+        context_hash = (fresh_state.terminal_route_context.get("hash")
+                        if fresh_state is not None and fresh_state.terminal_route_context else None)
+        production = (all_task_protected_prefix_rta(taskset, certificate_context_hash=context_hash)
+                      if route_id == "protected_prefix" else
+                      all_task_reference_rta(taskset, certificate_context_hash=context_hash))
     except (KeyError, TypeError, ValueError) as exc:
         return {"status": "PROOF_BUNDLE_INVALID", "route": "PROOF_BUNDLE_INVALID",
                 "code": "FRESH_REFERENCE_TASKSET_INVALID", "message": str(exc)}
@@ -301,7 +367,9 @@ def _rta_replay(*, inputs: Any, certified_envelope: Mapping[str, Any] | None,
     # 通过模块属性调用，确保测试或部署环境替换独立 replay 实现时，fresh
     # verifier 不会继续使用 import 时缓存的旧函数引用。
     from formal_toolchain.reference.rta_replay import replay_all_task_rta
-    replay = replay_all_task_rta(taskset, production)
+    replay = replay_all_task_rta(taskset, production,
+                                 expected_obligation_id=obligation_id,
+                                 expected_route_id=route_id)
     if replay.get("status") == "FAIL":
         return {"status": "FAIL", "route": "REFERENCE_CERTIFICATE_FAILED",
                 "code": "RTA_REPLAY_MISMATCH", "replay": replay,
@@ -312,12 +380,29 @@ def _rta_replay(*, inputs: Any, certified_envelope: Mapping[str, Any] | None,
 
     candidate_reference = candidate_evidence(candidate.get("REFERENCE_TASKSET", {})) or {}
     candidate_taskset = candidate_reference.get("taskset")
-    if isinstance(candidate_taskset, Mapping) and candidate_taskset.get("tasks") != taskset.to_dict().get("tasks"):
+    # REFERENCE_TASKSET always denotes the full concrete-to-reference target.
+    # Under protected_prefix, ``taskset`` is the transformed analysis prefix, so
+    # comparing it directly with the candidate full reference is a category
+    # error and makes the default route fail even when both objects are valid.
+    expected_full_reference = (fresh_state.full_reference_taskset
+                               if fresh_state is not None
+                               else fresh_reference or taskset)
+    if (isinstance(candidate_taskset, Mapping)
+            and candidate_taskset.get("tasks")
+            != expected_full_reference.to_dict().get("tasks")):
         return {"status": "PROOF_BUNDLE_INVALID", "route": "PROOF_BUNDLE_INVALID",
                 "code": "CANDIDATE_REFERENCE_TASKSET_MISMATCH"}
+    if (fresh_state is not None
+            and taskset.to_dict().get("fingerprint")
+            != fresh_state.analysis_taskset.to_dict().get("fingerprint")):
+        return {"status": "PROOF_BUNDLE_INVALID", "route": "PROOF_BUNDLE_INVALID",
+                "code": "ROUTE_ANALYSIS_TASKSET_MISMATCH"}
     return {"status": "PASS", "replay": replay,
             "replay_hash": sha256_object(replay),
             "fresh_reference": taskset.to_dict(),
+            "analysis_taskset": taskset.to_dict(),
+            "selected_rta_obligation_id": obligation_id,
+            "route_id": route_id,
             "fresh_production_hash": sha256_object(production),
             "replay_status": "PASS"}
 
@@ -532,8 +617,14 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
     source_root = Path(source_root).resolve(strict=True) if source_root is not None else Path(request_path).resolve().parent.parent.parent
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    registry_path = Path(__file__).parents[1] / "specs/obligation_registry.json"
-    registry = load_registry(registry_path)
+    try:
+        inputs = load_verifier_inputs(request_path, source_root=source_root)
+        registry = list(inputs.resolved_registry.entries)
+    except Exception as exc:
+        summary = _fail_summary(active=[], status="MODEL_CONFORMANCE_FAILED",
+                                code="VERIFIER_INPUT_REPLAY_FAILED", message=str(exc))
+        _write(out_dir / "proof_summary.json", summary)
+        return summary
     try:
         closure = build_claim_closure(registry, "DEPLOYED_HI_SAFETY")
         active = sorted(closure.verified_artifacts)
@@ -551,8 +642,14 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
         _write(out_dir / "proof_summary.json", summary)
         return summary
     migration = _read(Path(__file__).parents[1] / "specs/migration_manifest.json")
+    route_migration = dict(migration)
+    # The published migration manifest is for the global source registry.  A
+    # resolved route is independently hashed and validated here; rebind only
+    # this static manifest field so route switching does not become a bundle
+    # invalidation unrelated to the selected DAG.
+    route_migration["registry_fingerprint"] = registry_fingerprint(registry)
     migration_check = verify_migration_manifest(
-        migration=migration, registry=registry,
+        migration=route_migration, registry=registry,
         current_schema_version="obligation_registry_v5")
     if migration_check["status"] != "PASS":
         summary = _fail_summary(active=active, status="PROOF_BUNDLE_INVALID",
@@ -561,13 +658,6 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
         _write(out_dir / "proof_summary.json", summary)
         return summary
 
-    try:
-        inputs = load_verifier_inputs(request_path, source_root=source_root)
-    except Exception as exc:
-        summary = _fail_summary(active=active, status="MODEL_CONFORMANCE_FAILED",
-                                code="VERIFIER_INPUT_REPLAY_FAILED", message=str(exc))
-        _write(out_dir / "proof_summary.json", summary)
-        return summary
     if inputs.preflight.get("obligation_status") != "PASS":
         summary = _fail_summary(active=active, status="MODEL_CONFORMANCE_FAILED",
                                 code="TARGET_PREFLIGHT_FAILED", witness=dict(inputs.preflight))
@@ -589,7 +679,7 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
         _write(out_dir / "proof_summary.json", summary)
         return summary
 
-    candidate_contexts, candidates, candidate_error = _load_candidate(bundle, active)
+    candidate_contexts, candidates, candidate_error = _load_candidate(bundle, active, registry)
     if candidate_error is not None:
         summary = _fail_summary(active=active, status="PROOF_BUNDLE_INVALID",
                                 code=candidate_error["code"],
@@ -597,14 +687,6 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
         _write(out_dir / "proof_summary.json", summary)
         return summary
     assert candidate_contexts is not None
-    context_check = verify_component_contexts(contexts=candidate_contexts,
-                                               expected_contexts=inputs.contexts)
-    if context_check.status != "PASS":
-        summary = _fail_summary(active=active, status="PROOF_BUNDLE_INVALID",
-                                code=context_check.code or "COMPONENT_CONTEXT_INVALID",
-                                witness=context_check.witness)
-        _write(out_dir / "proof_summary.json", summary)
-        return summary
     context_hash = str(inputs.contexts["semantic_context"]["hash"])
     candidate_manifest = _read(Path(bundle) / "artifact_manifest.json")
     candidate_manifest_check = verify_artifact_manifest(
@@ -632,6 +714,15 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
             fresh_reference = None
 
     fresh_state = build_fresh_verifier_state(inputs, envelope_state, fresh_reference)
+
+    context_check = verify_component_contexts(contexts=candidate_contexts,
+                                               expected_contexts=inputs.contexts)
+    if context_check.status != "PASS":
+        summary = _fail_summary(active=active, status="PROOF_BUNDLE_INVALID",
+                                code=context_check.code or "COMPONENT_CONTEXT_INVALID",
+                                witness=context_check.witness)
+        _write(out_dir / "proof_summary.json", summary)
+        return summary
 
     by_id = {str(entry["id"]): entry for entry in registry}
     fresh: dict[str, dict[str, Any]] = {}
@@ -773,7 +864,7 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
             status = "PASS" if envelope_state.certified_envelope is not None else "UNRESOLVED"
             failure = None if status == "PASS" else {"route": "UNRESOLVED", "code": "ENVELOPE_NOT_CERTIFIED"}
             witness = envelope_state.certified_envelope
-        checker = checker_for(obligation_id)
+        checker = checker_for(obligation_id, route_strategy=(fresh_state.route_strategy if fresh_state else None))
         if checker is not None and obligation_id not in {
                 "CANDIDATE_ENVELOPE", "COMMON_TRANSITION_PRESERVATION",
                 "CERTIFIED_ENVELOPE"}:
@@ -808,7 +899,9 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
                                                             "REFERENCE_SEMANTICS_CONTRACT",
                                                             "REFERENCE_MODEL_CONFORMANCE",
                                                             "REFERENCE_TASKSET_SCHEDULABLE",
-                                                            "EFFECTIVE_EVENT_FRONTIER_RELATION"}
+                                                            "EFFECTIVE_EVENT_FRONTIER_RELATION",
+                                                            "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC",
+                                                            "SELECTED_REFERENCE_HI_SAFETY"}
                                        else None),
                     fresh_reference=(fresh_reference
                                      if obligation_id in {"CODE_REFERENCE_UPPER_BOUND_MAPPING",
@@ -822,7 +915,10 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
                                                            "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
                                                            "REFERENCE_MODEL_CONFORMANCE",
                                                            "REFERENCE_TASKSET_SCHEDULABLE",
-                                                           "EFFECTIVE_EVENT_FRONTIER_RELATION"}
+                                                           "EFFECTIVE_EVENT_FRONTIER_RELATION",
+                                                           "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC",
+                                                           "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE",
+                                                           "SELECTED_REFERENCE_HI_SAFETY"}
                                      else None),
                 )
             except (KeyError, TypeError, ValueError, RuntimeError, AttributeError) as exc:
@@ -850,10 +946,11 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
                 # 聚合逻辑把一个已经独立复核通过的义务误判为失败。
                 failure = None
                 witness = checked.get("witness")
-        if obligation_id in ("PROTECTED_HI_RTA_ARITHMETIC", "ALL_TASK_REFERENCE_RTA_ARITHMETIC"):
+        if obligation_id in ("PROTECTED_HI_RTA_ARITHMETIC", "ALL_TASK_REFERENCE_RTA_ARITHMETIC",
+                             "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"):
             replay = (_rta_replay(
                 inputs=inputs, certified_envelope=envelope_state.certified_envelope,
-                candidate=candidates, fresh_reference=fresh_reference)
+                candidate=candidates, fresh_reference=fresh_reference, fresh_state=fresh_state)
                       if envelope_state.certified_envelope is not None else
                       {"status": "UNRESOLVED", "route": "UNRESOLVED",
                        "code": "CERTIFIED_ENVELOPE_REQUIRED"})
@@ -1028,7 +1125,8 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
         "artifacts": {key: value["artifact_hash"] for key, value in certificates.items()}})
     coverage = build_interface_coverage_report(
         registry=registry, spec_root=Path(__file__).parents[1] / "specs",
-        checker_catalog=VERIFIER_CHECKERS, structural_ids=set(closure.structural))
+        checker_catalog={**VERIFIER_CHECKERS, **(fresh_state.route_strategy.checker_catalog() if fresh_state else {})},
+        structural_ids=set(closure.structural))
     _write(out_dir / "interface_coverage_report.json", coverage)
     result = {"result_status": aggregation_status, "outer_bundle_root": root,
               "claim_aggregation_source": "canonical_claim_aggregation"}
@@ -1054,6 +1152,11 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
                "result_status": aggregation_status,
                "profile": "P0",
                "primary_claim": "DEPLOYED_HI_SAFETY",
+               "proof_route": inputs.proof_route.route.value,
+               "proof_route_schema_version": inputs.proof_route.schema_version,
+               "common_registry_fingerprint": inputs.resolved_registry.common_fingerprint,
+               "route_registry_fingerprint": inputs.resolved_registry.route_fingerprint,
+               "resolved_registry_fingerprint": inputs.resolved_registry.resolved_fingerprint,
                "certificate_context_hash": context_hash,
                "fixture_id": inputs.request.get("target_id"),
                "fixture_kind": inputs.request.get("target_kind"),
@@ -1090,5 +1193,14 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
                "claim_eligible": aggregation_status == "DEPLOYED_TREE_PROVED",
                "real_seed_evaluation": "DEFERRED" if inputs.request.get("target_kind") == "SYNTHETIC_P0"
                else "COMPLETED" if inputs.request.get("target_kind") is not None else "UNRESOLVED"}
+    if fresh_state is not None:
+        summary.update({
+            "analysis_taskset_kind": fresh_state.prepared_route.analysis_taskset_kind if fresh_state.prepared_route else None,
+            "full_reference_taskset_fingerprint": fresh_state.full_reference_taskset.to_dict()["fingerprint"] if fresh_state.full_reference_taskset else None,
+            "analysis_taskset_fingerprint": fresh_state.analysis_taskset.to_dict()["fingerprint"] if fresh_state.analysis_taskset else None,
+            "selected_rta_obligation_id": fresh_state.selected_rta_obligation_id,
+            **(dict(fresh_state.prepared_route.route_metadata) if fresh_state.prepared_route else {}),
+            "route_terminal_status": fresh_state.fresh_rta_replay.get("status", "UNRESOLVED"),
+        })
     _write(out_dir / "proof_summary.json", summary)
     return summary

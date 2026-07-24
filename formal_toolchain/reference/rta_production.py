@@ -7,7 +7,9 @@ from fractions import Fraction
 from typing import Any, Sequence
 
 from formal_toolchain.core.artifact import obligation_certificate
-from formal_toolchain.core.obligation_ids import ALL_TASK_REFERENCE_RTA_ARITHMETIC
+from formal_toolchain.core.obligation_ids import (
+    ALL_TASK_REFERENCE_RTA_ARITHMETIC, PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC,
+)
 
 from .arithmetic import ceil_div_nonnegative, floor_div_nonnegative
 from .task_mapping import ReferenceTask, ReferenceTaskset
@@ -370,7 +372,8 @@ def _lo_only_task_analysis(task: ReferenceTask, lo: dict[str, Any]) -> dict[str,
         "analysis_stage": "LO_ONLY",
     }
 
-def all_task_reference_rta(taskset: ReferenceTaskset) -> dict[str, Any]:
+def compute_all_task_rta(taskset: ReferenceTaskset) -> dict[str, Any]:
+    """Pure all-task arithmetic; no route or obligation identity is attached."""
     lo_results = [
         lo_postfixed(task, taskset.tasks[:index])
         for index, task in enumerate(taskset.tasks)
@@ -424,7 +427,7 @@ def all_task_reference_rta(taskset: ReferenceTaskset) -> dict[str, Any]:
         ),
         "tasks": task_rows,
     }
-    result = {
+    return {
         "schema_version": ALL_TASK_RTA_SCHEMA_VERSION,
         "status": status,
         "route": route,
@@ -439,30 +442,39 @@ def all_task_reference_rta(taskset: ReferenceTaskset) -> dict[str, Any]:
         "tasks": task_rows,
         "witness": witness,
     }
-    result.update(
-        obligation_certificate(
-            obligation_id=ALL_TASK_REFERENCE_RTA_ARITHMETIC,
-            status=status,
-            context_hash=taskset.source_context_hash or "",
-            inputs={
-                "taskset_fingerprint": taskset_dict["fingerprint"],
+def build_all_task_rta_certificate(taskset: ReferenceTaskset, *, obligation_id: str,
+                                   route_id: str, certificate_context_hash: str | None = None,
+                                   checker_version: str = ALL_TASK_RTA_SCHEMA_VERSION) -> dict[str, Any]:
+    result = compute_all_task_rta(taskset)
+    status = result["status"]
+    result["route_id"] = route_id
+    result.update(obligation_certificate(
+        obligation_id=obligation_id, status=status,
+        context_hash=certificate_context_hash or taskset.source_context_hash or "",
+        inputs={"taskset_fingerprint": result["taskset"]["fingerprint"],
                 "priority_order": list(taskset.priority_order),
-                "task_count_expected": len(taskset.tasks),
-            },
-            witness=witness,
-            checker_id=__name__,
-            checker_version=ALL_TASK_RTA_SCHEMA_VERSION,
-            failure=None if status == "PASS" else {
-                "route": route,
-                "code": (
-                    "ALL_TASK_RTA_INCOMPLETE"
-                    if status == "UNRESOLVED"
-                    else "ALL_TASK_SUFFICIENT_TEST_FAILED"
-                ),
-            },
-        )
-    )
+                "task_count_expected": len(taskset.tasks), "route_id": route_id},
+        witness=result["witness"], checker_id=__name__, checker_version=checker_version,
+        failure=None if status == "PASS" else {
+            "route": result.get("route", "UNRESOLVED"),
+            "code": "ALL_TASK_RTA_INCOMPLETE" if status == "UNRESOLVED" else "ALL_TASK_SUFFICIENT_TEST_FAILED",
+        },
+    ))
     return result
+
+
+def all_task_reference_rta(taskset: ReferenceTaskset, *, certificate_context_hash: str | None = None) -> dict[str, Any]:
+    return build_all_task_rta_certificate(
+        taskset, obligation_id=ALL_TASK_REFERENCE_RTA_ARITHMETIC,
+        route_id="strict_full", certificate_context_hash=certificate_context_hash,
+        checker_version=ALL_TASK_RTA_SCHEMA_VERSION)
+
+
+def all_task_protected_prefix_rta(taskset: ReferenceTaskset, *, certificate_context_hash: str | None = None) -> dict[str, Any]:
+    return build_all_task_rta_certificate(
+        taskset, obligation_id=PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC,
+        route_id="protected_prefix", certificate_context_hash=certificate_context_hash,
+        checker_version=ALL_TASK_RTA_SCHEMA_VERSION)
 
 
 def protected_hi_rta(taskset: ReferenceTaskset) -> dict[str, Any]:

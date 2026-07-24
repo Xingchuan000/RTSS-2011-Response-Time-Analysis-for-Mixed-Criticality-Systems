@@ -19,6 +19,7 @@ CONTEXT_FIELDS = {
     "invariant_context": ("policy_context", "candidate_envelope"),
     "reference_context": ("invariant_context", "certified_envelope"),
     "bridge_context": ("reference_context", "bridge"),
+    "terminal_route_context": ("reference_context", "terminal_route"),
     "composition_context": ("bridge_context", "composition_inputs"),
     "bundle_context": ("composition_context", "bundle_inputs"),
 }
@@ -79,6 +80,18 @@ OBLIGATION_CONTEXT_LAYERS: dict[str, str] = {
     "PER_HI_TASK_INDUCTIVE_WCRT": "reference_context", "PROTECTED_HI_SAFETY_COROLLARY": "reference_context",
     "FINITE_BAD_PREFIX_CONTRADICTION": "composition_context",
     "FINAL_CLAIM_COMPOSITION": "composition_context",
+    "SELECTED_REFERENCE_HI_SAFETY": "terminal_route_context",
+    "PROTECTED_PRIORITY_PREFIX_PARTITION": "terminal_route_context",
+    "SATURATED_PROTECTED_PREFIX_REFERENCE": "terminal_route_context",
+    "PROTECTED_PREFIX_PARAMETER_PRESERVATION": "terminal_route_context",
+    "PROTECTED_PREFIX_LO_SATURATION": "terminal_route_context",
+    "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC": "terminal_route_context",
+    "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE": "terminal_route_context",
+    "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE": "terminal_route_context",
+    "FULL_TO_PREFIX_SIMULATION_DOMAIN": "terminal_route_context",
+    "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED": "terminal_route_context",
+    "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION": "terminal_route_context",
+    "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX": "terminal_route_context",
     # bridge
     "RELEASE_FIXED_REMOVAL_MAPPING": "bridge_context", "CLOSED_PREFIX_REFINEMENT": "bridge_context",
     "REFERENCE_PREFIX_EXTENSION": "bridge_context", "HI_BAD_CLOSED_PREFIX_REFLECTION": "bridge_context",
@@ -192,6 +205,22 @@ def build_reference_context_layer(*, invariant_context_hash: str, **inputs: Any)
 def build_bridge_context(*, reference_context_hash: str, **inputs: Any) -> dict[str, Any]:
     return finalize_context("bridge_context_v1",
                             {"reference_context_hash": reference_context_hash, **inputs})
+
+
+def build_terminal_route_context(*, reference_context_hash: str, route_id: str,
+                                 route_config_schema_version: str,
+                                 route_registry_fragment_fingerprint: str,
+                                 route_implementation_version: str,
+                                 analysis_taskset_fingerprint: str | None = None) -> dict[str, Any]:
+    """Bind route-only evidence below the shared full-reference context."""
+    return finalize_context("terminal_route_context_v1", {
+        "reference_context_hash": reference_context_hash,
+        "route_id": route_id,
+        "route_config_schema_version": route_config_schema_version,
+        "route_registry_fragment_fingerprint": route_registry_fragment_fingerprint,
+        "route_implementation_version": route_implementation_version,
+        "analysis_taskset_fingerprint": analysis_taskset_fingerprint,
+    })
 
 
 def build_composition_context(*, bridge_context_hash: str, **inputs: Any) -> dict[str, Any]:

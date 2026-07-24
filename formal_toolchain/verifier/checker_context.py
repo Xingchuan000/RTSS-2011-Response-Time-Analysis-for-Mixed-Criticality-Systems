@@ -16,6 +16,14 @@ class FreshVerifierState:
     reference_preclosed_state: Any
     reference_runtime_snapshot: Any
     phase_k_objects: Mapping[str, Mapping[str, Any]]
+    route_strategy: Any = None
+    prepared_route: Any = None
+    full_reference_taskset: Any = None
+    analysis_taskset: Any = None
+    terminal_route_context: Mapping[str, Any] | None = None
+    route_construction_certificates: Mapping[str, Mapping[str, Any]] = None
+    selected_rta_obligation_id: str | None = None
+    selected_route_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

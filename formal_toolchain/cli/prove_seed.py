@@ -16,6 +16,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--code-root", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--target-recipe", type=Path)
+    parser.add_argument("--proof-route", choices=("protected_prefix", "strict_full"),
+                        default="protected_prefix")
     parser.add_argument(
         "--nonvacuity-profile",
         choices=SUPPORTED_PROFILES,
@@ -60,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
         nonvacuity_profile=args.nonvacuity_profile,
         nonvacuity_params=nonvacuity_params,
         refresh_phase_k_map=args.refresh_phase_k_map,
+        proof_route=args.proof_route,
     )
     if args.json:
         print(json.dumps(result, ensure_ascii=False))

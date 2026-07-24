@@ -1550,5 +1550,12 @@ VERIFIER_CHECKERS: dict[str, Checker] = {
 }
 
 
-def checker_for(obligation_id: str) -> Checker | None:
-    return VERIFIER_CHECKERS.get(obligation_id)
+def checker_for(obligation_id: str, *, route_strategy: Any | None = None) -> Checker | None:
+    route_catalog = route_strategy.checker_catalog() if route_strategy is not None else {}
+    collisions = set(VERIFIER_CHECKERS).intersection(route_catalog)
+    if collisions:
+        raise ValueError(f"ROUTE_CHECKER_ID_COLLISION:{sorted(collisions)}")
+    checker = VERIFIER_CHECKERS.get(obligation_id)
+    if checker is not None:
+        return checker
+    return route_catalog.get(obligation_id)

@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["full_fingerprint", "cutoff_task_name", "cutoff_priority_index", "protected_task_names", "tail_task_names", "tail_all_lo", "all_hi_protected", "partition_complete", "order_preserved"],
+  "properties": {"full_fingerprint": {"type": "string"}, "cutoff_task_name": {"type": "string"}, "cutoff_priority_index": {"type": "integer"}, "protected_task_names": {"type": "array"}, "tail_task_names": {"type": "array"}, "tail_all_lo": {"const": true}, "all_hi_protected": {"const": true}, "partition_complete": {"const": true}, "order_preserved": {"const": true}}
+}

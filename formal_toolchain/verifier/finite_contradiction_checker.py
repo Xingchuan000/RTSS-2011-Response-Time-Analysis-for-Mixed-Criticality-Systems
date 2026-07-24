@@ -19,7 +19,7 @@ def verify_finite_bad_prefix_contradiction(
     fresh_reference: Any,
     **_: Any,
 ) -> dict[str, Any]:
-    expected_ids = {"REFERENCE_HI_SUBSET_SAFETY", "HI_BAD_CLOSED_PREFIX_REFLECTION"}
+    expected_ids = {"SELECTED_REFERENCE_HI_SAFETY", "HI_BAD_CLOSED_PREFIX_REFLECTION"}
     try:
         require_exact_predecessor_set(predecessors=verified_predecessors, expected_ids=expected_ids)
         contexts = getattr(raw_inputs, "contexts", {})
@@ -32,7 +32,7 @@ def verify_finite_bad_prefix_contradiction(
         "FINITE_BAD_PREFIX_CONTRADICTION",
     )
     rebuilt = build_finite_bad_prefix_contradiction(
-        reference_hi_safety_certificate=verified_predecessors["REFERENCE_HI_SUBSET_SAFETY"],
+        reference_hi_safety_certificate=verified_predecessors["SELECTED_REFERENCE_HI_SAFETY"],
         bad_prefix_reflection_certificate=verified_predecessors["HI_BAD_CLOSED_PREFIX_REFLECTION"],
         theorem=theorem,
         composition_context_hash=expected_context_hash,

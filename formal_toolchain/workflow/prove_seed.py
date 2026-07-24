@@ -42,6 +42,7 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
                nonvacuity_profile: str = "off",
                nonvacuity_params: dict[str, Any] | None = None,
                refresh_phase_k_map: bool = False,
+               proof_route: str = "protected_prefix",
                dependency_manifest_override: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
     """执行 discovery→preflight→compile→fresh verify→report。
 
@@ -86,7 +87,8 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
                                          overwrite=False,
                                          nonvacuity_profile=nonvacuity_profile,
                                          nonvacuity_params=nonvacuity_params,
-                                         refresh_phase_k_map=refresh_phase_k_map)
+                                         refresh_phase_k_map=refresh_phase_k_map,
+                                         proof_route=proof_route)
         request = Path(imported["request"])
         manifest: dict[str, Any] = {"schema_version": "workflow_manifest_v1", "commands": []}
         inspect = run_cli("formal_toolchain.cli.inspect_target", ["--request", str(request), "--out", str(staging / "preflight")], cwd=Path(code_root), log_dir=staging / "logs")
@@ -124,12 +126,14 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
         target_kind = request_data.get("target_kind")
         proof_result = {"workflow_schema_version": "prove_seed_workflow_v1",
                         "taskset_seed": request_data.get("taskset_seed"),
+                        "proof_route": request_data.get("proof_route", {"schema_version": "proof_route_config_v1", "route": "strict_full"}),
+                        "proof_route_schema_version": request_data.get("proof_route", {}).get("schema_version", "proof_route_config_v1"),
                         "target_id": request_data.get("target_id"),
                         "target_kind": target_kind,
                         "tree_variant": tree_variant, "profile": "P0",
                         "nonvacuity_profile": nonvacuity_profile,
                         "nonvacuity_params": dict(nonvacuity_params or {}),
-                        "phase_k_map_refreshed": bool(refresh_phase_k_map),
+                        "phase_k_map_refreshed": bool(imported.get("phase_k_map_refreshed", refresh_phase_k_map)),
                         "primary_claim": "DEPLOYED_HI_SAFETY",
                         "workflow_status": summary.get("workflow_status", "FAILED"),
                         "result_status": final_status,
@@ -171,6 +175,8 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
         (staging / "logs" / ("internal_error.log" if code == 70 else "seed_import_error.log")).write_text(str(exc), encoding="utf-8")
         failure = {"workflow_schema_version": "prove_seed_workflow_v1",
                    "profile": "P0", "primary_claim": "DEPLOYED_HI_SAFETY",
+                   "proof_route": {"schema_version": "proof_route_config_v1", "route": proof_route},
+                   "proof_route_schema_version": "proof_route_config_v1",
                    "nonvacuity_profile": nonvacuity_profile,
                    "nonvacuity_params": dict(nonvacuity_params or {}),
                    "workflow_status": "FAILED", "result_status": result_status,

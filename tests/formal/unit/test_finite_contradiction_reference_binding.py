@@ -8,9 +8,10 @@ SYSTEM_ID = "FIXED_EXECUTABLE_REFERENCE_P0_V3"
 
 
 def _certificate(obligation_id: str, *, fingerprint: str):
-    if obligation_id == "REFERENCE_HI_SUBSET_SAFETY":
+    if obligation_id == "SELECTED_REFERENCE_HI_SAFETY":
         witness = {
-            "theorem_id": "REFERENCE_HI_SUBSET_SAFETY_FROM_TASKSET_SCHEDULABILITY",
+            "theorem_id": "SELECTED_REFERENCE_HI_SAFETY",
+            "route_id": "strict_full",
             "conclusion": "ALL_REFERENCE_HI_JOBS_MEET_DEADLINES",
         }
     else:
@@ -44,7 +45,7 @@ def _theorem():
 def test_contradiction_requires_same_reference_taskset():
     result = build_finite_bad_prefix_contradiction(
         reference_hi_safety_certificate=_certificate(
-            "REFERENCE_HI_SUBSET_SAFETY",
+            "SELECTED_REFERENCE_HI_SAFETY",
             fingerprint="1" * 64,
         ),
         bad_prefix_reflection_certificate=_certificate(
@@ -64,7 +65,7 @@ def test_contradiction_requires_same_reference_taskset():
 def test_contradiction_passes_for_same_reference_model():
     result = build_finite_bad_prefix_contradiction(
         reference_hi_safety_certificate=_certificate(
-            "REFERENCE_HI_SUBSET_SAFETY",
+            "SELECTED_REFERENCE_HI_SAFETY",
             fingerprint="1" * 64,
         ),
         bad_prefix_reflection_certificate=_certificate(
@@ -86,7 +87,7 @@ def test_contradiction_rejects_wrong_composition_theorem():
     theorem["theorem_id"] = "WRONG_THEOREM"
     result = build_finite_bad_prefix_contradiction(
         reference_hi_safety_certificate=_certificate(
-            "REFERENCE_HI_SUBSET_SAFETY", fingerprint="1" * 64
+            "SELECTED_REFERENCE_HI_SAFETY", fingerprint="1" * 64
         ),
         bad_prefix_reflection_certificate=_certificate(
             "HI_BAD_CLOSED_PREFIX_REFLECTION", fingerprint="1" * 64

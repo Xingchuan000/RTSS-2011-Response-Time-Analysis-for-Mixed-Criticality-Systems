@@ -11,6 +11,8 @@ def render_markdown(summary: Mapping[str, Any], output: Path) -> None:
              f"- target_id: `{summary.get('target_id', summary.get('fixture_id', 'unknown'))}`",
              f"- target_kind: `{summary.get('target_kind', summary.get('fixture_kind', 'unknown'))}`",
              f"- profile: `{summary.get('profile', 'unknown')}`", "",
+             f"- proof_route: `{summary.get('proof_route', 'legacy_strict_full')}`",
+             f"- analysis_taskset_kind: `{summary.get('analysis_taskset_kind', 'unknown')}`", "",
              "## Claim result", "",
              f"- result_status: `{summary.get('result_status', 'unknown')}`",
              f"- real_seed_evaluation: `{summary.get('real_seed_evaluation', 'DEFERRED')}`", "",

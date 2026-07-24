@@ -380,7 +380,13 @@ def replay_all_task_rta_independently(taskset: ReferenceTaskset) -> dict[str, An
     }
 
 
-def replay_all_task_rta(taskset: ReferenceTaskset, production: Mapping[str, Any]) -> dict[str, Any]:
+def replay_all_task_rta(taskset: ReferenceTaskset, production: Mapping[str, Any], *,
+                        expected_obligation_id: str | None = None,
+                        expected_route_id: str | None = None) -> dict[str, Any]:
+    if expected_obligation_id is not None and production.get("obligation_id") != expected_obligation_id:
+        return {"status": "FAIL", "code": "RTA_OBLIGATION_ID_MISMATCH"}
+    if expected_route_id is not None and production.get("route_id") != expected_route_id:
+        return {"status": "FAIL", "code": "RTA_ROUTE_ID_MISMATCH"}
     if production.get("schema_version") not in {"all_task_reference_rta_v2", "all_task_rta_v3"}:
         return {"status": "FAIL", "code": "RTA_SCHEMA_MISMATCH"}
     if production.get("task_count_analyzed") != len(taskset.tasks):

@@ -59,7 +59,8 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
                           overwrite: bool = False,
                           nonvacuity_profile: str = "off",
                           nonvacuity_params: dict[str, Any] | None = None,
-                          refresh_phase_k_map: bool = False) -> dict[str, Any]:
+                          refresh_phase_k_map: bool = False,
+                          proof_route: str = "protected_prefix") -> dict[str, Any]:
     """创建 canonical workspace，并输出机器无关的 proof request。"""
 
     seed_dir = Path(seed_dir).resolve()
@@ -96,11 +97,13 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
             "canonical seed 缺少 authoritative formal_inputs 目录")
     copied_inputs = output_dir / "request" / "inputs" / "formal_inputs"
     shutil.copytree(formal_inputs, copied_inputs, symlinks=False)
-    # Phase K case map 是源码 AST/CFG 的权威绑定输入。只有 seed 自身提供
-    # 该文件时才复制；缺失时 compiler 必须保留 UNRESOLVED，不能现场猜测
-    # path 或把旧 map 当成当前源码的证明。
+    # Phase K case map is a source-derived authoritative binding input.  Reuse
+    # the seed copy when it is present and refresh was not requested; otherwise
+    # derive it automatically from the current source tree so the caller only
+    # needs to provide the seed folder.
     phase_k_case_map = seed_dir / "phase_k_case_map.json"
-    if refresh_phase_k_map:
+    phase_k_map_refreshed = bool(refresh_phase_k_map or not phase_k_case_map.is_file())
+    if phase_k_map_refreshed:
         from formal_toolchain.adapters.source_manifest import build_source_manifest
         from formal_toolchain.bridge.p0_case_manifest import p0_case_manifest_hash
         from formal_toolchain.bridge.runtime_branch_map import (
@@ -181,8 +184,11 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
 
     from formal_toolchain.adapters.source_manifest import build_source_manifest
     source_manifest = build_source_manifest(code_root)
+    from formal_toolchain.routes.config import route_config
+    resolved_route = route_config(proof_route)
     request = {
-        "schema_version": "proof_request_v2",
+        "schema_version": "proof_request_v3",
+        "proof_route": resolved_route.to_dict(),
         "profile": "P0",
         "primary_claim": "DEPLOYED_HI_SAFETY",
         "target_id": target_manifest["target_id"],
@@ -217,10 +223,11 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
                   "external_seed_paths_read": [], "hout_used": False,
                   "nonvacuity_profile": str(nonvacuity_profile or "off"),
                   "nonvacuity_params": dict(nonvacuity_params or {}),
-                  "phase_k_map_refreshed": bool(refresh_phase_k_map),
+                  "phase_k_map_refreshed": phase_k_map_refreshed,
                   "effective_runtime_config_refreshed": True,
                   "action_definitions_canonical_refreshed": True}
     (output_dir / "seed_import_diagnostic.json").write_text(
         json.dumps(diagnostic, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return {"workspace": output_dir, "request": output_dir / "request" / "proof_request.json",
-            "target_id": target_manifest.get("target_id"), "target_kind": target_manifest.get("target_kind")}
+            "target_id": target_manifest.get("target_id"), "target_kind": target_manifest.get("target_kind"),
+            "phase_k_map_refreshed": phase_k_map_refreshed}
