@@ -179,6 +179,7 @@ def prove_protected_service_correspondence(
     *,
     construction: ProtectedPrefixBuildResult,
     pp0_receipts: Mapping[str, Any] | None = None,
+    idle_jump_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """L3: Protected service correspondence.
 
@@ -191,10 +192,17 @@ def prove_protected_service_correspondence(
     pp0 = pp0_receipts or {}
     service_ok = pp0.get("SERVICE_UNIT", {}).get("status") == "PASS"
     tail_ok = pp0.get("TAIL_ONLY_SERVICE", {}).get("status") == "PASS"
+    idle_ok = (
+        isinstance(idle_jump_receipt, Mapping)
+        and idle_jump_receipt.get("status") == "PASS"
+        and idle_jump_receipt.get("parameterized") is True
+        and idle_jump_receipt.get("independent_of_complete_execution_witness") is True
+    )
+    established = service_ok and tail_ok and idle_ok
     return {
-        "status": "PASS" if service_ok and tail_ok else "UNRESOLVED",
+        "status": "PASS" if established else "UNRESOLVED",
         "lemma": "PROTECTED_SERVICE_CORRESPONDENCE",
-        "code": None if service_ok and tail_ok else "PARAMETRIC_TRANSITION_PROOF_MISSING",
+        "code": None if established else "PARAMETRIC_TRANSITION_OR_IDLE_STUTTER_PROOF_MISSING",
         "phase_relation": "RelPP_SvcEnd",
         "two_case_proof": {
             "case_1_protected_ready_nonempty": {
@@ -204,11 +212,15 @@ def prove_protected_service_correspondence(
             },
             "case_2_protected_empty": {
                 "description": "Protected ready empty: full TAIL_ONLY_SERVICE, prefix idle => both stutter on ObsP",
-                "requires": ["TAIL_ONLY_SERVICE does not modify protected observable"],
+                "requires": [
+                    "TAIL_ONLY_SERVICE does not modify protected observable",
+                    "prefix idle jump is expanded by the parameterized CloseAt stutter theorem",
+                ],
             },
         },
         "requires_pp0_smt2": True,
         "transition_cases": ["SERVICE_UNIT", "TAIL_ONLY_SERVICE"],
+        "idle_jump_stutter_theorem_consumed": idle_ok,
         "reason": (
             "This obligation requires verifying SERVICE_UNIT and TAIL_ONLY_SERVICE "
             "transition schemas via SMT2 queries over the compiled transition IR."
@@ -399,24 +411,34 @@ def prove_mode_tail_phase_join(
         "code": "PARAMETRIC_TRANSITION_PROOF_MISSING",
         "phase_relation": "RelPP_AfterREC | RelPP_Close",
         "identity_skip_cases": {
-            "RECOVERY": {
+            "FULL_ONLY_RECOVERY": {
                 "description": "Full REC, prefix identity skip",
-                "precondition": "HI mode, quiescent (no active/running/pending)",
-                "effect": "mode changes to LO, no protected observable change",
+                "effect": "global mode changes only; ObsP is unchanged",
             },
-            "MODE_SWITCH": {
+            "PREFIX_ONLY_RECOVERY": {
+                "description": "Prefix REC, full identity skip",
+                "effect": "global mode changes only; ObsP is unchanged",
+            },
+            "FULL_ONLY_MODE_SWITCH": {
                 "description": "Full SW, prefix identity skip",
-                "precondition": "LO mode, pending abnormal HI trigger",
-                "effect": "mode changes to HI, no protected observable change",
+                "effect": "global mode changes only; protected release data remains fixed",
             },
-            "TAIL_ONLY_SERVICE": {
-                "description": "Full tail service, prefix identity stutter",
+            "PREFIX_ONLY_MODE_SWITCH": {
+                "description": "Prefix SW, full identity skip",
+                "effect": "global mode changes only; protected release data remains fixed",
+            },
+            "FULL_TAIL_ONLY_SERVICE": {
+                "description": "Full tail service, prefix identity/CloseAt stutter",
                 "precondition": "protected ready/running projection empty",
                 "effect": "tail service advances, protected observable unchanged",
             },
         },
         "requires_pp0_smt2": True,
-        "transition_cases": ["RECOVERY", "MODE_SWITCH", "TAIL_ONLY_SERVICE"],
+        "transition_cases": [
+            "FULL_ONLY_RECOVERY", "PREFIX_ONLY_RECOVERY",
+            "FULL_ONLY_MODE_SWITCH", "PREFIX_ONLY_MODE_SWITCH",
+            "FULL_TAIL_ONLY_SERVICE",
+        ],
         "reason": (
             "This obligation requires verifying RECOVERY, MODE_SWITCH, and "
             "TAIL_ONLY_SERVICE transition schemas via SMT2 queries over the "
@@ -437,13 +459,14 @@ def prove_protected_macro_step_preservation(
     prefix_taskset: object,
     pp0_receipts: Mapping[str, Any] | None = None,
     fold_receipts: Mapping[str, Any] | None = None,
+    idle_jump_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """L8: Canonical macro-step preservation.
 
-    Combines L1–L7 to prove:
-        RelPP_Close(full_t, prefix_t) => RelPP_Close(full_{t+1}, prefix_{t+1})
-
-    where t+1 is the next canonical macro boundary.
+    Combines L1–L7 with the local idle-jump theorem to prove an
+    integer-time step over the common CloseAt domain:
+        RelPP_Close(CloseAt_full(t), CloseAt_pp(t))
+        => RelPP_Close(CloseAt_full(t+1), CloseAt_pp(t+1)).
 
     Section 9 L8 receipt must list L1–L7 artifact hashes and same relation schema hash.
     """
@@ -453,7 +476,10 @@ def prove_protected_macro_step_preservation(
             construction=construction,
             tail_service_exclusion_receipt=tail,
         ),
-        prove_protected_service_correspondence(construction=construction, pp0_receipts=pp0_receipts),
+        prove_protected_service_correspondence(
+            construction=construction, pp0_receipts=pp0_receipts,
+            idle_jump_receipt=idle_jump_receipt,
+        ),
         prove_completion_removal_correspondence(construction=construction, pp0_receipts=pp0_receipts),
         prove_deadline_batch_correspondence(construction=construction),
         prove_arrival_batch_projection(construction=construction),
@@ -461,9 +487,14 @@ def prove_protected_macro_step_preservation(
     ]
 
     lemma_hashes = [sha256_object(lm) for lm in [tail] + lemmas]
-    relation_schema_hash = sha256_object({"schema": "phase_relation_v3"})
+    relation_schema_hash = sha256_object({"schema": "phase_relation_v4_close_at"})
 
-    all_pass = (tail["status"] == "PASS" and all(item["status"] == "PASS" for item in lemmas)
+    idle_ok = (
+        isinstance(idle_jump_receipt, Mapping)
+        and idle_jump_receipt.get("status") == "PASS"
+        and idle_jump_receipt.get("parameterized") is True
+    )
+    all_pass = (idle_ok and tail["status"] == "PASS" and all(item["status"] == "PASS" for item in lemmas)
                 and all((pp0_receipts or {}).get(case, {}).get("status") == "PASS"
                         for case in ("FINAL_DISPATCH", "SERVICE_UNIT", "TAIL_ONLY_SERVICE", "REM_COMPLETION"))
                 and all((fold_receipts or {}).get(phase, {}).get("status") == "PASS"
@@ -478,6 +509,11 @@ def prove_protected_macro_step_preservation(
         "lemmas": lemmas,
         "lemma_artifact_hashes": lemma_hashes,
         "relation_schema_hash": relation_schema_hash,
-        "conclusion": "Rel_pp_close(Close(t)) -> Rel_pp_close(Close(t+1))",
-        "phase_relation_schema": "phase_relation_v3",
+        "conclusion": (
+            "Rel_pp_close(CloseAt_full(t),CloseAt_pp(t)) -> "
+            "Rel_pp_close(CloseAt_full(t+1),CloseAt_pp(t+1))"
+        ),
+        "integer_time_induction": True,
+        "idle_jump_stutter_theorem_consumed": idle_ok,
+        "phase_relation_schema": "phase_relation_v4_close_at",
     }

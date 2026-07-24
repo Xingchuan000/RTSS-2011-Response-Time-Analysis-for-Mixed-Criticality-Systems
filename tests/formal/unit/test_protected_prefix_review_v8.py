@@ -89,9 +89,10 @@ def test_complete_execution_requires_idle_jump_stutter_expansion():
 def test_idle_jump_stutter_expansion_is_an_explicit_route_obligation():
     resolved = resolve_registry("protected_prefix")
     by_id = {entry["id"]: entry for entry in resolved.entries}
-    assert by_id["PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION"]["depends_on"] == [
-        "PROTECTED_PREFIX_TIME_DIVERGENCE"
-    ]
+    assert set(by_id["PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION"]["depends_on"]) == {
+        "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
+        "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION",
+    }
     assert "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION" in (
         by_id["PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS"]["depends_on"]
     )

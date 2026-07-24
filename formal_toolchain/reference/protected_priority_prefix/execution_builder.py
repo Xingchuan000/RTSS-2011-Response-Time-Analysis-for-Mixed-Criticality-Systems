@@ -1,8 +1,9 @@
 """Complete prefix execution existence proofs.
 
-Implements the four required execution-existence obligations:
-  1. PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL
-  2. PROTECTED_PREFIX_SAME_TIME_CLOSURE_TERMINATES
+Implements the four required execution-existence obligations in the
+non-circular order required by the proof:
+  1. PROTECTED_PREFIX_SAME_TIME_CLOSURE_TERMINATES
+  2. PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL
   3. PROTECTED_PREFIX_TIME_DIVERGENCE
   4. PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS
 
@@ -28,6 +29,23 @@ from formal_toolchain.reference.executable_semantics import (
 
 from .input_oracle import ProtectedInputOracle, LazyInfiniteProtectedInputOracle
 from .types import ProtectedPrefixBuildResult
+
+
+def _receipt_payload(receipt: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if not isinstance(receipt, Mapping):
+        return {}
+    witness = receipt.get("witness")
+    return witness if isinstance(witness, Mapping) else receipt
+
+
+def _receipt_pass(receipt: Mapping[str, Any] | None) -> bool:
+    if not isinstance(receipt, Mapping):
+        return False
+    status = receipt.get("status", receipt.get("obligation_status"))
+    if status == "PASS":
+        return True
+    payload = _receipt_payload(receipt)
+    return payload.get("status") == "PASS"
 
 
 # ---------------------------------------------------------------------------
@@ -193,122 +211,133 @@ def define_next_closed_boundary(
     }
 
 
-def prove_canonical_successor_total(
-    prefix_taskset: object,
-    successor_definition: dict[str, Any],
-    proof_kernel_receipt: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Prove: next_closed_boundary is a total function over legal closed states.
-
-    The successor is close_timestamp(), which is total over all legal
-    ReferenceState values by the C-AMC-sem semantics.  Every closed state
-    has a well-defined next closed state because:
-    1. The same-time closure has a strictly decreasing finite measure (Section 7.3).
-    2. After closure, either a service tick advances time or a future event exists.
-    """
-    kernel_ok = (
-        isinstance(proof_kernel_receipt, Mapping)
-        and proof_kernel_receipt.get("status") == "PASS"
-        and proof_kernel_receipt.get("theorem_id") == "PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL"
-        and proof_kernel_receipt.get("all_legal_closed_states_covered") is True
-    )
-    return {
-        "obligation_id": "PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL",
-        "status": "PASS" if kernel_ok else "UNRESOLVED",
-        "code": None if kernel_ok else "CANONICAL_SUCCESSOR_TOTALITY_UNRESOLVED",
-        "successor_definition_hash": sha256_object(successor_definition),
-        "reason": (
-            "The successor is close_timestamp(), which is a pure function total "
-            "over all legal closed states per C-AMC-sem semantics.  The closure "
-            "measure is strictly decreasing and well-founded.  Post-closure either "
-            "applies a service tick (+1 time) or jumps to a strictly future event."
-        ),
-    }
-
-
 def prove_same_time_closure_terminates(
-    successor_total_receipt: Mapping[str, Any] | None = None,
+    runtime_schema_receipt: Mapping[str, Any] | None = None,
+    prefix_extension_receipt: Mapping[str, Any] | None = None,
     proof_kernel_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Prove: same-time closure has a strictly decreasing finite measure.
+    """Prove termination of the same-timestamp closure independently.
 
-    Uses the lexicographic count vector for the current timestamp in canonical
-    phase order (REM, REC, DDL, ARR, SW, REL, DSP).
-
-    Each micro-step processed by close_timestamp() removes one event from
-    the frontier or advances a cursor, strictly decreasing the measure.
-    The measure is well-founded, guaranteeing termination.
+    This lemma is logically prior to successor totality.  Using successor
+    totality as its premise would be circular because totality itself requires
+    the closure loop to terminate.
     """
-    measure_ok = prove_closure_measure_well_founded()
-    total_ok = (
-        isinstance(successor_total_receipt, Mapping)
-        and successor_total_receipt.get("status") == "PASS"
-    )
+    measure = prove_closure_measure_well_founded()
+    runtime_ok = _receipt_pass(runtime_schema_receipt)
+    extension_ok = _receipt_pass(prefix_extension_receipt)
     kernel_ok = (
         isinstance(proof_kernel_receipt, Mapping)
         and proof_kernel_receipt.get("status") == "PASS"
-        and proof_kernel_receipt.get("theorem_id") == "PROTECTED_PREFIX_SAME_TIME_CLOSURE_TERMINATES"
+        and proof_kernel_receipt.get("theorem_id")
+            == "PROTECTED_PREFIX_SAME_TIME_CLOSURE_TERMINATES"
+        and proof_kernel_receipt.get("proof_scope") == "ALL_LEGAL_SAME_TIME_CLOSURES"
+        and proof_kernel_receipt.get("source_bound_transition_relation") is True
         and proof_kernel_receipt.get("every_microstep_strictly_decreases_measure") is True
+        and proof_kernel_receipt.get("generated_events_only_in_later_phase") is True
     )
-    established = measure_ok["status"] == "PASS" and total_ok and kernel_ok
-
+    established = measure["status"] == "PASS" and runtime_ok and extension_ok and kernel_ok
     return {
         "obligation_id": "PROTECTED_PREFIX_SAME_TIME_CLOSURE_TERMINATES",
         "status": "PASS" if established else "UNRESOLVED",
         "code": None if established else "SAME_TIME_CLOSURE_TERMINATION_UNRESOLVED",
         "closure_measure": list(_LEXICOGRAPHIC_MEASURE_ORDER),
-        "measure_well_founded": measure_ok,
+        "measure_well_founded": measure,
+        "source_bound_microstep_decrease": kernel_ok,
         "reason": (
-            "Closure termination proof: (1) a well-founded lexicographic measure "
-            "over the seven canonical same-time event phases; "
-            "(2) every closure micro-step strictly decreases this measure; "
-            "(3) the measure lower-bounds at (0,...,0)."
+            "A source-bound proof must show that every legal closure micro-step "
+            "strictly decreases the seven-phase lexicographic measure and can "
+            "generate events only in a later phase."
+        ),
+    }
+
+
+def prove_canonical_successor_total(
+    prefix_taskset: object,
+    successor_definition: dict[str, Any],
+    *,
+    closure_termination_receipt: Mapping[str, Any] | None = None,
+    prefix_extension_receipt: Mapping[str, Any] | None = None,
+    input_projection_receipt: Mapping[str, Any] | None = None,
+    demand_receptiveness_receipt: Mapping[str, Any] | None = None,
+    proof_kernel_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Prove totality after closure termination and input legality are known."""
+    prerequisites_ok = all((
+        _receipt_pass(closure_termination_receipt),
+        _receipt_pass(prefix_extension_receipt),
+        _receipt_pass(input_projection_receipt),
+        _receipt_pass(demand_receptiveness_receipt),
+    ))
+    projection = _receipt_payload(input_projection_receipt)
+    demand = _receipt_payload(demand_receptiveness_receipt)
+    oracle_fp = projection.get("projected_oracle_fingerprint")
+    oracle_contract_ok = (
+        isinstance(oracle_fp, str)
+        and projection.get("complete_recurring_stream") is True
+        and demand.get("all_projected_demands_legal") is True
+        and demand.get("all_projected_demands_positive") is True
+        and demand.get("release_fixed_demands") is True
+        and demand.get("mode_independent_lo_receptiveness") is True
+    )
+    kernel_ok = (
+        isinstance(proof_kernel_receipt, Mapping)
+        and proof_kernel_receipt.get("status") == "PASS"
+        and proof_kernel_receipt.get("theorem_id")
+            == "PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL"
+        and proof_kernel_receipt.get("all_legal_closed_states_covered") is True
+        and proof_kernel_receipt.get("same_time_closure_termination_consumed") is True
+        and proof_kernel_receipt.get("future_event_or_service_branch_total") is True
+        and proof_kernel_receipt.get("projected_oracle_contract_consumed") is True
+    )
+    established = prerequisites_ok and oracle_contract_ok and kernel_ok
+    return {
+        "obligation_id": "PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL",
+        "status": "PASS" if established else "UNRESOLVED",
+        "code": None if established else "CANONICAL_SUCCESSOR_TOTALITY_UNRESOLVED",
+        "successor_definition_hash": sha256_object(successor_definition),
+        "projected_oracle_fingerprint": oracle_fp,
+        "closure_termination_consumed": _receipt_pass(closure_termination_receipt),
+        "projected_input_legal": oracle_contract_ok,
+        "reason": (
+            "Totality requires independently proved closure termination, the "
+            "prefix-extension theorem, a complete projected input contract, "
+            "demand receptiveness, and a source-bound proof of the service/future-event branches."
         ),
     }
 
 
 def prove_time_divergence(
-    closure_termination_receipt: Mapping[str, Any] | None = None,
+    canonical_successor_receipt: Mapping[str, Any] | None = None,
     proof_kernel_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Prove: every canonical macro-step advances time, no Zeno.
-
-    Post-closure, close_timestamp() either:
-    - Executes SERVICE_UNIT: time += 1
-    - Jumps to next future event: time := event_time > current_time
-
-    Both cases strictly increase time.  By induction on macro-step count,
-    time grows without bound (time-divergent).
-    """
-    closure_ok = (
-        isinstance(closure_termination_receipt, Mapping)
-        and closure_termination_receipt.get("status") == "PASS"
-    )
-
+    """Prove unbounded time growth for repeated canonical successors."""
+    successor_ok = _receipt_pass(canonical_successor_receipt)
     kernel_ok = (
         isinstance(proof_kernel_receipt, Mapping)
         and proof_kernel_receipt.get("status") == "PASS"
         and proof_kernel_receipt.get("theorem_id") == "PROTECTED_PREFIX_TIME_DIVERGENCE"
         and proof_kernel_receipt.get("every_macrostep_strictly_advances_time") is True
+        and proof_kernel_receipt.get("unbounded_iteration_proved") is True
     )
-    established = closure_ok and kernel_ok
+    established = successor_ok and kernel_ok
     return {
         "obligation_id": "PROTECTED_PREFIX_TIME_DIVERGENCE",
         "status": "PASS" if established else "UNRESOLVED",
         "code": None if established else "TIME_DIVERGENCE_UNRESOLVED",
+        "canonical_successor_total": successor_ok,
         "reason": (
-            "Time divergence proof: post-closure macro-step either applies "
-            "SERVICE_UNIT (time+1) or jumps to next event time > current. "
-            "Both cases strictly increase time.  By induction on macro-step "
-            "count, time grows without bound."
+            "The source-bound successor theorem must prove a strictly positive "
+            "time increase per macro-step and induction must prove unbounded iteration."
         ),
     }
 
 
 def prove_complete_execution_exists(
     *,
+    canonical_successor_receipt: Mapping[str, Any] | None = None,
     time_divergence_receipt: Mapping[str, Any] | None = None,
     input_projection_receipt: Mapping[str, Any] | None = None,
+    demand_receptiveness_receipt: Mapping[str, Any] | None = None,
     prefix_taskset: object,
     protected_oracle: ProtectedInputOracle | None = None,
     prefix_initial_state: Any = None,
@@ -316,29 +345,22 @@ def prove_complete_execution_exists(
     proof_kernel_receipt: Mapping[str, Any] | None = None,
     idle_jump_expansion_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Prove: a unique time-divergent execution exists for the projected oracle.
-
-    Section 7.5: The proof binds one fixed oracle to one complete prefix
-    execution.  The witness must certify:
-        same_fixed_oracle = true
-        same_initial_state = true
-        same_successor_function = true
-        all_finite_prefixes_are_prefixes_of_one_execution = true
-    """
+    """Prove existence of one complete execution for one fixed projected oracle."""
     try:
-        _ = initial_reference_state(prefix_taskset)
-        initial_ok = True
-    except (TypeError, ValueError, RuntimeError):
+        standard_initial = initial_reference_state(prefix_taskset)
+        initial_ok = (
+            int(standard_initial.time) == 0
+            and str(standard_initial.mode) in {"LO", "Mode.LO"}
+            and not getattr(standard_initial, "jobs", ())
+            and getattr(standard_initial, "running_job_key", None) is None
+        )
+    except (TypeError, ValueError, RuntimeError, AttributeError):
         initial_ok = False
 
-    div_ok = (
-        isinstance(time_divergence_receipt, Mapping)
-        and time_divergence_receipt.get("status") == "PASS"
-    )
-    proj_ok = (
-        isinstance(input_projection_receipt, Mapping)
-        and input_projection_receipt.get("status") == "PASS"
-    )
+    successor_ok = _receipt_pass(canonical_successor_receipt)
+    div_ok = _receipt_pass(time_divergence_receipt)
+    proj_ok = _receipt_pass(input_projection_receipt)
+    demand_ok = _receipt_pass(demand_receptiveness_receipt)
 
     witness_ok = (
         isinstance(single_witness_receipt, Mapping)
@@ -356,49 +378,51 @@ def prove_complete_execution_exists(
         and proof_kernel_receipt.get("status") == "PASS"
         and proof_kernel_receipt.get("theorem_id") == "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS"
         and proof_kernel_receipt.get("dependent_choice_construction_verified") is True
+        and proof_kernel_receipt.get("canonical_successor_total_consumed") is True
         and proof_kernel_receipt.get("recurring_history_preserved") is True
         and proof_kernel_receipt.get("same_fixed_oracle") is True
     )
+    idle_payload = _receipt_payload(idle_jump_expansion_receipt)
     idle_expansion_ok = (
-        isinstance(idle_jump_expansion_receipt, Mapping)
-        and idle_jump_expansion_receipt.get("status") == "PASS"
-        and idle_jump_expansion_receipt.get("theorem_id")
-            == "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION"
-        and idle_jump_expansion_receipt.get("all_integer_times_observable") is True
-        and idle_jump_expansion_receipt.get("protected_observable_stutters_on_expanded_idle_ticks") is True
+        _receipt_pass(idle_jump_expansion_receipt)
+        and idle_payload.get("theorem_id") == "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION"
+        and idle_payload.get("parameterized") is True
+        and idle_payload.get("independent_of_complete_execution_witness") is True
+        and idle_payload.get("all_integer_times_observable") is True
     )
-    projected_oracle_fingerprint = (
-        input_projection_receipt.get("witness", input_projection_receipt).get("projected_oracle_fingerprint")
-        if isinstance(input_projection_receipt, Mapping) else None
-    )
+    projection = _receipt_payload(input_projection_receipt)
+    projected_oracle_fingerprint = projection.get("projected_oracle_fingerprint")
     single_oracle_fingerprint = (
         single_witness_receipt.get("projected_oracle_fingerprint")
         if isinstance(single_witness_receipt, Mapping) else None
     )
     oracle_binding_ok = (
         isinstance(projected_oracle_fingerprint, str)
-        and isinstance(single_oracle_fingerprint, str)
         and projected_oracle_fingerprint == single_oracle_fingerprint
     )
-    established = (
-        initial_ok and div_ok and proj_ok and witness_ok and kernel_ok
-        and idle_expansion_ok and oracle_binding_ok
-    )
+    established = all((
+        initial_ok, successor_ok, div_ok, proj_ok, demand_ok, witness_ok,
+        kernel_ok, idle_expansion_ok, oracle_binding_ok,
+    ))
 
     return {
         "status": "PASS" if established else "UNRESOLVED",
         "code": None if established else "COMPLETE_EXECUTION_EXISTS_UNRESOLVED",
         "obligation_id": "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS",
         "witness": {
-            "schema_version": "complete_execution_existence_v3",
+            "schema_version": "complete_execution_existence_v4",
+            "quantifier_order": "forall-full-exists-one-prefix-forall-boundaries",
             "initial_state_constructible": initial_ok,
+            "standard_empty_lo_initial_state": initial_ok,
+            "canonical_successor_total": successor_ok,
             "time_divergent": div_ok,
             "projected_oracle_defined": proj_ok,
+            "projected_demands_legal": demand_ok,
             "single_complete_execution": established,
             "single_witness_receipt_verified": witness_ok,
-            "same_fixed_oracle": witness_ok,
-            "same_initial_state": True if witness_ok else False,
-            "same_successor_function": "next_closed_boundary" if initial_ok else None,
+            "same_fixed_oracle": witness_ok and oracle_binding_ok,
+            "same_initial_state": witness_ok and initial_ok,
+            "same_successor_function": "next_closed_boundary" if witness_ok else None,
             "all_finite_prefixes_are_prefixes_of_one_execution": witness_ok,
             "recurring_history_preserved": established,
             "idle_jump_expansion_verified": idle_expansion_ok,
@@ -410,12 +434,10 @@ def prove_complete_execution_exists(
         "failure": None if established else {
             "code": "COMPLETE_EXECUTION_EXISTS_UNRESOLVED",
             "reason": (
-                "Complete execution existence requires: time divergence "
-                "proof PASS, input projection receipt PASS, initial state "
-                "constructible, and a proof-kernel receipt binding one fixed "
-                "oracle to one complete prefix execution with the quantifier "
-                "order 'forall-full-exists-one-prefix-forall-boundaries', and "
-                "an idle-jump stutter expansion defining Close(t) at every integer time."
+                "Complete execution existence requires total canonical successor, "
+                "time divergence, a complete legal projected oracle, a standard empty "
+                "LO initial state, one dependent-choice witness, and the independent "
+                "local idle-jump theorem."
             ),
         },
     }

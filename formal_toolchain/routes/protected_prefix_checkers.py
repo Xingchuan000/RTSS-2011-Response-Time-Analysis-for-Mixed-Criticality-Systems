@@ -83,29 +83,18 @@ def check_runtime_schema_conformance(**kwargs: Any) -> dict[str, Any]:
 
 
 def check_simulation_domain(**kwargs: Any) -> dict[str, Any]:
-    predecessors = kwargs.get("verified_predecessors", {})
-    required = {
-        "REFERENCE_MODEL_CONFORMANCE",
-        "PROTECTED_PRIORITY_PREFIX_PARTITION",
-        "PROTECTED_PREFIX_LO_SATURATION",
-        "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
-        "PROTECTED_INPUT_STREAM_PROJECTION",
-        "PROTECTED_INPUT_DEMAND_RECEPTIVENESS",
-        "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS",
-    }
-    blocked = _require_pass_predecessors(predecessors, required)
-    if blocked is not None:
-        return blocked
+    """Compose the already verified PP domain predicates.
+
+    This node is a conjunction only; it does not manufacture executions or
+    proof receipts.  Once all exact predecessors PASS, the composition helper
+    checks quantifier order, oracle identity, demand legality, the single
+    execution witness, and the common CloseAt time domain.
+    """
+    result = check_full_to_prefix_simulation_domain(**kwargs)
+    status = result.get("status", "UNRESOLVED")
     return _finish(
-        "UNRESOLVED",
-        "FULL_TO_PREFIX_COMPLETE_EXECUTION_DOMAIN_PROOF_MISSING",
-        {
-            "reason": (
-                "The current implementation checks only an initial batch and one "
-                "closed timestamp; it does not construct one complete prefix execution "
-                "for the complete projected protected input stream."
-            )
-        },
+        "PASS" if status == "PASS" else ("FAIL" if status == "FAIL" else "UNRESOLVED"),
+        result.get("code"), result.get("witness", result),
     )
 
 
@@ -307,6 +296,8 @@ def check_protected_input_demand_receptiveness(**kwargs: Any) -> dict[str, Any]:
         and receipt.get("normal_hi_bound_preserved") is True
         and receipt.get("abnormal_hi_bound_preserved") is True
         and receipt.get("saturated_lo_mode_independent_bound") is True
+        and receipt.get("actual_demand_positive") is True
+        and receipt.get("demand_fixed_at_release") is True
     )
     if not kernel_ok:
         return _finish("UNRESOLVED", "PARAMETRIC_DEMAND_RECEPTIVENESS_PROOF_MISSING", {
@@ -319,6 +310,8 @@ def check_protected_input_demand_receptiveness(**kwargs: Any) -> dict[str, Any]:
     return _finish("PASS", witness={
         "obligation_id": "PROTECTED_INPUT_DEMAND_RECEPTIVENESS",
         "all_projected_demands_legal": True,
+        "all_projected_demands_positive": True,
+        "release_fixed_demands": True,
         "mode_independent_lo_receptiveness": True,
         "parameterized": True,
         "prefix_taskset_fingerprint": prefix_fp,
@@ -375,59 +368,71 @@ def check_prefix_reference_prefix_extension(**kwargs: Any) -> dict[str, Any]:
 
 
 
-def check_prefix_canonical_successor_total(**kwargs: Any) -> dict[str, Any]:
-    state = _route_state(kwargs)
-    if state is None or state.prepared_route is None:
-        return _finish("UNRESOLVED", "PROTECTED_PREFIX_TASKSET_MISSING")
-
-    from formal_toolchain.reference.protected_priority_prefix.execution_builder import (
-        define_next_closed_boundary,
-        prove_canonical_successor_total,
-    )
-
-    prefix_taskset = state.analysis_taskset
-    construction = state.prepared_route.construction_witnesses.get("build_result")
-    if construction is None:
-        return _finish("UNRESOLVED", "PROTECTED_PREFIX_CONSTRUCTION_MISSING")
-
-    predecessors = kwargs.get("verified_predecessors", {})
-    oracle = predecessors.get("PROTECTED_INPUT_STREAM_PROJECTION", {}).get("witness", {}).get("projected_oracle")
-    if oracle is None:
-        return _finish("UNRESOLVED", "AUTHORITATIVE_PROJECTED_ORACLE_MISSING")
-    successor_def = define_next_closed_boundary(prefix_taskset, oracle)
-    total = prove_canonical_successor_total(prefix_taskset, successor_def)
-
-    return _finish("PASS" if total.get("status") == "PASS" else "UNRESOLVED",
-                   total.get("code"), total)
-
-
 def check_prefix_same_time_closure_terminates(**kwargs: Any) -> dict[str, Any]:
     predecessors = kwargs.get("verified_predecessors", {})
-    blocked = _require_pass_predecessors(
-        predecessors,
-        {"PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL"},
-    )
+    required = {
+        "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
+        "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION",
+    }
+    blocked = _require_pass_predecessors(predecessors, required)
     if blocked is not None:
         return blocked
 
     from formal_toolchain.reference.protected_priority_prefix.execution_builder import (
         prove_same_time_closure_terminates,
     )
-
     result = prove_same_time_closure_terminates(
-        successor_total_receipt=predecessors.get("PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL"),
+        runtime_schema_receipt=predecessors["PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE"],
+        prefix_extension_receipt=predecessors["PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION"],
+        proof_kernel_receipt=kwargs.get("same_time_closure_proof_kernel"),
     )
-    if result.get("status") == "PASS":
-        return _finish("PASS", witness=result)
-    return _finish("UNRESOLVED", result.get("code", "PROTECTED_PREFIX_SAME_TIME_CLOSURE_TERMINATES_NOT_IMPLEMENTED"),
-                   result)
+    return _finish(
+        "PASS" if result.get("status") == "PASS" else "UNRESOLVED",
+        result.get("code"), result,
+    )
+
+
+def check_prefix_canonical_successor_total(**kwargs: Any) -> dict[str, Any]:
+    predecessors = kwargs.get("verified_predecessors", {})
+    required = {
+        "PROTECTED_PREFIX_SAME_TIME_CLOSURE_TERMINATES",
+        "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION",
+        "PROTECTED_INPUT_STREAM_PROJECTION",
+        "PROTECTED_INPUT_DEMAND_RECEPTIVENESS",
+    }
+    blocked = _require_pass_predecessors(predecessors, required)
+    if blocked is not None:
+        return blocked
+
+    state = _route_state(kwargs)
+    if state is None or state.prepared_route is None or state.analysis_taskset is None:
+        return _finish("UNRESOLVED", "PROTECTED_PREFIX_TASKSET_MISSING")
+
+    from formal_toolchain.reference.protected_priority_prefix.execution_builder import (
+        define_next_closed_boundary, prove_canonical_successor_total,
+    )
+    # The theorem consumes the symbolic projected-oracle contract/fingerprint.
+    # It must not require an in-memory oracle object hidden in a predecessor.
+    projection = predecessors["PROTECTED_INPUT_STREAM_PROJECTION"].get("witness", {})
+    successor_def = define_next_closed_boundary(state.analysis_taskset, projection)
+    total = prove_canonical_successor_total(
+        state.analysis_taskset, successor_def,
+        closure_termination_receipt=predecessors["PROTECTED_PREFIX_SAME_TIME_CLOSURE_TERMINATES"],
+        prefix_extension_receipt=predecessors["PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION"],
+        input_projection_receipt=predecessors["PROTECTED_INPUT_STREAM_PROJECTION"],
+        demand_receptiveness_receipt=predecessors["PROTECTED_INPUT_DEMAND_RECEPTIVENESS"],
+        proof_kernel_receipt=kwargs.get("canonical_successor_proof_kernel"),
+    )
+    return _finish(
+        "PASS" if total.get("status") == "PASS" else "UNRESOLVED",
+        total.get("code"), total,
+    )
 
 
 def check_prefix_time_divergence(**kwargs: Any) -> dict[str, Any]:
     predecessors = kwargs.get("verified_predecessors", {})
     blocked = _require_pass_predecessors(
-        predecessors,
-        {"PROTECTED_PREFIX_SAME_TIME_CLOSURE_TERMINATES"},
+        predecessors, {"PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL"},
     )
     if blocked is not None:
         return blocked
@@ -435,62 +440,54 @@ def check_prefix_time_divergence(**kwargs: Any) -> dict[str, Any]:
     from formal_toolchain.reference.protected_priority_prefix.execution_builder import (
         prove_time_divergence,
     )
-
     result = prove_time_divergence(
-        closure_termination_receipt=predecessors.get("PROTECTED_PREFIX_SAME_TIME_CLOSURE_TERMINATES"),
+        canonical_successor_receipt=predecessors["PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL"],
+        proof_kernel_receipt=kwargs.get("time_divergence_proof_kernel"),
     )
-    if result.get("status") == "PASS":
-        return _finish("PASS", witness=result)
-    return _finish("UNRESOLVED", result.get("code", "PROTECTED_PREFIX_TIME_DIVERGENCE_NOT_IMPLEMENTED"),
-                   result)
+    return _finish(
+        "PASS" if result.get("status") == "PASS" else "UNRESOLVED",
+        result.get("code"), result,
+    )
 
 
 def check_prefix_idle_jump_stutter_expansion(**kwargs: Any) -> dict[str, Any]:
-    """Require a theorem that expands executable idle jumps into unit-time stutters.
+    """Discharge the local, parameterized idle-jump frame theorem.
 
-    The executable reference semantics may jump directly from an idle closed
-    state to the next event time.  The PP weak simulation is stated at every
-    integer time, so a separate theorem must define the conceptual intermediate
-    closed observations and prove that their protected projection stutters.
+    A finite execution may be supplied for diagnostics, but it can never make
+    this obligation PASS.  The theorem is independent of complete execution
+    existence, which prevents a witness cycle.
     """
     predecessors = kwargs.get("verified_predecessors", {})
-    blocked = _require_pass_predecessors(
-        predecessors, {"PROTECTED_PREFIX_TIME_DIVERGENCE"},
-    )
+    required = {
+        "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
+        "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION",
+    }
+    blocked = _require_pass_predecessors(predecessors, required)
     if blocked is not None:
         return blocked
-    execution = kwargs.get("prefix_execution") or kwargs.get("complete_execution")
-    if execution is None:
-        return _finish(
-            "UNRESOLVED", "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION_PROOF_MISSING",
-            {
-                "theorem_id": "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION",
-                "required": [
-                    "define CloseAt(execution, t) for every integer t",
-                    "expand each idle jump [t,u] into unit-time conceptual stutters",
-                    "preserve protected observable on every inserted idle tick",
-                    "bind the expansion to executable idle-jump semantics",
-                ],
-            },
-        )
+
     from formal_toolchain.reference.protected_priority_prefix.idle_jump_stutter import (
         prove_idle_jump_stutter_expansion,
     )
     result = prove_idle_jump_stutter_expansion(
-        execution=execution,
+        execution=kwargs.get("prefix_execution") or kwargs.get("finite_execution_diagnostic"),
         observable_projector=kwargs.get("protected_observable_projector"),
+        proof_kernel_receipt=kwargs.get("idle_jump_proof_kernel"),
     )
-    return _finish("PASS" if result.get("status") == "PASS" else "UNRESOLVED",
-                   result.get("code"), result)
+    return _finish(
+        "PASS" if result.get("status") == "PASS" else "UNRESOLVED",
+        result.get("code"), result,
+    )
 
 
 def check_prefix_complete_execution_exists(**kwargs: Any) -> dict[str, Any]:
     predecessors = kwargs.get("verified_predecessors", {})
     required = {
-        "PROTECTED_INPUT_STREAM_PROJECTION",
-        "PROTECTED_INPUT_DEMAND_RECEPTIVENESS",
+        "PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL",
         "PROTECTED_PREFIX_TIME_DIVERGENCE",
         "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION",
+        "PROTECTED_INPUT_STREAM_PROJECTION",
+        "PROTECTED_INPUT_DEMAND_RECEPTIVENESS",
     }
     blocked = _require_pass_predecessors(predecessors, required)
     if blocked is not None:
@@ -504,8 +501,10 @@ def check_prefix_complete_execution_exists(**kwargs: Any) -> dict[str, Any]:
     )
     projection = predecessors["PROTECTED_INPUT_STREAM_PROJECTION"].get("witness", {})
     result = prove_complete_execution_exists(
+        canonical_successor_receipt=predecessors["PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL"],
         time_divergence_receipt=predecessors["PROTECTED_PREFIX_TIME_DIVERGENCE"],
         input_projection_receipt=predecessors["PROTECTED_INPUT_STREAM_PROJECTION"],
+        demand_receptiveness_receipt=predecessors["PROTECTED_INPUT_DEMAND_RECEPTIVENESS"],
         prefix_taskset=state.analysis_taskset,
         prefix_initial_state=kwargs.get("prefix_initial_state"),
         single_witness_receipt=kwargs.get("single_execution_witness_receipt"),
@@ -513,9 +512,12 @@ def check_prefix_complete_execution_exists(**kwargs: Any) -> dict[str, Any]:
         idle_jump_expansion_receipt=predecessors["PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION"],
     )
     if result.get("status") == "PASS":
-        result.setdefault("witness", {})["projected_oracle_fingerprint"] = projection.get("projected_oracle_fingerprint")
+        result.setdefault("witness", {})["projected_oracle_fingerprint"] = (
+            projection.get("projected_oracle_fingerprint")
+        )
         return _finish("PASS", witness=result)
-    return _finish("UNRESOLVED", result.get("code", "COMPLETE_EXECUTION_EXISTS_UNRESOLVED"), result)
+    return _finish("UNRESOLVED", result.get("code"), result)
+
 
 def check_partition(**kwargs: Any) -> dict[str, Any]:
     state = _route_state(kwargs)
@@ -648,6 +650,7 @@ def check_prefix_model_conformance(**kwargs: Any) -> dict[str, Any]:
         "PROTECTED_PREFIX_LO_SATURATION",
         "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
         "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION",
+        "PROTECTED_INPUT_DEMAND_RECEPTIVENESS",
         "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS",
         "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC",
         "ZERO_RELATIVE_START",
@@ -684,6 +687,7 @@ def check_prefix_model_conformance(**kwargs: Any) -> dict[str, Any]:
         construction=construction,
         runtime_schema_certificate=runtime_certificate,
         execution_existence_receipt=execution_receipt,
+        demand_receptiveness_receipt=predecessors["PROTECTED_INPUT_DEMAND_RECEPTIVENESS"],
         candidate_enumeration_receipt=candidate_enumeration_receipt,
         zero_relative_start_receipt=predecessors["ZERO_RELATIVE_START"],
     )

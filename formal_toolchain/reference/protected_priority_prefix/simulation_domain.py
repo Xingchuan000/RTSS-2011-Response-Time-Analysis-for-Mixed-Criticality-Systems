@@ -38,9 +38,22 @@ class FullToPrefixSimulationDomainWitness:
 
 
 def _predecessor_witness(predecessors: dict[str, Any], name: str) -> dict[str, Any]:
-    receipt = predecessors.get(name, {})
-    witness = receipt.get("witness", {}) if isinstance(receipt, dict) else {}
-    return witness if isinstance(witness, dict) else {}
+    """Unwrap the obligation envelope and one nested theorem witness.
+
+    Route checkers commonly return ``witness={theorem result}``, while theorem
+    results such as complete-execution existence themselves contain a nested
+    ``witness``.  Reading only one level makes all future PASS receipts appear
+    to lack quantifier/oracle fields and prevents the domain from closing.
+    """
+    value: Any = predecessors.get(name, {})
+    for _ in range(3):
+        if not isinstance(value, dict):
+            return {}
+        nested = value.get("witness")
+        if not isinstance(nested, dict):
+            break
+        value = nested
+    return value if isinstance(value, dict) else {}
 
 
 def check_full_to_prefix_simulation_domain(**kwargs: Any) -> dict[str, Any]:

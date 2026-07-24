@@ -68,6 +68,7 @@ def test_complete_execution_registry_matches_checker_predecessors():
     resolved = resolve_registry("protected_prefix")
     by_id = {entry["id"]: entry for entry in resolved.entries}
     assert set(by_id["PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS"]["depends_on"]) == {
+        "PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL",
         "PROTECTED_PREFIX_TIME_DIVERGENCE",
         "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION",
         "PROTECTED_INPUT_STREAM_PROJECTION",

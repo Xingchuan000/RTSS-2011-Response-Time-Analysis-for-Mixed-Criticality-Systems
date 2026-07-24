@@ -110,6 +110,7 @@ def resolve_registry(route: ProofRoute | str) -> ResolvedRegistry:
             "PROTECTED_PREFIX_LO_SATURATION",
             "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
             "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION",
+            "PROTECTED_INPUT_DEMAND_RECEPTIVENESS",
             "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS",
             "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC",
             "ZERO_RELATIVE_START",
@@ -130,21 +131,29 @@ def resolve_registry(route: ProofRoute | str) -> ResolvedRegistry:
         by["PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION"]["depends_on"] = [
             "SATURATED_PROTECTED_PREFIX_REFERENCE",
         ]
-        # Complete prefix execution existence chain
-        by["PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL"]["depends_on"] = [
+        # Complete prefix execution existence chain.  The order is intentionally
+        # non-circular: local closure termination precedes successor totality.
+        by["PROTECTED_PREFIX_SAME_TIME_CLOSURE_TERMINATES"]["depends_on"] = [
             "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
             "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION",
         ]
-        by["PROTECTED_PREFIX_SAME_TIME_CLOSURE_TERMINATES"]["depends_on"] = [
-            "PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL",
+        by["PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL"]["depends_on"] = [
+            "PROTECTED_PREFIX_SAME_TIME_CLOSURE_TERMINATES",
+            "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION",
+            "PROTECTED_INPUT_STREAM_PROJECTION",
+            "PROTECTED_INPUT_DEMAND_RECEPTIVENESS",
         ]
         by["PROTECTED_PREFIX_TIME_DIVERGENCE"]["depends_on"] = [
-            "PROTECTED_PREFIX_SAME_TIME_CLOSURE_TERMINATES",
+            "PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL",
         ]
+        # Idle-jump stuttering is a local transition/frame theorem.  It must be
+        # independent of the complete-execution witness to avoid a witness cycle.
         by["PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION"]["depends_on"] = [
-            "PROTECTED_PREFIX_TIME_DIVERGENCE",
+            "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
+            "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION",
         ]
         by["PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS"]["depends_on"] = [
+            "PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL",
             "PROTECTED_PREFIX_TIME_DIVERGENCE",
             "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION",
             "PROTECTED_INPUT_STREAM_PROJECTION",
