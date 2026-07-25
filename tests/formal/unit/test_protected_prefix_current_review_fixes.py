@@ -102,7 +102,7 @@ def test_l8_batch_lemmas_consume_symbolic_fold_without_concrete_batch():
     assert arr["finite_instance_data_used"] is False
 
 
-def test_weak_simulation_accepts_actual_l8_lemma_identifier():
+def test_weak_simulation_does_not_accept_pass_labels_as_an_induction_proof():
     result = prove_weak_forward_simulation(
         macro_step_receipt={
             "status": "PASS",
@@ -120,12 +120,12 @@ def test_weak_simulation_accepts_actual_l8_lemma_identifier():
             "induction_on_t_complete": True,
         },
     )
-    assert result["status"] == "PASS"
-    assert result["macro_step_L1_L8_proved"] is True
+    assert result["status"] == "UNRESOLVED"
+    assert result["macro_step_L1_L8_proved"] is False
 
 
 def test_bad_prefix_backend_requires_completion_state_reflection():
-    assert "same_completion_state" in ProtectedPrefixBadPrefixBackend.REQUIRED_REFLECTION_FIELDS
+    assert "completion_state" in ProtectedPrefixBadPrefixBackend.REQUIRED_REFLECTION_FIELDS
 
 
 def test_bad_prefix_field_lookup_matches_phase_relation_key_shape():

@@ -82,7 +82,7 @@ def test_prefix_model_conformance_receives_prefix_extension_and_candidate_domain
     deps = set(by_id["PROTECTED_PREFIX_REFERENCE_MODEL_CONFORMANCE"]["depends_on"])
     assert "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION" in deps
     assert "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS" not in deps
-    assert "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC" in deps
+    assert "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC" not in deps
 
 
 def test_prefix_model_conformance_consumes_zero_start_and_model_extension_proofs():
@@ -92,4 +92,4 @@ def test_prefix_model_conformance_consumes_zero_start_and_model_extension_proofs
     assert "ZERO_RELATIVE_START" in deps
     assert "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION" in deps
     assert "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS" not in deps
-    assert "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC" in deps
+    assert "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC" not in deps

@@ -374,14 +374,17 @@ def generate_code_bound_queries() -> dict[str, dict[str, Any]]:
             and compiled.compilation_receipt.total_semantic_coverage
             and not compiled.compilation_receipt.unsupported_nodes
         )
+        adapter_receipt = getattr(compiled, "adapter_equivalence_receipt", None)
         adapter_equivalence_proved = bool(
             compiler_total
-            and compiled is not None
-            and compiled.source_function == ir.source_function
-            and compiled.paths
-            and all(path.terminator in {"RETURN", "RAISE"} for path in compiled.paths)
-            and compiled.return_path_count == len([p for p in compiled.paths if p.terminator == "RETURN"])
-            and compiled.raise_path_count == len([p for p in compiled.paths if p.terminator == "RAISE"])
+            and isinstance(adapter_receipt, Mapping)
+            and adapter_receipt.get("status") == "PASS"
+            and adapter_receipt.get("theorem_id") == "EXECUTABLE_TO_PP0_ADAPTER_EQUIVALENCE"
+            and adapter_receipt.get("compiled_ir_hash") == compiled.ir_hash()
+            and adapter_receipt.get("audited_pp0_ir_hash") == ir.ir_hash
+            and adapter_receipt.get("all_paths_related") is True
+            and adapter_receipt.get("all_updates_related") is True
+            and adapter_receipt.get("all_frames_related") is True
         )
         equations_bound = compiler_total and adapter_equivalence_proved
 

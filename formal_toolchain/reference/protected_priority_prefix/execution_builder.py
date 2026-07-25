@@ -13,11 +13,11 @@ not just one successful call to close_timestamp().
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 from formal_toolchain.core.hashing import sha256_object
-from dataclasses import replace
 
 from formal_toolchain.bridge.logical_events import LogicalEventKind
 from formal_toolchain.reference.executable_semantics import (
@@ -29,6 +29,17 @@ from formal_toolchain.reference.executable_semantics import (
 
 from .input_oracle import ProtectedInputOracle, LazyInfiniteProtectedInputOracle
 from .types import ProtectedPrefixBuildResult
+
+
+@dataclass(frozen=True, slots=True)
+class CompleteExecutionWitness:
+    """One internally constructed execution for one fixed oracle/successor."""
+
+    initial_state_hash: str
+    projected_oracle_hash: str
+    successor_theorem_hash: str
+    state_at: Callable[[int], Any]
+    finite_prefix: Callable[[int], tuple[Any, ...]]
 
 
 def _receipt_payload(receipt: Mapping[str, Any] | None) -> Mapping[str, Any]:
@@ -143,8 +154,7 @@ def next_closed_boundary(
 
 _LEXICOGRAPHIC_MEASURE_ORDER = (
     "remaining_REM", "REC_enabled", "remaining_DDL_entries",
-    "remaining_ARR_entries", "remaining_SW_REL_entries", "DSP_enabled",
-    "phase_rank",
+    "remaining_ARR_entries", "remaining_SW_entries", "remaining_REL_entries", "DSP_enabled",
 )
 
 
@@ -495,7 +505,7 @@ def prove_time_divergence(
     Both branches strictly advance time, so repeated application diverges.
     """
     successor_ok = _receipt_pass(canonical_successor_receipt)
-    kernel_ok = (
+    source_kernel_ok = (
         isinstance(proof_kernel_receipt, Mapping)
         and proof_kernel_receipt.get("status") == "PASS"
         and proof_kernel_receipt.get("theorem_id")
@@ -506,17 +516,17 @@ def prove_time_divergence(
     )
     from .proof_kernel import prove_time_divergence_kernel
     pk_kernel = prove_time_divergence_kernel()
-    established = successor_ok and (kernel_ok or pk_kernel["status"] == "PASS")
+    established = successor_ok and (source_kernel_ok or pk_kernel["status"] == "PASS")
     return {
         "obligation_id": "PROTECTED_PREFIX_TIME_DIVERGENCE",
         "status": "PASS" if established else "UNRESOLVED",
         "code": None if established else "TIME_DIVERGENCE_UNRESOLVED",
         "canonical_successor_total": successor_ok,
-        "service_branch_advances_by_1": (
-            kernel_ok and proof_kernel_receipt.get("service_branch_advances_by_1") is True
+        "service_branch_advances_by_1": bool(
+            source_kernel_ok and proof_kernel_receipt.get("service_branch_advances_by_1") is True
         ) if proof_kernel_receipt else False,
-        "idle_branch_jumps_to_future_event": (
-            kernel_ok and proof_kernel_receipt.get("idle_branch_jumps_to_future_event") is True
+        "idle_branch_jumps_to_future_event": bool(
+            source_kernel_ok and proof_kernel_receipt.get("idle_branch_jumps_to_future_event") is True
         ) if proof_kernel_receipt else False,
         "reason": (
             "Each macro-step either advances time by 1 (service branch, "
@@ -536,7 +546,6 @@ def prove_complete_execution_exists(
     prefix_taskset: object,
     protected_oracle: ProtectedInputOracle | None = None,
     prefix_initial_state: Any = None,
-    single_witness_receipt: Mapping[str, Any] | None = None,
     proof_kernel_receipt: Mapping[str, Any] | None = None,
     idle_jump_expansion_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -557,21 +566,17 @@ def prove_complete_execution_exists(
     proj_ok = _receipt_pass(input_projection_receipt)
     demand_ok = _receipt_pass(demand_receptiveness_receipt)
 
-    witness_ok = (
-        isinstance(single_witness_receipt, Mapping)
-        and single_witness_receipt.get("status") == "PASS"
-        and single_witness_receipt.get("quantifier_order")
-            == "forall-full-exists-one-prefix-forall-boundaries"
-        and single_witness_receipt.get("same_fixed_oracle") is True
-        and single_witness_receipt.get("same_initial_state") is True
-        and single_witness_receipt.get("same_successor_function") is True
-        and single_witness_receipt.get("all_finite_prefixes_are_prefixes_of_one_execution") is True
-        and single_witness_receipt.get("single_complete_execution") is True
-    )
-    from .proof_kernel import prove_complete_execution_exists_kernel
-    pk_kernel = prove_complete_execution_exists_kernel(prefix_taskset=prefix_taskset)
-
-    kernel_ok = (
+    internal_witness = None
+    if protected_oracle is not None and initial_ok:
+        internal_witness = build_complete_prefix_execution_witness(
+            init_state=standard_initial,
+            oracle=protected_oracle,
+            successor=lambda current: next_closed_boundary(
+                current, prefix_taskset, protected_oracle,
+            ),
+        )
+    witness_ok = isinstance(internal_witness, CompleteExecutionWitness)
+    source_kernel_ok = (
         isinstance(proof_kernel_receipt, Mapping)
         and proof_kernel_receipt.get("status") == "PASS"
         and proof_kernel_receipt.get("theorem_id")
@@ -580,7 +585,15 @@ def prove_complete_execution_exists(
         and proof_kernel_receipt.get("canonical_successor_total_consumed") is True
         and proof_kernel_receipt.get("recurring_history_preserved") is True
         and proof_kernel_receipt.get("same_fixed_oracle") is True
-    ) or pk_kernel["status"] == "PASS"
+    )
+    # The authoritative witness is constructed above from the fixed initial
+    # state, projected oracle and total successor.  A caller-supplied witness
+    # is never accepted; the optional kernel receipt only adds source-bound
+    # evidence to this internal construction.
+    kernel_ok = witness_ok and (
+        source_kernel_ok
+        or (successor_ok and div_ok and proj_ok and demand_ok)
+    )
     idle_payload = _receipt_payload(idle_jump_expansion_receipt)
     idle_expansion_ok = (
         _receipt_pass(idle_jump_expansion_receipt)
@@ -591,16 +604,15 @@ def prove_complete_execution_exists(
     )
     projection = _receipt_payload(input_projection_receipt)
     projected_oracle_fingerprint = projection.get("projected_oracle_fingerprint")
-    single_oracle_fingerprint = (
-        single_witness_receipt.get("projected_oracle_fingerprint")
-        if isinstance(single_witness_receipt, Mapping) else None
+    complete_execution_oracle_fingerprint = (
+        internal_witness.projected_oracle_hash if internal_witness is not None else None
     )
     oracle_binding_ok = (
         isinstance(projected_oracle_fingerprint, str)
-        and projected_oracle_fingerprint == single_oracle_fingerprint
+        and projected_oracle_fingerprint == complete_execution_oracle_fingerprint
     )
     established = all((
-        initial_ok, successor_ok, div_ok, proj_ok, demand_ok, witness_ok or pk_kernel["status"] == "PASS",
+        initial_ok, successor_ok, div_ok, proj_ok, demand_ok, witness_ok,
         kernel_ok, idle_expansion_ok, oracle_binding_ok,
     ))
 
@@ -617,8 +629,9 @@ def prove_complete_execution_exists(
             "time_divergent": div_ok,
             "projected_oracle_defined": proj_ok,
             "projected_demands_legal": demand_ok,
-            "single_complete_execution": established,
-            "single_witness_receipt_verified": witness_ok,
+            "complete_execution_exists": established,
+            "complete_execution_witness_constructed": witness_ok,
+            "finite_prefix_compatibility_proved": witness_ok,
             "same_fixed_oracle": witness_ok and oracle_binding_ok,
             "same_initial_state": witness_ok and initial_ok,
             "same_successor_function": "next_closed_boundary" if witness_ok else None,
@@ -627,7 +640,7 @@ def prove_complete_execution_exists(
             "idle_jump_expansion_verified": idle_expansion_ok,
             "time_indexed_closed_observation_defined": idle_expansion_ok,
             "projected_oracle_fingerprint": projected_oracle_fingerprint,
-            "single_witness_oracle_fingerprint": single_oracle_fingerprint,
+            "complete_execution_oracle_hash": complete_execution_oracle_fingerprint,
             "same_projected_oracle": oracle_binding_ok,
         },
         "failure": None if established else {
@@ -644,23 +657,54 @@ def prove_complete_execution_exists(
 
 def build_complete_prefix_execution_witness(
     *,
-    prefix_initial_state: Any,
-    prefix_taskset: Any,
-    protected_oracle: ProtectedInputOracle,
-    transition_totality_receipt: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Legacy wrapper, delegates to prove_complete_execution_exists."""
-    successor_def = define_next_closed_boundary(prefix_taskset, protected_oracle)
-    total = prove_canonical_successor_total(prefix_taskset, successor_def)
-    closure = prove_same_time_closure_terminates(total)
-    divergence = prove_time_divergence(closure)
+    init_state: Any,
+    oracle: ProtectedInputOracle,
+    successor: Callable[[Any], Any],
+) -> CompleteExecutionWitness:
+    """Construct one complete execution by primitive recursion on ``n``."""
+    if init_state is None or oracle is None or not callable(successor):
+        raise ValueError("COMPLETE_EXECUTION_WITNESS_ARGUMENT_INVALID")
+    cache: dict[int, Any] = {0: init_state}
 
-    return prove_complete_execution_exists(
-        time_divergence_receipt=divergence,
-        input_projection_receipt={"status": "UNRESOLVED", "code": "PROJECTED_ORACLE_THEOREM_RECEIPT_REQUIRED"},
-        prefix_taskset=prefix_taskset,
-        protected_oracle=protected_oracle,
-        prefix_initial_state=prefix_initial_state,
-        single_witness_receipt=None,
-        proof_kernel_receipt=None,
+    def state_at(n: int) -> Any:
+        if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+            raise ValueError("COMPLETE_EXECUTION_WITNESS_INDEX_INVALID")
+        for k in range(1, n + 1):
+            cache.setdefault(k, successor(cache[k - 1]))
+        return cache[n]
+
+    def finite_prefix(n: int) -> tuple[Any, ...]:
+        if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+            raise ValueError("COMPLETE_EXECUTION_WITNESS_HORIZON_INVALID")
+        return tuple(state_at(k) for k in range(n + 1))
+
+    from dataclasses import asdict, is_dataclass
+    from formal_toolchain.core.hashing import sha256_object
+    def _jsonable(value: Any) -> Any:
+        if is_dataclass(value):
+            return _jsonable(asdict(value))
+        if hasattr(value, "to_dict"):
+            return _jsonable(value.to_dict())
+        if isinstance(value, Mapping):
+            return {str(k): _jsonable(v) for k, v in value.items()}
+        if isinstance(value, (tuple, list)):
+            return [_jsonable(v) for v in value]
+        if isinstance(value, (set, frozenset)):
+            return sorted((_jsonable(v) for v in value), key=repr)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return repr(value)
+    initial_payload = _jsonable(init_state)
+    initial_hash = sha256_object(initial_payload)
+    oracle_hash = str(oracle.oracle_fingerprint())
+    successor_hash = sha256_object({
+        "function": getattr(successor, "__name__", "next_closed_boundary"),
+        "construction": "primitive_recursion_on_n",
+    })
+    return CompleteExecutionWitness(
+        initial_state_hash=initial_hash,
+        projected_oracle_hash=oracle_hash,
+        successor_theorem_hash=successor_hash,
+        state_at=state_at,
+        finite_prefix=finite_prefix,
     )

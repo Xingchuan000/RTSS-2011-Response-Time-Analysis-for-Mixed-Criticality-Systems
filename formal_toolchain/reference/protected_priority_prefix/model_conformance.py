@@ -40,7 +40,6 @@ class PrefixModelConformanceWitness:
     lo_version_selected_at_release: bool
     standard_empty_lo_initial_state: bool
     recurring_history_preserved: bool
-    candidate_enumeration_complete: bool
     zero_relative_start_lemma_required: bool
 
 
@@ -52,7 +51,6 @@ def derive_prefix_model_conformance(
     runtime_schema_certificate: Mapping[str, Any],
     prefix_extension_receipt: Mapping[str, Any] | None = None,
     demand_receptiveness_receipt: Mapping[str, Any] | None = None,
-    candidate_enumeration_receipt: Mapping[str, Any] | None = None,
     zero_relative_start_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     prefix_tasks_list = list(prefix_taskset.tasks)
@@ -188,23 +186,6 @@ def derive_prefix_model_conformance(
         and demand_payload.get("mode_independent_lo_receptiveness") is True
     )
 
-    enumeration_receipt = candidate_enumeration_receipt or {}
-    enumeration_payload = (
-        enumeration_receipt.get("witness", enumeration_receipt)
-        if isinstance(enumeration_receipt, Mapping) else {}
-    )
-    enumeration_status = (
-        enumeration_receipt.get("status", enumeration_receipt.get("obligation_status"))
-        if isinstance(enumeration_receipt, Mapping) else None
-    )
-    if enumeration_status is None and isinstance(enumeration_payload, Mapping):
-        enumeration_status = enumeration_payload.get("status")
-    candidate_enumeration_complete = (
-        enumeration_status == "PASS"
-        and isinstance(enumeration_payload, Mapping)
-        and enumeration_payload.get("complete_integer_candidate_domains") is True
-    )
-
     # ZERO_RELATIVE_START is already a common mathematical predecessor of the
     # selected all-task RTA chain.  Prefix conformance must consume that verified
     # predecessor explicitly; it must not look for an unrelated receipt hidden
@@ -243,7 +224,6 @@ def derive_prefix_model_conformance(
         lo_version_selected_at_release=lo_version_selected_at_release,
         standard_empty_lo_initial_state=standard_empty_lo_initial_state,
         recurring_history_preserved=recurring_history_preserved,
-        candidate_enumeration_complete=candidate_enumeration_complete,
         zero_relative_start_lemma_required=zero_relative_start_lemma_required,
     )
 
@@ -256,6 +236,8 @@ def derive_prefix_model_conformance(
     }
     static_ok = all(all_flags[name] for name in static_fields)
 
+    # Candidate enumeration is deliberately not part of PP7-A1.  It is a
+    # separate PP7-B obligation consumed by the all-task RTA checker.
     # Zero-relative-start lemma absence means the conformance is semantically
     # incomplete (Section 6.3).  Missing ZERO_RELATIVE_START_LEMMA produces
     # UNRESOLVED, not FAIL, because the lemma is disclosed as external TCB.
@@ -279,7 +261,8 @@ def derive_prefix_model_conformance(
             "certificate_hash",
             sha256_object(runtime_schema_certificate),
         ),
-        "rta_formula_version": "C-AMC-sem-all-task-v3",
+        "rta_formula_version": None,
+        "proof_partition": "PP7-A1_REFERENCE_MODEL_CONFORMANCE_ONLY",
         "witness": all_flags,
     }
 

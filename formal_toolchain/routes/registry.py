@@ -116,7 +116,6 @@ def resolve_registry(route: ProofRoute | str) -> ResolvedRegistry:
             "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
             "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION",
             "PROTECTED_INPUT_DEMAND_RECEPTIVENESS",
-            "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC",
             "ZERO_RELATIVE_START",
         ]
         # Input oracle chain: full oracle -> projection -> demand receptiveness
@@ -229,7 +228,10 @@ def resolve_registry(route: ProofRoute | str) -> ResolvedRegistry:
             "PROTECTED_INPUT_STREAM_PROJECTION",
             "PROTECTED_INPUT_DEMAND_RECEPTIVENESS",
         ]
-        by["PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION"]["depends_on"] = ["PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED"]
+        by["PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION"]["depends_on"] = [
+            "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED",
+            "PPP_L5_DEADLINE_BATCH_FOLD",
+        ]
         by["REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX"]["depends_on"] = ["PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION", "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE"]
         # Concrete-to-full-reference N6 remains the shared bridge predecessor of
         # FINITE_BAD_PREFIX_CONTRADICTION.  The prefix reflection is used only to

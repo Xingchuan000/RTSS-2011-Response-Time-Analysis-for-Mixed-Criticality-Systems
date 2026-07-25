@@ -255,14 +255,14 @@ def test_case_11_single_witness_compatibility_required():
     try:
         result = backend.verify(Path(path), theorem=theorem)
         assert result["status"] == "UNRESOLVED"
-        assert "SINGLE_WITNESS_COMPATIBILITY_UNVERIFIED" in str(result.get("code", ""))
+        assert "COMPLETE_EXECUTION_WITNESS_UNVERIFIED" in str(result.get("code", ""))
     finally:
         os.unlink(path)
 
 
 def test_case_12_transition_schema_cases_complete():
     assert canonical_case_ids() == (
-        "REM_COMPLETION", "RECOVERY", "DDL_OBSERVE", "ARRIVAL_BATCH_OPEN",
+        "REM_COMPLETION", "RECOVERY", "DEADLINE_OBSERVATION", "ARRIVAL_BATCH",
         "MODE_SWITCH", "RELEASE", "FINAL_DISPATCH", "SERVICE_UNIT", "TAIL_ONLY_SERVICE",
     )
     for case in CANONICAL_CASES:

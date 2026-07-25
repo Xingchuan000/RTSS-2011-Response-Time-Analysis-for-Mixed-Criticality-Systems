@@ -480,6 +480,17 @@ def _build_phase_k_objects(*, inputs: Any, fresh_certificates: Mapping[str, Mapp
     reference_taskset = fresh_reference.to_dict()
     concrete_base, reference_base = build_preclosed_runtime_states(inputs.target, reference_taskset)
     model_bounds = derive_p0_model_bounds(reference_taskset)
+    required_upstream = (
+        "SCHEDULER_MODEL", "MODE_SEMANTICS_CONFORMANCE", "DEMAND_ORACLE_BATCH_CONTRACT",
+        "HI_EXECUTION_CONTRACT", "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION",
+        "DEADLINE_OBSERVATION", "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE",
+        "CONTROLLER_POSTCLOSURE", "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION",
+        "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
+    )
+    missing_upstream = [name for name in required_upstream if name not in fresh_certificates]
+    if missing_upstream:
+        return {}, {"route": "UNRESOLVED", "code": "BRIDGE_UPSTREAM_CERTIFICATE_MISSING",
+                    "missing": missing_upstream}
     bridge = compile_phase_k(
         source_root=src_root, branch_map=branch_map, reference_taskset=reference_taskset,
         bridge_context_hash=bridge_context_hash, model_bounds=model_bounds,
@@ -525,19 +536,24 @@ def _fresh_bridge_proofs(*, inputs: Any, fresh_certificates: Mapping[str, Mappin
     reference_taskset = fresh_reference.to_dict()
     concrete_base, reference_base = build_preclosed_runtime_states(inputs.target, reference_taskset)
     model_bounds = derive_p0_model_bounds(reference_taskset)
+    required_upstream = (
+        "SCHEDULER_MODEL", "MODE_SEMANTICS_CONFORMANCE", "DEMAND_ORACLE_BATCH_CONTRACT",
+        "HI_EXECUTION_CONTRACT", "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION",
+        "DEADLINE_OBSERVATION", "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE",
+        "CONTROLLER_POSTCLOSURE", "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION",
+        "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
+    )
+    missing_upstream = [name for name in required_upstream if name not in fresh_certificates]
+    if missing_upstream:
+        return {}, {"route": "UNRESOLVED", "code": "BRIDGE_UPSTREAM_CERTIFICATE_MISSING",
+                    "missing": missing_upstream}
     bridge = compile_phase_k(
         source_root=src_root, branch_map=branch_map, reference_taskset=reference_taskset,
         bridge_context_hash=bridge_context_hash, model_bounds=model_bounds,
         contexts=inputs.contexts, reference_prefix_theorem=reference_prefix_theorem,
         reference_prefix_proof_receipt=reference_prefix_receipt,
         concrete_base=concrete_base, reference_base=reference_base,
-        upstream_certificates={name: fresh_certificates[name] for name in (
-            "SCHEDULER_MODEL", "MODE_SEMANTICS_CONFORMANCE", "DEMAND_ORACLE_BATCH_CONTRACT",
-            "HI_EXECUTION_CONTRACT", "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION",
-            "DEADLINE_OBSERVATION", "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE",
-            "CONTROLLER_POSTCLOSURE", "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION",
-            "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
-        )},
+        upstream_certificates={name: fresh_certificates[name] for name in required_upstream},
         release_mapping_certificate=fresh_certificates.get("RELEASE_FIXED_REMOVAL_MAPPING"),
         closure_completion_certificate=None, runtime_config=inputs.target.runtime_config,
     )
@@ -920,6 +936,12 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
                                                            "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE",
                                                            "SELECTED_REFERENCE_HI_SAFETY"}
                                      else None),
+                fresh_runtime_snapshot=(fresh_state.concrete_runtime_snapshot
+                                        if obligation_id == "EFFECTIVE_EVENT_FRONTIER_RELATION"
+                                        and fresh_state is not None else None),
+                fresh_reference_snapshot=(fresh_state.reference_runtime_snapshot
+                                          if obligation_id == "EFFECTIVE_EVENT_FRONTIER_RELATION"
+                                          and fresh_state is not None else None),
                 )
             except (KeyError, TypeError, ValueError, RuntimeError, AttributeError) as exc:
                 checked = {

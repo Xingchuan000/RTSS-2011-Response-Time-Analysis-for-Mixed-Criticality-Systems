@@ -25,6 +25,10 @@ class ProtectedPrefixSafetyBackend:
         "bad_prefix_reflection_hash",
     )
     REQUIRED_CONCLUSION = "ALL_REFERENCE_HI_JOBS_MEET_DEADLINES"
+    REQUIRED_PREDECESSORS = (
+        "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
+        "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE",
+    )
 
     def verify(self, proof_path: Path, *, theorem: Mapping[str, Any]) -> dict[str, Any]:
         proof = json.loads(Path(proof_path).read_text(encoding="utf-8"))
@@ -89,6 +93,20 @@ class ProtectedPrefixSafetyBackend:
                         "The conclusion must only claim full-reference HI safety; "
                         "it must NOT extend to tail LO safety."
                     )}
+
+        if proof.get("proof_partition") != ["PP7-A1", "PP7-A2", "PP7-B", "PP8"]:
+            return {"status": "UNRESOLVED",
+                    "code": "SAFETY_COMPOSITION_PROOF_PARTITION_UNVERIFIED"}
+        predecessor_ids = proof.get("predecessor_theorem_ids")
+        predecessor_hashes = proof.get("predecessor_receipt_hashes")
+        if predecessor_ids != list(self.REQUIRED_PREDECESSORS) or not isinstance(predecessor_hashes, dict):
+            return {"status": "UNRESOLVED",
+                    "code": "SAFETY_COMPOSITION_PREDECESSOR_RECEIPTS_MISSING"}
+        for predecessor in self.REQUIRED_PREDECESSORS:
+            value = predecessor_hashes.get(predecessor)
+            if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+                return {"status": "UNRESOLVED",
+                        "code": "SAFETY_COMPOSITION_PREDECESSOR_RECEIPT_INVALID"}
 
         # All structural checks above are necessary but not sufficient.  The
         # backend still lacks a code-bound parametric proof kernel, so it must

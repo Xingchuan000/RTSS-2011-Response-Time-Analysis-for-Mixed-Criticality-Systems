@@ -3,7 +3,7 @@
 Phase H updates (Section 10):
   - Quantifier order fixed: forall-full-exists-one-prefix-forall-boundaries
   - Completeness checks for recurring input stream
-  - Single-witness binding verification
+  - One internally constructed complete-execution witness
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from .input_projection import check_projected_demands_legal, project_protected_r
 from .observable import observable_schema
 from .runtime_schema import build_runtime_schema_certificate
 from .types import ProtectedPrefixBuildResult
-from .execution_builder import build_complete_prefix_execution_witness
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +31,7 @@ class FullToPrefixSimulationDomainWitness:
     complete_prefix_execution_exists: bool
     quantifier_order_correct: bool
     same_fixed_oracle: bool
-    single_witness_verified: bool
+    complete_execution_witness_constructed: bool
     idle_jump_expansion_verified: bool
     time_indexed_closed_observation_defined: bool
 
@@ -87,6 +86,44 @@ def check_full_to_prefix_simulation_domain(**kwargs: Any) -> dict[str, Any]:
     projection = _predecessor_witness(predecessors, "PROTECTED_INPUT_STREAM_PROJECTION")
     receptiveness = _predecessor_witness(predecessors, "PROTECTED_INPUT_DEMAND_RECEPTIVENESS")
     execution = _predecessor_witness(predecessors, "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS")
+    model = _predecessor_witness(predecessors, "REFERENCE_MODEL_CONFORMANCE")
+    partition = _predecessor_witness(predecessors, "PROTECTED_PRIORITY_PREFIX_PARTITION")
+    saturation = _predecessor_witness(predecessors, "PROTECTED_PREFIX_LO_SATURATION")
+    runtime_schema = _predecessor_witness(
+        predecessors, "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE"
+    )
+
+    model_conditions = model.get("condition_results", ())
+    model_conformance = bool(model_conditions) and all(
+        isinstance(row, dict) and row.get("passed") is True
+        for row in model_conditions
+    )
+    partition_valid = all(
+        partition.get(name) is True
+        for name in ("tail_all_lo", "all_hi_protected", "partition_complete", "order_preserved")
+    )
+    saturation_valid = bool(
+        saturation.get("hi_fields_equal") is True
+        and saturation.get("timing_fields_equal") is True
+        and saturation.get("lo_saturation_equalities")
+        and all(
+            row.get("C_pp_LO") == row.get("C_pp_HI") == row.get("C_ref_LO")
+            for row in saturation.get("lo_saturation_equalities", ())
+            if isinstance(row, dict)
+        )
+    )
+    runtime_schema_valid = all(
+        runtime_schema.get(name) is True
+        for name in (
+            "single_processor_preemptive_work_conserving_fp",
+            "no_blocking_self_suspension_or_nonpreemptive_segments",
+            "fixed_processor_supply_and_mode_independent_priority",
+            "release_fixed_demands", "abnormal_classification_at_arrival",
+            "abnormal_hi_only_switch_trigger", "quiescent_idle_only_recovery",
+            "lo_version_selected_at_release", "deadline_observe_only",
+            "protected_input_independence",
+        )
+    )
 
     quantifier_order_correct = (
         projection.get("quantifier_scope")
@@ -102,13 +139,16 @@ def check_full_to_prefix_simulation_domain(**kwargs: Any) -> dict[str, Any]:
         and isinstance(projection_oracle_fp, str)
         and projection_oracle_fp == execution_oracle_fp
     )
-    single_witness_verified = execution.get("single_witness_receipt_verified") is True
+    complete_execution_witness_constructed = (
+        execution.get("complete_execution_witness_constructed") is True
+        and execution.get("finite_prefix_compatibility_proved") is True
+    )
 
     witness = FullToPrefixSimulationDomainWitness(
-        reference_model_conformance=True,
-        partition_valid=True,
-        saturation_valid=True,
-        runtime_schema_valid=True,
+        reference_model_conformance=model_conformance,
+        partition_valid=partition_valid,
+        saturation_valid=saturation_valid,
+        runtime_schema_valid=runtime_schema_valid,
         protected_input_independence=(
             projection.get("complete_recurring_stream") is True
             and projection.get("protected_input_independence") is True
@@ -118,13 +158,13 @@ def check_full_to_prefix_simulation_domain(**kwargs: Any) -> dict[str, Any]:
             and receptiveness.get("mode_independent_lo_receptiveness") is True
         ),
         complete_prefix_execution_exists=(
-            execution.get("single_complete_execution") is True
+            execution.get("complete_execution_exists") is True
             and execution.get("time_divergent") is True
             and execution.get("same_fixed_oracle") is True
         ),
         quantifier_order_correct=quantifier_order_correct,
         same_fixed_oracle=same_fixed_oracle,
-        single_witness_verified=single_witness_verified,
+        complete_execution_witness_constructed=complete_execution_witness_constructed,
         idle_jump_expansion_verified=(
             execution.get("idle_jump_expansion_verified") is True
         ),

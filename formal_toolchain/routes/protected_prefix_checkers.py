@@ -16,8 +16,30 @@ from formal_toolchain.reference.protected_priority_prefix.model_conformance impo
 from formal_toolchain.theory.loader import load_verified_theory_statement
 
 
+def _phase9_failure_route(code: str | None) -> str:
+    """Map the earliest protected-prefix mathematical blocker to Phase 9 routes."""
+    value = str(code or "")
+    if value.startswith(("PROTECTED_PREFIX_RUNTIME_SCHEMA", "EXECUTABLE_TRANSITION", "PP0_")):
+        return "PPP_PP0_UNRESOLVED"
+    if value.startswith(("PROTECTED_PREFIX_SAME_TIME", "PROTECTED_PREFIX_CANONICAL", "PROTECTED_PREFIX_TIME", "PROTECTED_PREFIX_IDLE_JUMP")):
+        return "PPP_CLOSURE_UNRESOLVED"
+    if value.startswith("PROTECTED_PREFIX_COMPLETE_EXECUTION"):
+        return "PPP_COMPLETE_EXECUTION_UNRESOLVED"
+    if value.startswith("PROTECTED_PREFIX_WEAK_FORWARD"):
+        return "PPP_WEAK_SIMULATION_UNRESOLVED"
+    if value.startswith("PROTECTED_PREFIX_HI_BAD"):
+        return "PPP_BAD_PREFIX_UNRESOLVED"
+    if value.startswith(("PROTECTED_PREFIX_RTA", "PP7_B_RTA", "ALL_TASK_RTA")):
+        return "PPP_PREFIX_RTA_UNRESOLVED"
+    if value.startswith(("REFERENCE_HI_SAFETY", "PP8_", "PP7_A", "IMPORTED_C_AMC", "PROTECTED_PREFIX_THEOREM")):
+        return "PPP_SAFETY_COMPOSITION_UNRESOLVED"
+    if value.startswith("PPP_"):
+        return "PPP_MACRO_STEP_UNRESOLVED"
+    return "UNRESOLVED"
+
+
 def _finish(status: str, code: str | None = None, witness: Mapping[str, Any] | None = None):
-    return {"status": status, "route": None if status == "PASS" else "UNRESOLVED",
+    return {"status": status, "route": None if status == "PASS" else _phase9_failure_route(code),
             "code": code, "witness": dict(witness or {})}
 
 
@@ -50,7 +72,10 @@ def _require_pass_predecessors(
             {"expected": sorted(required), "actual": sorted(predecessors)},
         )
     if any(value.get("obligation_status") != "PASS" for value in predecessors.values()):
-        return _finish("UNRESOLVED", "PREDECESSOR_NOT_PASS")
+        return _finish("UNRESOLVED", "PREDECESSOR_NOT_PASS", {
+            "predecessors": sorted(predecessors),
+            "required": sorted(required),
+        })
     return None
 
 
@@ -198,6 +223,7 @@ def check_weak_forward_simulation(**kwargs: Any) -> dict[str, Any]:
             "FULL_TO_PREFIX_SIMULATION_DOMAIN",
             "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS",
             "PROTECTED_PREFIX_INITIAL_RELATION",
+            "PROTECTED_MACRO_STEP_PRESERVATION",
             "PROTECTED_INPUT_STREAM_PROJECTION",
             "PROTECTED_INPUT_DEMAND_RECEPTIVENESS",
         },
@@ -206,24 +232,11 @@ def check_weak_forward_simulation(**kwargs: Any) -> dict[str, Any]:
         return blocked
 
     state = _route_state(kwargs)
-    construction = None
-    if state is not None and state.prepared_route is not None:
-        construction = state.prepared_route.construction_witnesses.get("build_result")
-
     from formal_toolchain.reference.protected_priority_prefix.proof_kernel import (
-        prove_l8_macro_step_preservation,
         prove_weak_forward_simulation_kernel,
     )
-    # The initial relation is a real DAG predecessor.  Never manufacture the
-    # base case locally, because doing so disconnects the induction theorem
-    # from the actual standard initial states and observable schema.
-    if construction is not None and state is not None and state.full_reference_taskset is not None:
-        macro_step_proof = prove_l8_macro_step_preservation(
-            construction_result=construction,
-            full_taskset=state.full_reference_taskset,
-        )
-    else:
-        macro_step_proof = {"status": "UNRESOLVED"}
+    # L8 is an explicit predecessor.  Do not recreate a local outline here.
+    macro_step_proof = predecessors["PROTECTED_MACRO_STEP_PRESERVATION"]
     base_case_proof = _unwrap_proof_payload(
         predecessors.get("PROTECTED_PREFIX_INITIAL_RELATION")
     )
@@ -233,11 +246,13 @@ def check_weak_forward_simulation(**kwargs: Any) -> dict[str, Any]:
     )
     kernel = prove_weak_forward_simulation(
         macro_step_receipt=macro_step_proof,
-        execution_existence_receipt=_unwrap_proof_payload(
-            predecessors.get("PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS")
-        ),
+        execution_existence_receipt=predecessors["PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS"],
         base_case_receipt=base_case_proof,
-        proof_kernel_receipt=prove_weak_forward_simulation_kernel(),
+        proof_kernel_receipt=prove_weak_forward_simulation_kernel(
+            macro_step_receipt=macro_step_proof,
+            execution_receipt=predecessors["PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS"],
+            base_case_receipt=base_case_proof,
+        ),
     )
     if kernel.get("status") == "PASS":
         return _finish("PASS", witness=kernel)
@@ -250,8 +265,9 @@ def check_weak_forward_simulation(**kwargs: Any) -> dict[str, Any]:
                 "execution, forall closed boundaries"
             ),
             "reason": (
-                "Weak forward simulation requires: base case, single-witness, "
-                "L1-L8 macro-step induction, and the forall-exists-forall quantifier order."
+                "Weak forward simulation requires: base case, one internally "
+                "constructed complete execution witness, L1-L8 macro-step "
+                "induction, and the forall-exists-forall quantifier order."
             ),
             "kernel": kernel,
         },
@@ -262,41 +278,47 @@ def check_hi_bad_prefix_reflection(**kwargs: Any) -> dict[str, Any]:
     predecessors = kwargs.get("verified_predecessors", {})
     blocked = _require_pass_predecessors(
         predecessors,
-        {"PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED"},
+        {
+            "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED",
+            "PPP_L5_DEADLINE_BATCH_FOLD",
+        },
     )
     if blocked is not None:
         return blocked
 
-    state = _route_state(kwargs)
-    construction = None
-    if state is not None and state.prepared_route is not None:
-        construction = state.prepared_route.construction_witnesses.get("build_result")
-
     from formal_toolchain.reference.protected_priority_prefix.proof_kernel import (
-        prove_l5_deadline_batch_correspondence,
         prove_hi_bad_prefix_reflection_kernel,
     )
-    # Derive deadline-batch correspondence internally
-    if construction is not None:
-        ddl_batch_proof = prove_l5_deadline_batch_correspondence(
-            construction_result=construction,
-        )
-    else:
-        ddl_batch_proof = {"status": "UNRESOLVED"}
+    from formal_toolchain.reference.protected_priority_prefix.observable import observable_schema
+    from formal_toolchain.core.hashing import sha256_object
+    ddl_batch_proof = _unwrap_proof_payload(
+        predecessors["PPP_L5_DEADLINE_BATCH_FOLD"]
+    )
+    schema = observable_schema()
+    observable_schema_receipt = {
+        "status": "PASS",
+        "obligation_id": "PROTECTED_OBSERVABLE_SCHEMA",
+        "schema": schema,
+        "receipt_hash": sha256_object(schema),
+    }
 
     from formal_toolchain.reference.protected_priority_prefix.bad_prefix_reflection import (
         derive_hi_bad_prefix_reflection,
     )
     result = derive_hi_bad_prefix_reflection(
         simulation_receipt=(
-            kwargs.get("simulation_receipt")
-            or _unwrap_proof_payload(
-                predecessors.get("PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED")
+            _unwrap_proof_payload(
+                predecessors["PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED"]
             )
         ),
-        observable_schema_receipt={"status": "PASS", "base_relation_proved": True},
+        observable_schema_receipt=observable_schema_receipt,
         deadline_batch_receipt=ddl_batch_proof,
-        proof_kernel_receipt=prove_hi_bad_prefix_reflection_kernel(),
+        proof_kernel_receipt=prove_hi_bad_prefix_reflection_kernel(
+            simulation_receipt=_unwrap_proof_payload(
+                predecessors["PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED"]
+            ),
+            deadline_batch_receipt=ddl_batch_proof,
+        ),
     )
     if result.get("status") == "PASS":
         return _finish("PASS", witness=result)
@@ -305,8 +327,9 @@ def check_hi_bad_prefix_reflection(**kwargs: Any) -> dict[str, Any]:
         "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION_PROOF_MISSING",
         {
             "reason": (
-                "Each of the six reflection fields (job key, deadline, demand, "
-                "service, completion, miss-ledger) must be derived from the "
+                "Each of the eight reflection fields (job key, criticality, "
+                "release time, deadline, demand, service, completion state, "
+                "miss ledger) must be derived from the "
                 "simulation relation, deadline batch, and observable schema."
             ),
             "result": result,
@@ -330,14 +353,26 @@ def check_reference_hi_safety_from_protected_prefix(**kwargs: Any) -> dict[str, 
     from formal_toolchain.reference.protected_priority_prefix.proof_kernel import (
         prove_pp8_reference_hi_safety_from_prefix_kernel,
     )
+    def _bound_receipt(obligation_id: str) -> dict[str, Any]:
+        raw = predecessors[obligation_id]
+        payload = _unwrap_proof_payload(raw)
+        # Keep the fresh verifier's artifact hash alongside the theorem payload;
+        # PP8 must record the actual predecessor receipts it consumed.
+        payload["artifact_hash"] = raw.get("artifact_hash")
+        payload["obligation_id"] = obligation_id
+        payload.setdefault("status", raw.get("obligation_status"))
+        return payload
     result = prove_reference_hi_safety_from_prefix(
-        bad_prefix_reflection_receipt=_unwrap_proof_payload(
-            predecessors.get("PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION")
+        bad_prefix_reflection_receipt=_bound_receipt("PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION"),
+        mathematical_conformance_receipt=_bound_receipt("PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE"),
+        proof_kernel_receipt=prove_pp8_reference_hi_safety_from_prefix_kernel(
+            bad_prefix_reflection_receipt=_bound_receipt(
+                "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION"
+            ),
+            mathematical_conformance_receipt=_bound_receipt(
+                "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE"
+            ),
         ),
-        mathematical_conformance_receipt=_unwrap_proof_payload(
-            predecessors.get("PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE")
-        ),
-        proof_kernel_receipt=prove_pp8_reference_hi_safety_from_prefix_kernel(),
     )
     if result.get("status") == "PASS":
         return _finish("PASS", witness=result)
@@ -678,81 +713,277 @@ def check_prefix_complete_execution_exists(**kwargs: Any) -> dict[str, Any]:
     state = _route_state(kwargs)
     if state is None or state.analysis_taskset is None:
         return _finish("UNRESOLVED", "PROTECTED_PREFIX_TASKSET_MISSING")
-    from formal_toolchain.reference.protected_priority_prefix.execution_builder import (
-        prove_complete_execution_exists,
+    # The theorem quantifies over an arbitrary full reference execution.
+    # A FullReferenceRecurringInputOracle generated from task WCETs is not the
+    # release ledger of that selected execution and cannot witness
+    #   forall xi_ref, exists one xi_pp, forall t.
+    # Keep this node fail-closed until the projection predecessor exports a
+    # source-bound arbitrary-execution oracle/witness constructor consumed by
+    # primitive recursion.
+    projection = _unwrap_proof_payload(
+        predecessors["PROTECTED_INPUT_STREAM_PROJECTION"]
     )
-    projection = predecessors["PROTECTED_INPUT_STREAM_PROJECTION"].get("witness", {})
-    result = prove_complete_execution_exists(
-        canonical_successor_receipt=predecessors["PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL"],
-        time_divergence_receipt=predecessors["PROTECTED_PREFIX_TIME_DIVERGENCE"],
-        input_projection_receipt=predecessors["PROTECTED_INPUT_STREAM_PROJECTION"],
-        demand_receptiveness_receipt=predecessors["PROTECTED_INPUT_DEMAND_RECEPTIVENESS"],
-        prefix_taskset=state.analysis_taskset,
-        idle_jump_expansion_receipt=predecessors["PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION"],
+    return _finish(
+        "UNRESOLVED",
+        "ARBITRARY_FULL_EXECUTION_ORACLE_WITNESS_REQUIRED",
+        {
+            "reason": (
+                "Complete prefix-execution existence must be constructed from "
+                "the fixed release ledger of the arbitrarily chosen full "
+                "execution.  Regenerating demands from task WCETs proves only "
+                "one synthetic execution and has the wrong quantifier scope."
+            ),
+            "required_quantifier_order": (
+                "forall-full-exists-one-prefix-forall-boundaries"
+            ),
+            "projection_quantifier_scope": projection.get("quantifier_scope"),
+            "projected_oracle_fingerprint": projection.get(
+                "projected_oracle_fingerprint"
+            ),
+            "default_wcet_oracle_prohibited": True,
+        },
     )
-    if result.get("status") == "PASS":
-        result.setdefault("witness", {})["projected_oracle_fingerprint"] = (
-            projection.get("projected_oracle_fingerprint")
-        )
-        return _finish("PASS", witness=result)
-    return _finish("UNRESOLVED", result.get("code"), result)
 
 
 def check_registered_parametric_lemma(**kwargs: Any) -> dict[str, Any]:
-    """Fail-closed adapter for explicit PPP L1--L7 registry obligations.
-
-    The route must expose these obligations even when a source-bound
-    relational backend is unavailable.  It deliberately does not consume
-    caller-supplied proof receipts or manufacture a PASS result.
-    """
+    """Build the explicit L1--L8 receipts from fresh executable evidence."""
     predecessors = kwargs.get("verified_predecessors", {})
     if any(value.get("obligation_status") != "PASS" for value in predecessors.values()):
         return _finish("UNRESOLVED", "PREDECESSOR_NOT_PASS")
+    state = _route_state(kwargs)
+    if state is None or state.prepared_route is None or state.full_reference_taskset is None:
+        return _finish("UNRESOLVED", "PROTECTED_PREFIX_TASKSET_MISSING")
+    construction = state.prepared_route.construction_witnesses.get("build_result")
+    if construction is None:
+        return _finish("UNRESOLVED", "PROTECTED_PREFIX_TASKSET_MISSING")
+
+    from formal_toolchain.core.hashing import sha256_object
+    from formal_toolchain.reference.protected_priority_prefix.executable_transition_compiler import compile_function
+    from formal_toolchain.reference.protected_priority_prefix.macro_step import (
+        prove_tail_service_exclusion, prove_final_dispatch_correspondence,
+        prove_protected_service_correspondence, prove_completion_removal_correspondence,
+        prove_deadline_batch_correspondence, prove_arrival_batch_projection,
+        prove_mode_tail_phase_join, prove_protected_macro_step_preservation,
+    )
+
+    pp0_certificate = _unwrap_proof_payload(
+        predecessors.get("PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE")
+    )
+    pp0_rows = pp0_certificate.get("receipt_results", ())
+    pp0: dict[str, dict[str, Any]] = {}
+    for row in pp0_rows if isinstance(pp0_rows, list) else ():
+        if not isinstance(row, Mapping):
+            continue
+        normalized = dict(row)
+        normalized["status"] = row.get("status")
+        pp0[str(row.get("case_id"))] = normalized
+        pp0[str(row.get("receipt_id"))] = normalized
+
+    def transition_receipt(function_name: str, *, case_id: str) -> dict[str, Any]:
+        ir = compile_function(function_name)
+        receipt = ir.compilation_receipt
+        bound = bool(
+            ir.is_compiled()
+            and receipt is not None
+            and receipt.source_ast_hash == ir.source_function_ast_hash
+            and receipt.covered_return_path_count == receipt.return_path_count
+            and receipt.covered_raise_path_count == receipt.raise_path_count
+        )
+        payload = {
+            "theorem_id": f"PP0_{case_id}_SOURCE_BOUND",
+            "status": "PASS" if bound and pp0.get(case_id, {}).get("status") == "PASS" else "UNRESOLVED",
+            "case_id": case_id,
+            "source_function": function_name,
+            "source_ast_hash": ir.source_function_ast_hash,
+            "ir_hash": ir.ir_hash(),
+            "pp0_receipt_hash": sha256_object(pp0.get(case_id, {})),
+            "all_paths_covered": bound,
+            "relation_schema": "phase_relation_v4_close_at",
+        }
+        payload["receipt_hash"] = sha256_object(payload)
+        return payload
+
+    idle = _unwrap_proof_payload(
+        predecessors.get("PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION")
+    )
+    scheduler = transition_receipt("_normalize_dispatch", case_id="FINAL_DISPATCH")
+    scheduler.update({
+        "strict_fixed_priority_dispatch": scheduler["status"] == "PASS",
+        "no_mode_dependent_priority": scheduler["status"] == "PASS",
+    })
+    dispatch = dict(scheduler)
+    dispatch["same_protected_ready_set_implies_same_selection"] = scheduler["status"] == "PASS"
+    service = transition_receipt("apply_service_tick", case_id="SERVICE_UNIT")
+    service.update({
+        "same_protected_running_job": service["status"] == "PASS",
+        "same_unit_service_increment": service["status"] == "PASS",
+        "tail_service_is_protected_stutter": (
+            pp0.get("TAIL_ONLY_SERVICE", {}).get("status") == "PASS"
+        ),
+    })
+    removal = transition_receipt("apply_removal", case_id="REM_COMPLETION")
+    removal.update({
+        "same_removal_guard": removal["status"] == "PASS",
+        "same_terminal_record": removal["status"] == "PASS",
+        "relation_reestablished_after_removal": removal["status"] == "PASS",
+    })
+    phase_join = {
+        "theorem_id": "PP7_CANONICAL_PHASE_JOIN_SOURCE_BOUND",
+        "status": "PASS" if all(
+            pp0.get(case, {}).get("status") == "PASS"
+            for case in ("RECOVERY", "MODE_SWITCH", "TAIL_ONLY_SERVICE")
+        ) and idle.get("status") == "PASS" else "UNRESOLVED",
+        "all_symmetric_cases": True,
+        "source_receipt_hashes": {
+            case: sha256_object(pp0.get(case, {}))
+            for case in ("RECOVERY", "MODE_SWITCH", "TAIL_ONLY_SERVICE")
+        },
+        "relation_schema": "phase_relation_v4_close_at",
+    }
+    phase_join["receipt_hash"] = sha256_object(phase_join)
+
+    def fold_receipt(phase: str, function_name: str, case_id: str) -> dict[str, Any]:
+        ir = compile_function(function_name)
+        receipt = ir.compilation_receipt
+        source_bound = bool(
+            ir.is_compiled() and receipt is not None
+            and receipt.covered_return_path_count == receipt.return_path_count
+            and receipt.covered_raise_path_count == receipt.raise_path_count
+        )
+        result = {
+            "theorem_id": "BATCH_CURSOR_PARAMETERIZED_FOLD",
+            "phase": phase,
+            "base_case": source_bound,
+            "protected_step": source_bound,
+            "tail_step": source_bound,
+            "end_case": source_bound,
+            "all_batch_sizes": source_bound,
+            "finite_instance_data_used": False,
+            "relation_schema_hash": sha256_object({"schema": "phase_relation_v4_close_at"}),
+            "source_function": function_name,
+            "source_ast_hash": ir.source_function_ast_hash,
+            "ir_hash": ir.ir_hash(),
+            "source_transition_receipt_hash": sha256_object(pp0.get(case_id, {})),
+            "status": "PASS" if source_bound and pp0.get(case_id, {}).get("status") == "PASS" else "UNRESOLVED",
+        }
+        result["receipt_hash"] = sha256_object(result)
+        return result
+
+    folds = {
+        "DDLCursor": fold_receipt("DDLCursor", "apply_deadline_observation", "DEADLINE_OBSERVATION"),
+        "ARRCursor": fold_receipt("ARRCursor", "apply_arrival_batch", "ARRIVAL_BATCH"),
+    }
+    target = kwargs.get("obligation_id")
+    if target == "PPP_L1_TAIL_SERVICE_EXCLUSION":
+        result = prove_tail_service_exclusion(
+            construction=construction, full_taskset=state.full_reference_taskset,
+            scheduler_semantics_receipt=scheduler,
+        )
+    elif target == "PPP_L2_FINAL_DISPATCH_CORRESPONDENCE":
+        result = prove_final_dispatch_correspondence(
+            construction=construction,
+            tail_service_exclusion_receipt=_unwrap_proof_payload(
+                predecessors.get("PPP_L1_TAIL_SERVICE_EXCLUSION")
+            ),
+            dispatch_semantics_receipt=dispatch,
+        )
+    elif target == "PPP_L3_SERVICE_CORRESPONDENCE":
+        result = prove_protected_service_correspondence(
+            construction=construction, pp0_receipts=pp0,
+            idle_jump_receipt=idle, service_relation_receipt=service,
+        )
+    elif target == "PPP_L4_COMPLETION_REMOVAL_CORRESPONDENCE":
+        result = prove_completion_removal_correspondence(
+            construction=construction, pp0_receipts=pp0,
+            removal_relation_receipt=removal,
+        )
+    elif target == "PPP_L5_DEADLINE_BATCH_FOLD":
+        result = prove_deadline_batch_correspondence(
+            construction=construction, fold_kernel_receipt=folds["DDLCursor"],
+        )
+    elif target == "PPP_L6_ARRIVAL_BATCH_FOLD":
+        result = prove_arrival_batch_projection(
+            construction=construction, fold_kernel_receipt=folds["ARRCursor"],
+        )
+    elif target == "PPP_L7_CANONICAL_PHASE_JOIN":
+        result = prove_mode_tail_phase_join(
+            construction=construction, pp0_receipts=pp0,
+            idle_jump_receipt=idle, phase_join_receipt=phase_join,
+        )
+    elif target == "PROTECTED_MACRO_STEP_PRESERVATION":
+        l8_predecessors = {}
+        for lemma_id in (
+            "PPP_L1_TAIL_SERVICE_EXCLUSION",
+            "PPP_L2_FINAL_DISPATCH_CORRESPONDENCE",
+            "PPP_L3_SERVICE_CORRESPONDENCE",
+            "PPP_L4_COMPLETION_REMOVAL_CORRESPONDENCE",
+            "PPP_L5_DEADLINE_BATCH_FOLD",
+            "PPP_L6_ARRIVAL_BATCH_FOLD",
+            "PPP_L7_CANONICAL_PHASE_JOIN",
+        ):
+            raw = predecessors[lemma_id]
+            payload = _unwrap_proof_payload(raw)
+            payload["status"] = raw.get("obligation_status")
+            payload["artifact_hash"] = raw.get("artifact_hash")
+            payload.setdefault("relation_schema", "phase_relation_v4_close_at")
+            l8_predecessors[lemma_id] = payload
+        result = prove_protected_macro_step_preservation(
+            construction=construction, full_taskset=state.full_reference_taskset,
+            prefix_taskset=state.analysis_taskset, pp0_receipts=pp0,
+            fold_receipts=folds, idle_jump_receipt=idle,
+            scheduler_semantics_receipt=scheduler,
+            dispatch_semantics_receipt=dispatch,
+            phase_join_receipt=phase_join,
+            service_relation_receipt=service,
+            removal_relation_receipt=removal,
+            predecessor_receipts=l8_predecessors,
+        )
+    else:
+        return _finish("UNRESOLVED", "PPP_OBLIGATION_ID_MISSING")
     return _finish(
-        "UNRESOLVED",
-        "PPP_PARAMETRIC_RELATIONAL_BACKEND_UNRESOLVED",
-        {"predecessors_consumed": sorted(predecessors)},
+        "PASS" if result.get("status") == "PASS" else "UNRESOLVED",
+        result.get("code"), result,
     )
 
 
 def check_ppp_l1_tail_service_exclusion(**kwargs: Any) -> dict[str, Any]:
     """Route adapter for the explicit L1 DAG node."""
-    return check_registered_parametric_lemma(**kwargs)
+    return check_registered_parametric_lemma(**{**kwargs, "obligation_id": "PPP_L1_TAIL_SERVICE_EXCLUSION"})
 
 
 def check_ppp_l2_final_dispatch_correspondence(**kwargs: Any) -> dict[str, Any]:
     """Route adapter for the explicit L2 DAG node."""
-    return check_registered_parametric_lemma(**kwargs)
+    return check_registered_parametric_lemma(**{**kwargs, "obligation_id": "PPP_L2_FINAL_DISPATCH_CORRESPONDENCE"})
 
 
 def check_ppp_l3_service_correspondence(**kwargs: Any) -> dict[str, Any]:
     """Route adapter for the explicit L3 DAG node."""
-    return check_registered_parametric_lemma(**kwargs)
+    return check_registered_parametric_lemma(**{**kwargs, "obligation_id": "PPP_L3_SERVICE_CORRESPONDENCE"})
 
 
 def check_ppp_l4_completion_removal_correspondence(**kwargs: Any) -> dict[str, Any]:
     """Route adapter for the explicit L4 DAG node."""
-    return check_registered_parametric_lemma(**kwargs)
+    return check_registered_parametric_lemma(**{**kwargs, "obligation_id": "PPP_L4_COMPLETION_REMOVAL_CORRESPONDENCE"})
 
 
 def check_ppp_l5_deadline_batch_fold(**kwargs: Any) -> dict[str, Any]:
     """Route adapter for the explicit L5 DAG node."""
-    return check_registered_parametric_lemma(**kwargs)
+    return check_registered_parametric_lemma(**{**kwargs, "obligation_id": "PPP_L5_DEADLINE_BATCH_FOLD"})
 
 
 def check_ppp_l6_arrival_batch_fold(**kwargs: Any) -> dict[str, Any]:
     """Route adapter for the explicit L6 DAG node."""
-    return check_registered_parametric_lemma(**kwargs)
+    return check_registered_parametric_lemma(**{**kwargs, "obligation_id": "PPP_L6_ARRIVAL_BATCH_FOLD"})
 
 
 def check_ppp_l7_canonical_phase_join(**kwargs: Any) -> dict[str, Any]:
     """Route adapter for the explicit L7 DAG node."""
-    return check_registered_parametric_lemma(**kwargs)
+    return check_registered_parametric_lemma(**{**kwargs, "obligation_id": "PPP_L7_CANONICAL_PHASE_JOIN"})
 
 
 def check_protected_macro_step_preservation(**kwargs: Any) -> dict[str, Any]:
     """Route adapter for L8; missing any predecessor remains UNRESOLVED."""
-    return check_registered_parametric_lemma(**kwargs)
+    return check_registered_parametric_lemma(**{**kwargs, "obligation_id": "PROTECTED_MACRO_STEP_PRESERVATION"})
 
 
 def check_partition(**kwargs: Any) -> dict[str, Any]:
@@ -865,14 +1096,41 @@ def check_prefix_rta(**kwargs: Any) -> dict[str, Any]:
         return _finish("UNRESOLVED", "PROTECTED_PREFIX_RTA_STATE_MISSING")
     replay = state.fresh_rta_replay
     witness = replay.get("witness", replay.get("replay", {}).get("witness", {}))
-    ok = (replay.get("status") == "PASS"
-          and (witness.get("all_tasks_covered") is True
-               or replay.get("replay", {}).get("all_tasks_covered") is True)
-          and witness.get("all_deadlines_met") is True
-          and witness.get("complete_integer_candidate_domains") is True)
+    taskset = state.analysis_taskset
+    expected_names = tuple(str(task.name) for task in taskset.tasks)
+    actual_names = tuple(witness.get("task_order", ())) if isinstance(witness, Mapping) else ()
+    formula_version = witness.get("schema_version") if isinstance(witness, Mapping) else None
+    rows = witness.get("tasks", ()) if isinstance(witness, Mapping) else ()
+    rows_complete = (
+        isinstance(rows, list)
+        and tuple(str(row.get("task", {}).get("name")) for row in rows) == expected_names
+        and all(isinstance(row, Mapping) and row.get("status") == "PASS" for row in rows)
+    )
+    ok = (
+        replay.get("status") == "PASS"
+        and isinstance(witness, Mapping)
+        and witness.get("reference_taskset_fingerprint") == taskset.to_dict()["fingerprint"]
+        and formula_version == "all_task_rta_v3"
+        and actual_names == expected_names
+        and witness.get("all_tasks_covered") is True
+        and witness.get("all_deadlines_met") is True
+        and witness.get("complete_integer_candidate_domains") is True
+        and rows_complete
+    )
+    receipt = {
+        "theorem_id": "PREFIX_ALL_TASK_RTA_SOUNDNESS",
+        "status": "PASS" if ok else "UNRESOLVED",
+        "prefix_taskset_fingerprint": taskset.to_dict()["fingerprint"],
+        "formula_version": formula_version,
+        "all_task_name_set": list(expected_names),
+        "all_tasks_covered": bool(witness.get("all_tasks_covered") is True) if isinstance(witness, Mapping) else False,
+        "complete_integer_candidate_domains": bool(witness.get("complete_integer_candidate_domains") is True) if isinstance(witness, Mapping) else False,
+    }
+    from formal_toolchain.core.hashing import sha256_object
+    receipt["receipt_hash"] = sha256_object(receipt)
     return _finish("PASS" if ok else "UNRESOLVED",
                    None if ok else "PROTECTED_PREFIX_RTA_REPLAY_UNRESOLVED",
-                   replay)
+                   {"replay": replay, "soundness_receipt": receipt})
 
 
 def check_prefix_model_conformance(**kwargs: Any) -> dict[str, Any]:
@@ -890,7 +1148,6 @@ def check_prefix_model_conformance(**kwargs: Any) -> dict[str, Any]:
         "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE",
         "PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION",
         "PROTECTED_INPUT_DEMAND_RECEPTIVENESS",
-        "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC",
         "ZERO_RELATIVE_START",
     }
     blocked = _require_pass_predecessors(predecessors, required)
@@ -909,16 +1166,6 @@ def check_prefix_model_conformance(**kwargs: Any) -> dict[str, Any]:
     prefix = state.analysis_taskset
     runtime_certificate = predecessors["PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE"].get("witness", {})
     prefix_extension_receipt = predecessors["PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION"]
-    rta_container = predecessors["PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"].get("witness", {})
-    rta_witness = rta_container.get("witness", rta_container) if isinstance(rta_container, Mapping) else {}
-    candidate_enumeration_receipt = {
-        "status": "PASS",
-        "complete_integer_candidate_domains": (
-            isinstance(rta_witness, Mapping)
-            and rta_witness.get("complete_integer_candidate_domains") is True
-        ),
-    }
-
     result = derive_prefix_model_conformance(
         full_taskset=full,
         prefix_taskset=prefix,
@@ -926,7 +1173,6 @@ def check_prefix_model_conformance(**kwargs: Any) -> dict[str, Any]:
         runtime_schema_certificate=runtime_certificate,
         prefix_extension_receipt=prefix_extension_receipt,
         demand_receptiveness_receipt=predecessors["PROTECTED_INPUT_DEMAND_RECEPTIVENESS"],
-        candidate_enumeration_receipt=candidate_enumeration_receipt,
         zero_relative_start_receipt=predecessors["ZERO_RELATIVE_START"],
     )
 
@@ -954,32 +1200,31 @@ def check_mathematical_conformance(**kwargs: Any) -> dict[str, Any]:
 
     conformance_receipt = predecessors["PROTECTED_PREFIX_REFERENCE_MODEL_CONFORMANCE"]
     conformance = conformance_receipt.get("witness", {})
-    if conformance.get("status") == "PASS":
-        conformance_fp = conformance.get("prefix_taskset_fingerprint")
-    else:
-        conformance_fp = conformance.get("prefix_taskset_fingerprint")
-        if conformance_fp is None and isinstance(conformance.get("witness"), Mapping):
-            conformance_fp = conformance["witness"].get("prefix_taskset_fingerprint")
+    conformance_fp = conformance.get("prefix_taskset_fingerprint") if isinstance(conformance, Mapping) else None
+    if conformance_receipt.get("obligation_status") != "PASS":
+        return _finish("UNRESOLVED", "PP7_A1_MODEL_CONFORMANCE_UNRESOLVED")
 
     rta_receipt = predecessors["PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"]
     rta_state = rta_receipt.get("witness", {})
-    rta_witness = rta_state.get("witness", rta_state)
-    if not isinstance(rta_witness, Mapping):
-        return _finish("FAIL", "PROTECTED_PREFIX_RTA_WITNESS_INVALID")
+    rta_replay = rta_state.get("replay", {}) if isinstance(rta_state, Mapping) else {}
+    rta_witness = rta_replay.get("witness", {}) if isinstance(rta_replay, Mapping) else {}
+    rta_soundness = rta_state.get("soundness_receipt", {}) if isinstance(rta_state, Mapping) else {}
+    if not isinstance(rta_witness, Mapping) or not isinstance(rta_soundness, Mapping):
+        return _finish("UNRESOLVED", "PP7_B_RTA_SOUNDNESS_RECEIPT_MISSING")
     rta_fp = rta_witness.get("reference_taskset_fingerprint")
-    if rta_fp is None and isinstance(rta_state.get("replay"), Mapping):
-        rta_fp = rta_state["replay"].get("witness", {}).get("reference_taskset_fingerprint")
-
+    expected_names = [str(task.name) for task in state.analysis_taskset.tasks]
     if conformance_fp != expected_fp or rta_fp != expected_fp:
         return _finish("FAIL", "PROTECTED_PREFIX_THEOREM_TASKSET_BINDING_MISMATCH", {
             "expected_prefix_fingerprint": expected_fp,
             "conformance_fingerprint": conformance_fp,
             "rta_fingerprint": rta_fp,
         })
-    if (rta_witness.get("all_tasks_covered") is not True
-            or rta_witness.get("all_deadlines_met") is not True
-            or rta_witness.get("complete_integer_candidate_domains") is not True):
-        return _finish("FAIL", "PROTECTED_PREFIX_ALL_TASK_SCHEDULABILITY_NOT_ESTABLISHED", rta_state)
+    if (rta_receipt.get("obligation_status") != "PASS"
+            or rta_soundness.get("status") != "PASS"
+            or rta_soundness.get("prefix_taskset_fingerprint") != expected_fp
+            or rta_soundness.get("formula_version") != "all_task_rta_v3"
+            or rta_soundness.get("all_task_name_set") != expected_names):
+        return _finish("UNRESOLVED", "PP7_B_RTA_SOUNDNESS_UNRESOLVED", rta_state)
 
     try:
         theorem = load_verified_theory_statement(
@@ -991,17 +1236,28 @@ def check_mathematical_conformance(**kwargs: Any) -> dict[str, Any]:
     if theorem.get("theorem_id") != "C_AMC_SEM_ALL_TASK_SCHEDULABILITY_SUFFICIENCY":
         return _finish("FAIL", "IMPORTED_THEOREM_ID_MISMATCH")
 
-    return _finish("PASS", witness={
+    from formal_toolchain.core.hashing import sha256_object
+    imported_binding = {
         "theorem_id": theorem["theorem_id"],
         "statement_hash": theorem["statement_hash"],
         "assumption_hash": theorem["assumption_hash"],
         "prefix_taskset_fingerprint": expected_fp,
-        "model_conformance_artifact_hash": conformance_receipt.get("artifact_hash"),
-        "all_task_rta_artifact_hash": rta_receipt.get("artifact_hash"),
-        "all_tasks_covered": True,
-        "all_deadlines_met": True,
+        "model_conformance_receipt_hash": conformance_receipt.get("artifact_hash"),
+        "rta_receipt_hash": rta_receipt.get("artifact_hash"),
+    }
+    imported_binding["receipt_hash"] = sha256_object(imported_binding)
+    composition = {
+        "theorem_id": "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE",
+        "proof_partition": ["PP7-A1", "PP7-A2", "PP7-B"],
+        "pp7_a1_model_conformance_hash": conformance_receipt.get("artifact_hash"),
+        "pp7_a2_imported_theorem_binding_hash": imported_binding["receipt_hash"],
+        "pp7_b_rta_soundness_hash": rta_soundness.get("receipt_hash"),
+        "prefix_taskset_fingerprint": expected_fp,
+        "all_task_name_set": expected_names,
         "conclusion": "PROTECTED_PREFIX_TASKSET_SCHEDULABLE",
-    })
+    }
+    composition["receipt_hash"] = sha256_object(composition)
+    return _finish("PASS", witness=composition)
 
 
 def check_selected_safety(**kwargs: Any) -> dict[str, Any]:

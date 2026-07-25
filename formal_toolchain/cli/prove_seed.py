@@ -11,7 +11,7 @@ from amc_py.nonvacuity import SUPPORTED_PROFILES, SUPPORTED_DISABLED_GUARDS
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="导入、编译、独立验证并报告一个 seed folder")
     parser.add_argument("--seed-dir", required=True, type=Path)
-    parser.add_argument("--tree-variant", required=True,
+    parser.add_argument("--tree-variant", default="best_overall",
                         choices=("best_overall", "best_balanced", "best_performance"))
     parser.add_argument("--code-root", type=Path, default=Path.cwd(),
                         help="源码根目录；默认使用当前工作区")

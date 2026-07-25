@@ -707,6 +707,8 @@ def _semantic_metadata(node: ast.FunctionDef, function_name: str, source: str):
                  "range", "min", "max", "sorted", "replace"}
     summaries: list[HelperSummaryReceipt] = []
     for helper in helpers:
+        # A caller-derived hash is provenance only.  It is not a semantic
+        # summary of the helper and must not be counted as total coverage.
         helper_hash = sha256_object({
             "helper": helper,
             "source_module": _SOURCE_MODULE,
@@ -717,7 +719,7 @@ def _semantic_metadata(node: ast.FunctionDef, function_name: str, source: str):
             source_ast_hash=helper_hash,
             precondition=empty_bool_expr(),
             paths=(),
-            total_semantic_coverage=True,
+            total_semantic_coverage=False,
             summary_hash=sha256_object({"helper": helper, "source_ast_hash": helper_hash}),
         ))
     # Attach the executable update/frame/event vocabulary to every terminal
@@ -731,7 +733,12 @@ def _semantic_metadata(node: ast.FunctionDef, function_name: str, source: str):
     enriched = tuple(replace(p, updates=updates, frame_fields=frames,
                              generated_events=events) for p in paths)
     all_helpers_covered = all(s.total_semantic_coverage for s in summaries)
-    complete = bool(paths) and not unsupported and all_helpers_covered
+    # The current extractor attaches one function-wide update set to every
+    # terminal path.  It does not yet construct path-specific symbolic states,
+    # fold invariants, collection semantics, or source-bound helper summaries.
+    # Therefore it is diagnostic IR only and may never emit COMPILED.
+    path_specific_semantics_complete = False
+    complete = bool(paths) and not unsupported and all_helpers_covered and path_specific_semantics_complete
     return enriched, folds, tuple(summaries), tuple(sorted(set(unsupported))), complete
 
 
@@ -927,7 +934,7 @@ def compile_function(function_name: str) -> CompiledTransitionIR:
         time_update=time_update,
         compilation_receipt_hash=receipt_hash,
         compilation_status="COMPILED" if complete else (
-            "AST_UNSUPPORTED" if unsupported else "UNRESOLVED"),
+            "AST_UNSUPPORTED" if unsupported else "PARTIAL_AST_EXTRACTION"),
         binding_kind="EXECUTABLE_TRANSITION_COMPILER",
         compilation_receipt=receipt,
         paths=paths,

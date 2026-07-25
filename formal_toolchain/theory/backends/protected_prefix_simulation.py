@@ -2,7 +2,8 @@
 
 This backend requires actual mathematical proof objects, not lemma-name checks
 or source-hash bindings.  A proof must contain predecessor receipts, dependency
-hashes, base-case/induction receipts, and a verified single-witness quantifier.
+hashes, base-case/induction receipts, and an internally constructed complete
+execution witness.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ class ProtectedPrefixSimulationBackend:
         "prefix_execution_existence_theorem",
         "base_case",
         "macro_step_induction",
-        "single_witness_compatibility",
+        "complete_execution_witness",
     )
 
     def verify(self, proof_path: Path, *, theorem: Mapping[str, Any]) -> dict[str, Any]:
@@ -59,7 +60,7 @@ class ProtectedPrefixSimulationBackend:
                     "reason": (
                         "The proof object must contain dependency receipts for: "
                         "full_input_projection_theorem, prefix_execution_existence_theorem, "
-                        "base_case, macro_step_induction, single_witness_compatibility. "
+                        "base_case, macro_step_induction, complete_execution_witness. "
                         "Each receipt must be a fresh-verifier-recognised PASS artifact."
                     ),
                     "expected": list(self.REQUIRED_DEPENDENCIES),
@@ -71,14 +72,13 @@ class ProtectedPrefixSimulationBackend:
                         "code": f"SIMULATION_DEPENDENCY_{dep_name.upper()}_NOT_PASS",
                         "reason": f"Dependency {dep_name} must be a PASS artifact."}
 
-        single_witness = proof.get("single_witness_compatibility")
-        if not isinstance(single_witness, dict) or single_witness.get("status") != "PASS":
+        complete_witness = proof.get("complete_execution_witness")
+        if not isinstance(complete_witness, dict) or complete_witness.get("status") != "PASS":
             return {"status": "UNRESOLVED",
-                    "code": "SINGLE_WITNESS_COMPATIBILITY_UNVERIFIED",
+                    "code": "COMPLETE_EXECUTION_WITNESS_UNVERIFIED",
                     "reason": (
-                        "The proof must verify that all finite induction prefixes "
-                        "originate from the same prefix oracle and the same execution; "
-                        "re-selecting a witness per horizon is prohibited."
+                        "The proof must verify one fixed oracle, one successor and "
+                        "one recursively constructed execution for all finite prefixes."
                     )}
 
         base_case = dependencies.get("base_case", {})

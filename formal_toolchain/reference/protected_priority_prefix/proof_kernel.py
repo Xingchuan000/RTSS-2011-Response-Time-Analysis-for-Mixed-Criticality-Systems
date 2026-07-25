@@ -709,8 +709,8 @@ def prove_same_time_closure_termination_kernel() -> dict[str, Any]:
     The measure is bounded below by (0,0,0,0,0,0,0) and well-founded.
     """
     measure_order = ("remaining_REM", "REC_enabled", "remaining_DDL_entries",
-                     "remaining_ARR_entries", "remaining_SW_REL_entries",
-                     "DSP_enabled", "phase_rank")
+                     "remaining_ARR_entries", "remaining_SW_entries", "remaining_REL_entries",
+                     "DSP_enabled")
     from .executable_transition_compiler import compile_all_transitions
     compiled = {ir.case_id: ir for ir in compile_all_transitions()}
     expected = set(("REM_COMPLETION", "RECOVERY", "DEADLINE_OBSERVATION",
@@ -727,10 +727,9 @@ def prove_same_time_closure_termination_kernel() -> dict[str, Any]:
     all_bound = expected == set(compiled) and all(
         item.get("all_paths_covered") is True for item in transitions.values()
     )
-    all_decrease = all_bound and all(
-        item.get("consumed_frontier_event") or item.get("exits_loop")
-        for item in transitions.values()
-    )
+    # Compilation status alone does not prove a lexicographic decrease.
+    # A path-level measure-delta theorem is still required for every primitive.
+    all_decrease = False
 
     return _kernel_receipt(
         "SAME_TIME_CLOSURE_TERMINATES",
@@ -771,15 +770,16 @@ def prove_canonical_successor_total_kernel() -> dict[str, Any]:
     from .executable_transition_compiler import compile_all_transitions
     compiled = tuple(compile_all_transitions())
     compiled_ok = len(compiled) == 9 and all(ir.is_compiled() for ir in compiled)
+    totality_proved = False
     return _kernel_receipt(
         "PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL",
-        "PASS" if compiled_ok else "UNRESOLVED",
+        "PASS" if totality_proved else "UNRESOLVED",
         {
             "lemma": "CANONICAL_SUCCESSOR_TOTAL",
-            "all_legal_closed_states_covered": compiled_ok,
-            "same_time_closure_termination_consumed": compiled_ok,
-            "future_event_or_service_branch_total": compiled_ok,
-            "projected_oracle_contract_consumed": compiled_ok,
+            "all_legal_closed_states_covered": totality_proved,
+            "same_time_closure_termination_consumed": totality_proved,
+            "future_event_or_service_branch_total": totality_proved,
+            "projected_oracle_contract_consumed": totality_proved,
             "branches": {
                 "service_branch": {
                     "condition": "ready nonempty",
@@ -792,10 +792,10 @@ def prove_canonical_successor_total_kernel() -> dict[str, Any]:
                     "time_delta": "> 0 (strictly future)",
                 },
             },
-            "case_split_total": compiled_ok,
+            "case_split_total": totality_proved,
             "proof_type": "two_branch_totality",
         },
-        code=None if compiled_ok else "SOURCE_BOUND_CANONICAL_SUCCESSOR_TOTALITY_REQUIRED",
+        code=None if totality_proved else "SOURCE_BOUND_CANONICAL_SUCCESSOR_TOTALITY_REQUIRED",
         reason="The branch outline is not a totality proof.  It still requires "
                "source-bound closure termination, legal-state preservation, "
                "projected-oracle input totality and the no-future-event case.",
@@ -815,21 +815,23 @@ def prove_time_divergence_kernel() -> dict[str, Any]:
     """
     from .executable_transition_compiler import compile_all_transitions
     compiled = {ir.case_id: ir for ir in compile_all_transitions()}
-    service_ok = all(compiled.get(case) is not None and compiled[case].is_compiled()
-                     for case in ("SERVICE_UNIT", "TAIL_ONLY_SERVICE"))
+    service_ir_available = all(compiled.get(case) is not None and compiled[case].is_compiled()
+                               for case in ("SERVICE_UNIT", "TAIL_ONLY_SERVICE"))
+    divergence_proved = False
     return _kernel_receipt(
         "PROTECTED_PREFIX_TIME_DIVERGENCE",
-        "PASS" if service_ok else "UNRESOLVED",
+        "PASS" if divergence_proved else "UNRESOLVED",
         {
             "lemma": "TIME_DIVERGENCE",
-            "service_branch_advances_by_1": service_ok,
-            "idle_branch_jumps_to_future_event": service_ok,
-            "unbounded_iteration_proved": service_ok,
-            "non_zeno": service_ok,
+            "service_ir_available": service_ir_available,
+            "service_branch_advances_by_1": divergence_proved,
+            "idle_branch_jumps_to_future_event": divergence_proved,
+            "unbounded_iteration_proved": divergence_proved,
+            "non_zeno": divergence_proved,
             "minimum_progress_per_step": 1,
             "proof_type": "induction_on_time",
         },
-        code=None if service_ok else "SOURCE_BOUND_TIME_DIVERGENCE_REQUIRED",
+        code=None if divergence_proved else "SOURCE_BOUND_TIME_DIVERGENCE_REQUIRED",
         reason="Time divergence requires the proved total successor and an "
                "explicit infinite-idle/terminal extension when no future event exists.",
     )
@@ -852,10 +854,13 @@ def prove_idle_jump_stutter_kernel() -> dict[str, Any]:
     """
     from .executable_transition_compiler import compile_all_transitions
     compiled = {ir.case_id: ir for ir in compile_all_transitions()}
-    source_bound = all(
+    source_ir_available = all(
         compiled.get(case) is not None and compiled[case].is_compiled()
         for case in ("FINAL_DISPATCH", "SERVICE_UNIT", "TAIL_ONLY_SERVICE")
     )
+    # The no-skipped-release/deadline frame theorem is not derivable from
+    # source availability alone.
+    source_bound = False
     return _kernel_receipt(
         "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION",
         "PASS" if source_bound else "UNRESOLVED",
@@ -865,6 +870,7 @@ def prove_idle_jump_stutter_kernel() -> dict[str, Any]:
             "independent_of_complete_execution_witness": True,
             "all_integer_times_observable": source_bound,
             "close_at_defined_for_every_intermediate_integer": source_bound,
+            "source_ir_available": source_ir_available,
             "source_bound_transition_relation": source_bound,
             "protected_observable_frame_proved": source_bound,
             "lemma": "IDLE_JUMP_STUTTER_EXPANSION",
@@ -922,7 +928,7 @@ def prove_complete_execution_exists_kernel(
             "pe3_canonical_successor_total": False,
             "pe4_time_divergence": False,
             "quantifier_order": "forall-full-exists-one-prefix-forall-boundaries",
-            "single_complete_execution": False,
+            "complete_execution_constructed": False,
             "construction": "dependent_choice_on_total_successor",
             "proof_type": "dependent_choice_construction",
         },
@@ -937,7 +943,12 @@ def prove_complete_execution_exists_kernel(
 # Weak forward simulation (PP6)
 # ---------------------------------------------------------------------------
 
-def prove_weak_forward_simulation_kernel() -> dict[str, Any]:
+def prove_weak_forward_simulation_kernel(
+    *,
+    macro_step_receipt: Mapping[str, Any] | None = None,
+    execution_receipt: Mapping[str, Any] | None = None,
+    base_case_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Prove full-to-prefix weak forward simulation.
 
     Quantifier order:
@@ -953,25 +964,52 @@ def prove_weak_forward_simulation_kernel() -> dict[str, Any]:
       5. Induction: L8 macro-step for all t (PP5-F)
       6. Conclusion: relation holds at all Close(t)
     """
+    from .executable_transition_compiler import compile_all_transitions
+    from .phase_relation import JOB_FIELDS, PENDING_RELEASE_FIELDS
+    compiled = tuple(compile_all_transitions())
+    executable_bound = len(compiled) == 9 and all(item.is_compiled() for item in compiled)
+    def passed(value: Mapping[str, Any] | None) -> bool:
+        if not isinstance(value, Mapping):
+            return False
+        return value.get("status", value.get("obligation_status")) == "PASS" or (
+            isinstance(value.get("witness"), Mapping)
+            and value["witness"].get("status") == "PASS"
+        )
+    predecessors_bound = all(passed(value) for value in (
+        macro_step_receipt, execution_receipt, base_case_receipt,
+    ))
+    # PASS-labelled predecessors do not themselves constitute the natural-
+    # number induction object or establish witness/oracle identity.
+    established = False
     return _kernel_receipt(
         "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION",
-        "UNRESOLVED",
+        "PASS" if established else "UNRESOLVED",
         {
             "theorem_id": "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION",
             "quantifier_order": "forall-full-exists-one-prefix-forall-boundaries",
-            "induction_on_t_complete": False,
+            "induction_on_t_complete": established,
+            "fixed_oracle_identity_checked": established,
+            "witness_identity_checked": established,
             "relation_schema": "phase_relation_v4_close_at",
-            "base_case_proved": False,
-            "single_witness_proved": False,
-            "macro_step_L1_L8_proved": False,
+            "base_case_proved": passed(base_case_receipt),
+            "complete_execution_witness_proved": passed(execution_receipt),
+            "macro_step_L1_L8_proved": passed(macro_step_receipt),
             "observation": "Obs_P preserves: job key, criticality, release, "
                           "deadline, priority, actual demand, HI class, "
                           "service, completion, miss ledger.  Excludes: "
                           "global mode, LO version label, tail state.",
-            "induction_proved": False,
+            "induction_proved": established,
+            "source_transition_ir_hashes": [item.ir_hash() for item in compiled],
+            "preserved_job_fields": list(JOB_FIELDS),
+            "preserved_pending_release_fields": list(PENDING_RELEASE_FIELDS),
+            "predecessor_receipt_hashes": {
+                "macro_step": sha256_object(macro_step_receipt or {}),
+                "execution": sha256_object(execution_receipt or {}),
+                "base_case": sha256_object(base_case_receipt or {}),
+            },
             "proof_type": "induction_over_closed_boundaries",
         },
-        code="SOURCE_BOUND_WEAK_SIMULATION_INDUCTION_REQUIRED",
+        code=None if established else "SOURCE_BOUND_WEAK_SIMULATION_INDUCTION_REQUIRED",
         reason="Requires verified base relation, one compatible complete prefix "
                "execution, and a source-bound L8 induction step for every t.",
     )
@@ -981,7 +1019,11 @@ def prove_weak_forward_simulation_kernel() -> dict[str, Any]:
 # HI bad-prefix reflection (PP6-A/B)
 # ---------------------------------------------------------------------------
 
-def prove_hi_bad_prefix_reflection_kernel() -> dict[str, Any]:
+def prove_hi_bad_prefix_reflection_kernel(
+    *,
+    simulation_receipt: Mapping[str, Any] | None = None,
+    deadline_batch_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Prove full-reference HI miss reflects to prefix HI miss.
 
     If full reference execution has an HI job miss deadline at time t*,
@@ -1000,9 +1042,22 @@ def prove_hi_bad_prefix_reflection_kernel() -> dict[str, Any]:
 
     N4PPBoundaryAlignment ensures PreClosed(t*) projects to Close(t*).
     """
+    def passed(value: Mapping[str, Any] | None) -> bool:
+        if not isinstance(value, Mapping):
+            return False
+        return value.get("status", value.get("obligation_status")) == "PASS" or (
+            isinstance(value.get("witness"), Mapping)
+            and value["witness"].get("status") == "PASS"
+        )
+    predecessor_statuses_available = passed(simulation_receipt) and passed(deadline_batch_receipt)
+    source_bound = False
+    preserved = (
+        "job_key", "criticality", "release_time", "absolute_deadline",
+        "actual_demand", "executed_service", "completed", "missed",
+    )
     return _kernel_receipt(
         "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
-        "UNRESOLVED",
+        "PASS" if source_bound else "UNRESOLVED",
         {
             "theorem_id": "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
             "reflection_fields": [
@@ -1014,6 +1069,14 @@ def prove_hi_bad_prefix_reflection_kernel() -> dict[str, Any]:
             "boundary_alignment": "N4PPBoundaryAlignment: PreClosed -> Close",
             "reflection_lemma": "PP6-A",
             "finite_bad_prefix_lemma": "PP6-B",
+            "all_reflection_fields_derived": source_bound,
+            "predecessor_statuses_available": predecessor_statuses_available,
+            "source_bound": source_bound,
+            "preserved_job_fields": list(preserved),
+            "predecessor_receipt_hashes": {
+                "simulation": sha256_object(simulation_receipt or {}),
+                "deadline_batch": sha256_object(deadline_batch_receipt or {}),
+            },
             "requires": [
                 "PP6 weak forward simulation",
                 "HI jobs are all protected",
@@ -1022,7 +1085,7 @@ def prove_hi_bad_prefix_reflection_kernel() -> dict[str, Any]:
             ],
             "proof_type": "simulation_projection",
         },
-        code="SOURCE_BOUND_BAD_PREFIX_DERIVATION_REQUIRED",
+        code=None if source_bound else "SOURCE_BOUND_BAD_PREFIX_DERIVATION_REQUIRED",
         reason="The implication follows only after the weak simulation receipt "
                "exports the protected field equalities and the deadline batch "
                "relation is source-bound.",
@@ -1108,7 +1171,11 @@ def prove_pp7b_rta_to_inequalities_kernel() -> dict[str, Any]:
 # Final contradiction (PP8): prefix schedulability => full-reference HI safety
 # ---------------------------------------------------------------------------
 
-def prove_pp8_reference_hi_safety_from_prefix_kernel() -> dict[str, Any]:
+def prove_pp8_reference_hi_safety_from_prefix_kernel(
+    *,
+    bad_prefix_reflection_receipt: Mapping[str, Any] | None = None,
+    mathematical_conformance_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """PP8: Prefix all-task schedulability implies full-reference HI safety.
 
     By contradiction:
@@ -1118,9 +1185,24 @@ def prove_pp8_reference_hi_safety_from_prefix_kernel() -> dict[str, Any]:
         prefix has NO misses (all tasks schedulable).
       Contradiction => full reference has NO HI miss.
     """
+    def passed(value: Mapping[str, Any] | None) -> bool:
+        return isinstance(value, Mapping) and value.get("status") == "PASS"
+
+    predecessor_statuses_available = passed(bad_prefix_reflection_receipt) and passed(
+        mathematical_conformance_receipt
+    )
+    source_bound = False
+    predecessor_hashes = {
+        "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION": sha256_object(
+            bad_prefix_reflection_receipt or {}
+        ),
+        "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE": sha256_object(
+            mathematical_conformance_receipt or {}
+        ),
+    }
     return _kernel_receipt(
         "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
-        "UNRESOLVED",
+        "PASS" if source_bound else "UNRESOLVED",
         {
             "theorem_id": "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
             "proof_by_contradiction": {
@@ -1138,8 +1220,11 @@ def prove_pp8_reference_hi_safety_from_prefix_kernel() -> dict[str, Any]:
                 "Prefix all-task RTA PASS",
             ],
             "proof_type": "contradiction",
+            "predecessor_statuses_available": predecessor_statuses_available,
+            "source_bound": source_bound,
+            "predecessor_receipt_hashes": predecessor_hashes,
         },
-        code="SOURCE_BOUND_SAFETY_COMPOSITION_REQUIRED",
+        code=None if source_bound else "SOURCE_BOUND_SAFETY_COMPOSITION_REQUIRED",
         reason="The contradiction is valid only after consuming verified bad-prefix "
                "reflection and prefix all-task schedulability receipts.",
     )

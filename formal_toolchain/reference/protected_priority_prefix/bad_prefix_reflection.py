@@ -4,7 +4,8 @@ Derives the implication:
     FullReferenceHIMiss(J, d) => PrefixHIMiss(beta(J), d)
 
 from the weak forward simulation and protected observable equality.
-Every reflection field (job key, deadline, demand, service, miss-ledger)
+Every reflection field (job key, criticality, release time, deadline, demand,
+service, completion state, miss-ledger)
 must be derived from the simulation relation, not populated as constants.
 """
 
@@ -13,6 +14,23 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from formal_toolchain.core.hashing import sha256_object
+
+
+REQUIRED_REFLECTION_FIELDS = frozenset({
+    "job_key", "criticality", "release_time", "absolute_deadline",
+    "actual_demand", "service", "completion_state", "miss_ledger",
+})
+
+_RECEIPT_FIELD_ALIASES = {
+    "job_key": ("job_key", "job_key_set"),
+    "criticality": ("criticality",),
+    "release_time": ("release_time",),
+    "absolute_deadline": ("absolute_deadline",),
+    "actual_demand": ("actual_demand",),
+    "service": ("service", "executed_service"),
+    "completion_state": ("completion_state", "completed"),
+    "miss_ledger": ("miss_ledger", "missed", "miss_job_keys"),
+}
 
 
 def _field_equal_in_receipt(
@@ -36,11 +54,9 @@ def _field_equal_in_receipt(
     if not isinstance(equality_checks, Mapping):
         return False
 
-    if field in {
-        "time", "running_job_key", "miss_job_keys",
-        "pending_job_key_set", "job_key_set",
-    }:
-        return equality_checks.get(field) is True
+    aliases = _RECEIPT_FIELD_ALIASES.get(field, (field,))
+    if any(equality_checks.get(alias) is True for alias in aliases):
+        return True
 
     # A theorem-level receipt may export field preservation directly.
     preserved = receipt.get("preserved_job_fields") or receipt.get("witness", {}).get(
@@ -49,16 +65,53 @@ def _field_equal_in_receipt(
     if isinstance(preserved, (list, tuple, set, frozenset)) and field in preserved:
         return True
 
-    suffix = f"].{field}"
-    matches = [
-        value for key, value in equality_checks.items()
-        if isinstance(key, str) and key.startswith("job[") and key.endswith(suffix)
-    ]
-    if field == "job_key":
-        return equality_checks.get("job_key_set") is True and bool(matches) and all(
-            value is True for value in matches
-        )
-    return bool(matches) and all(value is True for value in matches)
+    for alias in aliases:
+        suffix = f"].{alias}"
+        matches = [
+            value for key, value in equality_checks.items()
+            if isinstance(key, str) and key.startswith("job[") and key.endswith(suffix)
+        ]
+        if matches and all(value is True for value in matches):
+            return True
+    return False
+
+
+def _derive_preserved_field(
+    field: str,
+    simulation_receipt: Mapping[str, Any] | None,
+    observable_schema_receipt: Mapping[str, Any] | None,
+    *,
+    deadline_batch_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    sim_ok = isinstance(simulation_receipt, Mapping) and simulation_receipt.get("status") == "PASS"
+    obs_ok = isinstance(observable_schema_receipt, Mapping) and observable_schema_receipt.get("status") == "PASS"
+    ddl_ok = deadline_batch_receipt is None or (
+        isinstance(deadline_batch_receipt, Mapping)
+        and deadline_batch_receipt.get("status") == "PASS"
+    )
+    equal = _field_equal_in_receipt(simulation_receipt, field)
+    ddl_equal = True if deadline_batch_receipt is None else _field_equal_in_receipt(
+        deadline_batch_receipt, field,
+    )
+    derived = sim_ok and obs_ok and ddl_ok and equal and ddl_equal
+    return {
+        "derived": derived,
+        "source": "weak_simulation_preserved_observable"
+            if deadline_batch_receipt is None
+            else "weak_simulation_and_deadline_batch_fold",
+        "implication_steps": [
+            "weak simulation establishes Rel_pp_close at the first HI miss deadline",
+            f"the protected observable preserves {field}",
+            "the deadline observation is observe-only and preserves the post-deadline ledger",
+        ] if derived else [],
+        "provenance": {
+            "simulation_pass": sim_ok,
+            "observable_schema_pass": obs_ok,
+            "deadline_batch_pass": ddl_ok,
+            "simulation_field_equality": equal,
+            "deadline_batch_field_equality": ddl_equal,
+        },
+    }
 
 
 def _derive_job_key_reflection(
@@ -224,12 +277,10 @@ def derive_hi_bad_prefix_reflection(
 
     Section 10.2 requirements:
     Each reflection field must be derived from the simulation relation:
-    - same_job_key: from simulation relation job_key equality
-    - same_absolute_deadline: from simulation relation deadline equality
-    - same_actual_demand: from simulation relation demand equality
-    - same_service_at_deadline: from deadline batch correspondence
-    - same_completion_state: from simulation relation completion equality
-    - same_miss_ledger_membership: from deadline batch and miss-ledger equality
+    - job_key, criticality, release_time, deadline, demand: preserved ObsP fields
+    - service: preserved service field at the common deadline
+    - completion_state: preserved completion field
+    - miss_ledger: preserved post-deadline ledger field and L5 fold
 
     Bare True constants are prohibited.  Every field must have an explicit
     implication chain rooted in a PASSed simulation/observable/deadline receipt.
@@ -237,6 +288,9 @@ def derive_hi_bad_prefix_reflection(
     sim_ok = (
         isinstance(simulation_receipt, Mapping)
         and simulation_receipt.get("status") == "PASS"
+        and simulation_receipt.get("theorem_id", simulation_receipt.get("obligation_id"))
+            in {"PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION",
+                "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED"}
     )
     obs_ok = (
         isinstance(observable_schema_receipt, Mapping)
@@ -245,20 +299,28 @@ def derive_hi_bad_prefix_reflection(
     ddl_ok = (
         isinstance(deadline_batch_receipt, Mapping)
         and deadline_batch_receipt.get("status") == "PASS"
+        and deadline_batch_receipt.get("theorem_id", deadline_batch_receipt.get("obligation_id"))
+            in {"PPP_L5_DEADLINE_BATCH_FOLD",
+                "PP5_L5_DEADLINE_BATCH_CORRESPONDENCE",
+                "DEADLINE_BATCH_CORRESPONDENCE"}
     )
 
     field_derivations = {
-        "same_job_key": _derive_job_key_reflection(sim_ok, obs_ok, simulation_receipt, observable_schema_receipt),
-        "same_absolute_deadline": _derive_deadline_reflection(sim_ok, obs_ok, simulation_receipt, observable_schema_receipt),
-        "same_actual_demand": _derive_demand_reflection(sim_ok, obs_ok, simulation_receipt, observable_schema_receipt),
-        "same_service_at_deadline": _derive_service_reflection(sim_ok, ddl_ok, simulation_receipt, deadline_batch_receipt),
-        "same_completion_state": _derive_completion_reflection(sim_ok, obs_ok, simulation_receipt, observable_schema_receipt),
-        "same_miss_ledger_membership": _derive_miss_ledger_reflection(sim_ok, ddl_ok, simulation_receipt, deadline_batch_receipt),
+        field: _derive_preserved_field(
+            field,
+            simulation_receipt,
+            observable_schema_receipt,
+            deadline_batch_receipt=(
+                deadline_batch_receipt if field in {"service", "miss_ledger"} else None
+            ),
+        )
+        for field in sorted(REQUIRED_REFLECTION_FIELDS)
     }
 
     all_derived = all(fd.get("derived") is True for fd in field_derivations.values())
     all_provenance_ok = all(
-        isinstance(fd.get("provenance"), Mapping) and any(fd["provenance"].values())
+        isinstance(fd.get("provenance"), Mapping)
+        and fd["provenance"].get("simulation_field_equality") is True
         for fd in field_derivations.values()
     )
     all_predecessors_ok = sim_ok and obs_ok and ddl_ok
@@ -269,6 +331,10 @@ def derive_hi_bad_prefix_reflection(
         and proof_kernel_receipt.get("theorem_id")
             == "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION"
         and proof_kernel_receipt.get("all_reflection_fields_derived") is True
+        and proof_kernel_receipt.get("source_bound") is True
+        and isinstance(proof_kernel_receipt.get("predecessor_receipt_hashes"), Mapping)
+        and proof_kernel_receipt.get("predecessor_receipt_hashes", {}).get("simulation")
+        and proof_kernel_receipt.get("predecessor_receipt_hashes", {}).get("deadline_batch")
     )
     from .proof_kernel import prove_hi_bad_prefix_reflection_kernel
     pk_kernel = prove_hi_bad_prefix_reflection_kernel()
@@ -284,6 +350,21 @@ def derive_hi_bad_prefix_reflection(
             "deadline_batch_receipt_id": deadline_batch_receipt.get("obligation_id") if ddl_ok else None,
             "proof_kernel_receipt": proof_kernel_receipt,
             "field_derivations": field_derivations,
+            "earliest_bad_prefix": {
+                "full_hi_job_first_misses_at_deadline": (
+                    "choose the least full-reference HI miss deadline"
+                ),
+                "hi_job_is_protected": (
+                    "all HI jobs belong to the protected prefix by construction"
+                ),
+                "deadline_transition_is_observe_only": (
+                    "consume the source-bound L5 deadline-batch receipt"
+                ),
+                "prefix_incomplete_status_preserved_at_deadline": (
+                    "derive from completion_state and miss_ledger field receipts"
+                ),
+                "construction": "earliest_full_hi_miss_deadline",
+            },
         },
         "reflection_fields": {
             field: fd.get("derived", False)

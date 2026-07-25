@@ -93,10 +93,10 @@ def prove_idle_jump_stutter_expansion(
     # The kernel is authoritative only when explicitly supplied by the caller
     # (the route checker supplies the freshly generated source-bound receipt).
     # A finite diagnostic call must not silently upgrade itself to a theorem.
-    resolved_kernel_ok = kernel_ok or (
-        isinstance(proof_kernel_receipt, Mapping)
-        and pk_kernel["status"] == "PASS"
-    )
+    # If the freshly generated internal kernel is supplied, it already
+    # satisfies ``kernel_ok``.  Merely supplying an arbitrary mapping while an
+    # unrelated internal kernel happens to PASS is not a theorem binding.
+    resolved_kernel_ok = kernel_ok
 
     payload = {
         "theorem_id": "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION",

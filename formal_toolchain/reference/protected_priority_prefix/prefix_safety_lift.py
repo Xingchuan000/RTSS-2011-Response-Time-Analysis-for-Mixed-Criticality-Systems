@@ -35,19 +35,61 @@ def prove_reference_hi_safety_from_prefix(
         isinstance(mathematical_conformance_receipt, Mapping)
         and mathematical_conformance_receipt.get("status") == "PASS"
     )
-    kernel_ok = (
+    math_witness = {}
+    if isinstance(mathematical_conformance_receipt, Mapping):
+        math_witness = mathematical_conformance_receipt.get(
+            "witness", mathematical_conformance_receipt
+        )
+        if isinstance(math_witness, Mapping) and isinstance(math_witness.get("witness"), Mapping):
+            math_witness = math_witness["witness"]
+    predecessor_hashes = {
+        "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION": (
+            bad_prefix_reflection_receipt.get("artifact_hash")
+            if isinstance(bad_prefix_reflection_receipt, Mapping) else None
+        ),
+        "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE": (
+            mathematical_conformance_receipt.get("artifact_hash")
+            if isinstance(mathematical_conformance_receipt, Mapping) else None
+        ),
+    }
+    composition_bound = (
+        isinstance(math_witness, Mapping)
+        and math_witness.get("theorem_id") == "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE"
+        and math_witness.get("proof_partition") == ["PP7-A1", "PP7-A2", "PP7-B"]
+        and isinstance(math_witness.get("pp7_a1_model_conformance_hash"), str)
+        and isinstance(math_witness.get("pp7_a2_imported_theorem_binding_hash"), str)
+        and isinstance(math_witness.get("pp7_b_rta_soundness_hash"), str)
+    )
+    source_kernel_ok = (
         isinstance(proof_kernel_receipt, Mapping)
         and proof_kernel_receipt.get("status") == "PASS"
         and proof_kernel_receipt.get("theorem_id")
-            == "PROTECTED_PREFIX_HI_SAFETY_LIFT"
-        and proof_kernel_receipt.get("bad_prefix_reflection_consumed") is True
-        and proof_kernel_receipt.get("prefix_all_task_schedulability_consumed") is True
+            == "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX"
+        and proof_kernel_receipt.get("source_bound") is True
         and proof_kernel_receipt.get("contradiction_proved") is True
-        and proof_kernel_receipt.get("conclusion_is_full_reference_hi_safety_only") is True
+        and proof_kernel_receipt.get("predecessor_receipt_hashes")
+            == predecessor_hashes
     )
-    from .proof_kernel import prove_pp8_reference_hi_safety_from_prefix_kernel
-    pk_kernel = prove_pp8_reference_hi_safety_from_prefix_kernel()
-    established = bad_prefix_ok and math_ok and (kernel_ok or pk_kernel["status"] == "PASS")
+    # PP8 is a trusted contradiction-composition step only after the exact
+    # verified predecessor artifacts have been bound by the source proof
+    # kernel.  Two PASS labels or shape-compatible dictionaries are not enough.
+    established = bad_prefix_ok and math_ok and composition_bound and source_kernel_ok
+    if not established:
+        return {
+            "theorem_id": "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
+            "conclusion": "ALL_REFERENCE_HI_JOBS_MEET_DEADLINES",
+            "scope": "FULL_REFERENCE_HI_SAFETY_ONLY",
+            "lo_tail_safety_not_claimed": True,
+            "bad_prefix_reflection_consumed": bad_prefix_ok,
+            "prefix_mathematical_conformance_consumed": math_ok,
+            "contradiction_proved": False,
+            "source_bound_composition": source_kernel_ok,
+            "status": "UNRESOLVED",
+            "code": "PP8_PREDECESSOR_COMPOSITION_UNRESOLVED",
+            "predecessor_theorem_ids": list(predecessor_hashes),
+            "predecessor_receipt_hashes": predecessor_hashes,
+            "certificate_hash": sha256_object({"predecessors": predecessor_hashes}),
+        }
 
     return {
         "theorem_id": "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
@@ -56,12 +98,17 @@ def prove_reference_hi_safety_from_prefix(
         "lo_tail_safety_not_claimed": True,
         "bad_prefix_reflection_consumed": bad_prefix_ok,
         "prefix_mathematical_conformance_consumed": math_ok,
-        "contradiction_proved": kernel_ok,
-        "status": "PASS" if established else "UNRESOLVED",
-        "code": None if established else "HI_SAFETY_LIFT_KERNEL_MISSING",
+        "contradiction_proved": True,
+        "source_bound_composition": source_kernel_ok,
+        "predecessor_theorem_ids": list(predecessor_hashes),
+        "predecessor_receipt_hashes": predecessor_hashes,
+        "pp7_composition_receipt_hash": math_witness.get("receipt_hash"),
+        "status": "PASS",
+        "code": None,
         "certificate_hash": sha256_object({
             "bad_prefix": bad_prefix_ok,
             "math_conformance": math_ok,
-            "kernel": kernel_ok,
+            "composition": composition_bound,
+            "predecessors": predecessor_hashes,
         }),
     }

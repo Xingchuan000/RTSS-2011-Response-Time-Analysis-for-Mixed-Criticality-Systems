@@ -328,6 +328,7 @@ def prove_deadline_batch_correspondence(
             proof_kernel_receipt=fold_kernel_receipt,
         )
         return {
+            "theorem_id": "PPP_L5_DEADLINE_BATCH_FOLD",
             "status": "PASS" if kernel.get("status") == "PASS" else "UNRESOLVED",
             "lemma": "DEADLINE_BATCH_CORRESPONDENCE",
             "code": kernel.get("code"),
@@ -356,6 +357,7 @@ def prove_deadline_batch_correspondence(
     fold_verification = verify_fold_lemma(fold_lemma)
 
     return {
+        "theorem_id": "PPP_L5_DEADLINE_BATCH_FOLD",
         "status": verification["status"] if verification["status"] == "PASS" and fold_verification["status"] == "PASS" else "UNRESOLVED",
         "lemma": "DEADLINE_BATCH_CORRESPONDENCE",
         "phase_relation": f"RelPP_DDLCursor({cursor.k_full},{cursor.k_prefix})",
@@ -403,6 +405,7 @@ def prove_arrival_batch_projection(
             proof_kernel_receipt=fold_kernel_receipt,
         )
         return {
+            "theorem_id": "PPP_L6_ARRIVAL_BATCH_FOLD",
             "status": "PASS" if kernel.get("status") == "PASS" else "UNRESOLVED",
             "lemma": "ARRIVAL_BATCH_PROJECTION",
             "code": kernel.get("code"),
@@ -432,6 +435,7 @@ def prove_arrival_batch_projection(
     fold_verification = verify_fold_lemma(fold_lemma)
 
     return {
+        "theorem_id": "PPP_L6_ARRIVAL_BATCH_FOLD",
         "status": verification["status"] if verification["status"] == "PASS" and fold_verification["status"] == "PASS" else "UNRESOLVED",
         "lemma": "ARRIVAL_BATCH_PROJECTION",
         "phase_relation": f"RelPP_ARRCursor({cursor.k_full},{cursor.k_prefix})",
@@ -535,6 +539,7 @@ def prove_protected_macro_step_preservation(
     phase_join_receipt: Mapping[str, Any] | None = None,
     service_relation_receipt: Mapping[str, Any] | None = None,
     removal_relation_receipt: Mapping[str, Any] | None = None,
+    predecessor_receipts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """L8: Canonical macro-step preservation.
 
@@ -545,69 +550,92 @@ def prove_protected_macro_step_preservation(
 
     Section 9 L8 receipt must list L1–L7 artifact hashes and same relation schema hash.
     """
-    tail = prove_tail_service_exclusion(
-        full_taskset=full_taskset, construction=construction,
-        scheduler_semantics_receipt=scheduler_semantics_receipt,
-    )
-    lemmas = [
-        prove_final_dispatch_correspondence(
-            construction=construction,
-            tail_service_exclusion_receipt=tail,
-            dispatch_semantics_receipt=dispatch_semantics_receipt,
-        ),
-        prove_protected_service_correspondence(
-            construction=construction, pp0_receipts=pp0_receipts,
-            idle_jump_receipt=idle_jump_receipt,
-            service_relation_receipt=service_relation_receipt,
-        ),
-        prove_completion_removal_correspondence(
-            construction=construction,
-            pp0_receipts=pp0_receipts,
-            removal_relation_receipt=removal_relation_receipt,
-        ),
-        prove_deadline_batch_correspondence(
-            construction=construction,
-            fold_kernel_receipt=(fold_receipts or {}).get("DDLCursor"),
-        ),
-        prove_arrival_batch_projection(
-            construction=construction,
-            fold_kernel_receipt=(fold_receipts or {}).get("ARRCursor"),
-        ),
-        prove_mode_tail_phase_join(
-            construction=construction, pp0_receipts=pp0_receipts,
-            idle_jump_receipt=idle_jump_receipt,
-            phase_join_receipt=phase_join_receipt,
-        ),
-    ]
+    if predecessor_receipts is not None:
+        required = (
+            "PPP_L1_TAIL_SERVICE_EXCLUSION",
+            "PPP_L2_FINAL_DISPATCH_CORRESPONDENCE",
+            "PPP_L3_SERVICE_CORRESPONDENCE",
+            "PPP_L4_COMPLETION_REMOVAL_CORRESPONDENCE",
+            "PPP_L5_DEADLINE_BATCH_FOLD",
+            "PPP_L6_ARRIVAL_BATCH_FOLD",
+            "PPP_L7_CANONICAL_PHASE_JOIN",
+        )
+        if set(predecessor_receipts) != set(required):
+            return {
+                "status": "UNRESOLVED",
+                "code": "L8_PREDECESSOR_SET_MISMATCH",
+                "required_predecessors": list(required),
+            }
+        if any(
+            not isinstance(receipt, Mapping)
+            or receipt.get("status") != "PASS"
+            for receipt in predecessor_receipts.values()
+        ):
+            return {
+                "status": "UNRESOLVED",
+                "code": "L8_PREDECESSOR_NOT_PASS",
+            }
+        payloads = [predecessor_receipts[name] for name in required]
+        schemas = {
+            payload.get("relation_schema") or payload.get("phase_relation_schema")
+            or payload.get("relation_schema_hash")
+            for payload in payloads
+        }
+        if len(schemas) != 1 or None in schemas:
+            return {
+                "status": "UNRESOLVED",
+                "code": "L8_RELATION_SCHEMA_MISMATCH",
+                "relation_schemas": sorted(str(item) for item in schemas),
+            }
+        predecessor_hashes = {
+            name: str(predecessor_receipts[name].get("artifact_hash")
+                      or predecessor_receipts[name].get("receipt_hash") or "")
+            for name in required
+        }
+        if any(len(value) != 64 for value in predecessor_hashes.values()):
+            return {
+                "status": "UNRESOLVED",
+                "code": "L8_PREDECESSOR_HASH_MISSING",
+                "predecessor_hashes": predecessor_hashes,
+            }
+        return {
+            "status": "PASS",
+            "lemma": "PROTECTED_MACRO_STEP_PRESERVATION",
+            "theorem_id": "PROTECTED_MACRO_STEP_PRESERVATION",
+            "predecessor_theorem_ids": {
+                name: predecessor_receipts[name].get("theorem_id")
+                for name in required
+            },
+            "predecessor_receipt_hashes": predecessor_hashes,
+            "relation_schema": next(iter(schemas)),
+            "relation_schema_hash": sha256_object({"schema": next(iter(schemas))}),
+            "conclusion": (
+                "Rel_pp_close(CloseAt_full(t),CloseAt_pp(t)) -> "
+                "Rel_pp_close(CloseAt_full(t+1),CloseAt_pp(t+1))"
+            ),
+        }
 
-    lemma_hashes = [sha256_object(lm) for lm in [tail] + lemmas]
-    relation_schema_hash = sha256_object({"schema": "phase_relation_v4_close_at"})
-
-    idle_ok = (
-        isinstance(idle_jump_receipt, Mapping)
-        and idle_jump_receipt.get("status") == "PASS"
-        and idle_jump_receipt.get("parameterized") is True
+    # A caller that does not provide the explicit L1--L7 DAG cannot close L8.
+    # The legacy local recomputation path is intentionally retained only for
+    # diagnostics and is not an authoritative theorem receipt.
+    diagnostic_tail = prove_tail_service_exclusion(
+        full_taskset=full_taskset,
+        construction=construction,
+        scheduler_semantics_receipt=None,
     )
-    all_pass = (idle_ok and tail["status"] == "PASS" and all(item["status"] == "PASS" for item in lemmas)
-                and all((pp0_receipts or {}).get(case, {}).get("status") == "PASS"
-                        for case in ("FINAL_DISPATCH", "SERVICE_UNIT", "TAIL_ONLY_SERVICE", "REM_COMPLETION"))
-                and all((fold_receipts or {}).get(phase, {}).get("status") == "PASS"
-                        for phase in ("DDLCursor", "ARRCursor")))
     return {
-        "status": "PASS" if all_pass else "UNRESOLVED",
+        "status": "UNRESOLVED",
         "lemma": "PROTECTED_MACRO_STEP_PRESERVATION",
+        "code": "L8_EXPLICIT_PREDECESSOR_RECEIPTS_REQUIRED",
         "canonical_phase_sequence": [
-            "SvcEnd", "REM", "REC?", "DDL*", "ARR_BATCH", "SW?", "REL*", "PreDisp", "DSP", "Close",
+            "SvcEnd", "REM", "REC?", "DDL*", "ARR_BATCH", "SW?", "REL*",
+            "PreDisp", "DSP", "Close",
         ],
-        "tail_exclusion": tail,
-        "lemmas": lemmas,
-        "lemma_artifact_hashes": lemma_hashes,
-        "relation_schema_hash": relation_schema_hash,
+        "tail_exclusion": diagnostic_tail,
+        "integer_time_induction": False,
+        "idle_jump_stutter_theorem_consumed": False,
         "conclusion": (
             "Rel_pp_close(CloseAt_full(t),CloseAt_pp(t)) -> "
             "Rel_pp_close(CloseAt_full(t+1),CloseAt_pp(t+1))"
         ),
-        "integer_time_induction": all_pass,
-        "idle_jump_stutter_theorem_consumed": idle_ok,
-        "phase_relation_schema": "phase_relation_v4_close_at",
     }

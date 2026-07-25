@@ -17,9 +17,8 @@ class ProtectedPrefixBadPrefixBackend:
     backend_id = "protected-prefix-bad-prefix-v1"
 
     REQUIRED_REFLECTION_FIELDS = {
-        "same_job_key", "same_absolute_deadline", "same_actual_demand",
-        "same_service_at_deadline", "same_completion_state",
-        "same_miss_ledger_membership",
+        "job_key", "criticality", "release_time", "absolute_deadline",
+        "actual_demand", "service", "completion_state", "miss_ledger",
     }
 
     def verify(self, proof_path: Path, *, theorem: Mapping[str, Any]) -> dict[str, Any]:
@@ -90,6 +89,14 @@ class ProtectedPrefixBadPrefixBackend:
                 return {"status": "UNRESOLVED",
                         "code": f"FIELD_DERIVATION_{field_name.upper()}_NO_IMPLICATION_STEPS",
                         "reason": f"Field {field_name} must have at least one implication step."}
+
+        earliest = derivation.get("earliest_bad_prefix")
+        if not isinstance(earliest, dict) or set(earliest) != {
+            "full_hi_job_first_misses_at_deadline", "hi_job_is_protected",
+            "deadline_transition_is_observe_only",
+            "prefix_incomplete_status_preserved_at_deadline", "construction",
+        }:
+            return {"status": "UNRESOLVED", "code": "EARLIEST_BAD_PREFIX_DERIVATION_MISSING"}
 
         # All structural checks above are necessary but not sufficient.  The
         # backend still lacks a code-bound parametric proof kernel, so it must

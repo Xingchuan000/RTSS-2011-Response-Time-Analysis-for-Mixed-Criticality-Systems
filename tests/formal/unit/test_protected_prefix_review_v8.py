@@ -66,14 +66,6 @@ def test_complete_execution_requires_idle_jump_stutter_expansion():
         time_divergence_receipt={"status": "PASS"},
         input_projection_receipt={"status": "PASS"},
         prefix_taskset=construction.prefix_taskset,
-        single_witness_receipt={
-            "status": "PASS",
-            "quantifier_order": "forall-full-exists-one-prefix-forall-boundaries",
-            "same_fixed_oracle": True,
-            "same_initial_state": True,
-            "same_successor_function": True,
-            "all_finite_prefixes_are_prefixes_of_one_execution": True,
-        },
         proof_kernel_receipt={
             "status": "PASS",
             "theorem_id": "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS",

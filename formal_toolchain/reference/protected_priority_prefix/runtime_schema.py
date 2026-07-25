@@ -105,18 +105,23 @@ def build_runtime_schema_certificate() -> dict[str, Any]:
         "source_bindings": bindings,
     }
 
+    # PP0 relational preservation receipts do not by themselves discharge
+    # local model assumptions such as no blocking, unit processor supply,
+    # classification trigger uniqueness, or release-fixed demand semantics.
+    # Those require dedicated source-bound local-semantics theorems.
     payload["pp0_witness"] = {
-        "single_processor_preemptive_work_conserving_fp": passed("PP0_DISPATCH_DETERMINISM"),
-        "no_blocking_self_suspension_or_nonpreemptive_segments": passed("PP0_DISPATCH_DETERMINISM"),
-        "fixed_processor_supply_and_mode_independent_priority": passed("PP0_SERVICE_PROTECTED") and passed("PP0_DISPATCH_DETERMINISM"),
-        "release_fixed_demands": passed("PP0_RELEASE_PROTECTED_PAYLOAD"),
-        "abnormal_classification_at_arrival": passed("PP0_ARR_PENDING_PLAN_PROJECTION"),
-        "abnormal_hi_only_switch_trigger": passed("PP0_SWITCH_STUTTER_FULL_ONLY"),
-        "quiescent_idle_only_recovery": passed("PP0_RECOVERY_STUTTER_FULL_ONLY"),
-        "lo_version_selected_at_release": passed("PP0_RELEASE_PROTECTED_PAYLOAD"),
-        "deadline_observe_only": passed("PP0_DDL_OBSERVE_ONLY"),
-        "protected_input_independence": passed("PP0_ARR_PENDING_PLAN_PROJECTION"),
+        "single_processor_preemptive_work_conserving_fp": False,
+        "no_blocking_self_suspension_or_nonpreemptive_segments": False,
+        "fixed_processor_supply_and_mode_independent_priority": False,
+        "release_fixed_demands": False,
+        "abnormal_classification_at_arrival": False,
+        "abnormal_hi_only_switch_trigger": False,
+        "quiescent_idle_only_recovery": False,
+        "lo_version_selected_at_release": False,
+        "deadline_observe_only": False,
+        "protected_input_independence": False,
         "source_receipt_ids": sorted(receipt_rows.keys()),
+        "local_semantics_theorems_required": True,
     }
 
     status = pp0_result.get("status", "UNRESOLVED")
