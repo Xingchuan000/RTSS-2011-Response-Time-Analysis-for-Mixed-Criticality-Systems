@@ -95,6 +95,13 @@ def build_symbolic_projection_theorem(
         "query_order_independent": ok,
         "finite_instance_data_used": False,
         "complete_recurring_stream": ok,
+        "projection_definition": "A_P_xi(task,q)=A_xi(task,q) iff task in protected set",
+        "preserved_record_fields": [
+            "job_key", "release_time", "actual_demand", "hi_class",
+        ],
+        "canonical_protected_batch_order": (
+            "sort by (priority_index, task_name, release_index) after tail deletion"
+        ),
     }
     payload["receipt_hash"] = sha256_object(payload)
     return payload
@@ -190,6 +197,8 @@ def prove_projected_oracle_theorem(
         and proof_kernel_receipt.get("finite_instance_data_used") is False
         and proof_kernel_receipt.get("full_oracle_fingerprint") == full_fp
         and proof_kernel_receipt.get("projected_oracle_fingerprint") == projected_fp
+        and proof_kernel_receipt.get("protected_record_fields_preserved") is True
+        and proof_kernel_receipt.get("canonical_protected_batch_order") is True
     )
     payload = {
         "theorem_id": "PROTECTED_INPUT_STREAM_PROJECTION",
@@ -204,6 +213,42 @@ def prove_projected_oracle_theorem(
         "saturation_certificate_hash": saturation_certificate_hash,
         "protected_record_fields_preserved": kernel_ok,
         "tail_entries_deleted_only": kernel_ok,
+        "canonical_protected_batch_order": kernel_ok,
+        "protected_record_fields_preserved": kernel_ok,
+    }
+    payload["receipt_hash"] = sha256_object(payload)
+    return payload
+
+
+def bind_projection_to_full_execution_ledger(
+    *, symbolic_projection_receipt: Mapping[str, Any],
+    full_execution_ledger: Any, projected_oracle: Any,
+) -> dict[str, Any]:
+    """Bind the symbolic projection to the one selected execution ledger."""
+    full_fp = getattr(full_execution_ledger, "oracle_fingerprint", lambda: None)()
+    projected_fp = getattr(projected_oracle, "oracle_fingerprint", lambda: None)()
+    ok = (
+        symbolic_projection_receipt.get("status") == "PASS"
+        and (
+            callable(getattr(full_execution_ledger, "input_for", None))
+            or callable(getattr(full_execution_ledger, "record_for", None))
+        )
+        and isinstance(full_fp, str) and isinstance(projected_fp, str)
+    )
+    payload = {
+        "theorem_id": "PROTECTED_INPUT_STREAM_PROJECTION",
+        "status": "PASS" if ok else "UNRESOLVED",
+        "quantifier_scope": PROJECTION_QUANTIFIER,
+        "symbolic_projection_receipt_hash": symbolic_projection_receipt.get("receipt_hash"),
+        "full_execution_id": str(getattr(full_execution_ledger, "execution_id", "")),
+        "full_oracle_fingerprint": full_fp,
+        "projected_oracle_fingerprint": projected_fp,
+        "forall_release_indices": ok,
+        "complete_recurring_stream": ok,
+        "protected_record_fields_preserved": ok,
+        "canonical_protected_batch_order": ok,
+        "tail_entries_deleted_only": ok,
+        "finite_instance_data_used": False,
     }
     payload["receipt_hash"] = sha256_object(payload)
     return payload

@@ -3,14 +3,6 @@
     "PUBLISHED_THEORY_TCB",
     "MACHINE_CHECKED_PROJECT_LEMMA"
   ],
-  "library_version": "p0-theory-r7",
-  "proof_schema_compatible": [
-    "proof_request_v2",
-    "common_certificate_v1",
-    "common_certificate_v2"
-  ],
-  "proof_schema_version": "common_certificate_v2",
-  "registry_fingerprint": "2d4fb76e5ee56976fc768b26ce0238ae7686a0d4a531084fd1b552af7c63d65a",
   "common_required_theorems": [
     "FPPS_LO_RTA_POSTFIXED_SUFFICIENCY",
     "C_AMC_SEM_ALL_TASK_SCHEDULABILITY_SUFFICIENCY",
@@ -28,13 +20,24 @@
     "EVENT_HANDLER_MICROSTEP_DECOMPOSITION",
     "FINITE_RELEASE_FOLD_PRESERVES_RELATION"
   ],
-  "route_required_theorems": {
-    "strict_full": [],
+  "library_version": "p0-theory-r8",
+  "proof_schema_compatible": [
+    "proof_request_v2",
+    "common_certificate_v1",
+    "common_certificate_v2"
+  ],
+  "proof_schema_version": "common_certificate_v2",
+  "registry_fingerprint": "2d4fb76e5ee56976fc768b26ce0238ae7686a0d4a531084fd1b552af7c63d65a",
+  "route_derived_obligations": {
     "protected_prefix": [
-      "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION",
+      "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED",
       "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
       "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX"
     ]
+  },
+  "route_required_theorems": {
+    "protected_prefix": [],
+    "strict_full": []
   },
   "schema_version": "theory_manifest_v4"
 }

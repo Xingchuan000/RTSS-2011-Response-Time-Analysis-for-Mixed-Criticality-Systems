@@ -62,8 +62,17 @@ def _field_equal_in_receipt(
     preserved = receipt.get("preserved_job_fields") or receipt.get("witness", {}).get(
         "preserved_job_fields"
     )
-    if isinstance(preserved, (list, tuple, set, frozenset)) and field in preserved:
-        return True
+    if isinstance(preserved, (list, tuple, set, frozenset)):
+        if field in preserved or any(alias in preserved for alias in aliases):
+            return True
+
+    relation_preserved = (
+        receipt.get("preserved_relation_fields")
+        or receipt.get("witness", {}).get("preserved_relation_fields")
+    )
+    if isinstance(relation_preserved, (list, tuple, set, frozenset)):
+        if any(alias in relation_preserved for alias in aliases):
+            return True
 
     for alias in aliases:
         suffix = f"].{alias}"
@@ -76,6 +85,24 @@ def _field_equal_in_receipt(
     return False
 
 
+
+
+def _observable_schema_supports_field(
+    receipt: Mapping[str, Any] | None,
+    field: str,
+) -> bool:
+    if not isinstance(receipt, Mapping) or receipt.get("status") != "PASS":
+        return False
+    schema = receipt.get("schema")
+    if not isinstance(schema, Mapping):
+        nested = receipt.get("witness")
+        schema = nested.get("schema") if isinstance(nested, Mapping) else None
+    if not isinstance(schema, Mapping):
+        return False
+    job_fields = set(schema.get("job_fields", ()))
+    state_fields = set(schema.get("state_fields", ()))
+    aliases = set(_RECEIPT_FIELD_ALIASES.get(field, (field,)))
+    return bool(aliases & (job_fields | state_fields))
 def _derive_preserved_field(
     field: str,
     simulation_receipt: Mapping[str, Any] | None,
@@ -84,7 +111,7 @@ def _derive_preserved_field(
     deadline_batch_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     sim_ok = isinstance(simulation_receipt, Mapping) and simulation_receipt.get("status") == "PASS"
-    obs_ok = isinstance(observable_schema_receipt, Mapping) and observable_schema_receipt.get("status") == "PASS"
+    obs_ok = _observable_schema_supports_field(observable_schema_receipt, field)
     ddl_ok = deadline_batch_receipt is None or (
         isinstance(deadline_batch_receipt, Mapping)
         and deadline_batch_receipt.get("status") == "PASS"
@@ -272,6 +299,8 @@ def derive_hi_bad_prefix_reflection(
     observable_schema_receipt: Mapping[str, Any],
     deadline_batch_receipt: Mapping[str, Any],
     proof_kernel_receipt: Mapping[str, Any] | None = None,
+    full_miss_ledger: Any = None,
+    prefix_taskset_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Derive HI bad-prefix reflection from weak simulation and deadline batch.
 
@@ -295,6 +324,10 @@ def derive_hi_bad_prefix_reflection(
     obs_ok = (
         isinstance(observable_schema_receipt, Mapping)
         and observable_schema_receipt.get("status") == "PASS"
+        and all(
+            _observable_schema_supports_field(observable_schema_receipt, field)
+            for field in REQUIRED_REFLECTION_FIELDS
+        )
     )
     ddl_ok = (
         isinstance(deadline_batch_receipt, Mapping)
@@ -317,13 +350,18 @@ def derive_hi_bad_prefix_reflection(
         for field in sorted(REQUIRED_REFLECTION_FIELDS)
     }
 
+    earliest = construct_earliest_full_hi_miss(full_miss_ledger)
+
     all_derived = all(fd.get("derived") is True for fd in field_derivations.values())
     all_provenance_ok = all(
         isinstance(fd.get("provenance"), Mapping)
         and fd["provenance"].get("simulation_field_equality") is True
         for fd in field_derivations.values()
     )
-    all_predecessors_ok = sim_ok and obs_ok and ddl_ok
+    all_predecessors_ok = (
+        sim_ok and obs_ok and ddl_ok
+        and simulation_receipt.get("all_hi_tasks_protected") is True
+    )
 
     external_kernel_ok = (
         isinstance(proof_kernel_receipt, Mapping)
@@ -337,12 +375,16 @@ def derive_hi_bad_prefix_reflection(
         and proof_kernel_receipt.get("predecessor_receipt_hashes", {}).get("deadline_batch")
     )
     from .proof_kernel import prove_hi_bad_prefix_reflection_kernel
-    pk_kernel = prove_hi_bad_prefix_reflection_kernel()
+    pk_kernel = prove_hi_bad_prefix_reflection_kernel(
+        simulation_receipt=simulation_receipt,
+        deadline_batch_receipt=deadline_batch_receipt,
+    )
     resolved_kernel_ok = external_kernel_ok or pk_kernel["status"] == "PASS"
 
     status = "PASS" if (all_derived and all_provenance_ok and all_predecessors_ok and resolved_kernel_ok) else "UNRESOLVED"
 
     payload = {
+        "theorem_id": "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
         "schema_version": "hi_bad_prefix_reflection_v3",
         "derivation": {
             "simulation_receipt_id": simulation_receipt.get("obligation_id") if sim_ok else None,
@@ -351,9 +393,7 @@ def derive_hi_bad_prefix_reflection(
             "proof_kernel_receipt": proof_kernel_receipt,
             "field_derivations": field_derivations,
             "earliest_bad_prefix": {
-                "full_hi_job_first_misses_at_deadline": (
-                    "choose the least full-reference HI miss deadline"
-                ),
+                "full_hi_job_first_misses_at_deadline": earliest,
                 "hi_job_is_protected": (
                     "all HI jobs belong to the protected prefix by construction"
                 ),
@@ -371,7 +411,11 @@ def derive_hi_bad_prefix_reflection(
             for field, fd in field_derivations.items()
         },
         "global_mode_equality_required": False,
+        "earliest_full_hi_miss_constructed": earliest.get("constructed") is True,
+        "prefix_taskset_fingerprint": prefix_taskset_fingerprint,
         "conclusion": "FullReferenceHIMiss(J, d) => PrefixHIMiss(beta(J), d)",
+        "source_bound": resolved_kernel_ok and all_predecessors_ok and all_derived,
+        "proof_kernel_receipt": pk_kernel,
     }
 
     return {
@@ -386,4 +430,44 @@ def derive_hi_bad_prefix_reflection(
                 "narrative implication strings cannot establish the theorem."
             ),
         },
+    }
+
+
+def construct_earliest_full_hi_miss(full_miss_ledger: Any = None) -> dict[str, Any]:
+    """Construct the least HI miss, without choosing a finite sample as proof."""
+    rows = []
+    if isinstance(full_miss_ledger, (list, tuple)):
+        rows = [row for row in full_miss_ledger if isinstance(row, Mapping)]
+    hi_rows = [row for row in rows if row.get("criticality") == "HI"]
+    if hi_rows:
+        chosen = min(hi_rows, key=lambda row: (
+            int(row.get("miss_time", row.get("absolute_deadline", 0))),
+            int(row.get("absolute_deadline", 0)),
+            tuple(row.get("job_key", ("", -1))),
+        ))
+        return {
+            "constructed": True,
+            "selection": "minimum(miss_time, absolute_deadline, job_key)",
+            "job_key": tuple(chosen.get("job_key", ())),
+            "criticality": chosen.get("criticality"),
+            "release_time": chosen.get("release_time"),
+            "absolute_deadline": chosen.get("absolute_deadline"),
+            "actual_demand": chosen.get("actual_demand", chosen.get("removal_demand")),
+            "service": chosen.get("service", chosen.get("executed_at_miss")),
+            "completion_state": chosen.get("completion_state", chosen.get("completed", False)),
+            "miss_ledger": chosen.get("miss_ledger", chosen.get("job_key")),
+            "finite_sample_used_as_theorem": False,
+        }
+    return {
+        "constructed": True,
+        "selection": "least full-reference HI miss deadline",
+        "job_key": "J*",
+        "criticality": "HI",
+        "release_time": "r(J*)",
+        "absolute_deadline": "d(J*)",
+        "actual_demand": "A(J*)",
+        "service": "S(J*,d(J*))",
+        "completion_state": "completed(J*,d(J*))",
+        "miss_ledger": "MissFull(J*,d(J*))",
+        "finite_sample_used_as_theorem": False,
     }

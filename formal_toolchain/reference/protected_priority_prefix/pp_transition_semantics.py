@@ -36,6 +36,12 @@ class BoundTransitionCase:
     frame_fields: frozenset[str]
     generated_event_phase_constraints: tuple[BoolExpr, ...]
     binding_status: Literal["CODE_BOUND", "UNRESOLVED"]
+    compiled_ir_hash: str | None = None
+    semantic_effect_hash: str | None = None
+    path_hashes: tuple[str, ...] = ()
+    required_assumption_ids: tuple[str, ...] = ()
+    projection_derivation_complete: bool = False
+    total_semantic_coverage: bool = False
 
 
 def skip_state_update() -> StateUpdate:

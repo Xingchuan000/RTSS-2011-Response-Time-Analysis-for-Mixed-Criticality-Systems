@@ -91,8 +91,13 @@ def prove_parameterized_fold_kernel(
     They are not a proof kernel.  PASS is possible only when an external
     parametric receipt is bound to the phase and the current relation schema.
     """
-    required = ("base_case", "protected_step", "tail_step", "end_case")
-    cases = {name: proof_inputs.get(name) is True for name in required}
+    required = ("cursor_zero_base", "protected_entry_step",
+                "full_tail_entry_prefix_identity_step", "mode_only_step",
+                "cursor_exhaustion_join")
+    cases = {name: proof_kernel_receipt.get(name) is True
+             for name in required} if isinstance(proof_kernel_receipt, Mapping) else {
+                 name: False for name in required
+             }
     relation_schema_hash = sha256_object({"schema": "phase_relation_v4_close_at"})
     kernel_ok = (
         phase in {"ARRCursor", "DDLCursor"}
@@ -103,6 +108,7 @@ def prove_parameterized_fold_kernel(
             == "BATCH_CURSOR_PARAMETERIZED_FOLD"
         and proof_kernel_receipt.get("phase") == phase
         and proof_kernel_receipt.get("all_batch_sizes") is True
+        and proof_kernel_receipt.get("source_bound") is True
         and proof_kernel_receipt.get("finite_instance_data_used") is False
         and proof_kernel_receipt.get("relation_schema_hash")
             == relation_schema_hash
@@ -115,6 +121,14 @@ def prove_parameterized_fold_kernel(
         "all_batch_sizes": kernel_ok,
         "finite_instance_data_used": False,
         "relation_schema_hash": relation_schema_hash,
+        "required_local_theorem_id": (
+            proof_kernel_receipt.get("required_local_theorem_id")
+            if isinstance(proof_kernel_receipt, Mapping) else None
+        ),
+        "source_bound": (
+            proof_kernel_receipt.get("source_bound") is True
+            if isinstance(proof_kernel_receipt, Mapping) else False
+        ),
         "status": "PASS" if kernel_ok else "UNRESOLVED",
         "code": None if kernel_ok else "BATCH_CURSOR_PROOF_KERNEL_MISSING",
     }
@@ -177,11 +191,13 @@ def construct_fold_lemma(
         and proof_kernel_receipt.get("status") == "PASS"
         and proof_kernel_receipt.get("theorem_id") == "BATCH_CURSOR_PARAMETERIZED_FOLD"
         and proof_kernel_receipt.get("phase") == phase
-        and proof_kernel_receipt.get("base_case") is True
-        and proof_kernel_receipt.get("protected_step") is True
-        and proof_kernel_receipt.get("tail_step") is True
-        and proof_kernel_receipt.get("end_case") is True
+        and proof_kernel_receipt.get("cursor_zero_base") is True
+        and proof_kernel_receipt.get("protected_entry_step") is True
+        and proof_kernel_receipt.get("full_tail_entry_prefix_identity_step") is True
+        and proof_kernel_receipt.get("mode_only_step") is True
+        and proof_kernel_receipt.get("cursor_exhaustion_join") is True
         and proof_kernel_receipt.get("all_batch_sizes") is True
+        and proof_kernel_receipt.get("source_bound") is True
         and proof_kernel_receipt.get("finite_instance_data_used") is False
         and proof_kernel_receipt.get("relation_schema_hash") == expected_relation_hash
     )

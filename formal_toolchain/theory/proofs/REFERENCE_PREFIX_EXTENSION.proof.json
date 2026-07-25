@@ -14,27 +14,27 @@
   "solver_obligation_receipts": {
     "CLOSED_STATE_CASE_PARTITION_EXCLUSIVE": {
       "result": "UNSAT",
-      "smt2_hash": "15ca084c6a937d73b787df6bbca3962cd86132d8cbabecc2189d926ff458120a"
+      "smt2_hash": "19cde69c97b8d25df0eb465ab63ac1c171100ec12b3e241a8cc8bf5b4879ac4d"
     },
     "CLOSED_STATE_CASE_PARTITION_EXHAUSTIVE": {
       "result": "UNSAT",
-      "smt2_hash": "b94aaa3e1a5cb747372eb653b349734fe12f268c74233d9ed94c36b3317e8cb3"
+      "smt2_hash": "66dfc927cde0a0ea6b58816809f8c0051f8f79afa8c8f31e0656ddf43cd09027"
     },
     "LEAST_FUTURE_RELEASE_CONGRUENT": {
       "result": "UNSAT",
-      "smt2_hash": "372d84627daa36741b9a8ffde8b7be87a0cdbaa65f66436de3f29e6d7f14c784"
+      "smt2_hash": "1f63beaaa985e9ed8ce764c14266be032eeac6d7c6b00937ba36a54164610b84"
     },
     "LEAST_FUTURE_RELEASE_INDEX_NONNEGATIVE": {
       "result": "UNSAT",
-      "smt2_hash": "c0d78373214f4d108c3d9c571b7441729c5087ad039e88a5ecbedc6f81de9844"
+      "smt2_hash": "4577495a79ea59b8468d9a2791c2535e12a0eea3be7a5f9848043c9429aacaa4"
     },
     "LEAST_FUTURE_RELEASE_STRICT": {
       "result": "UNSAT",
-      "smt2_hash": "ad5caa9070b901a8ff75e81e9b13f19c390bf898aef0531439b39e82df2a33a8"
+      "smt2_hash": "681c2418dd198c8bed954ca753b3ae96b11eed0d6cd3d6983e06115bb15da1b0"
     },
     "SAME_TIMESTAMP_CLOSURE_LEXICOGRAPHIC_DECREASE": {
       "result": "UNSAT",
-      "smt2_hash": "0b212ecf8057bd2acd7974922d54e6c06b9d0c0fb3e6a412d7f5aa88f32d92b4"
+      "smt2_hash": "a50746d97bff9f2bdd4d6b17174caa40adf47271ab8fd551f4e627e78fb96d3d"
     }
   },
   "source_bindings": {

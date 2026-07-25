@@ -294,6 +294,20 @@ class LazyInfiniteProtectedInputOracle:
             "construction_fingerprint": self._construction.prefix_taskset.to_dict()["fingerprint"],
         })
 
+    @property
+    def execution_id(self) -> str:
+        return str(getattr(self._full, "execution_id", "arbitrary-full-execution"))
+
+    def canonical_protected_batch_order(
+        self, task_names: tuple[str, ...] | list[str], release_index: int,
+    ) -> tuple[JobKey, ...]:
+        """Canonical protected order used by executable ARR batch semantics."""
+        keys = [(str(name), int(release_index)) for name in task_names
+                if str(name) in self._protected]
+        return tuple(sorted(keys, key=lambda key: (
+            int(self._tasks[key[0]].priority_index), key[0], key[1],
+        )))
+
     def input_for(self, task_name: str, release_index: int) -> ProtectedJobInput:
         if task_name not in self._protected:
             raise ValueError(f"PROTECTED_INPUT_TASK_OUTSIDE_PREFIX:{task_name}")
@@ -306,7 +320,10 @@ class LazyInfiniteProtectedInputOracle:
         if key in self._cache:
             return self._cache[key]
 
-        full_input = self._full.input_for(task_name, release_index)
+        provider = getattr(self._full, "input_for", None) or getattr(self._full, "record_for", None)
+        if not callable(provider):
+            raise ValueError("FULL_EXECUTION_RELEASE_LEDGER_PROVIDER_MISSING")
+        full_input = provider(task_name, release_index)
         if isinstance(full_input, Mapping):
             try:
                 full_input = FullJobInput(
@@ -470,3 +487,16 @@ def project_full_input_oracle(
 ) -> LazyInfiniteProtectedInputOracle:
     """Project a full input oracle to protected prefix (Section 5.3)."""
     return LazyInfiniteProtectedInputOracle(full_input, construction)
+
+
+def project_full_execution_ledger(
+    full_execution_ledger: AuthoritativeFullExecutionInput,
+    construction: ProtectedPrefixBuildResult,
+) -> LazyInfiniteProtectedInputOracle:
+    """Project one selected full-execution ledger without WCET regeneration."""
+    if not (callable(getattr(full_execution_ledger, "input_for", None))
+            or callable(getattr(full_execution_ledger, "record_for", None))):
+        raise ValueError("FULL_EXECUTION_RELEASE_LEDGER_RECORD_FOR_REQUIRED")
+    if not callable(getattr(full_execution_ledger, "oracle_fingerprint", None)):
+        raise ValueError("FULL_EXECUTION_RELEASE_LEDGER_FINGERPRINT_REQUIRED")
+    return LazyInfiniteProtectedInputOracle(full_execution_ledger, construction)

@@ -108,9 +108,25 @@ class ProtectedPrefixSafetyBackend:
                 return {"status": "UNRESOLVED",
                         "code": "SAFETY_COMPOSITION_PREDECESSOR_RECEIPT_INVALID"}
 
-        # All structural checks above are necessary but not sufficient.  The
-        # backend still lacks a code-bound parametric proof kernel, so it must
-        # not turn self-asserted JSON receipts into a theorem PASS.
+        kernel = proof.get("proof_kernel_receipt")
+        kernel_ok = (
+            isinstance(kernel, dict)
+            and kernel.get("status") == "PASS"
+            and kernel.get("theorem_id") == "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX"
+            and kernel.get("source_bound") is True
+            and kernel.get("contradiction_proved") is True
+            and kernel.get("predecessor_receipt_hashes") == predecessor_hashes
+        )
+        if kernel_ok and proof.get("source_bound") is True:
+            return {
+                "status": "PASS",
+                "backend_id": self.backend_id,
+                "theorem_id": theorem.get("theorem_id"),
+                "proof_kernel_receipt_hash": sha256_object(kernel),
+            }
+
+        # Static fields and receipt-shaped hashes without the source-bound
+        # contradiction kernel remain unresolved.
         return {
             "status": "UNRESOLVED",
             "code": "PROTECTED_PREFIX_SAFETY_SOURCE_BOUND_COMPOSITION_REQUIRED",

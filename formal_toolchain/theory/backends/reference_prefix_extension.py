@@ -105,11 +105,132 @@ def _prove_unsat(
     }
 
 
+
+
+def _prove_smt2_unsat(*, obligation_id: str, smt2: str) -> dict[str, Any]:
+    """Prove one closed SMT-LIB2 obligation using z3py or system libz3.
+
+    The PPP transition checker already carries a narrow ctypes fallback for
+    environments where the shared Z3 library is installed but the Python
+    package is not.  Reusing the same universal solver path keeps proof-object
+    regeneration independent of a particular Python environment; it does not
+    replace SMT solving with finite testing.
+    """
+    from formal_toolchain.reference.protected_priority_prefix.pp0_checker import (
+        _solve_code_bound_smt2,
+    )
+
+    result, error = _solve_code_bound_smt2(smt2)
+    if result != "UNSAT":
+        return {
+            "status": "FAIL" if result in {"SAT", "UNKNOWN"} else "UNRESOLVED",
+            "code": f"Z3_OBLIGATION_NOT_PROVED:{obligation_id}",
+            "solver_result": result,
+            "detail": error,
+        }
+    return {
+        "status": "PASS",
+        "receipt": {
+            "result": "UNSAT",
+            "smt2_hash": sha256_object({
+                "obligation_id": obligation_id,
+                "smt2": smt2,
+            }),
+        },
+        "z3_version": "libz3-or-z3py",
+    }
+
+
+def _fallback_case_partition() -> dict[str, Any]:
+    declarations = """(set-logic QF_LIA)
+(declare-const same_time_count Int)
+(declare-const active_count Int)
+(declare-const future_count Int)
+(declare-const task_count Int)
+(assert (>= same_time_count 0))
+(assert (>= active_count 0))
+(assert (>= future_count 0))
+(assert (> task_count 0))
+(assert (=> (and (= same_time_count 0) (= active_count 0)) (> future_count 0)))
+"""
+    cases = "(or (> same_time_count 0) (and (= same_time_count 0) (> active_count 0)) (and (= same_time_count 0) (= active_count 0) (> future_count 0)))"
+    pair_overlap = "(or (and (> same_time_count 0) (and (= same_time_count 0) (> active_count 0))) (and (> same_time_count 0) (and (= same_time_count 0) (= active_count 0) (> future_count 0))) (and (and (= same_time_count 0) (> active_count 0)) (and (= same_time_count 0) (= active_count 0) (> future_count 0))))"
+    queries = {
+        "CLOSED_STATE_CASE_PARTITION_EXHAUSTIVE": declarations + f"(assert (not {cases}))\n(check-sat)\n",
+        "CLOSED_STATE_CASE_PARTITION_EXCLUSIVE": declarations + f"(assert {pair_overlap})\n(check-sat)\n",
+    }
+    receipts = {}
+    for obligation_id, smt2 in queries.items():
+        result = _prove_smt2_unsat(obligation_id=obligation_id, smt2=smt2)
+        if result["status"] != "PASS":
+            return result
+        receipts[obligation_id] = result["receipt"]
+    return {"status": "PASS", "obligations": receipts, "z3_version": "libz3-or-z3py"}
+
+
+def _fallback_closure_rank_decrease() -> dict[str, Any]:
+    rank_count = 7
+    lines = ["(set-logic QF_LIA)", "(declare-const selected_rank Int)"]
+    for index in range(rank_count):
+        lines.extend([
+            f"(declare-const before_{index} Int)",
+            f"(declare-const after_{index} Int)",
+            f"(assert (>= before_{index} 0))",
+            f"(assert (>= after_{index} 0))",
+        ])
+    lines.extend(["(assert (>= selected_rank 0))", f"(assert (< selected_rank {rank_count}))"])
+    branches = []
+    lex = []
+    for rank in range(rank_count):
+        prefix_eq = " ".join(f"(= after_{i} before_{i})" for i in range(rank))
+        prefix = f" {prefix_eq}" if prefix_eq else ""
+        branches.append(
+            f"(and (= selected_rank {rank}) (>= before_{rank} 1){prefix} (= after_{rank} (- before_{rank} 1)))"
+        )
+        lex.append(f"(and{prefix} (< after_{rank} before_{rank}))")
+    lines.append(f"(assert (or {' '.join(branches)}))")
+    lines.append(f"(assert (not (or {' '.join(lex)})))")
+    lines.append("(check-sat)")
+    smt2 = "\n".join(lines) + "\n"
+    obligation_id = "SAME_TIMESTAMP_CLOSURE_LEXICOGRAPHIC_DECREASE"
+    result = _prove_smt2_unsat(obligation_id=obligation_id, smt2=smt2)
+    if result["status"] != "PASS":
+        return result
+    return {"status": "PASS", "obligations": {obligation_id: result["receipt"]}, "z3_version": "libz3-or-z3py"}
+
+
+def _fallback_periodic_arithmetic() -> dict[str, Any]:
+    common = """(set-logic QF_NIA)
+(declare-const time Int)
+(declare-const offset Int)
+(declare-const period Int)
+(define-fun k () Int (ite (< time offset) 0 (+ (div (- time offset) period) 1)))
+(define-fun next_release () Int (+ offset (* k period)))
+(assert (>= time 0))
+(assert (> period 0))
+(assert (>= offset 0))
+(assert (< offset period))
+"""
+    negated = {
+        "LEAST_FUTURE_RELEASE_STRICT": "(assert (not (> next_release time)))",
+        "LEAST_FUTURE_RELEASE_CONGRUENT": "(assert (not (= (mod (- next_release offset) period) 0)))",
+        "LEAST_FUTURE_RELEASE_INDEX_NONNEGATIVE": "(assert (not (>= k 0)))",
+    }
+    receipts = {}
+    for obligation_id, assertion in negated.items():
+        smt2 = common + assertion + "\n(check-sat)\n"
+        result = _prove_smt2_unsat(obligation_id=obligation_id, smt2=smt2)
+        if result["status"] != "PASS":
+            return result
+        receipts[obligation_id] = result["receipt"]
+    return {"status": "PASS", "obligations": receipts, "z3_version": "libz3-or-z3py"}
+
+
 def _verify_case_partition() -> dict[str, Any]:
     try:
         import z3
     except ImportError:
-        return {"status": "FAIL", "code": "Z3_NOT_AVAILABLE"}
+        return _fallback_case_partition()
 
     context = z3.Context()
     same_time_count = z3.Int("same_time_count", ctx=context)
@@ -173,7 +294,7 @@ def _verify_closure_rank_decrease() -> dict[str, Any]:
     try:
         import z3
     except ImportError:
-        return {"status": "FAIL", "code": "Z3_NOT_AVAILABLE"}
+        return _fallback_closure_rank_decrease()
 
     context = z3.Context()
     rank_count = 7
@@ -244,7 +365,7 @@ def _verify_periodic_arithmetic() -> dict[str, Any]:
     try:
         import z3
     except ImportError:
-        return {"status": "FAIL", "code": "Z3_NOT_AVAILABLE"}
+        return _fallback_periodic_arithmetic()
 
     context = z3.Context()
     time = z3.Int("time", ctx=context)

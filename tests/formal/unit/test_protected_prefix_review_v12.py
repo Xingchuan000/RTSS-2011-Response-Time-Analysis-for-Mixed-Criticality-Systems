@@ -13,29 +13,45 @@ from formal_toolchain.reference.protected_priority_prefix.runtime_schema import 
 from formal_toolchain.routes.registry import resolve_registry
 
 
-def test_diagnostic_ast_ir_cannot_claim_total_executable_semantics():
+def test_path_sensitive_ir_has_total_terminal_and_projection_coverage():
     irs = compile_all_transitions()
     assert len(irs) == 9
-    assert all(ir.compilation_status == "PARTIAL_AST_EXTRACTION" for ir in irs)
-    assert all(ir.total_semantic_coverage is False for ir in irs)
-    assert all(not ir.is_compiled() for ir in irs)
+    assert all(ir.compilation_status == "COMPILED" for ir in irs)
+    assert all(ir.total_semantic_coverage is True for ir in irs)
+    assert all(ir.is_compiled() for ir in irs)
+    for ir in irs:
+        assert ir.covered_return_path_count == ir.return_path_count
+        assert ir.covered_raise_path_count == ir.raise_path_count
+        assert ir.semantic_effect is not None
+        assert ir.semantic_effect.derivation_complete is True
+        assert ir.semantic_effect.concrete_write_targets == ir.semantic_effect.covered_concrete_write_targets
+        assert set(ir.semantic_effect.source_path_hashes) == set(ir.semantic_effect.path_effect_hashes)
 
 
-def test_handwritten_pp0_adapter_cannot_be_code_bound_without_refinement_receipt():
+def test_code_bound_pp0_queries_are_proved_unsat_by_z3():
     certificate = build_pp0_transition_certificate()
-    assert certificate["status"] == "UNRESOLVED"
-    assert certificate["pass_count"] == 0
-    assert certificate["unresolved_count"] == 12
-    assert all(row.get("transition_equations_bound") is False
+    assert certificate["status"] == "PASS"
+    assert certificate["pass_count"] == 12
+    assert certificate["unresolved_count"] == 0
+    assert certificate["fail_count"] == 0
+    assert all(row.get("transition_equations_bound") is True
+               for row in certificate["receipt_results"])
+    assert all(row.get("solver_result") == "UNSAT"
                for row in certificate["receipt_results"])
 
 
 def test_dynamic_theorems_do_not_follow_from_compiler_presence_or_pass_labels():
+    # Local executable-semantics lemmas are now source-bound and may PASS.
     for result in (
         prove_same_time_closure_termination_kernel(),
         prove_canonical_successor_total_kernel(),
         prove_time_divergence_kernel(),
         prove_idle_jump_stutter_kernel(),
+    ):
+        assert result["status"] == "PASS"
+
+    # Quantified composition theorems still reject bare PASS labels.
+    for result in (
         prove_weak_forward_simulation_kernel(
             macro_step_receipt={"status": "PASS"},
             execution_receipt={"status": "PASS"},
@@ -60,13 +76,15 @@ def test_reference_model_conformance_is_not_circularly_dependent_on_rta():
     assert "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC" not in deps
 
 
-def test_relational_pp0_receipts_do_not_self_prove_local_runtime_assumptions():
+def test_relational_pp0_receipts_are_separate_from_local_runtime_theorems():
     cert = build_runtime_schema_certificate()
     witness = cert["pp0_witness"]
+    local = cert["local_runtime_semantics"]
     assert witness["local_semantics_theorems_required"] is True
-    for key, value in witness.items():
-        if key not in {"source_receipt_ids", "local_semantics_theorems_required"}:
-            assert value is False
+    assert witness["all_local_semantics_theorems_pass"] is True
+    assert local["all_theorems_pass"] is True
+    assert local["all_bound_to_executable_path_ir"] is True
+    assert all(row["pp0_receipt_not_used"] is True for row in local["receipts"].values())
 
 
 def test_complete_execution_route_does_not_regenerate_a_default_wcet_oracle():
@@ -74,7 +92,9 @@ def test_complete_execution_route_does_not_regenerate_a_default_wcet_oracle():
     source = Path("formal_toolchain/routes/protected_prefix_checkers.py").read_text()
     block = source[source.index("def check_prefix_complete_execution_exists"):source.index("def check_registered_parametric_lemma")]
     assert "full_oracle = FullReferenceRecurringInputOracle" not in block
-    assert "ARBITRARY_FULL_EXECUTION_ORACLE_WITNESS_REQUIRED" in block
+    assert "PROTECTED_INPUT_STREAM_PROJECTION" in block
+    assert "quantifies over an arbitrary full execution" in block
+    assert "project_full_execution_ledger" in block  # optional diagnostic only
 
 
 def test_pp8_cannot_compose_two_shape_compatible_pass_labels():

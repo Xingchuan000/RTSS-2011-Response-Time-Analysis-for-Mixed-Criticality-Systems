@@ -37,6 +37,45 @@ def _tasks(taskset: object) -> tuple[Any, ...]:
     return tuple(taskset.tasks)
 
 
+def _attach_predecessors(
+    payload: dict[str, Any], predecessors: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Record exact predecessor theorem IDs and artifact/receipt hashes."""
+    theorem_ids = {
+        "TAIL_SERVICE_EXCLUSION": "PPP_L1_TAIL_SERVICE_EXCLUSION",
+        "FINAL_DISPATCH_CORRESPONDENCE": "PPP_L2_FINAL_DISPATCH_CORRESPONDENCE",
+        "PROTECTED_SERVICE_CORRESPONDENCE": "PPP_L3_SERVICE_CORRESPONDENCE",
+        "COMPLETION_REMOVAL_CORRESPONDENCE": "PPP_L4_COMPLETION_REMOVAL_CORRESPONDENCE",
+        "DEADLINE_BATCH_CORRESPONDENCE": "PPP_L5_DEADLINE_BATCH_FOLD",
+        "ARRIVAL_BATCH_PROJECTION": "PPP_L6_ARRIVAL_BATCH_FOLD",
+        "MODE_TAIL_PHASE_JOIN": "PPP_L7_CANONICAL_PHASE_JOIN",
+    }
+    payload.setdefault("theorem_id", theorem_ids.get(str(payload.get("lemma"))))
+    payload.setdefault("relation_schema", "phase_relation_v4_close_at")
+    if payload.get("theorem_id") == "PPP_L5_DEADLINE_BATCH_FOLD":
+        payload.setdefault("preserved_relation_fields", [
+            "job_key", "criticality", "release_time", "absolute_deadline",
+            "actual_demand", "executed_service", "completed", "missed",
+            "miss_job_keys",
+        ])
+        payload.setdefault("post_deadline_ledger_theorem", payload.get("status") == "PASS")
+    payload["predecessor_theorem_ids"] = {
+        name: value.get("theorem_id") or value.get("obligation_id")
+        for name, value in predecessors.items() if isinstance(value, Mapping)
+    }
+    payload["predecessor_receipt_hashes"] = {
+        name: str(value.get("artifact_hash") or value.get("receipt_hash") or "")
+        for name, value in predecessors.items() if isinstance(value, Mapping)
+    }
+    payload["artifact_hash"] = sha256_object({
+        "theorem_id": payload.get("theorem_id") or payload.get("lemma"),
+        "predecessor_theorem_ids": payload["predecessor_theorem_ids"],
+        "predecessor_receipt_hashes": payload["predecessor_receipt_hashes"],
+        "status": payload.get("status"),
+    })
+    return payload
+
+
 # ---------------------------------------------------------------------------
 # L1: Tail service exclusion (Section 9)
 # ---------------------------------------------------------------------------
@@ -81,7 +120,7 @@ def prove_tail_service_exclusion(
     )
     structural_ok = all_protected_higher_priority and order_preserved
     ok = structural_ok and scheduler_bound
-    return {
+    return _attach_predecessors({
         "status": "PASS" if ok else ("FAIL" if not structural_ok else "UNRESOLVED"),
         "code": None if ok else (
             "TAIL_PRIORITY_PARTITION_INVALID" if not structural_ok
@@ -105,7 +144,9 @@ def prove_tail_service_exclusion(
             "tail": sorted(tail),
             "priorities": {k: v for k, v in sorted(priorities.items())},
         }),
-    }
+    }, {
+        "STRICT_FP_WORK_CONSERVING_DISPATCH": scheduler_semantics_receipt or {},
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +196,7 @@ def prove_final_dispatch_correspondence(
         and dispatch_semantics_receipt.get("status") == "PASS"
         and dispatch_semantics_receipt.get("same_protected_ready_set_implies_same_selection") is True
     )
-    return {
+    return _attach_predecessors({
         "status": "PASS" if (tail_exclusion_ok and dispatch_bound) else "UNRESOLVED",
         "lemma": "FINAL_DISPATCH_CORRESPONDENCE",
         "code": None if (tail_exclusion_ok and dispatch_bound) else "PARAMETRIC_TRANSITION_PROOF_MISSING",
@@ -168,7 +209,10 @@ def prove_final_dispatch_correspondence(
             "and strict FP scheduling.  Full SMT2 verification of the FINAL_DISPATCH "
             "transition schema confirms the parameterized form."
         ),
-    }
+    }, {
+        "PPP_L1_TAIL_SERVICE_EXCLUSION": tail_service_exclusion_receipt or {},
+        "FINAL_DISPATCH": dispatch_semantics_receipt or {},
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +254,7 @@ def prove_protected_service_correspondence(
             == "phase_relation_v4_close_at"
     )
     established = service_ok and tail_ok and idle_ok and relation_ok
-    return {
+    return _attach_predecessors({
         "status": "PASS" if established else "UNRESOLVED",
         "lemma": "PROTECTED_SERVICE_CORRESPONDENCE",
         "code": None if established else "PARAMETRIC_TRANSITION_OR_IDLE_STUTTER_PROOF_MISSING",
@@ -237,7 +281,12 @@ def prove_protected_service_correspondence(
             "This obligation requires verifying SERVICE_UNIT and TAIL_ONLY_SERVICE "
             "transition schemas via SMT2 queries over the compiled transition IR."
         ),
-    }
+    }, {
+        "SERVICE_UNIT": pp0.get("SERVICE_UNIT", {}),
+        "TAIL_ONLY_SERVICE": pp0.get("TAIL_ONLY_SERVICE", {}),
+        "IDLE_JUMP": idle_jump_receipt or {},
+        "SERVICE_RELATION": service_relation_receipt or {},
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +317,7 @@ def prove_completion_removal_correspondence(
             == "phase_relation_v4_close_at"
     )
     ok = pp0_ok and relation_ok
-    return {
+    return _attach_predecessors({
         "status": "PASS" if ok else "UNRESOLVED",
         "lemma": "COMPLETION_REMOVAL_CORRESPONDENCE",
         "code": None if ok else "PARAMETRIC_TRANSITION_PROOF_MISSING",
@@ -290,7 +339,10 @@ def prove_completion_removal_correspondence(
             "This obligation requires verifying the REM_COMPLETION transition "
             "schema via SMT2 queries over the compiled transition IR."
         ),
-    }
+    }, {
+        "REM_COMPLETION": pp0.get("REM_COMPLETION", {}),
+        "REMOVAL_RELATION": removal_relation_receipt or {},
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -327,9 +379,13 @@ def prove_deadline_batch_correspondence(
             },
             proof_kernel_receipt=fold_kernel_receipt,
         )
-        return {
+        theorem_consumed = (
+            kernel.get("status") == "PASS"
+            and kernel.get("required_local_theorem_id") == "DEADLINE_OBSERVE_ONLY"
+        )
+        return _attach_predecessors({
             "theorem_id": "PPP_L5_DEADLINE_BATCH_FOLD",
-            "status": "PASS" if kernel.get("status") == "PASS" else "UNRESOLVED",
+            "status": "PASS" if theorem_consumed else "UNRESOLVED",
             "lemma": "DEADLINE_BATCH_CORRESPONDENCE",
             "code": kernel.get("code"),
             "phase_relation": "RelPP_DDLCursor(k_full,k_prefix)",
@@ -337,11 +393,13 @@ def prove_deadline_batch_correspondence(
             "parameterized_induction": kernel.get("status") == "PASS",
             "finite_instance_data_used": False,
             "fold_kernel": kernel,
+            "consumed_local_theorem_id": "DEADLINE_OBSERVE_ONLY",
+            "post_deadline_ledger_theorem": theorem_consumed,
             "reason": (
                 "The theorem-level path consumes the parameterized cursor fold "
                 "kernel for all finite deadline batches."
             ),
-        }
+        }, {"DDLCursor": fold_kernel_receipt or {}})
 
     cursor, proof = construct_batch_cursor(
         full_batch_entries, prefix_batch_entries,
@@ -356,7 +414,11 @@ def prove_deadline_batch_correspondence(
     )
     fold_verification = verify_fold_lemma(fold_lemma)
 
-    return {
+    theorem_consumed = (
+        fold_kernel_receipt is not None
+        and fold_kernel_receipt.get("required_local_theorem_id") == "DEADLINE_OBSERVE_ONLY"
+    )
+    return _attach_predecessors({
         "theorem_id": "PPP_L5_DEADLINE_BATCH_FOLD",
         "status": verification["status"] if verification["status"] == "PASS" and fold_verification["status"] == "PASS" else "UNRESOLVED",
         "lemma": "DEADLINE_BATCH_CORRESPONDENCE",
@@ -365,8 +427,10 @@ def prove_deadline_batch_correspondence(
         "tail_skip_count": cursor.tail_skip_count,
         "verification": verification,
         "fold_lemma": fold_verification,
-        "parameterized_induction": fold_lemma.complete,
-    }
+        "parameterized_induction": fold_lemma.complete and theorem_consumed,
+        "consumed_local_theorem_id": "DEADLINE_OBSERVE_ONLY",
+        "post_deadline_ledger_theorem": theorem_consumed,
+    }, {"DDLCursor": fold_kernel_receipt or {}})
 
 
 # ---------------------------------------------------------------------------
@@ -404,9 +468,13 @@ def prove_arrival_batch_projection(
             },
             proof_kernel_receipt=fold_kernel_receipt,
         )
-        return {
+        theorem_consumed = (
+            kernel.get("status") == "PASS"
+            and kernel.get("required_local_theorem_id") == "ABNORMAL_HI_CLASSIFIED_AT_ARRIVAL"
+        )
+        return _attach_predecessors({
             "theorem_id": "PPP_L6_ARRIVAL_BATCH_FOLD",
-            "status": "PASS" if kernel.get("status") == "PASS" else "UNRESOLVED",
+            "status": "PASS" if theorem_consumed else "UNRESOLVED",
             "lemma": "ARRIVAL_BATCH_PROJECTION",
             "code": kernel.get("code"),
             "phase_relation": "RelPP_ARRCursor(k_full,k_prefix)",
@@ -415,11 +483,15 @@ def prove_arrival_batch_projection(
             "finite_instance_data_used": False,
             "fold_kernel": kernel,
             "lo_version_independent": True,
+            "consumed_pp0_theorem_ids": [
+                "ARRIVAL_BATCH", "MODE_SWITCH", "RELEASE",
+            ],
+            "demand_receptiveness_consumed": theorem_consumed,
             "reason": (
                 "The theorem-level path consumes the parameterized cursor fold "
                 "kernel for all finite arrival batches."
             ),
-        }
+        }, {"ARRCursor": fold_kernel_receipt or {}})
 
     cursor, proof = construct_batch_cursor(
         full_batch_entries, prefix_batch_entries,
@@ -434,7 +506,11 @@ def prove_arrival_batch_projection(
     )
     fold_verification = verify_fold_lemma(fold_lemma)
 
-    return {
+    theorem_consumed = (
+        fold_kernel_receipt is not None
+        and fold_kernel_receipt.get("required_local_theorem_id") == "ABNORMAL_HI_CLASSIFIED_AT_ARRIVAL"
+    )
+    return _attach_predecessors({
         "theorem_id": "PPP_L6_ARRIVAL_BATCH_FOLD",
         "status": verification["status"] if verification["status"] == "PASS" and fold_verification["status"] == "PASS" else "UNRESOLVED",
         "lemma": "ARRIVAL_BATCH_PROJECTION",
@@ -445,7 +521,9 @@ def prove_arrival_batch_projection(
         "fold_lemma": fold_verification,
         "parameterized_induction": fold_lemma.complete,
         "lo_version_independent": True,
-    }
+        "consumed_pp0_theorem_ids": ["ARRIVAL_BATCH", "MODE_SWITCH", "RELEASE"],
+        "demand_receptiveness_consumed": theorem_consumed,
+    }, {"ARRCursor": fold_kernel_receipt or {}})
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +556,7 @@ def prove_mode_tail_phase_join(
                  and phase_join_receipt.get("status") == "PASS"
                  and phase_join_receipt.get("all_symmetric_cases") is True)
     established = required_pp0 and idle_ok and kernel_ok
-    return {
+    return _attach_predecessors({
         "status": "PASS" if established else "UNRESOLVED",
         "lemma": "MODE_TAIL_PHASE_JOIN",
         "code": None if established else "PARAMETRIC_TRANSITION_PROOF_MISSING",
@@ -500,10 +578,26 @@ def prove_mode_tail_phase_join(
                 "description": "Prefix SW, full identity skip",
                 "effect": "global mode changes only; protected release data remains fixed",
             },
+            "FULL_ONLY_SWITCH": {
+                "description": "Full SW, prefix identity skip",
+                "effect": "mode-only transition; protected relation is rejoined",
+            },
+            "PREFIX_ONLY_SWITCH": {
+                "description": "Prefix SW, full identity skip",
+                "effect": "mode-only transition; protected relation is rejoined",
+            },
             "FULL_TAIL_ONLY_SERVICE": {
                 "description": "Full tail service, prefix identity/CloseAt stutter",
                 "precondition": "protected ready/running projection empty",
                 "effect": "tail service advances, protected observable unchanged",
+            },
+            "FULL_TAIL_ONLY_DEADLINE_ENTRY": {
+                "description": "Full tail deadline entry, prefix identity skip",
+                "effect": "tail-only deadline observation is outside protected ledger",
+            },
+            "FULL_TAIL_ONLY_ARRIVAL_ENTRY": {
+                "description": "Full tail arrival entry, prefix identity skip",
+                "effect": "tail-only arrival is removed by the cursor join",
             },
         },
         "requires_pp0_smt2": True,
@@ -511,14 +605,22 @@ def prove_mode_tail_phase_join(
         "transition_cases": [
             "FULL_ONLY_RECOVERY", "PREFIX_ONLY_RECOVERY",
             "FULL_ONLY_MODE_SWITCH", "PREFIX_ONLY_MODE_SWITCH",
-            "FULL_TAIL_ONLY_SERVICE",
+            "FULL_ONLY_SWITCH", "PREFIX_ONLY_SWITCH",
+            "FULL_TAIL_ONLY_SERVICE", "FULL_TAIL_ONLY_DEADLINE_ENTRY",
+            "FULL_TAIL_ONLY_ARRIVAL_ENTRY",
         ],
         "reason": (
             "This obligation requires verifying RECOVERY, MODE_SWITCH, and "
             "TAIL_ONLY_SERVICE transition schemas via SMT2 queries over the "
             "compiled transition IR."
         ),
-    }
+    }, {
+        "RECOVERY": pp0.get("RECOVERY", {}),
+        "MODE_SWITCH": pp0.get("MODE_SWITCH", {}),
+        "TAIL_ONLY_SERVICE": pp0.get("TAIL_ONLY_SERVICE", {}),
+        "IDLE_JUMP": idle_jump_receipt or {},
+        "PHASE_JOIN": phase_join_receipt or {},
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -598,7 +700,7 @@ def prove_protected_macro_step_preservation(
                 "code": "L8_PREDECESSOR_HASH_MISSING",
                 "predecessor_hashes": predecessor_hashes,
             }
-        return {
+        payload = {
             "status": "PASS",
             "lemma": "PROTECTED_MACRO_STEP_PRESERVATION",
             "theorem_id": "PROTECTED_MACRO_STEP_PRESERVATION",
@@ -614,6 +716,14 @@ def prove_protected_macro_step_preservation(
                 "Rel_pp_close(CloseAt_full(t+1),CloseAt_pp(t+1))"
             ),
         }
+        payload["artifact_hash"] = sha256_object({
+            "theorem_id": payload["theorem_id"],
+            "predecessor_theorem_ids": payload["predecessor_theorem_ids"],
+            "predecessor_receipt_hashes": payload["predecessor_receipt_hashes"],
+            "relation_schema": payload["relation_schema"],
+            "conclusion": payload["conclusion"],
+        })
+        return payload
 
     # A caller that does not provide the explicit L1--L7 DAG cannot close L8.
     # The legacy local recomputation path is intentionally retained only for

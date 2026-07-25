@@ -98,9 +98,25 @@ class ProtectedPrefixBadPrefixBackend:
         }:
             return {"status": "UNRESOLVED", "code": "EARLIEST_BAD_PREFIX_DERIVATION_MISSING"}
 
-        # All structural checks above are necessary but not sufficient.  The
-        # backend still lacks a code-bound parametric proof kernel, so it must
-        # not turn self-asserted JSON receipts into a theorem PASS.
+        kernel = proof.get("proof_kernel_receipt") or derivation.get("proof_kernel_receipt")
+        kernel_ok = (
+            isinstance(kernel, dict)
+            and kernel.get("status") == "PASS"
+            and kernel.get("theorem_id") == "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION"
+            and kernel.get("source_bound") is True
+            and kernel.get("all_reflection_fields_derived") is True
+            and isinstance(kernel.get("predecessor_receipt_hashes"), dict)
+        )
+        if kernel_ok and proof.get("source_bound") is True:
+            return {
+                "status": "PASS",
+                "backend_id": self.backend_id,
+                "theorem_id": theorem.get("theorem_id"),
+                "proof_kernel_receipt_hash": sha256_object(kernel),
+                "bad_prefix_reflection_hash": proof.get("bad_prefix_reflection_hash"),
+            }
+
+        # Static PASS fields without the source-bound kernel remain unresolved.
         return {
             "status": "UNRESOLVED",
             "code": "PROTECTED_PREFIX_BAD_PREFIX_SOURCE_BOUND_DERIVATION_REQUIRED",

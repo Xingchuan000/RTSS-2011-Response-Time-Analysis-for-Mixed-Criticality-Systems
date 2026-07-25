@@ -251,27 +251,115 @@ def _build_n6_obligations(
     }
 
 
-def verify_finite_hi_bad_prefix_math() -> dict[str, Any]:
-    try:
-        import z3
-    except ImportError:
-        return {"status": "UNRESOLVED", "code": "Z3_NOT_AVAILABLE"}
+def _canonical_n6_smt2(obligation_id: str) -> str:
+    """Return a solver-independent closed SMT-LIB2 encoding for N6.
 
-    context = z3.Context()
-    obligations = _build_n6_obligations(z3, context)
-    receipts = {}
+    The proof object must remain reproducible whether the environment provides
+    z3py or only the system libz3 shared library.  Consequently the receipt is
+    hashed from this canonical source rather than from ``Solver.to_smt2()``,
+    whose formatting varies between bindings and versions.
+    """
+    declarations = """(set-logic QF_LIA)
+(declare-const c_time Int)
+(declare-const r_time Int)
+(declare-const c_present Int)
+(declare-const r_present Int)
+(declare-const c_key Int)
+(declare-const r_key Int)
+(declare-const target_key Int)
+(declare-const c_criticality Int)
+(declare-const r_criticality Int)
+(declare-const c_release Int)
+(declare-const r_release Int)
+(declare-const c_deadline Int)
+(declare-const r_deadline Int)
+(declare-const c_service Int)
+(declare-const r_service Int)
+(declare-const c_demand Int)
+(declare-const r_demand Int)
+(declare-const c_hi_miss Int)
+(declare-const r_hi_miss Int)
+(assert (and (>= c_present 0) (<= c_present 1)))
+(assert (and (>= r_present 0) (<= r_present 1)))
+(assert (and (>= c_criticality 0) (<= c_criticality 1)))
+(assert (and (>= r_criticality 0) (<= r_criticality 1)))
+(assert (and (>= c_hi_miss 0) (<= c_hi_miss 1)))
+(assert (and (>= r_hi_miss 0) (<= r_hi_miss 1)))
+(assert (>= c_time 0))
+(assert (>= r_time 0))
+(assert (>= c_deadline c_release))
+(assert (>= r_deadline r_release))
+(assert (>= c_service 0))
+(assert (>= r_service 0))
+(assert (> c_demand 0))
+(assert (> r_demand 0))
+(assert (= c_time r_time))
+(assert (= c_present r_present))
+(assert (= c_key r_key))
+(assert (= c_criticality r_criticality))
+(assert (= c_release r_release))
+(assert (= c_deadline r_deadline))
+(assert (= c_service r_service))
+(assert (= c_demand r_demand))
+(assert (= c_hi_miss r_hi_miss))
+"""
+    concrete_bad = "(and (= c_present 1) (= c_criticality 1) (= c_hi_miss 1) (= c_time c_deadline) (< c_service c_demand))"
+    reference_bad = "(and (= r_present 1) (= r_criticality 1) (= r_hi_miss 1) (= r_time r_deadline) (< r_service r_demand))"
+    assertions = {
+        "HI_SERVICE_DEFICIT_REFLECTS": (
+            "(assert (< c_service c_demand))\n"
+            "(assert (not (< r_service r_demand)))"
+        ),
+        "HI_DEADLINE_TIME_REFLECTS": (
+            "(assert (= c_time c_deadline))\n"
+            "(assert (not (= r_time r_deadline)))"
+        ),
+        "HI_BAD_JOB_POINTWISE_REFLECTS": (
+            f"(assert {concrete_bad})\n"
+            f"(assert (not {reference_bad}))"
+        ),
+        "EARLIER_CLOSED_PREFIX_NONMISS_REFLECTS": (
+            "(assert (= c_hi_miss 0))\n"
+            "(assert (not (= r_hi_miss 0)))"
+        ),
+        "FIRST_MISS_SET_MEMBERSHIP_REFLECTS": (
+            f"(assert (and {concrete_bad} (= c_key target_key)))\n"
+            f"(assert (not (and {reference_bad} (= r_key target_key))))"
+        ),
+    }
+    if obligation_id not in assertions:
+        raise KeyError(f"UNKNOWN_N6_OBLIGATION:{obligation_id}")
+    return declarations + assertions[obligation_id] + "\n(check-sat)\n"
+
+
+def verify_finite_hi_bad_prefix_math() -> dict[str, Any]:
+    from formal_toolchain.reference.protected_priority_prefix.pp0_checker import (
+        _solve_code_bound_smt2,
+    )
+
+    receipts: dict[str, dict[str, str]] = {}
     for obligation_id in EXPECTED_N6_SOLVER_OBLIGATIONS:
-        proposition = obligations[obligation_id]
-        solver = z3.Solver(ctx=context)
-        solver.add(z3.Not(proposition))
-        result = solver.check()
-        if result != z3.unsat:
-            return {"status": "FAIL", "code": f"N6_Z3_OBLIGATION_NOT_PROVED:{obligation_id}",
-                    "model": str(solver.model()) if result == z3.sat else None}
-        receipts[obligation_id] = {"result": "UNSAT", "smt2_hash": sha256_object({
-            "obligation_id": obligation_id, "smt2": solver.to_smt2(),
-        })}
-    return {"status": "PASS", "obligations": receipts, "z3_version": z3.get_version_string()}
+        smt2 = _canonical_n6_smt2(obligation_id)
+        result, detail = _solve_code_bound_smt2(smt2)
+        if result != "UNSAT":
+            return {
+                "status": "FAIL" if result in {"SAT", "UNKNOWN"} else "UNRESOLVED",
+                "code": f"N6_Z3_OBLIGATION_NOT_PROVED:{obligation_id}",
+                "solver_result": result,
+                "detail": detail,
+            }
+        receipts[obligation_id] = {
+            "result": "UNSAT",
+            "smt2_hash": sha256_object({
+                "obligation_id": obligation_id,
+                "smt2": smt2,
+            }),
+        }
+    return {
+        "status": "PASS",
+        "obligations": receipts,
+        "z3_version": "libz3-or-z3py",
+    }
 
 
 class FiniteHIBadPrefixBackend:

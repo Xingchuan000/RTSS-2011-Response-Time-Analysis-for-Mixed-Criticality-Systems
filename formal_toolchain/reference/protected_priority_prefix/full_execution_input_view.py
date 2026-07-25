@@ -9,7 +9,15 @@ from formal_toolchain.core.hashing import sha256_object
 from .input_oracle import FullJobInput
 
 
-class ReleaseLedgerView(Protocol):
+class FullExecutionReleaseLedger(Protocol):
+    """Release ledger of one selected full execution parameter ``xi``."""
+
+    execution_id: str
+
+    def record_for(self, task_name: str, release_index: int) -> FullJobInput: ...
+
+
+class ReleaseLedgerView(FullExecutionReleaseLedger, Protocol):
     def record_for(self, task_name: str, release_index: int) -> FullJobInput: ...
 
 
@@ -30,6 +38,10 @@ class FullExecutionInputView:
         if key not in self.records:
             raise ValueError(f"FULL_EXECUTION_RELEASE_RECORD_MISSING:{task_name}:{release_index}")
         return self.records[key]
+
+    def record_for(self, task_name: str, release_index: int) -> FullJobInput:
+        """Protocol spelling used by theorem routes."""
+        return self.input_for(task_name, release_index)
 
     def oracle_fingerprint(self) -> str:
         return sha256_object({

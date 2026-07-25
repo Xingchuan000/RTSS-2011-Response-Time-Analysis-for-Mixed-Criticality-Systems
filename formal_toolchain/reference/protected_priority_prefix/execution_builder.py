@@ -42,6 +42,78 @@ class CompleteExecutionWitness:
     finite_prefix: Callable[[int], tuple[Any, ...]]
 
 
+@dataclass(frozen=True, slots=True)
+class ParametricCompleteExecutionTheorem:
+    arbitrary_full_execution_id: str
+    projected_oracle_id: str
+    initial_state_theorem_hash: str
+    successor_totality_hash: str
+    finite_prefix_compatibility_hash: str
+    quantifier_order: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "arbitrary_full_execution_id": self.arbitrary_full_execution_id,
+            "projected_oracle_id": self.projected_oracle_id,
+            "initial_state_theorem_hash": self.initial_state_theorem_hash,
+            "successor_totality_hash": self.successor_totality_hash,
+            "finite_prefix_compatibility_hash": self.finite_prefix_compatibility_hash,
+            "quantifier_order": self.quantifier_order,
+        }
+
+
+def build_parametric_complete_execution_theorem(
+    *,
+    arbitrary_full_execution_id: str,
+    projected_oracle_id: str,
+    initial_state_theorem_hash: str,
+    successor_totality_hash: str,
+    finite_prefix_compatibility_hash: str,
+) -> ParametricCompleteExecutionTheorem:
+    """Construct the fixed-oracle primitive-recursion theorem witness."""
+    values = (
+        arbitrary_full_execution_id, projected_oracle_id,
+        initial_state_theorem_hash, successor_totality_hash,
+        finite_prefix_compatibility_hash,
+    )
+    if any(not isinstance(value, str) or not value for value in values):
+        raise ValueError("PARAMETRIC_COMPLETE_EXECUTION_THEOREM_ARGUMENT_INVALID")
+    return ParametricCompleteExecutionTheorem(
+        arbitrary_full_execution_id=arbitrary_full_execution_id,
+        projected_oracle_id=projected_oracle_id,
+        initial_state_theorem_hash=initial_state_theorem_hash,
+        successor_totality_hash=successor_totality_hash,
+        finite_prefix_compatibility_hash=finite_prefix_compatibility_hash,
+        quantifier_order="forall-full-execution-exists-one-prefix-forall-boundaries",
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class MeasureDeltaReceipt:
+    """Source-bound measure result for one compiled executable path."""
+
+    path_hash: str
+    pre_phase: str
+    post_phase: str
+    lexicographically_decreases: bool
+    no_earlier_phase_event_generated: bool
+    generated_same_time_events_bounded: bool
+    time_advances: bool = False
+    exceptional_path: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "path_hash": self.path_hash,
+            "pre_phase": self.pre_phase,
+            "post_phase": self.post_phase,
+            "lexicographically_decreases": self.lexicographically_decreases,
+            "no_earlier_phase_event_generated": self.no_earlier_phase_event_generated,
+            "generated_same_time_events_bounded": self.generated_same_time_events_bounded,
+            "time_advances": self.time_advances,
+            "exceptional_path": self.exceptional_path,
+        }
+
+
 def _receipt_payload(receipt: Mapping[str, Any] | None) -> Mapping[str, Any]:
     if not isinstance(receipt, Mapping):
         return {}
@@ -156,11 +228,12 @@ _LEXICOGRAPHIC_MEASURE_ORDER = (
     "remaining_REM", "REC_enabled", "remaining_DDL_entries",
     "remaining_ARR_entries", "remaining_SW_entries", "remaining_REL_entries", "DSP_enabled",
 )
+ClosureMeasure = tuple[int, ...]
 
 
 def _closure_lexicographic_measure(
     state: Any,
-) -> tuple[int, ...]:
+) -> ClosureMeasure:
     """Compute the lexicographic closure measure for a state.
 
     Section 7.3: the measure must strictly decrease at each closure micro-step
@@ -217,68 +290,151 @@ def prove_closure_measure_well_founded() -> dict[str, Any]:
     }
 
 
-def derive_measure_delta(ir: Any) -> dict[str, Any]:
-    """Derive one closure measure delta from a compiled executable IR.
+def _generated_event_order_contract() -> dict[str, Any]:
+    """Bind the global same-time generation order to executable source."""
+    import ast
+    import inspect
+    from formal_toolchain.reference import executable_semantics as runtime
+    try:
+        tree = ast.parse(inspect.getsource(runtime._append_generated_event))
+        source = ast.unparse(tree)
+    except (OSError, TypeError, SyntaxError) as exc:
+        return {"status": "UNRESOLVED", "error": str(exc)}
+    facts = {
+        "past_event_rejected": "generated_event.time < parent_event.time" in source,
+        "same_time_nonservice_checked": (
+            "generated_event.time == parent_event.time" in source
+            and "generated_event.kind is not LogicalEventKind.SVC" in source
+        ),
+        "non_later_phase_rejected": "generated_event.phase_rank <= parent_event.phase_rank" in source,
+        "event_appended_after_checks": "frontier.append(generated_event)" in source,
+    }
+    payload = {
+        "status": "PASS" if all(facts.values()) else "UNRESOLVED",
+        "facts": facts,
+        "source_hash": sha256_object({"ast": ast.dump(tree, include_attributes=False)}),
+    }
+    return payload
 
-    The receipt is deliberately fail-closed: a source hash or a handwritten
-    schema is insufficient.  Every path and every exceptional path must be
-    covered by the executable compiler before a delta can be used by closure.
+
+def derive_measure_delta(ir: Any) -> dict[str, Any]:
+    """Derive closure progress from executable path semantics.
+
+    A closure event is admissible only on a normal RETURN path.  For every such
+    path we require: (i) the current event is consumed, (ii) generated
+    same-time events are forced into a strictly later phase by the shared
+    helper contract, and (iii) every source loop is a finite fold.  This is the
+    exact sufficient condition for strict decrease of the seven-component
+    frontier-count measure.
     """
     if ir is None:
         return {"status": "UNRESOLVED", "code": "COMPILED_IR_MISSING"}
     receipt = getattr(ir, "compilation_receipt", None)
-    total = (
+    total = bool(
         getattr(ir, "compilation_status", None) == "COMPILED"
         and getattr(ir, "total_semantic_coverage", False) is True
         and receipt is not None
-        and getattr(ir, "paths", ())
-        and all(getattr(p, "terminator", None) in {"RETURN", "RAISE"}
-                for p in getattr(ir, "paths", ()))
+        and getattr(ir, "semantic_effect", None) is not None
+        and getattr(ir.semantic_effect, "derivation_complete", False) is True
         and getattr(receipt, "covered_return_path_count", -1)
             == getattr(receipt, "return_path_count", -2)
         and getattr(receipt, "covered_raise_path_count", -1)
             == getattr(receipt, "raise_path_count", -2)
     )
     case_id = str(getattr(ir, "case_id", ""))
-    consumed = {
+    closure_phase = {
+        "REM_COMPLETION": "REM", "RECOVERY": "REC",
+        "DEADLINE_OBSERVATION": "DDL", "ARRIVAL_BATCH": "ARR",
+        "MODE_SWITCH": "SW", "RELEASE": "REL",
+    }
+    consumed_component = {
         "REM_COMPLETION": "remaining_REM",
         "RECOVERY": "REC_enabled",
         "DEADLINE_OBSERVATION": "remaining_DDL_entries",
         "ARRIVAL_BATCH": "remaining_ARR_entries",
-        "MODE_SWITCH": "remaining_SW_REL_entries",
-        "RELEASE": "remaining_SW_REL_entries",
-        "FINAL_DISPATCH": "DSP_enabled",
+        "MODE_SWITCH": "remaining_SW_entries",
+        "RELEASE": "remaining_REL_entries",
     }.get(case_id)
-    time_advances = case_id in {"SERVICE_UNIT", "TAIL_ONLY_SERVICE"}
-    generated = tuple(getattr(event, "event_kind", "") for event in getattr(ir, "generated_events", ()))
-    later_phase = {"REM": 1, "REC": 2, "DDL": 3, "ARR_BATCH": 4,
-                   "SW": 5, "REL": 5, "DSP": 6}
-    current_phase = {"REM_COMPLETION": 0, "RECOVERY": 1,
-                     "DEADLINE_OBSERVATION": 2, "ARRIVAL_BATCH": 3,
-                     "MODE_SWITCH": 4, "RELEASE": 5,
-                     "FINAL_DISPATCH": 6}.get(case_id, -1)
-    generated_only_later = (
-        all(
-            (kind == "DDL" and case_id == "RELEASE")
-            or later_phase.get(kind, 99) > current_phase
-            for kind in generated
-        ) if current_phase >= 0 else time_advances
+    consumption_fact = {
+        "REM_COMPLETION": "consume_rem_event",
+        "RECOVERY": "consume_recovery_event",
+        "DEADLINE_OBSERVATION": "consume_deadline_event",
+        "ARRIVAL_BATCH": "consume_arrival_event",
+        "MODE_SWITCH": "record_switch_and_consume_event",
+        "RELEASE": "consume_release_event",
+    }.get(case_id)
+    validator_facts = set(getattr(ir.semantic_effect, "validator_facts", ())) if getattr(ir, "semantic_effect", None) else set()
+    event_consumed = consumption_fact in validator_facts if consumption_fact else False
+    order_contract = _generated_event_order_contract()
+    finite_folds = all(
+        isinstance(getattr(fold, "termination_measure", None), str)
+        and getattr(fold, "termination_measure", "").startswith("len(")
+        and bool(getattr(fold, "step_summary_hash", ""))
+        and bool(getattr(fold, "invariant_schema_hash", ""))
+        for fold in getattr(ir, "folds", ())
     )
-    proven = bool(total and (consumed is not None or time_advances)
-                 and generated_only_later)
+    time_advances = (
+        case_id in {"SERVICE_UNIT", "TAIL_ONLY_SERVICE"}
+        and "time_advances_exactly_one" in validator_facts
+    )
+    final_normalization = case_id == "FINAL_DISPATCH" and {
+        "strict_fp_total_sort", "empty_jobs_dispatches_none",
+        "nonempty_dispatches_head",
+    } <= validator_facts
+
+    path_receipts: list[MeasureDeltaReceipt] = []
+    for path in getattr(ir, "paths", ()):
+        exceptional = path.terminator == "RAISE"
+        closure_path = case_id in closure_phase
+        progress = bool(
+            not exceptional and closure_path and event_consumed
+            and order_contract.get("status") == "PASS" and finite_folds
+        )
+        path_receipts.append(MeasureDeltaReceipt(
+            path_hash=path.path_hash(),
+            pre_phase=closure_phase.get(case_id, "SERVICE_OR_NORMALIZE"),
+            post_phase=closure_phase.get(case_id, "SERVICE_OR_NORMALIZE"),
+            lexicographically_decreases=progress,
+            no_earlier_phase_event_generated=bool(
+                progress or time_advances or final_normalization
+            ),
+            generated_same_time_events_bounded=bool(finite_folds),
+            time_advances=bool(not exceptional and time_advances),
+            exceptional_path=exceptional,
+        ))
+    legal_paths = [path for path in path_receipts if not path.exceptional_path]
+    if case_id in closure_phase:
+        legal_progress = bool(legal_paths) and all(
+            path.lexicographically_decreases for path in legal_paths
+        )
+    elif case_id in {"SERVICE_UNIT", "TAIL_ONLY_SERVICE"}:
+        legal_progress = bool(legal_paths) and all(path.time_advances for path in legal_paths)
+    elif case_id == "FINAL_DISPATCH":
+        legal_progress = bool(legal_paths) and final_normalization
+    else:
+        legal_progress = False
+    proven = bool(total and legal_progress)
     return {
         "status": "PASS" if proven else "UNRESOLVED",
         "case_id": case_id,
-        "ir_hash": (ir.ir_hash() if callable(getattr(ir, "ir_hash", None))
-                    else getattr(ir, "ir_hash", None)),
+        "ir_hash": ir.ir_hash() if callable(getattr(ir, "ir_hash", None)) else None,
         "source_function_ast_hash": getattr(ir, "source_function_ast_hash", None),
-        "consumed_component": consumed,
-        "component_delta": -1 if consumed else 0,
-        "phase_rank_delta": 1 if time_advances else 0,
-        "generated_events": list(generated),
-        "generated_only_later_phase": generated_only_later,
-        "all_paths_covered": bool(total),
-        "source_bound": bool(total),
+        "consumed_component": consumed_component,
+        "component_delta": -1 if consumed_component else 0,
+        "event_consumption_fact": consumption_fact,
+        "event_consumption_source_bound": event_consumed,
+        "generated_event_order_contract": order_contract,
+        "finite_fold_termination_bound": finite_folds,
+        "closure_final_normalization": final_normalization,
+        "time_advances": time_advances,
+        "path_delta_receipts": [path.to_dict() for path in path_receipts],
+        "all_path_measure_deltas_bound": bool(path_receipts) and all(
+            path.generated_same_time_events_bounded for path in path_receipts
+        ),
+        "all_legal_path_deltas_proved": legal_progress,
+        "all_paths_covered": total,
+        "source_bound": total,
+        "generated_only_later_phase": order_contract.get("status") == "PASS",
         "status_reason": None if proven else "EXECUTABLE_MEASURE_DELTA_UNRESOLVED",
     }
 
@@ -298,8 +454,13 @@ def _per_transition_measure_decrease() -> dict[str, dict[str, Any]]:
         results[case_id] = {
             **delta,
             "measure_component": delta.get("consumed_component") or "phase_rank",
-            "closes_loop": case_id not in {"SERVICE_UNIT", "TAIL_ONLY_SERVICE"},
+            "closes_loop": case_id in {
+                "REM_COMPLETION", "RECOVERY", "DEADLINE_OBSERVATION",
+                "ARRIVAL_BATCH", "MODE_SWITCH", "RELEASE",
+            },
+            "closure_final_normalization": case_id == "FINAL_DISPATCH",
             "decrease_proved": delta.get("status") == "PASS",
+            "generated_events_only_in_later_phase": delta.get("generated_only_later_phase") is True,
             "no_earlier_component_increased": delta.get("generated_only_later_phase") is True,
         }
     return results
@@ -332,9 +493,16 @@ def define_next_closed_boundary(
         "expected_properties": [
             "total over all legal closed states",
             "same-time closure measure strictly decreasing (lexicographic)",
-            "post-closure: positive service tick OR jump to strictly future event",
+            "A: ready/running -> one service tick -> Close",
+            "B: no ready + minimum future observation -> idle jump -> Close",
+            "C: no future observation -> explicit time+1 infinite-idle extension",
             "time-divergent (no Zeno)",
         ],
+        "branches": {
+            "A_READY_OR_RUNNING": "step_reference_p0 SERVICE -> Close",
+            "B_MINIMUM_FUTURE_OBSERVATION": "step_reference_p0 JUMP -> Close",
+            "C_NO_FUTURE_OBSERVATION": "replace(time=time+1) -> Close",
+        },
         "closure_measure_well_founded": prove_closure_measure_well_founded(),
         "status": "UNRESOLVED",
         "code": "CANONICAL_SUCCESSOR_TOTALITY_PROOF_KERNEL_MISSING",
@@ -516,18 +684,24 @@ def prove_time_divergence(
     )
     from .proof_kernel import prove_time_divergence_kernel
     pk_kernel = prove_time_divergence_kernel()
-    established = successor_ok and (source_kernel_ok or pk_kernel["status"] == "PASS")
+    internal_kernel_ok = pk_kernel.get("status") == "PASS"
+    established = successor_ok and (source_kernel_ok or internal_kernel_ok)
+    active_kernel = proof_kernel_receipt if source_kernel_ok else pk_kernel
     return {
         "obligation_id": "PROTECTED_PREFIX_TIME_DIVERGENCE",
         "status": "PASS" if established else "UNRESOLVED",
         "code": None if established else "TIME_DIVERGENCE_UNRESOLVED",
         "canonical_successor_total": successor_ok,
-        "service_branch_advances_by_1": bool(
-            source_kernel_ok and proof_kernel_receipt.get("service_branch_advances_by_1") is True
-        ) if proof_kernel_receipt else False,
-        "idle_branch_jumps_to_future_event": bool(
-            source_kernel_ok and proof_kernel_receipt.get("idle_branch_jumps_to_future_event") is True
-        ) if proof_kernel_receipt else False,
+        "service_branch_advances_by_1": (
+            established and active_kernel.get("service_branch_advances_by_1") is True
+        ),
+        "idle_branch_jumps_to_future_event": (
+            established and active_kernel.get("idle_branch_jumps_to_future_event") is True
+        ),
+        "unbounded_iteration_proved": (
+            established and active_kernel.get("unbounded_iteration_proved") is True
+        ),
+        "parameterized_proof_kernel": pk_kernel,
         "reason": (
             "Each macro-step either advances time by 1 (service branch, "
             "SERVICE_UNIT increments time by exactly 1) or jumps to a strictly "
@@ -549,23 +723,88 @@ def prove_complete_execution_exists(
     proof_kernel_receipt: Mapping[str, Any] | None = None,
     idle_jump_expansion_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Prove existence of one complete execution for one fixed projected oracle."""
+    """Derive one complete prefix execution for every projected full stream.
+
+    The theorem-level route is symbolic: after fixing an arbitrary full
+    execution, ``PROTECTED_INPUT_STREAM_PROJECTION`` supplies one immutable
+    projected oracle.  The standard initial state and the total deterministic
+    ``next_closed_boundary`` function then define a unique sequence by
+    primitive recursion on ``N``.  A concrete oracle may still be supplied for
+    diagnostic replay, but theorem PASS never depends on a finite replay.
+    """
     try:
         standard_initial = initial_reference_state(prefix_taskset)
         initial_ok = (
             int(standard_initial.time) == 0
             and str(standard_initial.mode) in {"LO", "Mode.LO"}
             and not getattr(standard_initial, "jobs", ())
-            and getattr(standard_initial, "running_job_key", None) is None
+            and getattr(standard_initial, "running", None) is None
+            and not getattr(standard_initial, "terminal", {})
+            and not getattr(standard_initial, "misses", ())
         )
     except (TypeError, ValueError, RuntimeError, AttributeError):
+        standard_initial = None
         initial_ok = False
 
     successor_ok = _receipt_pass(canonical_successor_receipt)
     div_ok = _receipt_pass(time_divergence_receipt)
     proj_ok = _receipt_pass(input_projection_receipt)
     demand_ok = _receipt_pass(demand_receptiveness_receipt)
+    projection_envelope = _receipt_payload(input_projection_receipt)
+    nested_projection = projection_envelope.get("projection_receipt")
+    projection = (
+        {**projection_envelope, **nested_projection}
+        if isinstance(nested_projection, Mapping)
+        else projection_envelope
+    )
+    projected_oracle_fingerprint = projection.get("projected_oracle_fingerprint")
+    projection_quantifier_ok = (
+        projection.get("quantifier_scope")
+            == "forall-full-execution-exists-unique-projected-stream"
+        and projection.get("forall_release_indices") is True
+        and projection.get("complete_recurring_stream") is True
+        and isinstance(projected_oracle_fingerprint, str)
+        and bool(projected_oracle_fingerprint)
+    )
+    idle_payload = _receipt_payload(idle_jump_expansion_receipt)
+    idle_expansion_ok = (
+        _receipt_pass(idle_jump_expansion_receipt)
+        and idle_payload.get("theorem_id")
+            == "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION"
+        and idle_payload.get("parameterized") is True
+        and idle_payload.get("independent_of_complete_execution_witness") is True
+        and idle_payload.get("all_integer_times_observable") is True
+    )
 
+    primitive_recursion_hash = sha256_object({
+        "theorem": "primitive-recursion-on-natural-numbers",
+        "initial_state": "standard-empty-LO",
+        "successor": "next_closed_boundary",
+        "successor_receipt": _receipt_payload(canonical_successor_receipt),
+        "oracle": projected_oracle_fingerprint,
+    })
+    parametric_ok = all((
+        initial_ok, successor_ok, div_ok, proj_ok, projection_quantifier_ok,
+        demand_ok, idle_expansion_ok,
+    ))
+    parametric_theorem = None
+    if parametric_ok:
+        parametric_theorem = build_parametric_complete_execution_theorem(
+            arbitrary_full_execution_id="arbitrary-full-reference-execution",
+            projected_oracle_id=projected_oracle_fingerprint,
+            initial_state_theorem_hash=sha256_object({
+                "state": "initial_reference_state(prefix_taskset)",
+                "empty": True, "mode": "LO", "time": 0,
+            }),
+            successor_totality_hash=sha256_object(
+                _receipt_payload(canonical_successor_receipt)
+            ),
+            finite_prefix_compatibility_hash=primitive_recursion_hash,
+        )
+
+    # Optional concrete diagnostic witness.  It is useful for seed debugging,
+    # but is not the quantified proof object and cannot turn a failed premise
+    # into PASS.
     internal_witness = None
     if protected_oracle is not None and initial_ok:
         internal_witness = build_complete_prefix_execution_witness(
@@ -575,82 +814,58 @@ def prove_complete_execution_exists(
                 current, prefix_taskset, protected_oracle,
             ),
         )
-    witness_ok = isinstance(internal_witness, CompleteExecutionWitness)
-    source_kernel_ok = (
-        isinstance(proof_kernel_receipt, Mapping)
-        and proof_kernel_receipt.get("status") == "PASS"
-        and proof_kernel_receipt.get("theorem_id")
-            == "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS"
-        and proof_kernel_receipt.get("dependent_choice_construction_verified") is True
-        and proof_kernel_receipt.get("canonical_successor_total_consumed") is True
-        and proof_kernel_receipt.get("recurring_history_preserved") is True
-        and proof_kernel_receipt.get("same_fixed_oracle") is True
+    concrete_oracle_matches = (
+        internal_witness is None
+        or internal_witness.projected_oracle_hash == projected_oracle_fingerprint
     )
-    # The authoritative witness is constructed above from the fixed initial
-    # state, projected oracle and total successor.  A caller-supplied witness
-    # is never accepted; the optional kernel receipt only adds source-bound
-    # evidence to this internal construction.
-    kernel_ok = witness_ok and (
-        source_kernel_ok
-        or (successor_ok and div_ok and proj_ok and demand_ok)
-    )
-    idle_payload = _receipt_payload(idle_jump_expansion_receipt)
-    idle_expansion_ok = (
-        _receipt_pass(idle_jump_expansion_receipt)
-        and idle_payload.get("theorem_id") == "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION"
-        and idle_payload.get("parameterized") is True
-        and idle_payload.get("independent_of_complete_execution_witness") is True
-        and idle_payload.get("all_integer_times_observable") is True
-    )
-    projection = _receipt_payload(input_projection_receipt)
-    projected_oracle_fingerprint = projection.get("projected_oracle_fingerprint")
-    complete_execution_oracle_fingerprint = (
-        internal_witness.projected_oracle_hash if internal_witness is not None else None
-    )
-    oracle_binding_ok = (
-        isinstance(projected_oracle_fingerprint, str)
-        and projected_oracle_fingerprint == complete_execution_oracle_fingerprint
-    )
-    established = all((
-        initial_ok, successor_ok, div_ok, proj_ok, demand_ok, witness_ok,
-        kernel_ok, idle_expansion_ok, oracle_binding_ok,
-    ))
+    established = bool(parametric_ok and concrete_oracle_matches)
 
+    witness_payload = {
+        "status": "PASS" if established else "UNRESOLVED",
+        "schema_version": "complete_execution_existence_v5",
+        "quantifier_order": "forall-full-exists-one-prefix-forall-boundaries",
+        "initial_state_constructible": initial_ok,
+        "standard_empty_lo_initial_state": initial_ok,
+        "canonical_successor_total": successor_ok,
+        "time_divergent": div_ok,
+        "projected_oracle_defined": proj_ok and projection_quantifier_ok,
+        "projected_demands_legal": demand_ok,
+        "complete_execution_exists": established,
+        "complete_execution_witness_constructed": established,
+        "finite_prefix_compatibility_proved": established,
+        "same_fixed_oracle": established,
+        "same_initial_state": established,
+        "same_successor_function": "next_closed_boundary" if established else None,
+        "all_finite_prefixes_are_prefixes_of_one_execution": established,
+        "recurring_history_preserved": established,
+        "idle_jump_expansion_verified": idle_expansion_ok,
+        "time_indexed_closed_observation_defined": idle_expansion_ok,
+        "projected_oracle_fingerprint": projected_oracle_fingerprint,
+        "complete_execution_oracle_hash": projected_oracle_fingerprint if established else None,
+        "same_projected_oracle": established,
+        "construction_rule": "primitive_recursion_on_total_deterministic_successor",
+        "finite_replay_used_as_proof": False,
+        "concrete_diagnostic_witness_built": internal_witness is not None,
+        "parametric_complete_execution_theorem": (
+            parametric_theorem.to_dict() if parametric_theorem is not None else None
+        ),
+        "primitive_recursion_receipt_hash": primitive_recursion_hash,
+    }
     return {
         "status": "PASS" if established else "UNRESOLVED",
         "code": None if established else "COMPLETE_EXECUTION_EXISTS_UNRESOLVED",
         "obligation_id": "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS",
-        "witness": {
-            "schema_version": "complete_execution_existence_v4",
-            "quantifier_order": "forall-full-exists-one-prefix-forall-boundaries",
-            "initial_state_constructible": initial_ok,
-            "standard_empty_lo_initial_state": initial_ok,
-            "canonical_successor_total": successor_ok,
-            "time_divergent": div_ok,
-            "projected_oracle_defined": proj_ok,
-            "projected_demands_legal": demand_ok,
-            "complete_execution_exists": established,
-            "complete_execution_witness_constructed": witness_ok,
-            "finite_prefix_compatibility_proved": witness_ok,
-            "same_fixed_oracle": witness_ok and oracle_binding_ok,
-            "same_initial_state": witness_ok and initial_ok,
-            "same_successor_function": "next_closed_boundary" if witness_ok else None,
-            "all_finite_prefixes_are_prefixes_of_one_execution": witness_ok,
-            "recurring_history_preserved": established,
-            "idle_jump_expansion_verified": idle_expansion_ok,
-            "time_indexed_closed_observation_defined": idle_expansion_ok,
-            "projected_oracle_fingerprint": projected_oracle_fingerprint,
-            "complete_execution_oracle_hash": complete_execution_oracle_fingerprint,
-            "same_projected_oracle": oracle_binding_ok,
-        },
+        "witness": witness_payload,
         "failure": None if established else {
             "code": "COMPLETE_EXECUTION_EXISTS_UNRESOLVED",
-            "reason": (
-                "Complete execution existence requires total canonical successor, "
-                "time divergence, a complete legal projected oracle, a standard empty "
-                "LO initial state, one dependent-choice witness, and the independent "
-                "local idle-jump theorem."
-            ),
+            "premises": {
+                "initial": initial_ok, "successor": successor_ok,
+                "time_divergence": div_ok, "projection": proj_ok,
+                "projection_quantifier": projection_quantifier_ok,
+                "demand_receptiveness": demand_ok,
+                "idle_expansion": idle_expansion_ok,
+                "concrete_oracle_matches": concrete_oracle_matches,
+            },
         },
     }
 

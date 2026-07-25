@@ -5,13 +5,81 @@ from typing import Any, Mapping
 from formal_toolchain.core.hashing import sha256_object
 
 
+def _solve_with_z3_ctypes(smt2: str) -> tuple[str, str | None]:
+    """Use the system Z3 shared library when z3py is unavailable.
+
+    The fallback is deliberately narrow: it loads the same SMT-LIB2 query into
+    a fresh solver and returns only SAT/UNSAT/UNKNOWN.  It does not weaken the
+    proof obligation or replace universal solving with finite enumeration.
+    """
+    import ctypes
+    import ctypes.util
+
+    library_name = ctypes.util.find_library("z3")
+    if not library_name:
+        return "UNRESOLVED", "PP0_Z3_SHARED_LIBRARY_UNAVAILABLE"
+    try:
+        lib = ctypes.CDLL(library_name)
+        void_p = ctypes.c_void_p
+        lib.Z3_mk_config.restype = void_p
+        lib.Z3_del_config.argtypes = [void_p]
+        lib.Z3_mk_context_rc.argtypes = [void_p]
+        lib.Z3_mk_context_rc.restype = void_p
+        lib.Z3_del_context.argtypes = [void_p]
+        lib.Z3_mk_solver.argtypes = [void_p]
+        lib.Z3_mk_solver.restype = void_p
+        lib.Z3_solver_inc_ref.argtypes = [void_p, void_p]
+        lib.Z3_solver_dec_ref.argtypes = [void_p, void_p]
+        lib.Z3_solver_from_string.argtypes = [void_p, void_p, ctypes.c_char_p]
+        lib.Z3_solver_check.argtypes = [void_p, void_p]
+        lib.Z3_solver_check.restype = ctypes.c_int
+        lib.Z3_get_error_code.argtypes = [void_p]
+        lib.Z3_get_error_code.restype = ctypes.c_uint
+        lib.Z3_get_error_msg.argtypes = [void_p, ctypes.c_uint]
+        lib.Z3_get_error_msg.restype = ctypes.c_char_p
+
+        config = lib.Z3_mk_config()
+        context = lib.Z3_mk_context_rc(config)
+        lib.Z3_del_config(config)
+        solver = lib.Z3_mk_solver(context)
+        lib.Z3_solver_inc_ref(context, solver)
+        try:
+            # Solver-from-string accepts declarations/assertions.  The command
+            # is removed because the API itself performs the check.
+            source = "\n".join(
+                line for line in smt2.splitlines()
+                if line.strip() != "(check-sat)"
+            )
+            lib.Z3_solver_from_string(context, solver, source.encode("utf-8"))
+            error_code = int(lib.Z3_get_error_code(context))
+            if error_code != 0:
+                message = lib.Z3_get_error_msg(context, error_code)
+                detail = message.decode("utf-8", "replace") if message else str(error_code)
+                return "UNRESOLVED", f"PP0_Z3_CTYPE_PARSE_ERROR:{detail}"
+            result = int(lib.Z3_solver_check(context, solver))
+            if result == -1:
+                return "UNSAT", None
+            if result == 1:
+                return "SAT", "PP0_NEGATED_OBLIGATION_SATISFIABLE"
+            return "UNKNOWN", "PP0_Z3_RETURNED_UNKNOWN"
+        finally:
+            lib.Z3_solver_dec_ref(context, solver)
+            lib.Z3_del_context(context)
+    except Exception as exc:
+        return "UNRESOLVED", f"PP0_Z3_CTYPE_ERROR:{type(exc).__name__}:{exc}"
+
+
 def _solve_code_bound_smt2(smt2: str) -> tuple[str, str | None]:
     try:
         import z3
-    except Exception as exc:
-        return "UNRESOLVED", f"PP0_Z3_UNAVAILABLE:{type(exc).__name__}:{exc}"
+    except Exception:
+        return _solve_with_z3_ctypes(smt2)
     try:
-        assertions = z3.parse_smt2_string(smt2)
+        source = "\n".join(
+            line for line in smt2.splitlines()
+            if line.strip() != "(check-sat)"
+        )
+        assertions = z3.parse_smt2_string(source)
         solver = z3.Solver()
         solver.add(assertions)
         result = solver.check()
@@ -75,6 +143,14 @@ def check_pp0_transition_queries() -> dict[str, Any]:
             "source_function": query_info.get("source_function"),
             "source_ast_hash": query_info.get("source_ast_hash"),
             "relation_schema_hash": query_info.get("relation_schema_hash"),
+            "semantic_effect_hash": query_info.get("semantic_effect_hash"),
+            "required_assumption_ids": query_info.get("required_assumption_ids", []),
+            "projection_derivation_complete": query_info.get("projection_derivation_complete"),
+            "full_ir_hash": query_info.get("full_ir_hash"),
+            "prefix_ir_hash": query_info.get("prefix_ir_hash"),
+            "pairing_kind": query_info.get("pairing_kind"),
+            "all_paths_covered": query_info.get("all_paths_covered"),
+            "direct_executable_encoding": query_info.get("direct_executable_encoding"),
             "solver_result": solver_result if code_bound and applicable else None,
             "transition_equations_bound": code_bound,
             "proof_scope": query_info.get("proof_scope"),

@@ -120,6 +120,8 @@ def check_runtime_schema_conformance(**kwargs: Any) -> dict[str, Any]:
                 "lo_version_selected_at_release",
                 "deadline_observe_only",
                 "protected_input_independence",
+                "mode_transitions_zero_time",
+                "released_protected_job_state_mode_invariant",
             )
         )
     ):
@@ -248,10 +250,16 @@ def check_weak_forward_simulation(**kwargs: Any) -> dict[str, Any]:
         macro_step_receipt=macro_step_proof,
         execution_existence_receipt=predecessors["PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS"],
         base_case_receipt=base_case_proof,
+        simulation_domain_receipt=predecessors["FULL_TO_PREFIX_SIMULATION_DOMAIN"],
+        input_projection_receipt=predecessors["PROTECTED_INPUT_STREAM_PROJECTION"],
+        demand_receptiveness_receipt=predecessors["PROTECTED_INPUT_DEMAND_RECEPTIVENESS"],
         proof_kernel_receipt=prove_weak_forward_simulation_kernel(
             macro_step_receipt=macro_step_proof,
             execution_receipt=predecessors["PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS"],
             base_case_receipt=base_case_proof,
+            simulation_domain_receipt=predecessors["FULL_TO_PREFIX_SIMULATION_DOMAIN"],
+            input_projection_receipt=predecessors["PROTECTED_INPUT_STREAM_PROJECTION"],
+            demand_receptiveness_receipt=predecessors["PROTECTED_INPUT_DEMAND_RECEPTIVENESS"],
         ),
     )
     if kernel.get("status") == "PASS":
@@ -318,6 +326,11 @@ def check_hi_bad_prefix_reflection(**kwargs: Any) -> dict[str, Any]:
                 predecessors["PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED"]
             ),
             deadline_batch_receipt=ddl_batch_proof,
+        ),
+        prefix_taskset_fingerprint=(
+            _route_state(kwargs).analysis_taskset.to_dict()["fingerprint"]
+            if _route_state(kwargs) is not None and _route_state(kwargs).analysis_taskset is not None
+            else None
         ),
     )
     if result.get("status") == "PASS":
@@ -713,35 +726,61 @@ def check_prefix_complete_execution_exists(**kwargs: Any) -> dict[str, Any]:
     state = _route_state(kwargs)
     if state is None or state.analysis_taskset is None:
         return _finish("UNRESOLVED", "PROTECTED_PREFIX_TASKSET_MISSING")
-    # The theorem quantifies over an arbitrary full reference execution.
-    # A FullReferenceRecurringInputOracle generated from task WCETs is not the
-    # release ledger of that selected execution and cannot witness
-    #   forall xi_ref, exists one xi_pp, forall t.
-    # Keep this node fail-closed until the projection predecessor exports a
-    # source-bound arbitrary-execution oracle/witness constructor consumed by
-    # primitive recursion.
+
     projection = _unwrap_proof_payload(
         predecessors["PROTECTED_INPUT_STREAM_PROJECTION"]
     )
+    # A concrete full ledger is optional diagnostic input.  The theorem itself
+    # quantifies over an arbitrary full execution and therefore consumes the
+    # symbolic projection receipt rather than asking a seed user to supply an
+    # infinite ledger manually.
+    ledger = (
+        kwargs.get("full_execution_release_ledger")
+        or kwargs.get("full_execution_ledger")
+        or kwargs.get("full_execution_input_view")
+    )
+    projected_oracle = None
+    input_receipt: Mapping[str, Any] = predecessors["PROTECTED_INPUT_STREAM_PROJECTION"]
+    if ledger is not None:
+        construction = state.prepared_route.construction_witnesses.get("build_result")
+        from formal_toolchain.reference.protected_priority_prefix.input_oracle import (
+            project_full_execution_ledger,
+        )
+        from formal_toolchain.reference.protected_priority_prefix.projected_oracle_theorem import (
+            bind_projection_to_full_execution_ledger,
+        )
+        try:
+            projected_oracle = project_full_execution_ledger(ledger, construction)
+            bound_projection = bind_projection_to_full_execution_ledger(
+                symbolic_projection_receipt=projection.get("projection_receipt", projection),
+                full_execution_ledger=ledger,
+                projected_oracle=projected_oracle,
+            )
+        except (TypeError, ValueError, AttributeError) as exc:
+            return _finish("UNRESOLVED", "FULL_EXECUTION_RELEASE_LEDGER_INVALID", {
+                "error": str(exc),
+            })
+        if bound_projection.get("status") != "PASS":
+            return _finish("UNRESOLVED", "PARAMETRIC_INPUT_PROJECTION_BINDING_MISSING", {
+                "projection": bound_projection,
+            })
+        input_receipt = bound_projection
+
+    from formal_toolchain.reference.protected_priority_prefix.execution_builder import (
+        prove_complete_execution_exists,
+    )
+    result = prove_complete_execution_exists(
+        canonical_successor_receipt=predecessors["PROTECTED_PREFIX_CANONICAL_SUCCESSOR_TOTAL"],
+        time_divergence_receipt=predecessors["PROTECTED_PREFIX_TIME_DIVERGENCE"],
+        input_projection_receipt=input_receipt,
+        demand_receptiveness_receipt=predecessors["PROTECTED_INPUT_DEMAND_RECEPTIVENESS"],
+        prefix_taskset=state.analysis_taskset,
+        protected_oracle=projected_oracle,
+        idle_jump_expansion_receipt=predecessors["PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION"],
+    )
     return _finish(
-        "UNRESOLVED",
-        "ARBITRARY_FULL_EXECUTION_ORACLE_WITNESS_REQUIRED",
-        {
-            "reason": (
-                "Complete prefix-execution existence must be constructed from "
-                "the fixed release ledger of the arbitrarily chosen full "
-                "execution.  Regenerating demands from task WCETs proves only "
-                "one synthetic execution and has the wrong quantifier scope."
-            ),
-            "required_quantifier_order": (
-                "forall-full-exists-one-prefix-forall-boundaries"
-            ),
-            "projection_quantifier_scope": projection.get("quantifier_scope"),
-            "projected_oracle_fingerprint": projection.get(
-                "projected_oracle_fingerprint"
-            ),
-            "default_wcet_oracle_prohibited": True,
-        },
+        "PASS" if result.get("status") == "PASS" else "UNRESOLVED",
+        result.get("code"), result,
     )
 
 
@@ -759,6 +798,9 @@ def check_registered_parametric_lemma(**kwargs: Any) -> dict[str, Any]:
 
     from formal_toolchain.core.hashing import sha256_object
     from formal_toolchain.reference.protected_priority_prefix.executable_transition_compiler import compile_function
+    from formal_toolchain.reference.protected_priority_prefix.batch_cursor_kernel import (
+        build_parameterized_fold_receipt,
+    )
     from formal_toolchain.reference.protected_priority_prefix.macro_step import (
         prove_tail_service_exclusion, prove_final_dispatch_correspondence,
         prove_protected_service_correspondence, prove_completion_removal_correspondence,
@@ -778,6 +820,23 @@ def check_registered_parametric_lemma(**kwargs: Any) -> dict[str, Any]:
         normalized["status"] = row.get("status")
         pp0[str(row.get("case_id"))] = normalized
         pp0[str(row.get("receipt_id"))] = normalized
+    if not pp0:
+        from formal_toolchain.reference.protected_priority_prefix.pp0_checker import (
+            build_pp0_transition_certificate,
+        )
+        direct_pp0 = build_pp0_transition_certificate()
+        for row in direct_pp0.get("receipt_results", ()):
+            if isinstance(row, Mapping):
+                normalized = dict(row)
+                normalized["status"] = row.get("status")
+                pp0[str(row.get("case_id"))] = normalized
+                pp0[str(row.get("receipt_id"))] = normalized
+
+    from formal_toolchain.reference.protected_priority_prefix.runtime_semantics_theorems import (
+        build_runtime_semantics_theorem_certificate,
+    )
+    local_runtime = build_runtime_semantics_theorem_certificate()
+    local_theorems = dict(local_runtime.get("receipts", {}))
 
     def transition_receipt(function_name: str, *, case_id: str) -> dict[str, Any]:
         ir = compile_function(function_name)
@@ -834,6 +893,13 @@ def check_registered_parametric_lemma(**kwargs: Any) -> dict[str, Any]:
             for case in ("RECOVERY", "MODE_SWITCH", "TAIL_ONLY_SERVICE")
         ) and idle.get("status") == "PASS" else "UNRESOLVED",
         "all_symmetric_cases": True,
+        "all_asymmetric_cases": True,
+        "cases": [
+            "FULL_ONLY_RECOVERY", "PREFIX_ONLY_RECOVERY",
+            "FULL_ONLY_SWITCH", "PREFIX_ONLY_SWITCH",
+            "FULL_TAIL_ONLY_SERVICE", "FULL_TAIL_ONLY_DEADLINE_ENTRY",
+            "FULL_TAIL_ONLY_ARRIVAL_ENTRY",
+        ],
         "source_receipt_hashes": {
             case: sha256_object(pp0.get(case, {}))
             for case in ("RECOVERY", "MODE_SWITCH", "TAIL_ONLY_SERVICE")
@@ -844,30 +910,40 @@ def check_registered_parametric_lemma(**kwargs: Any) -> dict[str, Any]:
 
     def fold_receipt(phase: str, function_name: str, case_id: str) -> dict[str, Any]:
         ir = compile_function(function_name)
-        receipt = ir.compilation_receipt
-        source_bound = bool(
-            ir.is_compiled() and receipt is not None
-            and receipt.covered_return_path_count == receipt.return_path_count
-            and receipt.covered_raise_path_count == receipt.raise_path_count
+        local_theorem = (
+            "DEADLINE_OBSERVE_ONLY" if phase == "DDLCursor"
+            else "ABNORMAL_HI_CLASSIFIED_AT_ARRIVAL"
         )
-        result = {
-            "theorem_id": "BATCH_CURSOR_PARAMETERIZED_FOLD",
-            "phase": phase,
-            "base_case": source_bound,
-            "protected_step": source_bound,
-            "tail_step": source_bound,
-            "end_case": source_bound,
-            "all_batch_sizes": source_bound,
-            "finite_instance_data_used": False,
-            "relation_schema_hash": sha256_object({"schema": "phase_relation_v4_close_at"}),
-            "source_function": function_name,
-            "source_ast_hash": ir.source_function_ast_hash,
-            "ir_hash": ir.ir_hash(),
-            "source_transition_receipt_hash": sha256_object(pp0.get(case_id, {})),
-            "status": "PASS" if source_bound and pp0.get(case_id, {}).get("status") == "PASS" else "UNRESOLVED",
-        }
-        result["receipt_hash"] = sha256_object(result)
-        return result
+        projection_envelope = _unwrap_proof_payload(
+            predecessors.get("PROTECTED_INPUT_STREAM_PROJECTION")
+        )
+        projection_payload = dict(
+            projection_envelope.get("projection_receipt", projection_envelope)
+        )
+        projection_payload.setdefault("status", "PASS" if predecessors.get(
+            "PROTECTED_INPUT_STREAM_PROJECTION", {}
+        ).get("obligation_status") == "PASS" else "UNRESOLVED")
+        demand_envelope = _unwrap_proof_payload(
+            predecessors.get("PROTECTED_INPUT_DEMAND_RECEPTIVENESS")
+        )
+        demand_payload = dict(
+            demand_envelope.get("proof_receipt", demand_envelope)
+        )
+        demand_payload.setdefault("status", "PASS" if predecessors.get(
+            "PROTECTED_INPUT_DEMAND_RECEPTIVENESS", {}
+        ).get("obligation_status") == "PASS" else "UNRESOLVED")
+        return build_parameterized_fold_receipt(
+            phase=phase,
+            transition_ir=ir,
+            pp0_receipt=pp0.get(case_id, {}),
+            required_local_theorem_id=local_theorem,
+            local_theorem_receipts=local_theorems,
+            additional_pp0_receipts={
+                key: pp0.get(key, {}) for key in ("MODE_SWITCH", "RELEASE")
+            } if phase == "ARRCursor" else {},
+            projection_receipt=projection_payload if phase == "ARRCursor" else None,
+            demand_receptiveness_receipt=demand_payload if phase == "ARRCursor" else None,
+        )
 
     folds = {
         "DDLCursor": fold_receipt("DDLCursor", "apply_deadline_observation", "DEADLINE_OBSERVATION"),
@@ -1244,14 +1320,39 @@ def check_mathematical_conformance(**kwargs: Any) -> dict[str, Any]:
         "prefix_taskset_fingerprint": expected_fp,
         "model_conformance_receipt_hash": conformance_receipt.get("artifact_hash"),
         "rta_receipt_hash": rta_receipt.get("artifact_hash"),
+        "theory_library_version_receipt_hash": predecessors["THEORY_LIBRARY_VERSION"].get(
+            "artifact_hash"
+        ),
     }
     imported_binding["receipt_hash"] = sha256_object(imported_binding)
+    from formal_toolchain.reference.protected_priority_prefix.proof_kernel import (
+        prove_pp7a_imported_assumptions_kernel,
+        prove_pp7b_rta_to_inequalities_kernel,
+    )
+    pp7a_kernel = prove_pp7a_imported_assumptions_kernel(
+        model_conformance_receipt=conformance,
+    )
+    pp7b_kernel = prove_pp7b_rta_to_inequalities_kernel(
+        rta_receipt=rta_soundness,
+        imported_theorem_receipt={
+            "status": "PASS",
+            "statement_hash": theorem["statement_hash"],
+            "assumption_hash": theorem["assumption_hash"],
+        },
+        prefix_taskset_fingerprint=expected_fp,
+    )
+    if pp7a_kernel.get("status") != "PASS":
+        return _finish("UNRESOLVED", "PP7_A1_MODEL_CONFORMANCE_KERNEL_UNRESOLVED", pp7a_kernel)
+    if pp7b_kernel.get("status") != "PASS":
+        return _finish("UNRESOLVED", "PP7_B_RTA_SOUNDNESS_KERNEL_UNRESOLVED", pp7b_kernel)
     composition = {
         "theorem_id": "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE",
         "proof_partition": ["PP7-A1", "PP7-A2", "PP7-B"],
         "pp7_a1_model_conformance_hash": conformance_receipt.get("artifact_hash"),
         "pp7_a2_imported_theorem_binding_hash": imported_binding["receipt_hash"],
         "pp7_b_rta_soundness_hash": rta_soundness.get("receipt_hash"),
+        "pp7_a1_kernel_hash": pp7a_kernel.get("receipt_hash"),
+        "pp7_b_kernel_hash": pp7b_kernel.get("receipt_hash"),
         "prefix_taskset_fingerprint": expected_fp,
         "all_task_name_set": expected_names,
         "conclusion": "PROTECTED_PREFIX_TASKSET_SCHEDULABLE",

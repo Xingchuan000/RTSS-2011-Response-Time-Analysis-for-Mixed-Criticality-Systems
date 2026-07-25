@@ -45,9 +45,13 @@ def test_pp0_handwritten_ir_is_not_code_bound():
     assert ir.binding_kind == "HAND_WRITTEN_SCHEMA_ONLY"
     assert ir.binding_kind != "EXECUTABLE_TRANSITION_COMPILER"
     report = check_pp0_transition_queries()
-    assert report["status"] == "UNRESOLVED"
-    assert report["code_bound_query_count"] >= 0  # compiled IR may produce code-bound queries
-    assert report["unresolved_count"] > 0  # always some unresolved queries still
+    # The legacy hand-written IR remains non-authoritative.  The PASS report is
+    # produced by the separate path-sensitive executable compiler and direct
+    # PP0 encoder, never by transition_ir_map().
+    assert report["status"] == "PASS"
+    assert report["code_bound_query_count"] == 12
+    assert report["pass_count"] == 12
+    assert all(row["direct_executable_encoding"] is True for row in report["receipt_results"])
 
 
 def test_simulation_domain_depends_on_demand_receptiveness():

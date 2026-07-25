@@ -112,8 +112,11 @@ def check_full_to_prefix_simulation_domain(**kwargs: Any) -> dict[str, Any]:
             if isinstance(row, dict)
         )
     )
+    runtime_semantics = runtime_schema.get("pp0_witness")
+    if not isinstance(runtime_semantics, dict):
+        runtime_semantics = runtime_schema
     runtime_schema_valid = all(
-        runtime_schema.get(name) is True
+        runtime_semantics.get(name) is True
         for name in (
             "single_processor_preemptive_work_conserving_fp",
             "no_blocking_self_suspension_or_nonpreemptive_segments",

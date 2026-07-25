@@ -15,6 +15,10 @@ from formal_toolchain.core.hashing import sha256_file, sha256_object
 from formal_toolchain.reference.protected_priority_prefix.pp0_checker import (
     build_pp0_transition_certificate,
 )
+from formal_toolchain.reference.protected_priority_prefix.runtime_semantics_theorems import (
+    THEOREM_IDS,
+    build_runtime_semantics_theorem_certificate,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE_FILES = (
@@ -82,6 +86,7 @@ def build_runtime_schema_certificate() -> dict[str, Any]:
     The certificate status is determined by the PP0 relational receipt results.
     """
     pp0_result = build_pp0_transition_certificate()
+    local_semantics = build_runtime_semantics_theorem_certificate()
     legacy_checks = runtime_schema_checks()
     bindings = {name: sha256_file(ROOT / name) for name in SOURCE_FILES}
 
@@ -109,22 +114,29 @@ def build_runtime_schema_certificate() -> dict[str, Any]:
     # local model assumptions such as no blocking, unit processor supply,
     # classification trigger uniqueness, or release-fixed demand semantics.
     # Those require dedicated source-bound local-semantics theorems.
+    local_pass = local_semantics.get("status") == "PASS"
+    local_receipts = local_semantics.get("receipts", {})
+    payload["local_runtime_semantics"] = local_semantics
     payload["pp0_witness"] = {
-        "single_processor_preemptive_work_conserving_fp": False,
-        "no_blocking_self_suspension_or_nonpreemptive_segments": False,
-        "fixed_processor_supply_and_mode_independent_priority": False,
-        "release_fixed_demands": False,
-        "abnormal_classification_at_arrival": False,
-        "abnormal_hi_only_switch_trigger": False,
-        "quiescent_idle_only_recovery": False,
-        "lo_version_selected_at_release": False,
-        "deadline_observe_only": False,
-        "protected_input_independence": False,
+        "single_processor_preemptive_work_conserving_fp": local_pass and local_receipts.get("STRICT_FP_WORK_CONSERVING_DISPATCH", {}).get("status") == "PASS",
+        "no_blocking_self_suspension_or_nonpreemptive_segments": local_pass and local_receipts.get("NO_BLOCKING_SELF_SUSPENSION_NONPREEMPTIVE_SEGMENTS", {}).get("status") == "PASS",
+        "fixed_processor_supply_and_mode_independent_priority": local_pass and local_receipts.get("SINGLE_UNIT_PROCESSOR_SUPPLY", {}).get("status") == "PASS",
+        "release_fixed_demands": local_pass and local_receipts.get("RELEASE_FIXED_ACTUAL_DEMAND", {}).get("status") == "PASS",
+        "abnormal_classification_at_arrival": local_pass and local_receipts.get("ABNORMAL_HI_CLASSIFIED_AT_ARRIVAL", {}).get("status") == "PASS",
+        "abnormal_hi_only_switch_trigger": local_pass and local_receipts.get("ABNORMAL_HI_ONLY_SWITCH_TRIGGER", {}).get("status") == "PASS",
+        "quiescent_idle_only_recovery": local_pass and local_receipts.get("QUIESCENT_IDLE_ONLY_RECOVERY", {}).get("status") == "PASS",
+        "lo_version_selected_at_release": local_pass and local_receipts.get("LO_VERSION_SELECTED_AT_RELEASE", {}).get("status") == "PASS",
+        "deadline_observe_only": local_pass and local_receipts.get("DEADLINE_OBSERVE_ONLY", {}).get("status") == "PASS",
+        "protected_input_independence": local_pass and local_receipts.get("PROTECTED_INPUT_INDEPENDENT_OF_TAIL", {}).get("status") == "PASS",
+        "mode_transitions_zero_time": local_pass and local_receipts.get("MODE_TRANSITIONS_ZERO_TIME", {}).get("status") == "PASS",
+        "released_protected_job_state_mode_invariant": local_pass and local_receipts.get("RELEASED_PROTECTED_JOB_STATE_MODE_INVARIANT", {}).get("status") == "PASS",
         "source_receipt_ids": sorted(receipt_rows.keys()),
+        "local_semantics_theorem_ids": list(THEOREM_IDS),
         "local_semantics_theorems_required": True,
+        "all_local_semantics_theorems_pass": local_pass,
     }
 
-    status = pp0_result.get("status", "UNRESOLVED")
+    status = "PASS" if pp0_result.get("status") == "PASS" and local_pass else "UNRESOLVED"
     failure = None if status == "PASS" else pp0_result.get("failure")
 
     return {

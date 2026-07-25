@@ -15,6 +15,18 @@ from formal_toolchain.reference.protected_priority_prefix.pp_transition_binding 
 from formal_toolchain.reference.protected_priority_prefix.weak_simulation_kernel import (
     prove_weak_forward_simulation,
 )
+from formal_toolchain.reference.protected_priority_prefix.batch_cursor_kernel import (
+    build_parameterized_fold_receipt,
+)
+from formal_toolchain.reference.protected_priority_prefix.executable_transition_compiler import (
+    compile_all_transitions as compile_executable_transitions,
+)
+from formal_toolchain.reference.protected_priority_prefix.pp0_checker import (
+    build_pp0_transition_certificate,
+)
+from formal_toolchain.reference.protected_priority_prefix.runtime_schema import (
+    build_runtime_schema_certificate,
+)
 from formal_toolchain.reference.task_mapping import ReferenceTask, ReferenceTaskset
 from formal_toolchain.theory.backends.protected_prefix_bad_prefix import (
     ProtectedPrefixBadPrefixBackend,
@@ -31,31 +43,47 @@ def _construction():
 
 
 def _fold_receipt(phase: str):
-    return {
-        "status": "PASS",
-        "theorem_id": "BATCH_CURSOR_PARAMETERIZED_FOLD",
-        "phase": phase,
-        "base_case": True,
-        "protected_step": True,
-        "tail_step": True,
-        "end_case": True,
-        "all_batch_sizes": True,
-        "finite_instance_data_used": False,
-        "relation_schema_hash": sha256_object({"schema": "phase_relation_v4_close_at"}),
-    }
+    irs = {ir.case_id: ir for ir in compile_executable_transitions()}
+    pp0_rows = build_pp0_transition_certificate()["receipt_results"]
+    by_receipt = {row["receipt_id"]: row for row in pp0_rows}
+    local = build_runtime_schema_certificate()["local_runtime_semantics"]["receipts"]
+    if phase == "DDLCursor":
+        return build_parameterized_fold_receipt(
+            phase=phase,
+            transition_ir=irs["DEADLINE_OBSERVATION"],
+            pp0_receipt=by_receipt["PP0_DDL_OBSERVE_ONLY"],
+            required_local_theorem_id="DEADLINE_OBSERVE_ONLY",
+            local_theorem_receipts=local,
+        )
+    return build_parameterized_fold_receipt(
+        phase=phase,
+        transition_ir=irs["ARRIVAL_BATCH"],
+        pp0_receipt=by_receipt["PP0_ARR_PENDING_PLAN_PROJECTION"],
+        required_local_theorem_id="ABNORMAL_HI_CLASSIFIED_AT_ARRIVAL",
+        local_theorem_receipts=local,
+        additional_pp0_receipts={
+            "MODE_SWITCH": by_receipt["PP0_SWITCH_STUTTER_FULL_ONLY"],
+            "RELEASE": by_receipt["PP0_RELEASE_PROTECTED_PAYLOAD"],
+        },
+        projection_receipt={"status": "PASS", "forall_release_indices": True},
+        demand_receptiveness_receipt={"status": "PASS"},
+    )
 
 
-def test_handwritten_pp0_queries_are_never_mislabeled_code_bound():
+def test_pp0_queries_are_bound_only_to_complete_projection_derivations():
     queries = generate_code_bound_queries()
-    assert queries
-    # Matching the canonical schema identifies the intended mathematical
-    # case, but does not establish semantic equivalence to the executable
-    # transition.  Until total compilation + adapter refinement exists, every
-    # relational query must remain fail-closed.
-    for q in queries.values():
-        assert q["transition_equations_bound"] is False
-        assert q["proof_scope"] != "CODE_BOUND_RELATIONAL"
-    assert all(case.binding_status == "UNRESOLVED" for case in compile_all_transitions().values())
+    assert len(queries) == 12
+    for query in queries.values():
+        assert query["transition_equations_bound"] is True
+        assert query["proof_scope"] == "CODE_BOUND_RELATIONAL"
+        assert query["direct_executable_encoding"] is True
+        assert query["projection_derivation_complete"] is True
+        assert query["all_paths_covered"] is True
+        assert query["required_assumption_ids"]
+    bound = compile_all_transitions()
+    assert len(bound) == 9
+    assert all(case.binding_status == "CODE_BOUND" for case in bound.values())
+    assert all(case.projection_derivation_complete for case in bound.values())
 
 
 def test_descriptive_proof_kernel_outlines_are_not_authoritative_passes():
@@ -71,11 +99,15 @@ def test_descriptive_proof_kernel_outlines_are_not_authoritative_passes():
     )
 
     construction = _construction()
-    dynamic = [
+    local_source_bound = [
         prove_same_time_closure_termination_kernel(),
         prove_canonical_successor_total_kernel(),
         prove_time_divergence_kernel(),
         prove_idle_jump_stutter_kernel(),
+    ]
+    assert all(item["status"] == "PASS" for item in local_source_bound)
+
+    quantified = [
         prove_complete_execution_exists_kernel(
             prefix_taskset=construction.prefix_taskset,
         ),
@@ -83,7 +115,7 @@ def test_descriptive_proof_kernel_outlines_are_not_authoritative_passes():
         prove_hi_bad_prefix_reflection_kernel(),
         prove_pp8_reference_hi_safety_from_prefix_kernel(),
     ]
-    assert all(item["status"] == "UNRESOLVED" for item in dynamic)
+    assert all(item["status"] == "UNRESOLVED" for item in quantified)
 
 
 def test_l8_batch_lemmas_consume_symbolic_fold_without_concrete_batch():
@@ -150,3 +182,15 @@ def test_bad_prefix_field_lookup_matches_phase_relation_key_shape():
         "executed_service", "completed", "missed", "miss_job_keys",
     ):
         assert _field_equal_in_receipt(receipt, field) is True
+
+
+def test_time_divergence_receipt_exposes_internal_kernel_facts():
+    from formal_toolchain.reference.protected_priority_prefix.execution_builder import (
+        prove_time_divergence,
+    )
+
+    receipt = prove_time_divergence({"status": "PASS"})
+    assert receipt["status"] == "PASS"
+    assert receipt["service_branch_advances_by_1"] is True
+    assert receipt["idle_branch_jumps_to_future_event"] is True
+    assert receipt["unbounded_iteration_proved"] is True

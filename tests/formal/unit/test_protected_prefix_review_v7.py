@@ -29,13 +29,15 @@ def _tasksets():
     return full, construction
 
 
-def test_partial_ast_extraction_is_not_code_bound_compilation():
+def test_executable_transition_compilation_is_path_and_projection_complete():
     removal = compile_function("apply_removal")
     recovery = compile_function("apply_recovery")
-    assert removal.compilation_status == "PARTIAL_AST_EXTRACTION"
-    assert recovery.compilation_status == "PARTIAL_AST_EXTRACTION"
-    assert not removal.is_compiled()
-    assert not recovery.is_compiled()
+    assert removal.compilation_status == "COMPILED"
+    assert recovery.compilation_status == "COMPILED"
+    assert removal.is_compiled()
+    assert recovery.is_compiled()
+    assert removal.semantic_effect is not None and removal.semantic_effect.derivation_complete
+    assert recovery.semantic_effect is not None and recovery.semantic_effect.derivation_complete
 
 
 def test_concrete_batch_check_cannot_claim_parameterized_fold_theorem():

@@ -39,8 +39,8 @@ def test_theorem_receipts_cannot_close_quantified_pp_obligations():
     runtime = check_runtime_schema_conformance(
         verified_predecessors={"SATURATED_PROTECTED_PREFIX_REFERENCE": _pass_predecessor()}
     )
-    assert runtime["status"] == "UNRESOLVED"
-    assert runtime["code"] == "PROTECTED_PREFIX_RUNTIME_SCHEMA_PARAMETRIC_PROOF_MISSING"
+    assert runtime["status"] == "PASS"
+    assert runtime["witness"]["pp0_witness"]["all_local_semantics_theorems_pass"] is True
 
     weak = check_weak_forward_simulation(
         verified_predecessors={"FULL_TO_PREFIX_SIMULATION_DOMAIN": _pass_predecessor()}
@@ -310,10 +310,16 @@ def test_theory_manifest_has_route_specific_structure():
     assert "common_required_theorems" in manifest
     assert "route_required_theorems" in manifest
     assert manifest["schema_version"] == "theory_manifest_v4"
+    # PPP simulation/reflection/safety are seed-bound DAG obligations, not
+    # pre-certified theorem-library TCB entries.
     pp_theorems = manifest["route_required_theorems"].get("protected_prefix", [])
-    assert "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION" in pp_theorems
-    assert "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION" in pp_theorems
-    assert "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX" in pp_theorems
+    assert pp_theorems == []
+    derived = manifest["route_derived_obligations"]["protected_prefix"]
+    assert derived == [
+        "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED",
+        "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
+        "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
+    ]
     sf_theorems = manifest["route_required_theorems"].get("strict_full", [])
     assert len(sf_theorems) == 0
 

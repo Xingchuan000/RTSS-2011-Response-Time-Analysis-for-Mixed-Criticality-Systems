@@ -18,23 +18,23 @@
   "solver_obligation_receipts": {
     "EARLIER_CLOSED_PREFIX_NONMISS_REFLECTS": {
       "result": "UNSAT",
-      "smt2_hash": "16522768643e04dbe3956b3aa6aa79311912dc56034263bfaaf27ebc248aa9aa"
+      "smt2_hash": "569bcf5144550af00a9349323423fd5010021f569a99273ef4e5c22821df916c"
     },
     "FIRST_MISS_SET_MEMBERSHIP_REFLECTS": {
       "result": "UNSAT",
-      "smt2_hash": "501f91bd675045ab0414892c62d619b236f381cdc1d80d4eac1638c70abce0f6"
+      "smt2_hash": "546ab50e105a6359ecabe7e33db5060fb676e5aa9c6ae4099e9692f9c0616ecf"
     },
     "HI_BAD_JOB_POINTWISE_REFLECTS": {
       "result": "UNSAT",
-      "smt2_hash": "ec5238714da69c660dbabaa357a6843ee59febb54ecc49d9921ad6e006230865"
+      "smt2_hash": "6de4e86ea66ff9cfd7077ffd55faa606e2c10557dd2d358deb2a65d450edca5c"
     },
     "HI_DEADLINE_TIME_REFLECTS": {
       "result": "UNSAT",
-      "smt2_hash": "904b8507cccb7aadd08998ee3dedd4ed4506cf56781e2775fc765b89b21c0829"
+      "smt2_hash": "bfabc023dbf4a3086a7857887b7a4b9a05f9159eda5a33ea7293e83c7b2fb478"
     },
     "HI_SERVICE_DEFICIT_REFLECTS": {
       "result": "UNSAT",
-      "smt2_hash": "e162254e2e6cf29591971405f075fc74886beb5f8c02f74f3ae3e14e3f47da0c"
+      "smt2_hash": "828046961a0c9188aacdb139dd4a6a0de97376f1a4f4527131856acc78e7708f"
     }
   },
   "source_bindings": {
