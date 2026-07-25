@@ -16,8 +16,9 @@
   ],
   "proof_object": {
     "backend": "protected-prefix-simulation-v1",
+    "hash_mode": "canonical_json_v1",
     "path": "proofs/PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION.proof.json",
-    "sha256": "d7b5d76023091d5325d464fc64bb4a432605ce1b2b853616d5ff2e14bb591be3"
+    "sha256": "951a733db0684e366abeaa8f2bf96d11d34eff1f5440d703d9d2281beac6351b"
   },
   "source_reference": "Protected Priority Prefix canonical macro-step preservation",
   "statement_hash": "81fced998f7e7c78088b8d45ecba4c1d7661c4f51a10cb67b98d4672d7b20e2b",

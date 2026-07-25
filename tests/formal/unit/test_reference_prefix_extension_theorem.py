@@ -12,7 +12,7 @@ from formal_toolchain.theory.backends.reference_prefix_extension import (
     _prove_unsat,
     verify_reference_prefix_extension_math,
 )
-from formal_toolchain.core.hashing import sha256_file
+from formal_toolchain.core.hashing import sha256_file_by_mode
 
 
 THEORY_DIR = Path(__file__).resolve().parents[3] / "formal_toolchain" / "theory"
@@ -29,7 +29,9 @@ def test_proof_object_hashes_match():
     assert proof_obj.get("path") == "proofs/REFERENCE_PREFIX_EXTENSION.proof.json"
     proof_path = THEORY_DIR / proof_obj["path"]
     assert proof_path.is_file()
-    actual_hash = sha256_file(proof_path)
+    actual_hash = sha256_file_by_mode(
+        proof_path, proof_obj.get("hash_mode", "raw_bytes_v1")
+    )
     assert actual_hash == proof_obj["sha256"], "proof object hash mismatch"
 
 
@@ -108,7 +110,7 @@ def test_case_partition_is_machine_proved():
 
 
 def test_case_partition_mutation_is_rejected():
-    import z3
+    z3 = pytest.importorskip("z3")
     context = z3.Context()
     result = _prove_unsat(
         z3=z3,
@@ -156,7 +158,7 @@ def test_backend_rejects_modified_arithmetic():
 
 @pytest.mark.parametrize("mutation", [
     ["SAME_TIMESTAMP_CLOSURE", "SAME_TIMESTAMP_CLOSURE", "IDLE_JUMP_TO_MINIMUM_FUTURE_EVENT"],
-    ["SAME_TIMESTAMP_CLOSURE", "READY_SERVICE_OR_EARLIER_BOUNDARY", "IDLE_JUMP_TO_MINIMUM_FUTURE_EVENT"],
+    ["READY_SERVICE_OR_EARLIER_BOUNDARY", "SAME_TIMESTAMP_CLOSURE", "IDLE_JUMP_TO_MINIMUM_FUTURE_EVENT"],
     ["SAME_TIMESTAMP_CLOSURE", "READY_SERVICE_OR_EARLIER_BOUNDARY", "IDLE_JUMP_TO_MINIMUM_FUTURE_EVENT", "EXTRA"],
 ])
 def test_case_ids_mutations_rejected(mutation):

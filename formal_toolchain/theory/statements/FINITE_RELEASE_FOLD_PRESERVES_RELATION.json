@@ -12,8 +12,9 @@
   "exact_statement": "A finite fold of primitive release transitions preserves the parameterized relation and extends the finite job map by fresh keys.",
   "proof_object": {
     "backend": "finite-release-fold-v1",
+    "hash_mode": "canonical_json_v1",
     "path": "proofs/FINITE_RELEASE_FOLD_PRESERVES_RELATION.proof.json",
-    "sha256": "aec567da618372c85789af72462fdae51f2093079c271c1ffacdf99db0a05306"
+    "sha256": "1567aabf2f95ec71e4cbdbae66dc52e272873d30d46fd39c1659834f98da0e84"
   },
   "source_reference": "Phase K parameterized arrival release fold",
   "statement_hash": "f8b51e24f2692a1094bb67a381a7d9c3cff0c31241e7a5b9ae815ac028759504",

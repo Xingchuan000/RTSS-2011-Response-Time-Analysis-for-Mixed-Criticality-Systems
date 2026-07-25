@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from formal_toolchain.core.hashing import sha256_file, sha256_object
+from formal_toolchain.core.hashing import sha256_file_by_mode, sha256_object
 
 
 from formal_toolchain.theory.backends.reference_prefix_extension import (
@@ -176,8 +176,20 @@ def load_verified_theory_statement(theory_dir: Path, theorem_id: str) -> dict[st
         proof_path = (theory_dir / proof_object["path"]).resolve(strict=True)
         if theory_dir not in proof_path.parents:
             raise ValueError("PROOF_OBJECT_ESCAPES_THEORY_ROOT")
-        if sha256_file(proof_path) != proof_object["sha256"]:
-            raise ValueError("theory proof object hash mismatch")
+        hash_mode = proof_object.get("hash_mode", "raw_bytes_v1")
+        try:
+            actual_proof_hash = sha256_file_by_mode(proof_path, hash_mode)
+        except ValueError as exc:
+            raise ValueError(
+                f"invalid theory proof object hash mode: {theorem_id}: {exc}"
+            ) from exc
+        if actual_proof_hash != proof_object["sha256"]:
+            raise ValueError(
+                "theory proof object hash mismatch: "
+                f"{theorem_id}: mode={hash_mode}: "
+                f"declared={proof_object['sha256']}: actual={actual_proof_hash}: "
+                f"path={proof_object['path']}"
+            )
         backend_name = proof_object.get("backend", "")
         backend = TCB_BACKENDS.get(backend_name)
         if backend is not None:

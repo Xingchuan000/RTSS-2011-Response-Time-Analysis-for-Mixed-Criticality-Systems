@@ -14,8 +14,9 @@
   ],
   "proof_object": {
     "backend": "protected-prefix-safety-v1",
+    "hash_mode": "canonical_json_v1",
     "path": "proofs/REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX.proof.json",
-    "sha256": "c376db341c0449c41673d420947178fd8dfbf1a884c1d207a38dcc5ee45ae370"
+    "sha256": "2e420529cc83f9f038999f67198cda57c391cd6b6e9a15af0f504e3d931f1c68"
   },
   "source_reference": "Protected-prefix schedulability contradiction",
   "statement_hash": "7f450bae7bd31a638bb89b844f384cb99b8c687989126b34d761f1b6fd5f7f18",

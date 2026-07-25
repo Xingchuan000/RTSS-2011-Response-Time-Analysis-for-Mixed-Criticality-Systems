@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from formal_toolchain.core.hashing import sha256_file, sha256_object
+from formal_toolchain.core.hashing import sha256_file, sha256_file_by_mode, sha256_object
 from formal_toolchain.bridge.state_relation import (
     N6_REQUIRED_QUANTITIES,
     parameterized_state_relation_schema_hash,
@@ -391,8 +391,15 @@ class FiniteHIBadPrefixBackend:
             return {"status": "FAIL", "code": "SOLVER_OBLIGATION_IDS_MISMATCH"}
         if proof.get("solver_obligation_receipts") != math["obligations"]:
             return {"status": "FAIL", "code": "SOLVER_RECEIPTS_MISMATCH", "fresh": math}
-        proof_hash = sha256_file(proof_path)
-        if theorem.get("proof_object", {}).get("sha256") != proof_hash:
+        declared_proof = theorem.get("proof_object", {})
+        try:
+            proof_hash = sha256_file_by_mode(
+                proof_path, declared_proof.get("hash_mode", "raw_bytes_v1")
+            )
+        except ValueError as exc:
+            return {"status": "FAIL", "code": "PROOF_OBJECT_HASH_MODE_INVALID",
+                    "detail": str(exc)}
+        if declared_proof.get("sha256") != proof_hash:
             return {"status": "FAIL", "code": "PROOF_OBJECT_HASH_MISMATCH"}
         receipt_body = {
             "backend_id": "finite-hi-bad-prefix-z3-v1",

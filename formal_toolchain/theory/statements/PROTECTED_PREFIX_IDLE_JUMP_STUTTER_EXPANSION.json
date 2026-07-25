@@ -12,8 +12,9 @@
   "premise_obligation_ids": [],
   "proof_object": {
     "backend": "protected-prefix-idle-jump-v8",
+    "hash_mode": "canonical_json_v1",
     "path": "proofs/PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION.proof.json",
-    "sha256": "94a68511a0fe24474366e5ff50dae871d71cb45ac5d815000e9df26ab0fe9125"
+    "sha256": "32202d23eccfe179558ae475d81e15fcf15e7a0e9639da63340fda25a3c14529"
   },
   "source_reference": "formal_toolchain/reference/protected_priority_prefix/time_indexed_close.py",
   "statement_hash": "ea69ff5cc6a16854716ae8553f75dc3e345984f39c9035524d456f3672f4bb1d",

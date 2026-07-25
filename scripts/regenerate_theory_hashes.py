@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
-from formal_toolchain.core.hashing import sha256_object
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from formal_toolchain.core.hashing import sha256_file, sha256_json_file, sha256_object
+
 STATEMENTS = ROOT / "formal_toolchain" / "theory" / "statements"
 OUTPUT = ROOT / "formal_toolchain" / "theory" / "hashes.json"
+THEORY_ROOT = ROOT / "formal_toolchain" / "theory"
 
 
 def main() -> None:
@@ -15,6 +20,19 @@ def main() -> None:
     for path in sorted(STATEMENTS.glob("*.json")):
         row = json.loads(path.read_text(encoding="utf-8"))
         theorem_id = str(row["theorem_id"])
+
+        proof_object = row.get("proof_object")
+        if isinstance(proof_object, dict):
+            proof_path = (THEORY_ROOT / str(proof_object["path"])).resolve(strict=True)
+            if THEORY_ROOT.resolve() not in proof_path.parents:
+                raise ValueError(f"PROOF_OBJECT_ESCAPES_THEORY_ROOT:{theorem_id}")
+            if proof_path.suffix.lower() == ".json":
+                proof_object["hash_mode"] = "canonical_json_v1"
+                proof_object["sha256"] = sha256_json_file(proof_path)
+            else:
+                proof_object["hash_mode"] = "raw_bytes_v1"
+                proof_object["sha256"] = sha256_file(proof_path)
+
         row["statement_hash"] = sha256_object({
             "theorem_id": theorem_id,
             "exact_statement": row["exact_statement"],

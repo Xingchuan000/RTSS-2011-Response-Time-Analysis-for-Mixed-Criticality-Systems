@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from collections.abc import Mapping
 from pathlib import Path
@@ -26,6 +27,25 @@ def sha256_file(path: Path) -> str:
 def sha256_object(value: Any) -> str:
     return sha256_bytes(canonical_bytes(value))
 
+
+
+def sha256_json_file(path: Path) -> str:
+    """Hash JSON by canonical semantic content, independent of whitespace/line endings."""
+
+    value = json.loads(Path(path).read_text(encoding="utf-8"))
+    return sha256_object(value)
+
+
+def sha256_file_by_mode(path: Path, hash_mode: str) -> str:
+    """Hash an artifact using an explicitly declared, fail-closed mode."""
+
+    if hash_mode == "canonical_json_v1":
+        if Path(path).suffix.lower() != ".json":
+            raise ValueError("canonical_json_v1 requires a .json artifact")
+        return sha256_json_file(path)
+    if hash_mode == "raw_bytes_v1":
+        return sha256_file(path)
+    raise ValueError(f"unsupported artifact hash mode: {hash_mode}")
 
 def proof_safe_value(value: Any) -> Any:
     """Normalize runtime diagnostics before they enter a proof-object hash.

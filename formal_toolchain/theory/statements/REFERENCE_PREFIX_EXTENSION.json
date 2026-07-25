@@ -16,8 +16,9 @@
   "exact_statement": "For every finite legal P0 reference prefix whose state satisfies validate_reference_state and whose periodic generator invariant holds: (1) the three abstract cases SAME_TIMESTAMP_CLOSURE, READY_SERVICE_OR_EARLIER_BOUNDARY, and IDLE_JUMP_TO_MINIMUM_FUTURE_EVENT are exhaustive and mutually exclusive as proved by Z3; (2) same-time closure decreases a lexicographic rank as proved by Z3; (3) same-time generated events enter only a strictly higher phase as enforced by the executable contract; (4) every step_reference successor is revalidated by validate_reference_state; and (5) periodic successor strict futurity and period congruence are proved by Z3.",
   "proof_object": {
     "backend": "reference-prefix-extension-z3-v3",
+    "hash_mode": "canonical_json_v1",
     "path": "proofs/REFERENCE_PREFIX_EXTENSION.proof.json",
-    "sha256": "d2d97baa2123bafd060a06a185000e156df7a707b28d44b53c52cae92d897586"
+    "sha256": "2151b546725476b780d3e66c250fa4b8a900e9a796c9450cf8bb2072dad7b248"
   },
   "source_reference": "P0 reference periodic machine transition rule",
   "statement_hash": "ba42157a994cfab7bd16e50b3deee4bb98178adac4328dd964a7a06b9813216d",

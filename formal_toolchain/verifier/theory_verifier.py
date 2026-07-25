@@ -131,8 +131,11 @@ def verify_theory_library(theory_dir: Path, *, route_id: str | None = None) -> d
 
     if loader_result["status"] != "PASS":
         code = loader_result.get("code", "THEORY_LIBRARY_INVALID")
+        theorem_id = loader_result.get("theorem_id", "UNKNOWN_THEOREM")
         msg = loader_result.get("message", "theory proof object 加载失败")
-        raise ValueError(f"theory proof object 加载失败: {code}: {msg}")
+        raise ValueError(
+            f"theory proof object 加载失败: {code}: {theorem_id}: {msg}"
+        )
 
     route_theorem_ids = loader_result.get("checked_theorems", sorted(ids))
     return {"status": "PASS", "library_version": manifest.get("library_version"),

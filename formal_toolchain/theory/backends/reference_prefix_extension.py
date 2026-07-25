@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from formal_toolchain.core.hashing import sha256_file, sha256_object
+from formal_toolchain.core.hashing import sha256_file, sha256_file_by_mode, sha256_object
 
 
 PREFIX_EXTENSION_SOURCE_FILES = {
@@ -432,8 +432,14 @@ class ReferencePrefixExtensionBackend:
             return math
         if proof.get("solver_obligation_receipts") != math.get("obligations"):
             return {"status": "FAIL", "code": "SOLVER_RECEIPTS_MISMATCH", "fresh": math}
-        proof_hash = sha256_file(proof_path)
         declared_proof = theorem.get("proof_object", {})
+        try:
+            proof_hash = sha256_file_by_mode(
+                proof_path, declared_proof.get("hash_mode", "raw_bytes_v1")
+            )
+        except ValueError as exc:
+            return {"status": "FAIL", "code": "PROOF_OBJECT_HASH_MODE_INVALID",
+                    "detail": str(exc)}
         if declared_proof.get("sha256") and declared_proof.get("sha256") != proof_hash:
             return {"status": "FAIL", "code": "PROOF_OBJECT_HASH_MISMATCH"}
         receipt_body = {
