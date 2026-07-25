@@ -25,6 +25,7 @@ def verify_budget_to_reference_domination(
         "REFERENCE_TASKSET",
         "ACTIVE_RELEASE_BUDGET_INVARIANT",
         "CODE_REFERENCE_UPPER_BOUND_MAPPING",
+        "RELEASE_FIXED_REMOVAL_MAPPING",
     }
     try:
         require_exact_predecessor_set(predecessors=verified_predecessors, expected_ids=expected_ids)
