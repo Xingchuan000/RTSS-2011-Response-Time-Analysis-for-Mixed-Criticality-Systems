@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from formal_toolchain.core.hashing import sha256_file, sha256_file_by_mode, sha256_object
+from formal_toolchain.core.hashing import sha256_file_by_mode, sha256_object, sha256_text_file_normalized
 
 
 PREFIX_EXTENSION_SOURCE_FILES = {
@@ -55,7 +55,7 @@ PREFIX_EXTENSION_SOURCE_FILES = {
 def current_prefix_extension_source_bindings(
 ) -> dict[str, str]:
     return {
-        relative_path: sha256_file(path)
+        relative_path: sha256_text_file_normalized(path)
         for relative_path, path
         in PREFIX_EXTENSION_SOURCE_FILES.items()
     }
@@ -403,6 +403,11 @@ class ReferencePrefixExtensionBackend:
             return {"status": "FAIL", "code": "PROOF_THEOREM_ID_MISMATCH"}
         if proof.get("case_ids") != list(EXPECTED_CASE_IDS):
             return {"status": "FAIL", "code": "PROOF_CASE_IDS_MISMATCH"}
+        if proof.get("source_binding_hash_mode") != "canonical_text_v1":
+            return {
+                "status": "FAIL",
+                "code": "SOURCE_BINDING_HASH_MODE_INVALID",
+            }
         source_bindings = proof.get("source_bindings")
         expected_bindings = (
             current_prefix_extension_source_bindings()

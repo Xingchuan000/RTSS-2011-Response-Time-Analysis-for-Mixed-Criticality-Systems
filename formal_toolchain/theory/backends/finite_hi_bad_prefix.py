@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from formal_toolchain.core.hashing import sha256_file, sha256_file_by_mode, sha256_object
+from formal_toolchain.core.hashing import sha256_file_by_mode, sha256_object, sha256_text_file_normalized
 from formal_toolchain.bridge.state_relation import (
     N6_REQUIRED_QUANTITIES,
     parameterized_state_relation_schema_hash,
@@ -39,7 +39,7 @@ N6_SOURCE_FILES = {
 
 
 def current_n6_source_bindings() -> dict[str, str]:
-    return {relative: sha256_file(path) for relative, path in N6_SOURCE_FILES.items()}
+    return {relative: sha256_text_file_normalized(path) for relative, path in N6_SOURCE_FILES.items()}
 
 
 def _build_n6_obligations(
@@ -382,6 +382,8 @@ class FiniteHIBadPrefixBackend:
             return {"status": "FAIL", "code": "N6_REQUIRED_QUANTITIES_MISMATCH"}
         if proof.get("proof_scope") != "POINTWISE_RELATION_SPECIALIZATION_OVER_FINITE_CLOSED_PREFIXES":
             return {"status": "FAIL", "code": "PROOF_SCOPE_MISMATCH"}
+        if proof.get("source_binding_hash_mode") != "canonical_text_v1":
+            return {"status": "FAIL", "code": "SOURCE_BINDING_HASH_MODE_INVALID"}
         if proof.get("source_bindings") != current_n6_source_bindings():
             return {"status": "FAIL", "code": "SOURCE_BINDINGS_MISMATCH"}
         math = verify_finite_hi_bad_prefix_math()

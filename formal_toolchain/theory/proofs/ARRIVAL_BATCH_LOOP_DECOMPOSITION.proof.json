@@ -5,6 +5,7 @@
     "child_cases": "PASS",
     "finite_fold": "PASS"
   },
+  "source_binding_hash_mode": "canonical_text_v1",
   "source_bindings": {
     "amc_py/event_runtime.py": "4eb79121ffbc589f90c142575e258510a43371383af106f11b7ef8e1f69f6a8e",
     "formal_toolchain/bridge/handler_decomposition.py": "f208f7634a0d99eec46c2ce290ba22025f757bbb4f4265efe9c57d3270b2d6bd",

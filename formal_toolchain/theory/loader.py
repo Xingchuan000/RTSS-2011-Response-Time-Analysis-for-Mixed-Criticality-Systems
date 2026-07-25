@@ -195,7 +195,10 @@ def load_verified_theory_statement(theory_dir: Path, theorem_id: str) -> dict[st
         if backend is not None:
             result = backend.verify(proof_path, theorem=statement)
             if result.get("status") != "PASS":
-                raise ValueError(f"PROOF_OBJECT_BACKEND_REJECTED:{theorem_id}")
+                code = result.get("code", "BACKEND_REJECTED_WITHOUT_CODE")
+                raise ValueError(
+                    f"PROOF_OBJECT_BACKEND_REJECTED:{theorem_id}:{code}"
+                )
         elif backend_name:
             raise ValueError(f"PROOF_BACKEND_NOT_AVAILABLE:{backend_name}")
     else:

@@ -26,6 +26,7 @@ def main() -> None:
              "theorem_id": "FINITE_HI_BAD_PREFIX_REFLECTION",
              "theorem_statement_hash": statement["statement_hash"],
              "theorem_assumption_hash": statement["assumption_hash"],
+             "source_binding_hash_mode": "canonical_text_v1",
              "source_bindings": current_n6_source_bindings(), "solver_backend": "z3",
              "relation_interface": "n6_closed_prefix_relation_interface_v2",
              "parameterized_relation_schema_hash": parameterized_state_relation_schema_hash(),

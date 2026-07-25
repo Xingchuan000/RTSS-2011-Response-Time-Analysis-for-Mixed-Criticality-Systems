@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from formal_toolchain.core.hashing import sha256_file, sha256_object
+from formal_toolchain.core.hashing import sha256_json_file, sha256_object, sha256_text_file_normalized
 from formal_toolchain.bridge.state_relation import parameterized_state_relation_schema_hash
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,11 +30,12 @@ def main() -> None:
     assumption_payload = {"theorem_id": statement["theorem_id"], "assumptions": statement["assumptions"], "premise_obligation_ids": statement.get("premise_obligation_ids", []), "version": statement["version"]}
     statement["statement_hash"] = sha256_object(statement_payload)
     statement["assumption_hash"] = sha256_object(assumption_payload)
-    proof = {"schema_version": "casewise_prefix_induction_proof_v1", "theorem_id": statement["theorem_id"], "theorem_statement_hash": statement["statement_hash"], "theorem_assumption_hash": statement["assumption_hash"], "parameterized_relation_schema_hash": parameterized_state_relation_schema_hash(), "induction_clauses": {"base": "PASS", "step": "PASS", "finite_sequence_induction": "PASS", "map_extension": "PASS", "frame_rule": "PASS", "ledger_monotonicity": "PASS"}, "source_bindings": {name: sha256_file(ROOT / name) for name in SOURCE_FILES}}
+    proof = {"schema_version": "casewise_prefix_induction_proof_v1", "theorem_id": statement["theorem_id"], "theorem_statement_hash": statement["statement_hash"], "theorem_assumption_hash": statement["assumption_hash"], "parameterized_relation_schema_hash": parameterized_state_relation_schema_hash(), "induction_clauses": {"base": "PASS", "step": "PASS", "finite_sequence_induction": "PASS", "map_extension": "PASS", "frame_rule": "PASS", "ledger_monotonicity": "PASS"}, "source_binding_hash_mode": "canonical_text_v1", "source_bindings": {name: sha256_text_file_normalized(ROOT / name) for name in SOURCE_FILES}}
     proof_path = THEORY / "proofs" / "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT.proof.json"
     proof_path.parent.mkdir(exist_ok=True)
     proof_path.write_text(json.dumps(proof, indent=2, sort_keys=True) + "\n")
-    statement["proof_object"]["sha256"] = sha256_file(proof_path)
+    statement["proof_object"]["hash_mode"] = "canonical_json_v1"
+    statement["proof_object"]["sha256"] = sha256_json_file(proof_path)
     statement_path.write_text(json.dumps(statement, indent=2, sort_keys=True) + "\n")
     hashes_path = THEORY / "hashes.json"
     hashes = json.loads(hashes_path.read_text())

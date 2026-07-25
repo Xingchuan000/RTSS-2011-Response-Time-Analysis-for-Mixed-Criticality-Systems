@@ -28,6 +28,20 @@ def sha256_object(value: Any) -> str:
     return sha256_bytes(canonical_bytes(value))
 
 
+def sha256_text_file_normalized(path: Path) -> str:
+    """Hash UTF-8 text by semantic text content, independent of line endings.
+
+    Source-bound theory proofs are expected to survive Git checkout on both
+    POSIX (LF) and Windows (CRLF).  UTF-8 BOMs are ignored and every newline
+    spelling is normalized to ``\n`` before hashing.  Other textual changes
+    still change the digest.
+    """
+
+    text = Path(path).read_text(encoding="utf-8-sig")
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return sha256_bytes(normalized.encode("utf-8"))
+
+
 
 def sha256_json_file(path: Path) -> str:
     """Hash JSON by canonical semantic content, independent of whitespace/line endings."""
@@ -43,6 +57,8 @@ def sha256_file_by_mode(path: Path, hash_mode: str) -> str:
         if Path(path).suffix.lower() != ".json":
             raise ValueError("canonical_json_v1 requires a .json artifact")
         return sha256_json_file(path)
+    if hash_mode == "canonical_text_v1":
+        return sha256_text_file_normalized(path)
     if hash_mode == "raw_bytes_v1":
         return sha256_file(path)
     raise ValueError(f"unsupported artifact hash mode: {hash_mode}")

@@ -9,6 +9,7 @@
   },
   "parameterized_relation_schema_hash": "622cef51b934d622d1babe661e52ac21fb944285675dded631ce8ca998cc8a9d",
   "schema_version": "casewise_prefix_induction_proof_v1",
+  "source_binding_hash_mode": "canonical_text_v1",
   "source_bindings": {
     "formal_toolchain/bridge/event_projection.py": "122786952059a08fb36f6bc0d0bb3c3cc847b65303d7e37bd6cfd1e539a2fb1e",
     "formal_toolchain/bridge/prefix_refinement.py": "19da9f0eb05cedbcce61bfac0505a09e71a56e845c490580f291c58a17068bf7",

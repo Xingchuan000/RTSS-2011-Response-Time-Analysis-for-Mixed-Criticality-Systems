@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from formal_toolchain.core.hashing import sha256_file, sha256_object
+from formal_toolchain.core.hashing import sha256_object, sha256_text_file_normalized
 
 
 SOURCE_FILES = (
@@ -30,13 +30,15 @@ class HandlerDecompositionBackend:
         if proof.get("theorem_statement_hash") != sha256_object(payload) or proof.get("theorem_assumption_hash") != sha256_object(assumptions):
             return {"status": "FAIL", "code": "THEOREM_HASH_BINDING_INVALID"}
         root = Path(__file__).resolve().parents[3]
+        if proof.get("source_binding_hash_mode") != "canonical_text_v1":
+            return {"status": "FAIL", "code": "SOURCE_BINDING_HASH_MODE_INVALID"}
         bindings = proof.get("source_bindings", {})
-        if set(bindings) != set(SOURCE_FILES) or any(bindings[name] != sha256_file(root / name) for name in SOURCE_FILES):
+        if set(bindings) != set(SOURCE_FILES) or any(bindings[name] != sha256_text_file_normalized(root / name) for name in SOURCE_FILES):
             return {"status": "FAIL", "code": "SOURCE_BINDING_MISMATCH"}
         clauses = proof.get("clauses", {})
         if any(clauses.get(name) != "PASS" for name in self.required_clauses):
             return {"status": "FAIL", "code": "DECOMPOSITION_PROOF_CLAUSES_INCOMPLETE"}
-        receipt = {"status": "PASS", "backend_id": self.backend_id, "theorem_statement_hash": proof["theorem_statement_hash"], "theorem_assumption_hash": proof["theorem_assumption_hash"], "source_bindings": bindings, "clauses": clauses}
+        receipt = {"status": "PASS", "backend_id": self.backend_id, "theorem_statement_hash": proof["theorem_statement_hash"], "theorem_assumption_hash": proof["theorem_assumption_hash"], "source_binding_hash_mode": "canonical_text_v1", "source_bindings": bindings, "clauses": clauses}
         receipt["receipt_hash"] = sha256_object(receipt)
         return receipt
 

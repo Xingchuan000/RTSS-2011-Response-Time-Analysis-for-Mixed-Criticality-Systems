@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-from formal_toolchain.core.hashing import sha256_file, sha256_object
+from formal_toolchain.core.hashing import sha256_object, sha256_text_file_normalized
 from formal_toolchain.bridge.state_relation import parameterized_state_relation_schema_hash
 
 
@@ -54,17 +54,19 @@ class CasewisePrefixInductionBackend:
         if proof.get("induction_clauses") != REQUIRED_CLAUSES:
             return {"status": "FAIL", "code": "INDUCTION_CLAUSES_INCOMPLETE"}
         root = Path(__file__).resolve().parents[3]
+        if proof.get("source_binding_hash_mode") != "canonical_text_v1":
+            return {"status": "FAIL", "code": "SOURCE_BINDING_HASH_MODE_INVALID"}
         bindings = proof.get("source_bindings", {})
         if set(bindings) != set(SOURCE_FILES):
             return {"status": "FAIL", "code": "SOURCE_BINDINGS_INCOMPLETE"}
-        if any(bindings[name] != sha256_file(root / name) for name in SOURCE_FILES):
+        if any(bindings[name] != sha256_text_file_normalized(root / name) for name in SOURCE_FILES):
             return {"status": "FAIL", "code": "SOURCE_BINDING_MISMATCH"}
         receipt = {
             "status": "PASS", "backend_id": self.backend_id,
             "theorem_statement_hash": proof["theorem_statement_hash"],
             "theorem_assumption_hash": proof["theorem_assumption_hash"],
             "parameterized_relation_schema_hash": proof["parameterized_relation_schema_hash"],
-            "induction_clauses": dict(REQUIRED_CLAUSES), "source_bindings": dict(bindings),
+            "induction_clauses": dict(REQUIRED_CLAUSES), "source_binding_hash_mode": "canonical_text_v1", "source_bindings": dict(bindings),
         }
         receipt["receipt_hash"] = sha256_object(receipt)
         return receipt

@@ -24,6 +24,7 @@ def main() -> None:
         "schema_version": "reference_prefix_extension_proof_v3",
         "theorem_id": "REFERENCE_PREFIX_EXTENSION",
         "case_ids": list(EXPECTED_CASE_IDS),
+        "source_binding_hash_mode": "canonical_text_v1",
         "source_bindings":
             current_prefix_extension_source_bindings(),
         "theorem_statement_hash": statement["statement_hash"],

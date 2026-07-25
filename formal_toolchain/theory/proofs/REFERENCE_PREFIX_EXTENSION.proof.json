@@ -37,6 +37,7 @@
       "smt2_hash": "a50746d97bff9f2bdd4d6b17174caa40adf47271ab8fd551f4e627e78fb96d3d"
     }
   },
+  "source_binding_hash_mode": "canonical_text_v1",
   "source_bindings": {
     "formal_toolchain/bridge/logical_events.py": "87c4ec04755534cd4ffc82b3f7682341bb49d9fc276313da370afd943ae5041f",
     "formal_toolchain/reference/c_amc_sem_semantics.py": "d0ae27dcb954a278aadaf061df130c907960ea2385123445ad4759fb527bfe7c",
