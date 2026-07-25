@@ -630,7 +630,13 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
             source_context_hash=bridge_context["hash"])
         # production 与 replay 必须作为一个复合证据输出；任何一侧缺失都不
         # 能被顶层 obligation 当作“只要 production PASS 就够了”。
-        rta_composite = build_rta_composite(reference)
+        # RTA domain obligations must be generated for the taskset to which
+        # the selected imported-theorem branch is actually applied.  For
+        # protected_prefix this is the saturated priority prefix, not the full
+        # reference taskset containing the intentionally removed LO tail.
+        analysis_reference = prepared_route.analysis_taskset
+        rta_composite = build_rta_composite(
+            analysis_reference, route_id=route_strategy.route_id)
         rta = rta_composite["production"]
         replay = rta_composite["replay"]
         reference_obligations = decompose_rta_obligations(
@@ -638,7 +644,11 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
             semantic_evidence=evidence,
         )
         evidence.update(reference_obligations)
-        recurring = build_recurring_hi_instances(reference, rta_certificate=rta) if rta.get("status") == "PASS" else {"status": rta.get("status"), "failure": "RTA_NOT_PASS"}
+        recurring = build_recurring_hi_instances(
+            analysis_reference, rta_certificate=rta
+        ) if rta.get("status") == "PASS" else {
+            "status": rta.get("status"), "failure": "RTA_NOT_PASS"
+        }
         corollary = protected_hi_safety_corollary(recurring) if recurring.get("status") == "PASS" else {"status": "FAIL", "route": "REFERENCE_CERTIFICATE_FAILED", "failure": "RECURRING_NOT_PASS"}
         # bridge 证明对象必须由 Phase I-K generator 生成并由 verifier 独立
         # 检查。此函数只导出 verifier 可消费的原始输入，绝不把 transition

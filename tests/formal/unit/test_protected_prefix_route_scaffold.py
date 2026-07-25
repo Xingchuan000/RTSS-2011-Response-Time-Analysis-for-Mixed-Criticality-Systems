@@ -142,3 +142,35 @@ def test_protected_rta_replay_compares_candidate_to_full_reference(monkeypatch):
         fresh_reference=full, fresh_state=state)
     assert result["status"] == "PASS"
     assert result["analysis_taskset"]["fingerprint"] == prepared.analysis_taskset.to_dict()["fingerprint"]
+
+
+def test_protected_route_candidate_rta_uses_saturated_analysis_taskset():
+    """A failing low-priority LO tail must not erase prefix Case1/Case2 domains."""
+    from formal_toolchain.reference.rta_certificate import build_rta_composite
+    from formal_toolchain.reference.task_mapping import ReferenceTask, ReferenceTaskset
+    from formal_toolchain.routes.resolver import resolve_route
+
+    full = ReferenceTaskset((
+        ReferenceTask("lo_protected", 20, 20, 2, 1, "LO", 0, 1, 1, 1, 0),
+        ReferenceTask("hi_cutoff", 25, 25, 3, 5, "HI", 1, 3, 5, None, 0),
+        # Intentionally unschedulable full-reference LO tail.
+        ReferenceTask("lo_tail", 25, 25, 30, 1, "LO", 2, 1, 1, 1, 0),
+    ), "a" * 64)
+    prepared = resolve_route("protected_prefix").prepare_analysis(
+        full_reference_taskset=full,
+        reference_context_hash="a" * 64,
+    )
+
+    strict = build_rta_composite(full, route_id="strict_full")
+    protected = build_rta_composite(
+        prepared.analysis_taskset, route_id="protected_prefix")
+
+    assert strict["status"] == "FAIL"
+    assert protected["status"] == "PASS"
+    production = protected["production"]
+    assert production["route_id"] == "protected_prefix"
+    assert production["obligation_id"] == "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"
+    assert production["task_order"] == ["lo_protected", "hi_cutoff"]
+    assert production["complete_integer_candidate_domains"] is True
+    for row in production["tasks"]:
+        assert [entry["start"] for entry in row["case1"]] == list(range(row["r_lo"]))
