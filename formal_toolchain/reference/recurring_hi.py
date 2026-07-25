@@ -8,6 +8,10 @@ from typing import Any
 
 from formal_toolchain.core.artifact import obligation_certificate, verify_obligation_certificate
 from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.core.obligation_ids import (
+    ALL_TASK_REFERENCE_RTA_ARITHMETIC,
+    PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC,
+)
 from .rta_production import all_task_reference_rta
 from .task_mapping import ReferenceTaskset
 
@@ -35,9 +39,22 @@ def build_recurring_hi_instances(taskset: ReferenceTaskset, *,
     """只消费已验证 RTA certificate，构造带 theorem side conditions 的 instance。"""
     if not verify_obligation_certificate(rta_certificate):
         raise ValueError("RTA certificate hash 无效")
-    if (rta_certificate.get("obligation_id") != "ALL_TASK_REFERENCE_RTA_ARITHMETIC"
+    obligation_id = str(rta_certificate.get("obligation_id", ""))
+    route_id = str(rta_certificate.get("route_id", ""))
+    expected_by_route = {
+        "strict_full": ALL_TASK_REFERENCE_RTA_ARITHMETIC,
+        "protected_prefix": PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC,
+    }
+    expected_obligation_id = expected_by_route.get(route_id)
+    if (expected_obligation_id is None
+            or obligation_id != expected_obligation_id
             or rta_certificate.get("taskset") != taskset.to_dict()):
-        raise ValueError("RTA certificate context/status 不满足 recurring theorem 前置条件")
+        raise ValueError(
+            "RTA certificate context/status 不满足 recurring theorem 前置条件: "
+            f"route_id={route_id!r}, obligation_id={obligation_id!r}, "
+            f"expected_obligation_id={expected_obligation_id!r}, "
+            f"taskset_matches={rta_certificate.get('taskset') == taskset.to_dict()}"
+        )
     theory = _theory_hashes()
     instances = []
     for row in rta_certificate.get("tasks", []):
@@ -85,7 +102,7 @@ def build_recurring_hi_instances(taskset: ReferenceTaskset, *,
         context_hash=taskset.source_context_hash,
         inputs={"rta_artifact_hash": rta_certificate["artifact_hash"]},
         witness={"instances": instances, "theory_refs": theory},
-        direct_predecessor_hashes={"rta": rta_certificate["artifact_hash"]},
+        direct_predecessor_hashes={obligation_id: rta_certificate["artifact_hash"]},
         checker_id=__name__, checker_version="phase-j-v2",
     ))
     return result

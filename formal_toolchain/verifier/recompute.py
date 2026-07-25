@@ -92,6 +92,16 @@ def _load_candidate(bundle: Path, active: list[str], registry: list[Mapping[str,
 
     artifact_dir = Path(bundle) / "artifacts"
     candidates: dict[str, dict[str, Any]] = {}
+    candidate_failure_path = Path(bundle) / "candidate_failure.json"
+    if candidate_failure_path.is_file():
+        candidate_failure = _read(candidate_failure_path)
+        failure = candidate_failure.get("failure") if isinstance(candidate_failure, Mapping) else None
+        if isinstance(failure, Mapping):
+            return None, {}, {
+                "code": str(failure.get("code", "CANDIDATE_INPUT_REPLAY_FAILED")),
+                "candidate_failure": dict(failure),
+            }
+        return None, {}, {"code": "CANDIDATE_INPUT_REPLAY_FAILED"}
     contexts_path = Path(bundle) / "component_contexts.json"
     candidate_contexts = _read(contexts_path) if contexts_path.is_file() else None
     if not isinstance(candidate_contexts, Mapping):

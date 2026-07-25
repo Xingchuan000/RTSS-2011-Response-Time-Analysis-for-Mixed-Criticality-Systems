@@ -34,7 +34,10 @@ from formal_toolchain.verifier.recompute import (
     load_verifier_inputs,
 )
 from formal_toolchain.reference.arithmetic import ceil_div_nonnegative, floor_div_nonnegative, post_count
-from formal_toolchain.reference.rta_production import all_task_reference_rta as protected_hi_rta
+from formal_toolchain.reference.rta_production import (
+    all_task_protected_prefix_rta,
+    all_task_reference_rta as protected_hi_rta,
+)
 from formal_toolchain.reference.rta_replay import replay_rta
 from formal_toolchain.reference.recurring_hi import build_recurring_hi_instances
 from formal_toolchain.reference.protected_hi import protected_hi_safety_corollary
@@ -187,6 +190,35 @@ def test_recurring_and_corollary_require_verified_rta_predecessor():
     tampered = deepcopy(recurring)
     tampered["instances"][0]["r_star"] += 1
     assert protected_hi_safety_corollary(tampered)["status"] == "FAIL"
+
+
+def test_recurring_accepts_route_bound_protected_prefix_rta():
+    rta = all_task_protected_prefix_rta(toy_taskset())
+    recurring = build_recurring_hi_instances(toy_taskset(), rta_certificate=rta)
+    assert recurring["obligation_status"] == "PASS"
+    assert set(recurring["direct_predecessor_hashes"]) == {
+        "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"
+    }
+
+
+def test_recurring_rejects_route_and_obligation_mismatch():
+    rta = all_task_protected_prefix_rta(toy_taskset())
+    tampered = deepcopy(rta)
+    tampered["route_id"] = "strict_full"
+    from formal_toolchain.core.artifact import obligation_certificate
+    # Re-seal the deliberately inconsistent certificate so the rejection is
+    # caused by route/obligation identity rather than a stale artifact hash.
+    tampered.update(obligation_certificate(
+        obligation_id=tampered["obligation_id"],
+        status=tampered["status"],
+        context_hash=toy_taskset().source_context_hash,
+        inputs=tampered["inputs"],
+        witness=tampered["witness"],
+        checker_id=tampered["checker_id"],
+        checker_version=tampered["checker_version"],
+    ))
+    with pytest.raises(ValueError, match="expected_obligation_id"):
+        build_recurring_hi_instances(toy_taskset(), rta_certificate=tampered)
 
 
 def test_obligation_certificate_hash_is_checked_independently():

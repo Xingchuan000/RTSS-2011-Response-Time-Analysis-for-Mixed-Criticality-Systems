@@ -148,6 +148,15 @@ def compile_request(request_path: Path, out_dir: Path, *, source_root: Path | No
             "semantic_input_hash": sha256_proof_object(computed["context_body"]),
         })
         _write(out_dir / "component_contexts.json", computed["contexts"])
+    elif base_error is not None:
+        # Preserve the actual compiler replay failure.  Without this file the
+        # fresh verifier only observes the secondary absence of
+        # component_contexts.json and masks the first mathematical/software
+        # blocker behind CANDIDATE_COMPONENT_CONTEXTS_MISSING.
+        _write(out_dir / "candidate_failure.json", {
+            "schema_version": "candidate_failure_v1",
+            "failure": base_error,
+        })
     summary = {
         "schema_version": "proof_summary_v1",
         "workflow_status": "CANDIDATE",
