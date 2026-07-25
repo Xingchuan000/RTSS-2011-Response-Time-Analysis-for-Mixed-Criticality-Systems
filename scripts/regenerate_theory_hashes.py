@@ -45,9 +45,18 @@ def _refresh_source_bound_proof(backend_name: str, proof: dict[str, object]) -> 
         return True
 
     if backend_name == "reference-prefix-extension-z3-v3":
-        from formal_toolchain.theory.backends.reference_prefix_extension import current_prefix_extension_source_bindings
+        from formal_toolchain.theory.backends.reference_prefix_extension import (
+            current_prefix_extension_source_bindings,
+            verify_reference_prefix_extension_math,
+        )
+        math = verify_reference_prefix_extension_math()
+        if math.get("status") != "PASS":
+            raise RuntimeError(
+                f"REFERENCE_PREFIX_EXTENSION_SOLVER_REGEN_FAILED:{math}"
+            )
         proof["source_binding_hash_mode"] = "canonical_text_v1"
         proof["source_bindings"] = current_prefix_extension_source_bindings()
+        proof["solver_obligation_receipts"] = math["obligations"]
         return True
 
     return False

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
-from formal_toolchain.core.hashing import sha256_file
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from formal_toolchain.core.hashing import sha256_json_file
 from formal_toolchain.theory.backends.reference_prefix_extension import (
     EXPECTED_CASE_IDS,
     current_prefix_extension_source_bindings,
     verify_reference_prefix_extension_math,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
 PROOF_PATH = ROOT / "formal_toolchain/theory/proofs/REFERENCE_PREFIX_EXTENSION.proof.json"
 STATEMENT_PATH = ROOT / "formal_toolchain/theory/statements/REFERENCE_PREFIX_EXTENSION.json"
 
@@ -38,10 +42,11 @@ def main() -> None:
         ],
     }
     PROOF_PATH.write_text(json.dumps(proof, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    proof_hash = sha256_file(PROOF_PATH)
+    proof_hash = sha256_json_file(PROOF_PATH)
     statement["proof_object"] = {
         "path": "proofs/REFERENCE_PREFIX_EXTENSION.proof.json",
         "sha256": proof_hash,
+        "hash_mode": "canonical_json_v1",
         "backend": "reference-prefix-extension-z3-v3",
     }
     STATEMENT_PATH.write_text(json.dumps(statement, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

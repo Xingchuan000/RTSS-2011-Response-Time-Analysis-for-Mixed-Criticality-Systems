@@ -336,28 +336,108 @@ def _verify_closure_rank_decrease() -> dict[str, Any]:
     }
 
 
-def verify_reference_prefix_extension_math() -> dict[str, Any]:
-    components = (
-        _verify_case_partition(),
-        _verify_closure_rank_decrease(),
-        _verify_periodic_arithmetic(),
-    )
-    obligations = {}
-    versions = set()
-    for component in components:
-        if component.get("status") != "PASS":
-            return component
-        obligations.update(component["obligations"])
-        versions.add(component["z3_version"])
-    if set(obligations) != set(EXPECTED_SOLVER_OBLIGATIONS):
-        return {
-            "status": "FAIL",
-            "code": "REFERENCE_PREFIX_SOLVER_OBLIGATION_SET_MISMATCH",
+def _canonical_reference_prefix_extension_smt2(obligation_id: str) -> str:
+    """Return a solver/frontend-independent SMT-LIB2 obligation.
+
+    ``Solver.to_smt2()`` is not a stable receipt format: its whitespace,
+    auxiliary declarations and arithmetic pretty-printing can change across
+    z3py/libz3 versions.  The theorem receipt therefore commits to these
+    canonical closed formulas and every environment solves exactly the same
+    text.
+    """
+    if obligation_id in {
+        "CLOSED_STATE_CASE_PARTITION_EXHAUSTIVE",
+        "CLOSED_STATE_CASE_PARTITION_EXCLUSIVE",
+    }:
+        declarations = """(set-logic QF_LIA)
+(declare-const same_time_count Int)
+(declare-const active_count Int)
+(declare-const future_count Int)
+(declare-const task_count Int)
+(assert (>= same_time_count 0))
+(assert (>= active_count 0))
+(assert (>= future_count 0))
+(assert (> task_count 0))
+(assert (=> (and (= same_time_count 0) (= active_count 0)) (> future_count 0)))
+"""
+        cases = "(or (> same_time_count 0) (and (= same_time_count 0) (> active_count 0)) (and (= same_time_count 0) (= active_count 0) (> future_count 0)))"
+        overlap = "(or (and (> same_time_count 0) (and (= same_time_count 0) (> active_count 0))) (and (> same_time_count 0) (and (= same_time_count 0) (= active_count 0) (> future_count 0))) (and (and (= same_time_count 0) (> active_count 0)) (and (= same_time_count 0) (= active_count 0) (> future_count 0))))"
+        assertion = (
+            f"(assert (not {cases}))"
+            if obligation_id == "CLOSED_STATE_CASE_PARTITION_EXHAUSTIVE"
+            else f"(assert {overlap})"
+        )
+        return declarations + assertion + "\n(check-sat)\n"
+
+    if obligation_id == "SAME_TIMESTAMP_CLOSURE_LEXICOGRAPHIC_DECREASE":
+        rank_count = 7
+        lines = ["(set-logic QF_LIA)", "(declare-const selected_rank Int)"]
+        for index in range(rank_count):
+            lines.extend([
+                f"(declare-const before_{index} Int)",
+                f"(declare-const after_{index} Int)",
+                f"(assert (>= before_{index} 0))",
+                f"(assert (>= after_{index} 0))",
+            ])
+        lines.extend(["(assert (>= selected_rank 0))", f"(assert (< selected_rank {rank_count}))"])
+        branches: list[str] = []
+        lex: list[str] = []
+        for rank in range(rank_count):
+            prefix_eq = " ".join(f"(= after_{i} before_{i})" for i in range(rank))
+            prefix = f" {prefix_eq}" if prefix_eq else ""
+            branches.append(
+                f"(and (= selected_rank {rank}) (>= before_{rank} 1){prefix} (= after_{rank} (- before_{rank} 1)))"
+            )
+            lex.append(f"(and{prefix} (< after_{rank} before_{rank}))")
+        lines.append(f"(assert (or {' '.join(branches)}))")
+        lines.append(f"(assert (not (or {' '.join(lex)})))")
+        lines.append("(check-sat)")
+        return "\n".join(lines) + "\n"
+
+    if obligation_id in {
+        "LEAST_FUTURE_RELEASE_STRICT",
+        "LEAST_FUTURE_RELEASE_CONGRUENT",
+        "LEAST_FUTURE_RELEASE_INDEX_NONNEGATIVE",
+    }:
+        common = """(set-logic QF_NIA)
+(declare-const time Int)
+(declare-const offset Int)
+(declare-const period Int)
+(define-fun k () Int (ite (< time offset) 0 (+ (div (- time offset) period) 1)))
+(define-fun next_release () Int (+ offset (* k period)))
+(assert (>= time 0))
+(assert (> period 0))
+(assert (>= offset 0))
+(assert (< offset period))
+"""
+        negated = {
+            "LEAST_FUTURE_RELEASE_STRICT": "(assert (not (> next_release time)))",
+            "LEAST_FUTURE_RELEASE_CONGRUENT": "(assert (not (= (mod (- next_release offset) period) 0)))",
+            "LEAST_FUTURE_RELEASE_INDEX_NONNEGATIVE": "(assert (not (>= k 0)))",
         }
+        return common + negated[obligation_id] + "\n(check-sat)\n"
+
+    raise KeyError(f"UNKNOWN_REFERENCE_PREFIX_EXTENSION_OBLIGATION:{obligation_id}")
+
+
+def verify_reference_prefix_extension_math() -> dict[str, Any]:
+    """Freshly solve the six canonical obligations.
+
+    Both z3py and the ctypes/system-libz3 fallback consume the same canonical
+    SMT-LIB2 text, so the stored receipt is independent of the local Z3
+    frontend and version.
+    """
+    obligations: dict[str, dict[str, str]] = {}
+    for obligation_id in EXPECTED_SOLVER_OBLIGATIONS:
+        smt2 = _canonical_reference_prefix_extension_smt2(obligation_id)
+        result = _prove_smt2_unsat(obligation_id=obligation_id, smt2=smt2)
+        if result.get("status") != "PASS":
+            return result
+        obligations[obligation_id] = result["receipt"]
     return {
         "status": "PASS",
         "obligations": obligations,
-        "z3_version": sorted(versions)[0],
+        "z3_version": "libz3-or-z3py",
     }
 
 

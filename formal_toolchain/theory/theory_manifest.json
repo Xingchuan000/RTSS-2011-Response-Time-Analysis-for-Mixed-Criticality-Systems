@@ -20,7 +20,7 @@
     "EVENT_HANDLER_MICROSTEP_DECOMPOSITION",
     "FINITE_RELEASE_FOLD_PRESERVES_RELATION"
   ],
-  "library_version": "p0-theory-r10",
+  "library_version": "p0-theory-r11",
   "proof_schema_compatible": [
     "proof_request_v2",
     "common_certificate_v1",
