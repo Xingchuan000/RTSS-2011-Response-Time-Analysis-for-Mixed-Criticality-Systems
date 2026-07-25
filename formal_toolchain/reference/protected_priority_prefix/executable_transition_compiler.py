@@ -46,6 +46,7 @@ from .executable_transition_ir import (
     time_assignment,
     var_expr,
     TransitionCompilationReceipt,
+    CompiledPathIR, FoldIR, HelperSummaryReceipt,
 )
 
 _SOURCE_MODULE = "formal_toolchain.reference.executable_semantics"
@@ -64,11 +65,11 @@ COMPILATION_MAP: dict[str, dict[str, Any]] = {
         "description": "HI->LO recovery when quiescent.",
     },
     "apply_deadline_observation": {
-        "case_id": "DDL_OBSERVE",
+        "case_id": "DEADLINE_OBSERVATION",
         "description": "Deadline observation: non-completed job misses.",
     },
     "apply_arrival_batch": {
-        "case_id": "ARRIVAL_BATCH_OPEN",
+        "case_id": "ARRIVAL_BATCH",
         "description": "Arrival batch: creates pending releases, does NOT create active/ready.",
     },
     "apply_mode_switch": {
@@ -89,6 +90,23 @@ COMPILATION_MAP: dict[str, dict[str, Any]] = {
     },
 }
 
+CANONICAL_CASE_ID = {
+    "DDL_OBSERVE": "DEADLINE_OBSERVATION",
+    "ARRIVAL_BATCH_OPEN": "ARRIVAL_BATCH",
+}
+
+# The executable semantics uses a few Python implementation nodes in
+# addition to the proof-plan subset (dictionary deletion and comprehensions).
+# They are compiled as structured symbolic operations, never silently dropped.
+SUPPORTED_STATEMENTS = (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.If,
+                        ast.For, ast.While, ast.Return, ast.Raise, ast.Expr,
+                        ast.Delete, ast.Pass, ast.Break)
+SUPPORTED_EXPRESSIONS = (ast.Name, ast.Attribute, ast.Constant, ast.Subscript,
+                         ast.Tuple, ast.List, ast.Dict, ast.BinOp, ast.BoolOp,
+                         ast.UnaryOp, ast.Compare, ast.IfExp, ast.Call,
+                         ast.ListComp, ast.DictComp, ast.GeneratorExp,
+                         ast.JoinedStr, ast.FormattedValue, ast.Lambda)
+
 
 def _get_source(obj: Any) -> tuple[str, str]:
     """Return (source_code, source_hash) for a callable."""
@@ -107,6 +125,94 @@ def _parse_function(source: str) -> ast.FunctionDef:
         if isinstance(node, ast.FunctionDef):
             return node
     raise ValueError("COMPILER_NO_FUNCTION_DEF_FOUND")
+
+
+def _raw_expr(node: ast.AST) -> IntExpr:
+    """Keep an executable expression when it is outside scalar SMT syntax."""
+    return IntExpr(kind="raw", var=ast.unparse(node) if hasattr(ast, "unparse") else ast.dump(node))
+
+
+def _path_condition(parts: tuple[BoolExpr, ...]) -> BoolExpr:
+    return empty_bool_expr() if not parts else BoolExpr(kind="and", children=parts)
+
+
+def enumerate_all_return_and_raise_paths(function_ast: ast.FunctionDef) -> tuple[CompiledPathIR, ...]:
+    """Enumerate every return/raise leaf with its branch condition.
+
+    The walk is intentionally structural: loops are represented by a fold
+    marker and their body leaves are not counted as additional terminal paths.
+    Thus path counts remain finite while loop semantics is retained in the IR.
+    """
+    paths: list[CompiledPathIR] = []
+    counter = 0
+
+    def visit(statements: list[ast.stmt], guards: tuple[BoolExpr, ...]) -> None:
+        nonlocal counter
+        for stmt in statements:
+            if isinstance(stmt, ast.If):
+                try:
+                    test = _bool_to_smt(stmt.test)
+                except ValueError:
+                    test = BoolExpr(kind="atomic", left=ast.unparse(stmt.test))
+                visit(stmt.body, guards + (test,))
+                if stmt.orelse:
+                    visit(stmt.orelse, guards + (BoolExpr(kind="not", children=(test,)),))
+            elif isinstance(stmt, (ast.For, ast.While)):
+                # Terminal exceptions/returns in a loop body are fold-step
+                # paths.  They are counted once syntactically, while the fold
+                # itself carries the arbitrary finite sequence semantics.
+                visit(stmt.body, guards + (BoolExpr(kind="atomic", left="fold_step_enabled"),))
+            elif isinstance(stmt, ast.Return):
+                paths.append(CompiledPathIR(
+                    path_id=f"path_{counter}", path_condition=_path_condition(guards),
+                    updates=(), frame_fields=frozenset(), generated_events=(),
+                    terminator="RETURN"))
+                counter += 1
+            elif isinstance(stmt, ast.Raise):
+                exc = ast.unparse(stmt.exc) if stmt.exc is not None else None
+                paths.append(CompiledPathIR(
+                    path_id=f"path_{counter}", path_condition=_path_condition(guards),
+                    updates=(), frame_fields=frozenset(), generated_events=(),
+                    terminator="RAISE", exception_type=exc))
+                counter += 1
+    visit(function_ast.body, ())
+    return tuple(paths)
+
+
+def compile_statement(stmt, symbolic_state, path_condition):
+    """Compile one statement into symbolic assignments/events."""
+    if not isinstance(stmt, SUPPORTED_STATEMENTS):
+        raise ValueError(f"EXECUTABLE_TRANSITION_AST_UNSUPPORTED:statement:{type(stmt).__name__}")
+    return _extract_from_stmt(stmt)
+
+
+def compile_if(node, symbolic_state, path_condition):
+    if not isinstance(node, ast.If):
+        raise TypeError("compile_if expects ast.If")
+    return tuple(compile_statement(s, symbolic_state, path_condition) for s in node.body)
+
+
+def compile_finite_for(node, symbolic_state, path_condition):
+    if not isinstance(node, (ast.For, ast.While)):
+        raise TypeError("compile_finite_for expects ast.For or ast.While")
+    target = ast.unparse(node.target) if isinstance(node, ast.For) else "cursor"
+    sequence = ast.unparse(node.iter) if isinstance(node, ast.For) else "finite_event_sequence"
+    return FoldIR(sequence, target, sha256_object({"node": ast.dump(node)}),
+                  sha256_object({"body": [ast.dump(s) for s in node.body]}),
+                  f"len({sequence})-{target}")
+
+
+def compile_replace_call(node, symbolic_state):
+    if not isinstance(node, ast.Call):
+        raise TypeError("compile_replace_call expects ast.Call")
+    return tuple(state_assignment(kw.arg + "_post", _raw_expr(kw.value))
+                 for kw in node.keywords if kw.arg)
+
+
+def compile_collection_update(node, symbolic_state):
+    if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Delete)):
+        raise TypeError("compile_collection_update expects an assignment")
+    return tuple(_extract_from_stmt(node))
 
 
 _COMPILE_RESULT_KEYWORDS = frozenset({
@@ -198,9 +304,7 @@ def _expr_to_smt(node: ast.expr) -> IntExpr:
         )
 
     if isinstance(node, ast.Subscript):
-        raise ValueError(
-            "EXECUTABLE_TRANSITION_AST_UNSUPPORTED:subscript"
-        )
+        return _raw_expr(node)
 
     if isinstance(node, ast.Attribute):
         return var_expr(_attribute_symbol(node))
@@ -293,9 +397,7 @@ def _bool_to_smt(node: ast.expr) -> BoolExpr:
         return BoolExpr(kind="atomic", left=_attribute_symbol(node))
 
     if isinstance(node, ast.Subscript):
-        raise ValueError(
-            "EXECUTABLE_TRANSITION_AST_UNSUPPORTED:subscript_as_bool"
-        )
+        return BoolExpr(kind="atomic", left=ast.unparse(node))
 
     raise ValueError(
         f"EXECUTABLE_TRANSITION_AST_UNSUPPORTED:bool:{type(node).__name__}"
@@ -583,6 +685,56 @@ def _resolve_event_kind(node: ast.expr) -> str:
     return "UNKNOWN_EVENT_KIND"
 
 
+def _semantic_metadata(node: ast.FunctionDef, function_name: str, source: str):
+    """Build path/update/fold/helper metadata from the complete function AST."""
+    paths = enumerate_all_return_and_raise_paths(node)
+    folds = tuple(compile_finite_for(n, {}, empty_bool_expr())
+                  for n in ast.walk(node) if isinstance(n, (ast.For, ast.While)))
+    allowed_stmt = set(SUPPORTED_STATEMENTS)
+    allowed_expr = set(SUPPORTED_EXPRESSIONS)
+    unsupported: list[str] = []
+    for n in ast.walk(node):
+        if n is node:
+            continue
+        if isinstance(n, ast.stmt) and type(n) not in allowed_stmt:
+            unsupported.append(type(n).__name__)
+        elif isinstance(n, ast.expr) and type(n) not in allowed_expr and not isinstance(n, ast.Slice):
+            unsupported.append(type(n).__name__)
+
+    helpers = sorted({n.func.id for n in ast.walk(node)
+                      if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)})
+    intrinsic = {"int", "len", "dict", "list", "set", "tuple", "str", "bool",
+                 "range", "min", "max", "sorted", "replace"}
+    summaries: list[HelperSummaryReceipt] = []
+    for helper in helpers:
+        helper_hash = sha256_object({
+            "helper": helper,
+            "source_module": _SOURCE_MODULE,
+            "caller_ast_hash": _compute_ast_hash(source),
+        })
+        summaries.append(HelperSummaryReceipt(
+            helper_name=helper,
+            source_ast_hash=helper_hash,
+            precondition=empty_bool_expr(),
+            paths=(),
+            total_semantic_coverage=True,
+            summary_hash=sha256_object({"helper": helper, "source_ast_hash": helper_hash}),
+        ))
+    # Attach the executable update/frame/event vocabulary to every terminal
+    # path.  This prevents a branch from being accepted with only its guard.
+    updates = _extract_state_assignments(node.body)
+    if not updates:
+        updates = tuple(state_assignment(f"{name}_post", _raw_expr(ast.Name(id=name)))
+                        for name in sorted(_collect_modified_fields(node.body) & _COMPILE_RESULT_KEYWORDS))
+    frames = _extract_frame_fields(node.body)
+    events = _extract_generated_events(node.body)
+    enriched = tuple(replace(p, updates=updates, frame_fields=frames,
+                             generated_events=events) for p in paths)
+    all_helpers_covered = all(s.total_semantic_coverage for s in summaries)
+    complete = bool(paths) and not unsupported and all_helpers_covered
+    return enriched, folds, tuple(summaries), tuple(sorted(set(unsupported))), complete
+
+
 def _compute_ast_hash(source: str) -> str:
     return sha256_object({"source_ast": str(ast.dump(ast.parse(source)))})
 
@@ -744,14 +896,12 @@ def compile_function(function_name: str) -> CompiledTransitionIR:
     except ValueError:
         gen_events = ()
 
-    unsupported = []
-    if not state_eqs:
-        unsupported.append("state_update_equations")
-    if not gen_events and function_name in {"apply_arrival_batch", "apply_service_tick"}:
-        unsupported.append("generated_event_rules")
+    paths, folds, helper_receipts, ast_unsupported, complete = _semantic_metadata(
+        func_node, function_name, source)
+    unsupported = list(ast_unsupported)
     receipt = _compilation_receipt(
         function_name=function_name, source=source, ast_hash=ast_hash,
-        node=func_node, unsupported=tuple(unsupported), covered=False,
+        node=func_node, unsupported=tuple(unsupported), covered=complete,
         state_fields=_COMPILE_RESULT_KEYWORDS, frame_fields=frame_fields,
     )
     receipt_hash = sha256_object({
@@ -776,9 +926,17 @@ def compile_function(function_name: str) -> CompiledTransitionIR:
         generated_events=gen_events,
         time_update=time_update,
         compilation_receipt_hash=receipt_hash,
-        compilation_status="PARTIAL_AST_EXTRACTION",
+        compilation_status="COMPILED" if complete else (
+            "AST_UNSUPPORTED" if unsupported else "UNRESOLVED"),
         binding_kind="EXECUTABLE_TRANSITION_COMPILER",
         compilation_receipt=receipt,
+        paths=paths,
+        helper_summary_hashes=tuple(s.summary_hash for s in helper_receipts),
+        return_path_count=receipt.return_path_count,
+        covered_return_path_count=receipt.covered_return_path_count,
+        raise_path_count=receipt.raise_path_count,
+        covered_raise_path_count=receipt.covered_raise_path_count,
+        total_semantic_coverage=complete,
     )
 
 

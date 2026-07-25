@@ -11,6 +11,15 @@ def _empty(value: Any) -> bool:
     return value in (None, (), [], {}, frozenset(), set())
 
 
+def _receipt_pass(receipt: Mapping[str, Any] | None) -> bool:
+    if not isinstance(receipt, Mapping):
+        return False
+    if receipt.get("status", receipt.get("obligation_status")) == "PASS":
+        return True
+    witness = receipt.get("witness")
+    return isinstance(witness, Mapping) and witness.get("status") == "PASS"
+
+
 def prove_standard_initial_relation(
     full_initial_state: Any,
     prefix_initial_state: Any,
@@ -18,8 +27,8 @@ def prove_standard_initial_relation(
     observable_schema_receipt: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """Construct the t=0 relation from actual initial states and predecessors."""
-    partition_ok = isinstance(protected_partition_receipt, Mapping) and protected_partition_receipt.get("status") == "PASS"
-    schema_ok = isinstance(observable_schema_receipt, Mapping) and observable_schema_receipt.get("status") == "PASS"
+    partition_ok = _receipt_pass(protected_partition_receipt)
+    schema_ok = _receipt_pass(observable_schema_receipt)
     states_present = full_initial_state is not None and prefix_initial_state is not None
 
     def attr(state: Any, name: str, default: Any = None) -> Any:
@@ -32,7 +41,10 @@ def prove_standard_initial_relation(
     empty_observables = states_present and all(
         _empty(attr(state, field))
         for state in (full_initial_state, prefix_initial_state)
-        for field in ("jobs", "released", "pending_releases", "ready_order")
+        for field in (
+            "jobs", "released", "terminal", "misses",
+            "pending_releases", "ready_order",
+        )
     )
     no_running = states_present and all(
         attr(state, "running", attr(state, "running_job_key")) is None
@@ -48,8 +60,14 @@ def prove_standard_initial_relation(
         "protected_job_key_sets_empty": empty_observables,
         "ready_running_empty": no_running,
         "relation": "Rel_pp_close(full_init, prefix_init)",
-        "partition_receipt_hash": partition_ok,
-        "observable_schema_receipt_hash": schema_ok,
+        "partition_receipt_hash": (
+            protected_partition_receipt.get("receipt_hash")
+            if isinstance(protected_partition_receipt, Mapping) else None
+        ),
+        "observable_schema_receipt_hash": (
+            observable_schema_receipt.get("receipt_hash")
+            if isinstance(observable_schema_receipt, Mapping) else None
+        ),
     }
     receipt["receipt_hash"] = sha256_object(receipt)
     return receipt

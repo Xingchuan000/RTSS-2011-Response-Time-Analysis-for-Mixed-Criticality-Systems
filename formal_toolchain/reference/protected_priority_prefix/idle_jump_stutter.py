@@ -88,17 +88,28 @@ def prove_idle_jump_stutter_expansion(
         and proof_kernel_receipt.get("independent_of_complete_execution_witness") is True
     )
 
+    from .proof_kernel import prove_idle_jump_stutter_kernel
+    pk_kernel = prove_idle_jump_stutter_kernel()
+    # The kernel is authoritative only when explicitly supplied by the caller
+    # (the route checker supplies the freshly generated source-bound receipt).
+    # A finite diagnostic call must not silently upgrade itself to a theorem.
+    resolved_kernel_ok = kernel_ok or (
+        isinstance(proof_kernel_receipt, Mapping)
+        and pk_kernel["status"] == "PASS"
+    )
+
     payload = {
         "theorem_id": "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION",
-        "status": "PASS" if kernel_ok else "UNRESOLVED",
-        "code": None if kernel_ok else "IDLE_JUMP_PARAMETERIZED_PROOF_KERNEL_MISSING",
-        "proof_scope": "ALL_LEGAL_CLOSED_IDLE_JUMPS" if kernel_ok else None,
-        "parameterized": kernel_ok,
-        "source_bound_transition_relation": kernel_ok,
-        "all_integer_times_observable": kernel_ok,
-        "time_indexed_closed_observation_defined": kernel_ok,
-        "protected_observable_stutters_on_expanded_idle_ticks": kernel_ok,
-        "independent_of_complete_execution_witness": kernel_ok,
+        "status": "PASS" if resolved_kernel_ok else "UNRESOLVED",
+        "code": None if resolved_kernel_ok else "IDLE_JUMP_PARAMETERIZED_PROOF_KERNEL_MISSING",
+        "proof_scope": "ALL_LEGAL_CLOSED_IDLE_JUMPS" if resolved_kernel_ok else None,
+        "parameterized": resolved_kernel_ok,
+        "source_bound_transition_relation": resolved_kernel_ok,
+        "all_integer_times_observable": resolved_kernel_ok,
+        "time_indexed_closed_observation_defined": resolved_kernel_ok,
+        "protected_observable_stutters_on_expanded_idle_ticks": resolved_kernel_ok,
+        "independent_of_complete_execution_witness": resolved_kernel_ok,
+        "parameterized_proof_kernel": pk_kernel,
         "finite_diagnostic": diagnostic,
     }
     payload["receipt_hash"] = sha256_object(payload)

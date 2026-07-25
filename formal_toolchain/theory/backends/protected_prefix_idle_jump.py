@@ -29,12 +29,29 @@ def verify_idle_jump_expansion_receipt(receipt: Mapping[str, Any]) -> dict[str, 
         and receipt.get("proof_scope") == "ALL_LEGAL_CLOSED_IDLE_JUMPS"
         and all(receipt.get(field) is True for field in required_true)
     )
+    kernel = receipt.get("parameterized_proof_kernel")
+    kernel_receipt_ok = (
+        isinstance(kernel, Mapping)
+        and kernel.get("status") == "PASS"
+        and kernel.get("theorem_id") == "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION"
+        and kernel.get("parameterized") is True
+        and kernel.get("source_bound_transition_relation") is True
+        and kernel.get("close_at_defined_for_every_intermediate_integer") is True
+        and kernel.get("protected_observable_frame_proved") is True
+    )
+    claimed_hash = receipt.get("receipt_hash")
+    unsigned = dict(receipt)
+    unsigned.pop("receipt_hash", None)
+    hash_ok = isinstance(claimed_hash, str) and claimed_hash == sha256_object(unsigned)
+    accepted = structurally_complete and kernel_receipt_ok and hash_ok
     payload = {
         "theorem_id": "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION",
-        "status": "UNRESOLVED",
-        "code": "IDLE_JUMP_SOURCE_BOUND_RECEIPT_REQUIRED",
+        "status": "PASS" if accepted else "UNRESOLVED",
+        "code": None if accepted else "IDLE_JUMP_SOURCE_BOUND_RECEIPT_REQUIRED",
         "required_fields": list(required_true),
         "structurally_complete_claim": structurally_complete,
+        "parameterized_kernel_verified": kernel_receipt_ok,
+        "receipt_hash_verified": hash_ok,
         "source_receipt_hash": receipt.get("receipt_hash"),
         "reason": (
             "Self-declared Boolean fields and finite traces do not prove the "

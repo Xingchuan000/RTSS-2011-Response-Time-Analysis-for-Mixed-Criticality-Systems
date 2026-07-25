@@ -131,7 +131,7 @@ def build_pp0_transition_ir() -> tuple[PP0TransitionIR, ...]:
             source_binding=exe_hash,
         ),
         PP0TransitionIR(
-            case_id="DDL_OBSERVE",
+            case_id="DEADLINE_OBSERVATION",
             phase_before="AfterREC",
             phase_after="DDLCursor",
             guard_formula="(= event_kind DEADLINE)",
@@ -152,7 +152,7 @@ def build_pp0_transition_ir() -> tuple[PP0TransitionIR, ...]:
             source_binding=exe_hash,
         ),
         PP0TransitionIR(
-            case_id="ARRIVAL_BATCH_OPEN",
+            case_id="ARRIVAL_BATCH",
             phase_before="DDLCursor",
             phase_after="ARRCursor",
             guard_formula="(= event_kind ARR_BATCH)",
@@ -274,7 +274,7 @@ def build_pp0_transition_ir() -> tuple[PP0TransitionIR, ...]:
                 _eq("frame", "priority_index_post", "priority_index_pre"),
             ),
             time_equation=_eq("time", "time_post", "(+ time_pre 1)"),
-            source_function="apply_service_tick",
+            source_function="close_timestamp",
             source_binding=exe_hash,
         ),
     )

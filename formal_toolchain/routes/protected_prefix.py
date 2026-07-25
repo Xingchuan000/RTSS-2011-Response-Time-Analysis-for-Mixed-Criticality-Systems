@@ -19,7 +19,11 @@ from .protected_prefix_checkers import (
     check_prefix_canonical_successor_total, check_prefix_same_time_closure_terminates,
     check_prefix_time_divergence, check_prefix_idle_jump_stutter_expansion,
     check_prefix_complete_execution_exists,
-    check_initial_relation, check_registered_parametric_lemma,
+    check_initial_relation,
+    check_ppp_l1_tail_service_exclusion, check_ppp_l2_final_dispatch_correspondence,
+    check_ppp_l3_service_correspondence, check_ppp_l4_completion_removal_correspondence,
+    check_ppp_l5_deadline_batch_fold, check_ppp_l6_arrival_batch_fold,
+    check_ppp_l7_canonical_phase_join, check_protected_macro_step_preservation,
 )
 
 
@@ -89,14 +93,14 @@ class ProtectedPrefixRoute:
             "PROTECTED_PREFIX_IDLE_JUMP_STUTTER_EXPANSION": check_prefix_idle_jump_stutter_expansion,
             "PROTECTED_PREFIX_COMPLETE_EXECUTION_EXISTS": check_prefix_complete_execution_exists,
             "PROTECTED_PREFIX_INITIAL_RELATION": check_initial_relation,
-            "PPP_L1_TAIL_SERVICE_EXCLUSION": check_registered_parametric_lemma,
-            "PPP_L2_FINAL_DISPATCH_CORRESPONDENCE": check_registered_parametric_lemma,
-            "PPP_L3_SERVICE_CORRESPONDENCE": check_registered_parametric_lemma,
-            "PPP_L4_COMPLETION_REMOVAL_CORRESPONDENCE": check_registered_parametric_lemma,
-            "PPP_L5_DEADLINE_BATCH_FOLD": check_registered_parametric_lemma,
-            "PPP_L6_ARRIVAL_BATCH_FOLD": check_registered_parametric_lemma,
-            "PPP_L7_CANONICAL_PHASE_JOIN": check_registered_parametric_lemma,
-            "PROTECTED_MACRO_STEP_PRESERVATION": check_registered_parametric_lemma,
+            "PPP_L1_TAIL_SERVICE_EXCLUSION": check_ppp_l1_tail_service_exclusion,
+            "PPP_L2_FINAL_DISPATCH_CORRESPONDENCE": check_ppp_l2_final_dispatch_correspondence,
+            "PPP_L3_SERVICE_CORRESPONDENCE": check_ppp_l3_service_correspondence,
+            "PPP_L4_COMPLETION_REMOVAL_CORRESPONDENCE": check_ppp_l4_completion_removal_correspondence,
+            "PPP_L5_DEADLINE_BATCH_FOLD": check_ppp_l5_deadline_batch_fold,
+            "PPP_L6_ARRIVAL_BATCH_FOLD": check_ppp_l6_arrival_batch_fold,
+            "PPP_L7_CANONICAL_PHASE_JOIN": check_ppp_l7_canonical_phase_join,
+            "PROTECTED_MACRO_STEP_PRESERVATION": check_protected_macro_step_preservation,
         }
 
 

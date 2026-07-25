@@ -38,6 +38,8 @@ def _tasksets():
 def test_finite_idle_jump_sample_cannot_prove_universal_theorem():
     execution = [_State(0), _State(5)]
     receipt = prove_idle_jump_stutter_expansion(execution=execution)
+    # A finite diagnostic can validate the sampled jump, but cannot establish
+    # the universal source-bound frame theorem.
     assert receipt["status"] == "UNRESOLVED"
     assert receipt["parameterized"] is False
     assert receipt["finite_diagnostic"]["status"] == "PASS"

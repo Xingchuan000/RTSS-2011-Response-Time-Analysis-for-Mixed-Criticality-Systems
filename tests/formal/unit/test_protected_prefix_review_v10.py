@@ -171,7 +171,7 @@ def test_idle_jump_backend_rejects_self_asserted_booleans():
     }
     checked = verify_idle_jump_expansion_receipt(receipt)
     assert checked["status"] == "UNRESOLVED"
-    assert checked["code"] == "IDLE_JUMP_EXECUTABLE_PROOF_KERNEL_NOT_IMPLEMENTED"
+    assert checked["code"] == "IDLE_JUMP_SOURCE_BOUND_RECEIPT_REQUIRED"
 
 
 def test_local_pp0_receipt_alone_does_not_prove_relational_l3_or_l4():

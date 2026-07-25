@@ -53,6 +53,8 @@ class IntExpr:
     else_val: str | None = None
 
     def to_smt(self) -> str:
+        if self.kind == "raw":
+            return self.var or "0"
         if self.kind == "var":
             return self.var or "0"
         if self.kind == "const":
@@ -78,6 +80,37 @@ class GeneratedEventRule:
     time_expr: IntExpr
     condition: BoolExpr | None = None
     job_key_expr: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FoldIR:
+    """Finite-sequence fold emitted for a data-dependent event loop."""
+    sequence_symbol: str
+    cursor_symbol: str
+    invariant_schema_hash: str
+    step_summary_hash: str
+    termination_measure: str
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledPathIR:
+    path_id: str
+    path_condition: BoolExpr
+    updates: tuple[Assignment, ...]
+    frame_fields: frozenset[str]
+    generated_events: tuple[GeneratedEventRule, ...]
+    terminator: str
+    exception_type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HelperSummaryReceipt:
+    helper_name: str
+    source_ast_hash: str
+    precondition: BoolExpr
+    paths: tuple[CompiledPathIR, ...]
+    total_semantic_coverage: bool
+    summary_hash: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +176,13 @@ class CompiledTransitionIR:
     compilation_status: str = "COMPILED"  # COMPILED only after total semantic coverage; otherwise PARTIAL_AST_EXTRACTION / AST_UNSUPPORTED / UNRESOLVED
     binding_kind: str = "EXECUTABLE_TRANSITION_COMPILER"
     compilation_receipt: TransitionCompilationReceipt | None = None
+    paths: tuple[CompiledPathIR, ...] = ()
+    helper_summary_hashes: tuple[str, ...] = ()
+    return_path_count: int = 0
+    covered_return_path_count: int = 0
+    raise_path_count: int = 0
+    covered_raise_path_count: int = 0
+    total_semantic_coverage: bool = False
 
     def ir_hash(self) -> str:
         payload = {
@@ -156,6 +196,9 @@ class CompiledTransitionIR:
             "compilation_status": self.compilation_status,
             "binding_kind": self.binding_kind,
             "compilation_receipt": self.compilation_receipt.to_dict() if self.compilation_receipt else None,
+            "paths": [(p.path_id, p.path_condition.to_smt(), p.terminator,
+                       p.exception_type, sorted(p.frame_fields)) for p in self.paths],
+            "helper_summary_hashes": list(self.helper_summary_hashes),
         }
         return sha256_object(payload)
 
@@ -163,6 +206,7 @@ class CompiledTransitionIR:
         return (self.compilation_status == "COMPILED"
                 and self.compilation_receipt is not None
                 and self.compilation_receipt.total_semantic_coverage
+                and self.total_semantic_coverage
                 and not self.compilation_receipt.unsupported_nodes)
 
 

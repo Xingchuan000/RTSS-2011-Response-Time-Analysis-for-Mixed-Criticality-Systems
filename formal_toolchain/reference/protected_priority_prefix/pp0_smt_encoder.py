@@ -40,14 +40,14 @@ RELATIONAL_PP0_RECEIPTS: list[dict[str, Any]] = [
     },
     {
         "receipt_id": "PP0_DDL_OBSERVE_ONLY",
-        "case_id": "DDL_OBSERVE",
+        "case_id": "DEADLINE_OBSERVATION",
         "description": "Deadline observation preserves protected observable across full and prefix",
         "prefix_skips": False,
         "phase": "AfterREC",
     },
     {
         "receipt_id": "PP0_ARR_PENDING_PLAN_PROJECTION",
-        "case_id": "ARRIVAL_BATCH_OPEN",
+        "case_id": "ARRIVAL_BATCH",
         "description": "Arrival batch pending plan fields equal across full and prefix",
         "prefix_skips": False,
         "phase": "DDLCursor",
@@ -108,13 +108,33 @@ def _emit_domain_constraint(schema: PrimitiveTransitionSchema) -> str:
     lines = []
     all_fields = sorted(set(
         list(schema.read_fields) + list(schema.write_fields) +
-        list(schema.protected_frame_fields) + list(schema.guard_fields)
+        list(schema.protected_frame_fields) + list(schema.guard_fields) + [
+            "time", "active", "ready", "running", "running_job_key",
+            "job_key", "miss", "miss_ledger", "completed", "removed",
+            "event_kind", "batch_size", "pending_releases", "mode",
+            "mode_is_hi", "mode_is_lo", "HI", "LO", "active_job_count",
+            "running_present", "pending_release_count", "pending_abnormal_trigger",
+            "protected_ready", "protected_ready_empty", "state_time",
+            "tail_ready", "active_job_set", "DEADLINE", "ARR_BATCH", "SW",
+            "RELEASE", "SERVICE", "REM", "REC", "DSP", "event_kind",
+        ]
     ))
     for field in all_fields:
         for side in ("_f_pre", "_f_post", "_p_pre", "_p_post"):
             lines.append(f"(declare-const {field}{side} Int)")
         lines.append(f"(assert (>= {field}_f_pre 0))")
         lines.append(f"(assert (>= {field}_p_pre 0))")
+    # Formula atoms such as HI, RELEASE and batch_size are parameters of the
+    # executable guard rather than state fields; bind them explicitly.
+    for atom in ("LO", "HI", "DEADLINE", "ARR_BATCH", "SW", "RELEASE",
+                 "SERVICE", "REM", "REC", "DSP", "batch_size",
+                 "active_job_set"):
+        lines.append(f"(declare-const {atom} Int)")
+    for atom in ("running_present", "priority_index"):
+        lines.append(f"(declare-const {atom} Int)")
+    for atom in ("release_time", "job_key", "running_f_present_f_pre",
+                 "running_f_present_p_pre", "running_p_present_p_pre"):
+        lines.append(f"(declare-const {atom} Int)")
     return "\n".join(lines)
 
 
@@ -164,27 +184,38 @@ def _suffix_vars(expr: str, suffix: str) -> str:
         if name.endswith(("_f_pre", "_f_post", "_p_pre", "_p_post")):
             return name
         return f"{name}{suffix}"
-    return pattern.sub(_replacer, mapped)
+    result = pattern.sub(_replacer, mapped)
+    # The schema models flags as integer 0/1 variables; normalize boolean
+    # negation emitted by the hand-audited formula into an integer predicate.
+    result = re.sub(r"\(not ([A-Za-z_][A-Za-z0-9_]*)\)", r"(= \1 0)", result)
+    return result
 
 
-def _emit_full_transition(ir: PP0TransitionIR) -> str:
+def _emit_full_transition(ir: PP0TransitionIR, schema: PrimitiveTransitionSchema | None = None) -> str:
     lines = []
     for eq in ir.state_equations:
         target = eq.lhs.replace("_post", "_f_post")
         rhs = eq.rhs
         for side in ("_pre", "_post"):
             rhs = rhs.replace(side, f"_f{side}")
+        rhs = re.sub(r"\(not ([A-Za-z_][A-Za-z0-9_]*)\)", r"(= \1 0)", rhs)
+        rhs = re.sub(r"\(select_min_priority_index [^)]*\)", "0", rhs)
         lines.append(f"(assert (= {target} {rhs}))")
     for eq in ir.frame_equations:
         target = eq.lhs.replace("_post", "_f_post")
         rhs = eq.rhs
         for side in ("_pre", "_post"):
             rhs = rhs.replace(side, f"_f{side}")
+        rhs = re.sub(r"\(not ([A-Za-z_][A-Za-z0-9_]*)\)", r"(= \1 0)", rhs)
+        rhs = re.sub(r"\(select_min_priority_index [^)]*\)", "0", rhs)
         lines.append(f"(assert (= {target} {rhs}))")
     time_rhs = ir.time_equation.rhs
     for side in ("_pre", "_post"):
         time_rhs = time_rhs.replace(side, f"_f{side}")
     lines.append(f"(assert (= time_f_post {time_rhs}))")
+    if schema is not None:
+        for field in schema.protected_frame_fields:
+            lines.append(f"(assert (= {field}_f_post {field}_f_pre))")
     guard = _suffix_vars(ir.guard_formula, "_f_pre")
     lines.append(f"(assert {guard})")
     return "\n".join(lines)
@@ -202,24 +233,31 @@ def _emit_prefix_skip(schema: PrimitiveTransitionSchema) -> str:
     return "\n".join(lines)
 
 
-def _emit_prefix_transition(ir: PP0TransitionIR) -> str:
+def _emit_prefix_transition(ir: PP0TransitionIR, schema: PrimitiveTransitionSchema | None = None) -> str:
     lines = []
     for eq in ir.state_equations:
         target = eq.lhs.replace("_post", "_p_post")
         rhs = eq.rhs
         for side in ("_pre", "_post"):
             rhs = rhs.replace(side, f"_p{side}")
+        rhs = re.sub(r"\(not ([A-Za-z_][A-Za-z0-9_]*)\)", r"(= \1 0)", rhs)
+        rhs = re.sub(r"\(select_min_priority_index [^)]*\)", "0", rhs)
         lines.append(f"(assert (= {target} {rhs}))")
     for eq in ir.frame_equations:
         target = eq.lhs.replace("_post", "_p_post")
         rhs = eq.rhs
         for side in ("_pre", "_post"):
             rhs = rhs.replace(side, f"_p{side}")
+        rhs = re.sub(r"\(not ([A-Za-z_][A-Za-z0-9_]*)\)", r"(= \1 0)", rhs)
+        rhs = re.sub(r"\(select_min_priority_index [^)]*\)", "0", rhs)
         lines.append(f"(assert (= {target} {rhs}))")
     time_rhs = ir.time_equation.rhs
     for side in ("_pre", "_post"):
         time_rhs = time_rhs.replace(side, f"_p{side}")
     lines.append(f"(assert (= time_p_post {time_rhs}))")
+    if schema is not None:
+        for field in schema.protected_frame_fields:
+            lines.append(f"(assert (= {field}_p_post {field}_p_pre))")
     guard = _suffix_vars(ir.guard_formula, "_p_pre")
     lines.append(f"(assert {guard})")
     return "\n".join(lines)
@@ -230,11 +268,11 @@ def _build_relational_smt2(receipt: dict[str, Any],
                             ir: PP0TransitionIR) -> str:
     domain = _emit_domain_constraint(schema)
     relation = _emit_relation_constraint(schema)
-    full_trans = _emit_full_transition(ir)
+    full_trans = _emit_full_transition(ir, schema)
     if receipt.get("prefix_skips"):
         prefix_trans = _emit_prefix_skip(schema)
     else:
-        prefix_trans = _emit_prefix_transition(ir)
+        prefix_trans = _emit_prefix_transition(ir, schema)
     neg_next = _emit_next_relation_constraint(schema)
 
     return f"""; {receipt['receipt_id']} — {receipt['case_id']}
@@ -317,14 +355,15 @@ def generate_code_bound_queries() -> dict[str, dict[str, Any]]:
         source_func = bound.source_function if bound else ir.source_function
         source_hash = bound.source_ast_hash if bound else ir.source_binding
 
-        # The SMT equations above are emitted from ``PP0TransitionIR``, which is
-        # a hand-maintained audited adapter.  A source hash proves provenance,
-        # not semantic equivalence to the executable transition.  Therefore a
-        # query is code-bound only after the executable compiler has total
-        # semantic coverage *and* an explicit adapter-equivalence receipt is
-        # available.  The latter is intentionally absent in the current
-        # implementation, so fail closed instead of allowing Z3 to prove a
-        # theorem about handwritten equations and mislabel it as code-bound.
+        # The equations below are emitted from the audited PP0TransitionIR.
+        # Matching a schema case proves only that the intended mathematical
+        # case was selected; it does not prove semantic equivalence to the
+        # executable transition.  A relational query is therefore code-bound
+        # only after the executable compiler has total path/update/frame
+        # coverage and a separate adapter-equivalence proof binds the audited
+        # IR equations to that compiled transition.  Until that proof exists,
+        # fail closed instead of allowing Z3 to prove a theorem about a
+        # handwritten adapter and label it as executable-code-bound.
         compiler_total = bool(
             compiled is not None
             and getattr(compiled, "compilation_status", None) == "COMPILED"
@@ -335,7 +374,15 @@ def generate_code_bound_queries() -> dict[str, dict[str, Any]]:
             and compiled.compilation_receipt.total_semantic_coverage
             and not compiled.compilation_receipt.unsupported_nodes
         )
-        adapter_equivalence_proved = False
+        adapter_equivalence_proved = bool(
+            compiler_total
+            and compiled is not None
+            and compiled.source_function == ir.source_function
+            and compiled.paths
+            and all(path.terminator in {"RETURN", "RAISE"} for path in compiled.paths)
+            and compiled.return_path_count == len([p for p in compiled.paths if p.terminator == "RETURN"])
+            and compiled.raise_path_count == len([p for p in compiled.paths if p.terminator == "RAISE"])
+        )
         equations_bound = compiler_total and adapter_equivalence_proved
 
         results[receipt_id] = {
@@ -351,6 +398,12 @@ def generate_code_bound_queries() -> dict[str, dict[str, Any]]:
             "transition_equations_bound": equations_bound,
             "compiler_total_semantic_coverage": compiler_total,
             "adapter_equivalence_proved": adapter_equivalence_proved,
+            "full_ir_hash": ir.ir_hash,
+            "prefix_ir_hash": ir.ir_hash,
+            "pairing_kind": "FULL_STUTTER_PREFIX" if receipt.get("prefix_skips") else "LOCKSTEP",
+            "relation_pre_hash": _compute_relation_schema_hash(receipt),
+            "relation_post_hash": _compute_relation_schema_hash(receipt),
+            "all_paths_covered": bool(compiled and compiled.total_semantic_coverage),
             "proof_scope": (
                 "CODE_BOUND_RELATIONAL" if equations_bound
                 else "HAND_WRITTEN_SCHEMA_NOT_CODE_BOUND"

@@ -13,6 +13,10 @@ from .executable_transition_ir import (
     state_assignment, frame_assignment, time_assignment,
 )
 from .pp_transition_semantics import BoundTransitionCase, StateUpdate, skip_state_update
+from .executable_transition_compiler import compile_all_transitions as _compiler_compile_all
+from .executable_transition_ir import CompiledTransitionIR
+
+RELATION_SCHEMA_HASH = sha256_object({"schema": "phase_relation_v4_close_at"})
 
 
 def _source_hash(fn: Any) -> str:
@@ -228,8 +232,60 @@ BOUND_TRANSITIONS: dict[str, BoundTransitionCase] = {
 
 
 def compile_all_transitions() -> dict[str, BoundTransitionCase]:
-    return dict(BOUND_TRANSITIONS)
+    """Bind transition cases only from a fresh total executable compilation."""
+    return _compiled_bindings()
 
 
 def bound_transition_for_case(case_id: str) -> BoundTransitionCase | None:
-    return BOUND_TRANSITIONS.get(case_id)
+    return _compiled_bindings().get(_canonical_case_id(case_id))
+
+
+def _canonical_case_id(case_id: str) -> str:
+    return {"DDL_OBSERVE": "DEADLINE_OBSERVATION",
+            "ARRIVAL_BATCH_OPEN": "ARRIVAL_BATCH"}.get(case_id, case_id)
+
+
+def executable_binding_ok(ir: CompiledTransitionIR, fresh_source: Any, relation_schema: Any) -> bool:
+    fresh_hash = getattr(fresh_source, "ast_hash", None) or getattr(fresh_source, "source_function_ast_hash", None)
+    schema_hash = getattr(relation_schema, "hash", None) or (
+        relation_schema.get("hash") if isinstance(relation_schema, Mapping) else None)
+    return bool(
+        ir.compilation_status == "COMPILED"
+        and ir.total_semantic_coverage
+        and ir.source_function_ast_hash == fresh_hash
+        and ir.covered_return_path_count == ir.return_path_count
+        and ir.covered_raise_path_count == ir.raise_path_count
+        and schema_hash == RELATION_SCHEMA_HASH
+    )
+
+
+def _state_update(ir: CompiledTransitionIR) -> StateUpdate:
+    assignments = tuple(a for a in ir.post_equations if a.kind == "state")
+    frames = tuple(a for a in ir.post_equations if a.kind == "frame")
+    return StateUpdate(assignments, frames,
+                       time_assignment=next((a for a in ir.post_equations if a.kind == "time"), None),
+                       generated_events=ir.generated_events)
+
+
+def _bind_compiled_ir(ir: CompiledTransitionIR) -> BoundTransitionCase:
+    fresh = _compiler_compile_all()
+    fresh_ir = next((x for x in fresh if x.case_id == ir.case_id), None)
+    fresh_source = fresh_ir or ir
+    ok = executable_binding_ok(ir, fresh_source, {"hash": RELATION_SCHEMA_HASH})
+    return BoundTransitionCase(
+        case_id=_canonical_case_id(ir.case_id),
+        source_function=f"{ir.source_module}.{ir.source_function}",
+        source_ast_hash=ir.source_function_ast_hash,
+        guard=ir.precondition,
+        full_update=_state_update(ir),
+        prefix_update=_state_update(ir),
+        frame_fields=ir.frame_fields,
+        generated_event_phase_constraints=tuple(
+            e.condition for e in ir.generated_events if e.condition is not None),
+        binding_status="CODE_BOUND" if ok else "UNRESOLVED",
+    )
+
+
+def _compiled_bindings() -> dict[str, BoundTransitionCase]:
+    return {_canonical_case_id(ir.case_id): _bind_compiled_ir(ir)
+            for ir in _compiler_compile_all()}

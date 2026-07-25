@@ -45,7 +45,7 @@ CANONICAL_CASES: tuple[PrimitiveTransitionSchema, ...] = (
         time_delta=0,
     ),
     PrimitiveTransitionSchema(
-        case_id="DDL_OBSERVE",
+        case_id="DEADLINE_OBSERVATION",
         guard_fields=("deadline_event_at_time",),
         read_fields=("absolute_deadline", "completion_time", "job_key"),
         write_fields=("missed", "miss_ledger"),
@@ -56,7 +56,7 @@ CANONICAL_CASES: tuple[PrimitiveTransitionSchema, ...] = (
         time_delta=0,
     ),
     PrimitiveTransitionSchema(
-        case_id="ARRIVAL_BATCH_OPEN",
+        case_id="ARRIVAL_BATCH",
         guard_fields=("arrival_event_at_time",),
         read_fields=("release_demand_overrides", "abnormal_hi_releases", "ghost_future_budgets"),
         write_fields=("pending_releases", "frontier"),

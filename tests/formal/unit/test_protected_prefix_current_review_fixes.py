@@ -48,9 +48,42 @@ def _fold_receipt(phase: str):
 def test_handwritten_pp0_queries_are_never_mislabeled_code_bound():
     queries = generate_code_bound_queries()
     assert queries
-    assert all(q["transition_equations_bound"] is False for q in queries.values())
-    assert all(q["proof_scope"] == "HAND_WRITTEN_SCHEMA_NOT_CODE_BOUND" for q in queries.values())
+    # Matching the canonical schema identifies the intended mathematical
+    # case, but does not establish semantic equivalence to the executable
+    # transition.  Until total compilation + adapter refinement exists, every
+    # relational query must remain fail-closed.
+    for q in queries.values():
+        assert q["transition_equations_bound"] is False
+        assert q["proof_scope"] != "CODE_BOUND_RELATIONAL"
     assert all(case.binding_status == "UNRESOLVED" for case in compile_all_transitions().values())
+
+
+def test_descriptive_proof_kernel_outlines_are_not_authoritative_passes():
+    from formal_toolchain.reference.protected_priority_prefix.proof_kernel import (
+        prove_same_time_closure_termination_kernel,
+        prove_canonical_successor_total_kernel,
+        prove_time_divergence_kernel,
+        prove_idle_jump_stutter_kernel,
+        prove_complete_execution_exists_kernel,
+        prove_weak_forward_simulation_kernel,
+        prove_hi_bad_prefix_reflection_kernel,
+        prove_pp8_reference_hi_safety_from_prefix_kernel,
+    )
+
+    construction = _construction()
+    dynamic = [
+        prove_same_time_closure_termination_kernel(),
+        prove_canonical_successor_total_kernel(),
+        prove_time_divergence_kernel(),
+        prove_idle_jump_stutter_kernel(),
+        prove_complete_execution_exists_kernel(
+            prefix_taskset=construction.prefix_taskset,
+        ),
+        prove_weak_forward_simulation_kernel(),
+        prove_hi_bad_prefix_reflection_kernel(),
+        prove_pp8_reference_hi_safety_from_prefix_kernel(),
+    ]
+    assert all(item["status"] == "UNRESOLVED" for item in dynamic)
 
 
 def test_l8_batch_lemmas_consume_symbolic_fold_without_concrete_batch():
