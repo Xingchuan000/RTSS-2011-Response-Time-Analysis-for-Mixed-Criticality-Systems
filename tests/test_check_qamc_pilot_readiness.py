@@ -7,7 +7,10 @@ from pathlib import Path
 from scripts.check_qamc_pilot_readiness import (
     EXIT_HI_SAFETY_FAILURE,
     EXIT_HOUT_INCOMPLETE,
+    EXIT_MISSING_ARTIFACT,
     EXIT_METRIC_MISMATCH,
+    EXIT_NO_DQN_ACTION,
+    EXIT_NO_QAMC_EVENT,
     EXIT_OK,
     READY,
     check_readiness,
@@ -114,6 +117,42 @@ def test_qos_mismatch_uses_metric_mismatch_exit_code(tmp_path: Path) -> None:
 
     assert exit_code == EXIT_METRIC_MISMATCH
     assert summary["failure_code"] == "QAMC_GENERIC_QOS_MISMATCH"
+
+
+def test_missing_train_output_uses_missing_artifact_exit_code(
+    tmp_path: Path,
+) -> None:
+    summary, exit_code = check_readiness(
+        tmp_path / "missing_train",
+        tmp_path / "missing_hout",
+    )
+
+    assert exit_code == EXIT_MISSING_ARTIFACT
+    assert summary["failure_code"] == "MISSING_TRAIN_OUTPUT"
+
+
+def test_missing_qamc_events_uses_event_exit_code(tmp_path: Path) -> None:
+    train, hout = _ready_outputs(tmp_path)
+    row = _validation_row()
+    row["qamc_overrun_stop_count_mean"] = 0
+    _write_csv(train / "validation_metrics.csv", [row])
+
+    summary, exit_code = check_readiness(train, hout)
+
+    assert exit_code == EXIT_NO_QAMC_EVENT
+    assert summary["failure_code"] == "QAMC_EVENTS_NOT_OBSERVED"
+
+
+def test_missing_dqn_update_uses_action_exit_code(tmp_path: Path) -> None:
+    train, hout = _ready_outputs(tmp_path)
+    row = _validation_row()
+    row["qamc_dqn_budget_update_event_count_mean"] = 0
+    _write_csv(train / "validation_metrics.csv", [row])
+
+    summary, exit_code = check_readiness(train, hout)
+
+    assert exit_code == EXIT_NO_DQN_ACTION
+    assert summary["failure_code"] == "DQN_BUDGET_UPDATE_NOT_OBSERVED"
 
 
 def test_hi_deadline_miss_uses_safety_exit_code(tmp_path: Path) -> None:
