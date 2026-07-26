@@ -77,7 +77,11 @@ def _discover_hout_csvs(hout_output: Path) -> list[Path]:
         return [hout_output]
     if not hout_output.is_dir():
         return []
-    return sorted(hout_output.rglob("*.csv"))
+    return sorted(
+        path
+        for path in hout_output.rglob("*.csv")
+        if not path.stem.endswith("_unified_summary")
+    )
 
 
 def _loss_is_conservative(row: Mapping[str, object]) -> bool:
@@ -262,7 +266,8 @@ def check_readiness(train_output: Path, hout_output: Path) -> tuple[dict[str, ob
         return summary, EXIT_HI_SAFETY_FAILURE
 
     hout_csvs = _discover_hout_csvs(hout_output)
-    hout_rows = [row for path in hout_csvs for row in _read_csv(path)]
+    rows_by_hout_csv = [(path, _read_csv(path)) for path in hout_csvs]
+    hout_rows = [row for _, rows in rows_by_hout_csv for row in rows]
     required_aliases = (
         ("seed",),
         ("method",),
@@ -274,11 +279,16 @@ def check_readiness(train_output: Path, hout_output: Path) -> tuple[dict[str, ob
         ("dqn_budget_update_count", "qamc_dqn_budget_update_event_count"),
         ("hi_deadline_miss_count", "hi_deadline_misses"),
     )
-    methods = {str(row.get("method", "")) for row in hout_rows}
     hout_complete = (
-        bool(hout_rows)
-        and QAMC_NATIVE_METHOD in methods
-        and QAMC_DQN_METHOD in methods
+        bool(rows_by_hout_csv)
+        and all(rows for _, rows in rows_by_hout_csv)
+        and all(
+            {
+                QAMC_NATIVE_METHOD,
+                QAMC_DQN_METHOD,
+            }.issubset({str(row.get("method", "")) for row in rows})
+            for _, rows in rows_by_hout_csv
+        )
         and _all_have_columns(hout_rows, required_aliases)
     )
     if hout_complete:

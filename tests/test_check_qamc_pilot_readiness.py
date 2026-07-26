@@ -91,6 +91,10 @@ def _ready_outputs(tmp_path: Path) -> tuple[Path, Path]:
 
 def test_ready_pilot_outputs_pass_all_checks(tmp_path: Path) -> None:
     train, hout = _ready_outputs(tmp_path)
+    _write_csv(
+        hout / "hout_unified_summary.csv",
+        [{"method": "q_amc_native", "lo_quality_qos_mean": 0.5}],
+    )
 
     summary, exit_code = check_readiness(train, hout)
 
