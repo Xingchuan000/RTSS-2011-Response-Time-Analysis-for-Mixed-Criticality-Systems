@@ -20,6 +20,8 @@ from amc_py.runtime_scenarios import (
     make_rtss11_random_scenario,
     make_table_scenario,
 )
+from amc_py.qamc.models import QAmcProfileBundle
+from amc_py.qamc.profiles import load_profile_bundle
 from amc_py.workloads.base import WorkloadProvider
 
 TasksetFactory = Callable[[int], list[Task]]
@@ -37,6 +39,8 @@ class ExperimentConfig:
     normalization_bounds_factory: NormalizationBoundsFactory | None = None
     workload_provider: WorkloadProvider | None = None
     check_safety: bool = True
+    qamc_profile_manifest_path: str | None = None
+    qamc_profile_spec_path: str | None = None
 
     def __post_init__(self) -> None:
         """校验 experiment 配置只使用一种数据来源。"""
@@ -62,6 +66,7 @@ class ExperimentBundle:
     taskset_attempts: int = 1
     taskset_fingerprint: str | None = None
     metadata: dict[str, object] | None = None
+    qamc_profile_bundle: QAmcProfileBundle | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -439,10 +444,27 @@ def build_env_from_experiment_config(
     residual_guard_hi_pressure_abs_limit: float = 0.30,
     residual_guard_reject_decrease_pressure_threshold: float = 0.05,
     residual_guard_use_hi_pressure_max: bool = False,
+    qamc_profile_bundle: QAmcProfileBundle | None = None,
+    qamc_profile_manifest_path: str | None = None,
 ) -> AmcBudgetEnv:
     """根据实验配置构造 `AmcBudgetEnv`，供训练与评估入口复用。"""
 
     bundle = resolve_experiment_bundle(config, seed)
+    resolved_qamc_profile = qamc_profile_bundle or bundle.qamc_profile_bundle
+    if semantics is RuntimeSemantics.Q_AMC and resolved_qamc_profile is None:
+        manifest_path = qamc_profile_manifest_path or config.qamc_profile_manifest_path
+        if manifest_path is None:
+            raise ValueError("QAMC_PROFILE_MANIFEST_REQUIRED")
+        import json
+        from pathlib import Path
+
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        entry = manifest.get("profiles", {}).get(bundle.taskset_fingerprint)
+        if entry is None:
+            raise ValueError(f"QAMC_PROFILE_TASKSET_NOT_IN_MANIFEST:{bundle.taskset_fingerprint}")
+        resolved_qamc_profile = load_profile_bundle(entry["path"])
+        if resolved_qamc_profile.taskset_fingerprint != bundle.taskset_fingerprint:
+            raise ValueError("QAMC_PROFILE_TASKSET_FINGERPRINT_MISMATCH")
     return AmcBudgetEnv(
         ordered_tasks=bundle.ordered_tasks,
         scenario=bundle.scenario,
@@ -492,6 +514,7 @@ def build_env_from_experiment_config(
         residual_guard_hi_pressure_abs_limit=residual_guard_hi_pressure_abs_limit,
         residual_guard_reject_decrease_pressure_threshold=residual_guard_reject_decrease_pressure_threshold,
         residual_guard_use_hi_pressure_max=residual_guard_use_hi_pressure_max,
+        qamc_profile_bundle=resolved_qamc_profile,
     )
 
 

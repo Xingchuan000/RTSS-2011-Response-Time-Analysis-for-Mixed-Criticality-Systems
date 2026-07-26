@@ -49,6 +49,7 @@ from amc_py.runtime_models import (
     SimulationResult,
 )
 from amc_py.runtime_scenarios import ExecutionScenario
+from amc_py.qamc.models import QAmcProfileBundle
 
 ACTION_FEATURE_PRESSURE_THRESHOLD = 0.85
 ACTION_FEATURE_NEAR_CANCEL_THRESHOLD = 0.95
@@ -197,6 +198,8 @@ class AmcBudgetEnv:
     include_explicit_noop: bool = False
     budget_floor_ratio: float = 0.0
     forbid_decreasing_hi_budgets: bool = False
+    qamc_profile_bundle: QAmcProfileBundle | None = None
+    budget_update_source: str = "DQN_ACTION"
     # Non-vacuity experiment semantics. Defaults preserve the certified deployment.
     policy_selection_semantics: Literal[
         "ranked_first_valid", "raw_top1", "top1_or_noop", "first_valid_else_top1"
@@ -1606,6 +1609,11 @@ class AmcBudgetEnv:
         for task_name, candidate_budget in updates.items():
             initial_budget = self._initial_budgets[task_name]
             floor_value = max(1, math.ceil(initial_budget * self.budget_floor_ratio))
+            if self.qamc_profile_bundle is not None and task_name in self.qamc_profile_bundle.profiles:
+                floor_value = max(
+                    floor_value,
+                    self.qamc_profile_bundle.profiles[task_name].full_quality_isolated_wcet,
+                )
             if candidate_budget < floor_value:
                 return f"budget_floor_violation:{task_name}"
         return None
@@ -2635,6 +2643,7 @@ class AmcBudgetEnv:
             config=self.runtime_config,
             budget_state=BudgetState.from_tasks(self.ordered_tasks),
             monitor=self._monitor,
+            qamc_profile_bundle=self.qamc_profile_bundle,
         )
         # 先处理 time=0 的边界事件，再返回首次观测，避免 agent 早于首批 release 决策。
         self._engine.run_until(0, include_boundary=True)
@@ -2723,6 +2732,8 @@ class AmcBudgetEnv:
         details = getattr(self, "_last_mask_details", None)
         if not isinstance(details, (list, tuple)):
             return False
+        if not details:
+            return False
         if action_id < 0 or action_id >= len(details):
             raise IndexError(f"action_id={action_id} 超出 mask 范围")
         row = details[action_id]
@@ -2808,7 +2819,7 @@ class AmcBudgetEnv:
                 if accepted:
                     if action_was_checked:
                         self._safety_accepted_actions += 1
-                    self._engine.apply_budget_updates(updates)
+                    self._engine.apply_budget_updates(updates, source=self.budget_update_source)
                 else:
                     normalized_reject = _normalize_candidate_reject_reason(reject_reason or "unknown")
                     if action_was_checked and normalized_reject in {
@@ -2935,7 +2946,7 @@ class AmcBudgetEnv:
                 # residual_ranked 分支在动作被接受后，必须显式把 updates 应用到 runtime budget。
                 # 否则会出现日志显示 accepted=True，但预算状态实际未变化的问题。
                 if accepted:
-                    self._engine.apply_budget_updates(updates)
+                    self._engine.apply_budget_updates(updates, source=self.budget_update_source)
                 elif is_safe_residual_action and reject_reason is not None:
                     reject_reason = f"safe_mask_step_mismatch:{reject_reason}"
             else:
@@ -2956,7 +2967,7 @@ class AmcBudgetEnv:
                     accepted = True
                     reject_reason = None
                     action_was_checked = False
-                    self._engine.apply_budget_updates(updates)
+                    self._engine.apply_budget_updates(updates, source=self.budget_update_source)
                 else:
                     evaluation = self.evaluate_budget_candidate(
                         action=action,
@@ -2981,7 +2992,7 @@ class AmcBudgetEnv:
                     elif action_was_checked and not accepted:
                         self._safety_rejected_actions += 1
                     if accepted:
-                        self._engine.apply_budget_updates(updates)
+                        self._engine.apply_budget_updates(updates, source=self.budget_update_source)
         else:
             if self._mask_log:
                 valid_action_count = int(self._mask_log[-1]["valid_action_count"])

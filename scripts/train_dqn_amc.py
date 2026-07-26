@@ -10,7 +10,7 @@ import random
 import sys
 from collections import Counter, defaultdict, deque
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -2305,13 +2305,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--agent-period", type=int, default=1000)
     parser.add_argument(
         "--dqn-runtime-semantics",
-        choices=["AMC_PLUS", "AMC_RA", "AMC_RH", "C_AMC_SEM"],
+        choices=["AMC_PLUS", "AMC_RA", "AMC_RH", "C_AMC_SEM", "Q_AMC"],
         default="AMC_PLUS",
         help="Runtime semantics used by the DQN training environment.",
     )
     parser.add_argument(
         "--validation-baseline-semantics",
-        choices=["AMC_PLUS", "AMC_RA", "AMC_RH", "C_AMC_SEM"],
+        choices=["AMC_PLUS", "AMC_RA", "AMC_RH", "C_AMC_SEM", "Q_AMC"],
         default=None,
         help="Runtime semantics used by validation baseline. Defaults to --dqn-runtime-semantics.",
     )
@@ -2324,6 +2324,9 @@ def build_parser() -> argparse.ArgumentParser:
             "Must be in (0, 1]."
         ),
     )
+    parser.add_argument("--qamc-reference-config-path", type=Path, default=None)
+    parser.add_argument("--qamc-profile-manifest-path", type=Path, default=None)
+    parser.add_argument("--qamc-profile-spec-path", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--network-seed", type=int, default=None)
     parser.add_argument("--exploration-seed", type=int, default=None)
@@ -2853,6 +2856,21 @@ def main() -> None:
     )
 
     experiment_config = _build_experiment_config(args)
+    if dqn_runtime_semantics is RuntimeSemantics.Q_AMC:
+        if args.qamc_reference_config_path is None:
+            raise ValueError("QAMC_REFERENCE_CONFIG_REQUIRED")
+        if not args.qamc_reference_config_path.is_file():
+            raise ValueError("QAMC_REFERENCE_CONFIG_MISSING")
+        frozen_reference = json.loads(args.qamc_reference_config_path.read_text(encoding="utf-8"))
+        if frozen_reference.get("schema_version") != "qamc_reference_experiment_config_v2":
+            raise ValueError("QAMC_REFERENCE_CONFIG_NOT_FROZEN_V2")
+        if args.qamc_profile_manifest_path is None or args.qamc_profile_spec_path is None:
+            raise ValueError("QAMC_PROFILE_MANIFEST_AND_SPEC_REQUIRED")
+        experiment_config = replace(
+            experiment_config,
+            qamc_profile_manifest_path=str(args.qamc_profile_manifest_path),
+            qamc_profile_spec_path=str(args.qamc_profile_spec_path),
+        )
     train_seed_candidates = _parse_seed_spec(args.train_seeds)
     episode_seed_schedule = _build_episode_seed_schedule(
         episodes=args.episodes,
@@ -5145,6 +5163,28 @@ def main() -> None:
             "validation_baseline_semantics": validation_baseline_semantics.value,
             "c_amc_sem_xf": args.c_amc_sem_xf,
         },
+        "qamc": (
+            {
+                "qamc_semantic_version": "qamc_budget_overlay_v5",
+                "qamc_demand_mapping_version": "wcet_capped_component_split_v1",
+                "qamc_ratio_semantics": "isolated_work_to_interference",
+                "qamc_isolated_to_interference_ratio": 0.5,
+                "qamc_native_controls_quality": True,
+                "dqn_controls_quality": False,
+                "dqn_controls_budget_threshold": True,
+                "quality_change_applies_to_future_release_only": True,
+                "budget_rebase_on_quality_change": False,
+                "quality_visible_to_agent": False,
+                "problem_class": "POMDP",
+                "strict_budget_plus_one_overrun": True,
+                "formal_safety_claim": False,
+                "reference_config_path": str(args.qamc_reference_config_path),
+                "profile_manifest_path": str(args.qamc_profile_manifest_path),
+                "profile_spec_path": str(args.qamc_profile_spec_path),
+            }
+            if dqn_runtime_semantics is RuntimeSemantics.Q_AMC
+            else None
+        ),
         "effective_taskset_seed": (
             (initial_bundle.metadata or {}).get("workload_metadata", {}).get("effective_taskset_seed")
             if isinstance((initial_bundle.metadata or {}).get("workload_metadata", {}), dict)

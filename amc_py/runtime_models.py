@@ -45,6 +45,7 @@ class RuntimeSemantics(str, Enum):
     AMC_RA = "AMC_RA"
     AMC_RH = "AMC_RH"
     C_AMC_SEM = "C_AMC_SEM"
+    Q_AMC = "Q_AMC"
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +95,9 @@ class RuntimeConfig:
     nonvacuity_controller_overhead_ticks: int = 0
     nonvacuity_recover_without_quiescence: bool = False
     nonvacuity_unstable_demand_reads: bool = False
+    qamc_mode_recovery_policy: str = "idle"
+    qamc_quality_recovery_policy: str = "persistent_no_restore"
+    qamc_demand_mapping_version: str = "wcet_capped_component_split_v1"
 
     def __post_init__(self) -> None:
         # 基本的范围校验：避免在仿真过程中才报错，尽量把问题前置。
@@ -109,6 +113,27 @@ class RuntimeConfig:
             raise TypeError("c_amc_sem_primary_on_switch_time must be bool")
         if self.nonvacuity_controller_overhead_ticks < 0:
             raise ValueError("nonvacuity_controller_overhead_ticks 必须为非负整数")
+        if self.semantics is RuntimeSemantics.Q_AMC:
+            if self.qamc_mode_recovery_policy != "idle":
+                raise ValueError("QAMC_UNSUPPORTED_MODE_RECOVERY_POLICY")
+            if self.qamc_quality_recovery_policy != "persistent_no_restore":
+                raise ValueError("QAMC_UNSUPPORTED_QUALITY_RECOVERY_POLICY")
+            if self.qamc_demand_mapping_version != "wcet_capped_component_split_v1":
+                raise ValueError("QAMC_UNSUPPORTED_DEMAND_MAPPING_VERSION")
+            if self.nonvacuity_profile != "off":
+                raise ValueError("QAMC_NONVACUITY_PROFILE_MUST_BE_OFF")
+            if self.nonvacuity_unstable_demand_reads:
+                raise ValueError("QAMC_NONVACUITY_UNSTABLE_DEMAND_READS_FORBIDDEN")
+            if self.nonvacuity_deadline_cleanup_remove:
+                raise ValueError("QAMC_NONVACUITY_DEADLINE_CLEANUP_FORBIDDEN")
+            if self.nonvacuity_hi_budget_cap_truncate:
+                raise ValueError("QAMC_NONVACUITY_HI_CAP_FORBIDDEN")
+            if self.nonvacuity_controller_overhead_ticks:
+                raise ValueError("QAMC_NONVACUITY_CONTROLLER_OVERHEAD_FORBIDDEN")
+            if self.nonvacuity_arrival_before_deadline:
+                raise ValueError("QAMC_NONVACUITY_ARRIVAL_BEFORE_DEADLINE_FORBIDDEN")
+            if self.nonvacuity_recover_without_quiescence:
+                raise ValueError("QAMC_NONVACUITY_RECOVER_WITHOUT_QUIESCENCE_FORBIDDEN")
 
 
 @dataclass(slots=True)
@@ -167,6 +192,22 @@ class Job:
     # 保留释放时的 full-quality budget，便于后处理直接计算 degraded/full 的预算比例。
     # 对普通 job 也统一写入，减少调试和指标代码里的分支判断。
     original_runtime_budget_at_release: int | None = None
+    qamc_target_runtime_level_at_release: int | None = None
+    qamc_target_raw_rank_at_release: int | None = None
+    qamc_target_normalized_quality_at_release: float | None = None
+    qamc_provided_raw_rank: int | None = None
+    qamc_provided_normalized_quality: float | None = None
+    qamc_full_quality_actual_cost: int | None = None
+    qamc_full_quality_application_component: int | None = None
+    qamc_observed_interference_component: int | None = None
+    qamc_target_application_component: int | None = None
+    qamc_quality_specific_actual_cost: int | None = None
+    qamc_stopped_by_overrun: bool = False
+    qamc_overrun_stop_time: int | None = None
+    qamc_result_lost_due_to_deadline: bool = False
+    qamc_trigger_budget: int | None = None
+    qamc_trigger_budget_ratio_to_design_c_lo: float | None = None
+    qamc_would_overrun_design_c_lo: bool | None = None
 
     def remaining(self) -> int:
         """返回本 job 还需执行的时间，下限为 0。
@@ -228,6 +269,9 @@ class JobCancellationEvent:
 LO_LOSS_BUDGET_CANCELLATION = "lo_budget_overrun_cancellation"
 LO_LOSS_RELEASE_DROPPED_IN_DEGRADED_MODE = "lo_release_dropped_in_degraded_mode"
 LO_LOSS_ACTIVE_DROPPED_ON_MODE_SWITCH = "lo_active_dropped_on_mode_switch"
+LO_LOSS_QAMC_OVERRUN_STOP = "lo_loss_qamc_overrun_stop"
+LO_LOSS_QAMC_MIN_QUALITY_EXHAUSTED = "lo_loss_qamc_min_quality_exhausted"
+LO_LOSS_QAMC_TERMINAL_HI_DROP = "lo_loss_qamc_terminal_hi_drop"
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,11 +296,34 @@ class ModeRecoveryEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class QAmcQualityChangeEvent:
+    time: int
+    task: str
+    old_runtime_level: int
+    new_runtime_level: int
+    old_raw_rank: int
+    new_raw_rank: int
+    old_normalized_quality: float
+    new_normalized_quality: float
+    trigger_release_index: int
+
+
+@dataclass(frozen=True, slots=True)
+class QAmcMinQualityExhaustionEvent:
+    time: int
+    task: str
+    runtime_level: int
+    raw_rank: int
+    trigger_release_index: int
+
+
+@dataclass(frozen=True, slots=True)
 class BudgetUpdateEvent:
     """记录一次运行时预算更新事件。"""
 
     time: int
     updates: dict[str, int]
+    source: str = "UNSPECIFIED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,6 +397,10 @@ class SimulationResult:
     job_cancellations: list[JobCancellationEvent] = field(default_factory=list)
     lo_job_losses: list[LoJobLossEvent] = field(default_factory=list)
     deadline_misses: list[DeadlineMiss] = field(default_factory=list)
+    qamc_quality_changes: list[QAmcQualityChangeEvent] = field(default_factory=list)
+    qamc_min_quality_exhaustions: list[QAmcMinQualityExhaustionEvent] = field(default_factory=list)
+    qamc_profile_fingerprint: str | None = None
+    qamc_spec_fingerprint: str | None = None
     end_time: int = 0
     final_mode: SystemMode = SystemMode.LO
 
@@ -438,12 +509,17 @@ __all__ = [
     "Job",
     "ModeSwitchEvent",
     "ModeRecoveryEvent",
+    "QAmcQualityChangeEvent",
+    "QAmcMinQualityExhaustionEvent",
     "BudgetUpdateEvent",
     "JobCancellationEvent",
     "LoJobLossEvent",
     "LO_LOSS_BUDGET_CANCELLATION",
     "LO_LOSS_RELEASE_DROPPED_IN_DEGRADED_MODE",
     "LO_LOSS_ACTIVE_DROPPED_ON_MODE_SWITCH",
+    "LO_LOSS_QAMC_OVERRUN_STOP",
+    "LO_LOSS_QAMC_MIN_QUALITY_EXHAUSTED",
+    "LO_LOSS_QAMC_TERMINAL_HI_DROP",
     "DeadlineMiss",
     "ScheduleTick",
     "SimulationResult",

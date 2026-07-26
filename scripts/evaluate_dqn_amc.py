@@ -7,6 +7,7 @@ import csv
 import json
 import sys
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from statistics import mean
 
@@ -48,6 +49,7 @@ from amc_py.rl.feature_config import FeatureConfig
 from amc_py.rl.reward_config import available_reward_modes
 from amc_py.rl.runtime_wrapper import AgentRuntimeConfig, simulate_ordered_taskset_with_agent
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationResult
+from amc_py.qamc.profiles import load_profile_bundle
 
 
 NOOP_Q_DIAGNOSTIC_FIELDNAMES = [
@@ -2014,6 +2016,16 @@ def _evaluate_enabled_methods_for_seed(
     """
 
     bundle = resolve_experiment_bundle(experiment_config, seed)
+    qamc_profile_bundle = None
+    if dqn_runtime_semantics is RuntimeSemantics.Q_AMC:
+        manifest_path = experiment_config.qamc_profile_manifest_path
+        if manifest_path is None:
+            raise ValueError("QAMC_PROFILE_MANIFEST_REQUIRED")
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        entry = manifest.get("profiles", {}).get(bundle.taskset_fingerprint)
+        if entry is None:
+            raise ValueError(f"QAMC_PROFILE_TASKSET_NOT_IN_MANIFEST:{bundle.taskset_fingerprint}")
+        qamc_profile_bundle = load_profile_bundle(entry["path"])
     actions = build_budget_action_space(
         list(bundle.ordered_tasks),
         action_space=action_space,
@@ -2192,6 +2204,7 @@ def _evaluate_enabled_methods_for_seed(
                 budget_floor_ratio=budget_floor_ratio,
             ),
             bounds=bundle.normalization_bounds,
+            qamc_profile_bundle=qamc_profile_bundle,
         )
         # wrapper 类 baseline 自己不返回显式的 step_count 字段，
         # 因此统一用 action_log 行数来定义“发生了多少次 agent 决策”。
@@ -2285,6 +2298,7 @@ def _evaluate_enabled_methods_for_seed(
                 budget_floor_ratio=budget_floor_ratio,
             ),
             bounds=bundle.normalization_bounds,
+            qamc_profile_bundle=qamc_profile_bundle,
         )
         random_step_count = len(random_result.action_log)
         random_selected_action_count = sum(int(row.get("action_id") is not None) for row in random_result.action_log)
@@ -2378,6 +2392,7 @@ def _evaluate_enabled_methods_for_seed(
                 budget_floor_ratio=budget_floor_ratio,
             ),
             bounds=bundle.normalization_bounds,
+            qamc_profile_bundle=qamc_profile_bundle,
         )
         heuristic_step_count = len(heuristic_result.action_log)
         heuristic_selected_action_count = sum(
@@ -2783,7 +2798,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--agent-period", type=int, default=1000)
     parser.add_argument(
         "--dqn-runtime-semantics",
-        choices=["AMC_PLUS", "AMC_RA", "AMC_RH", "C_AMC_SEM"],
+        choices=["AMC_PLUS", "AMC_RA", "AMC_RH", "C_AMC_SEM", "Q_AMC"],
         default="AMC_PLUS",
         help="Runtime semantics used by dqn_agent and wrapper-based agent baselines.",
     )
@@ -2793,6 +2808,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.5,
         help="LO-task degraded budget ratio used by c_amc_sem_baseline in HI mode.",
     )
+    parser.add_argument("--qamc-reference-config-path", type=Path, default=None)
+    parser.add_argument("--qamc-profile-manifest-path", type=Path, default=None)
+    parser.add_argument("--qamc-profile-spec-path", type=Path, default=None)
     parser.add_argument("--scenario", choices=["nominal", "stress"], default="stress")
     parser.add_argument(
         "--baselines",
@@ -3056,6 +3074,21 @@ def main() -> None:
         )
     else:
         raise ValueError(f"unsupported workload: {args.workload}")
+    if dqn_runtime_semantics is RuntimeSemantics.Q_AMC:
+        if args.qamc_reference_config_path is None:
+            raise ValueError("QAMC_REFERENCE_CONFIG_REQUIRED")
+        if not args.qamc_reference_config_path.is_file():
+            raise ValueError("QAMC_REFERENCE_CONFIG_MISSING")
+        frozen_reference = json.loads(args.qamc_reference_config_path.read_text(encoding="utf-8"))
+        if frozen_reference.get("schema_version") != "qamc_reference_experiment_config_v2":
+            raise ValueError("QAMC_REFERENCE_CONFIG_NOT_FROZEN_V2")
+        if args.qamc_profile_manifest_path is None or args.qamc_profile_spec_path is None:
+            raise ValueError("QAMC_PROFILE_MANIFEST_AND_SPEC_REQUIRED")
+        experiment_config = replace(
+            experiment_config,
+            qamc_profile_manifest_path=str(args.qamc_profile_manifest_path),
+            qamc_profile_spec_path=str(args.qamc_profile_spec_path),
+        )
     effective_num_tasks = (
         args.mc_fairgen_num_tasks if args.workload == "mc_fairgen" else args.num_tasks
     )

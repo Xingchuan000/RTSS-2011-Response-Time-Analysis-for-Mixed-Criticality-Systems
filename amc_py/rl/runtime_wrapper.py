@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import math
 
 from amc_py.budget_runtime import BudgetState
 from amc_py.amc import build_design_r_lo_map
 from amc_py.event_runtime import EventRuntimeEngine
 from amc_py.models import Task
-from amc_py.rl.actions import action_violates_hi_decrease_guard, apply_budget_action_candidate
+from amc_py.rl.actions import apply_budget_action_candidate
+from amc_py.rl.action_execution import BudgetActionExecutionConfig, evaluate_budget_action
 from amc_py.rl.agents import BudgetAgent
 from amc_py.rl.monitor import RuntimeMonitor
 from amc_py.rl.observation import NormalizationBounds, build_observation
 from amc_py.rl.reward_config import evaluate_reward_expression, load_reward_mode_config
 from amc_py.rl.safety import RuntimeBudgetSafetyChecker, merge_budget_candidate
 from amc_py.runtime_models import RuntimeConfig, SimulationResult
+from amc_py.qamc.models import QAmcProfileBundle
 from amc_py.runtime_scenarios import ExecutionScenario
 
 
@@ -106,6 +108,12 @@ class AgentRuntimeConfig:
     forbid_decreasing_hi_budgets: bool = False
     # 与 DQN env 一致：若 >0，则拒绝任何使任务 budget 低于 episode 初始 budget * ratio 的动作。
     budget_floor_ratio: float = 0.0
+    budget_rounding_mode: str = "ceil_floor"
+    min_budget_delta: int = 1
+    enable_deploy_cap_mask: bool = False
+    deploy_cap_mask_ratio: float = 4.0
+    deploy_cap_mask_criticality: str = "lo"
+    budget_update_source: str = "UNSPECIFIED"
 
 
 @dataclass(slots=True)
@@ -175,32 +183,24 @@ def simulate_ordered_taskset_with_agent(
     agent_config: AgentRuntimeConfig,
     safety_checker: RuntimeBudgetSafetyChecker | None = None,
     bounds: NormalizationBounds | None = None,
+    qamc_profile_bundle: QAmcProfileBundle | None = None,
 ) -> AgentRuntimeResult:
     """以固定 agent 周期驱动 runtime，并记录动作接受/拒绝统计。"""
 
     # 奖励参数按 reward_mode 从配置文件读取，避免 runtime wrapper 内部硬编码。
     monitor = RuntimeMonitor(reward_mode=agent_config.reward_mode)
     reward_mode_config = load_reward_mode_config(agent_config.reward_mode)
-    runtime_cfg = RuntimeConfig(
-        end_time=agent_config.end_time,
-        jobs_per_task=runtime_config.jobs_per_task,
-        hyperperiod_limit=runtime_config.hyperperiod_limit,
-        capture_trace=runtime_config.capture_trace,
-        capture_debug_events=runtime_config.capture_debug_events,
-        stop_at_first_miss=runtime_config.stop_at_first_miss,
-        drop_lo_jobs_on_hi_switch=runtime_config.drop_lo_jobs_on_hi_switch,
-        semantics=runtime_config.semantics,
-        record_dropped_lo_releases=runtime_config.record_dropped_lo_releases,
-        c_amc_sem_lo_degradation_ratio=runtime_config.c_amc_sem_lo_degradation_ratio,
-        c_amc_sem_primary_on_switch_time=runtime_config.c_amc_sem_primary_on_switch_time,
-    )
-    engine = EventRuntimeEngine.build(
-        ordered_tasks=ordered_tasks,
-        scenario=scenario,
-        config=runtime_cfg,
-        budget_state=BudgetState.from_tasks(ordered_tasks),
-        monitor=monitor,
-    )
+    runtime_cfg = replace(runtime_config, end_time=agent_config.end_time)
+    build_kwargs = {
+        "ordered_tasks": ordered_tasks,
+        "scenario": scenario,
+        "config": runtime_cfg,
+        "budget_state": BudgetState.from_tasks(ordered_tasks),
+        "monitor": monitor,
+    }
+    if qamc_profile_bundle is not None:
+        build_kwargs["qamc_profile_bundle"] = qamc_profile_bundle
+    engine = EventRuntimeEngine.build(**build_kwargs)
     # 固定记录本轮 episode 的初始预算快照。
     # 后续任何 floor 判断都必须相对这份初始值，而不是相对当前已漂移的 runtime budget。
     initial_budgets = dict(engine.runtime_budgets.budgets)
@@ -382,57 +382,46 @@ def simulate_ordered_taskset_with_agent(
             )
         else:
             budget_before = dict(engine.runtime_budgets.budgets)
-            accepted = True
-            reject_reason: str | None = None
-            reject_diagnostics: tuple[dict[str, str | int | float], ...] = ()
-            safety_checked = False
-            if action_violates_hi_decrease_guard(
+            execution = evaluate_budget_action(
                 action=action,
                 ordered_tasks=ordered_tasks,
-                forbid_decreasing_hi_budgets=agent_config.forbid_decreasing_hi_budgets,
-            ):
-                # 与 env 保持完全一致：
-                # - 命中 HI decrease 立即拒绝；
-                # - reject_reason 固定为 decrease_hi_forbidden；
-                # - 不再进入 safety checker，避免被其它 reject_reason 覆盖。
-                accepted = False
-                reject_reason = "decrease_hi_forbidden"
-                updates = {}
-                merged = dict(budget_before)
-            else:
-                updates = apply_budget_action_candidate(
-                    action=action,
-                    budget_state=engine.runtime_budgets,
-                    ordered_tasks=ordered_tasks,
-                )
-                merged = merge_budget_candidate(engine.runtime_budgets, updates)
-                floor_reject_reason = _budget_floor_violation(
-                    updates=updates,
-                    initial_budgets=initial_budgets,
+                budget_state=engine.runtime_budgets,
+                initial_budgets=initial_budgets,
+                config=BudgetActionExecutionConfig(
+                    rounding_mode=agent_config.budget_rounding_mode,
+                    min_budget_delta=agent_config.min_budget_delta,
                     budget_floor_ratio=agent_config.budget_floor_ratio,
-                )
-                if floor_reject_reason is not None:
-                    # floor rejection 不属于 safety checker rejection。
-                    # 因此这里只记录 accepted=False 与 reject_reason，不增加 safety 统计计数。
-                    accepted = False
-                    reject_reason = floor_reject_reason
-                    reject_diagnostics = ()
-                elif agent_config.check_safety:
-                    safety_checked = True
-                    safety_checked_actions += 1
-                    report = checker.validate_candidate(merged)
-                    accepted = report.accepted
-                    reject_reason = None if accepted else report.reason
-                    reject_diagnostics = report.diagnostics
-                    if accepted:
-                        safety_accepted_actions += 1
-                    else:
-                        safety_rejected_actions += 1
+                    fixed_floor_by_task=(
+                        {
+                            name: profile.full_quality_isolated_wcet
+                            for name, profile in qamc_profile_bundle.profiles.items()
+                        }
+                        if qamc_profile_bundle is not None
+                        else {}
+                    ),
+                    forbid_decreasing_hi_budgets=agent_config.forbid_decreasing_hi_budgets,
+                    enable_deploy_cap_mask=agent_config.enable_deploy_cap_mask,
+                    deploy_cap_mask_ratio=agent_config.deploy_cap_mask_ratio,
+                    deploy_cap_mask_criticality=agent_config.deploy_cap_mask_criticality,
+                    check_safety=agent_config.check_safety,
+                ),
+                safety_checker=checker,
+            )
+            accepted = execution.accepted
+            reject_reason = execution.reject_reason
+            updates = dict(execution.updates)
+            merged = dict(execution.candidate_budgets)
+            safety_checked = execution.safety_checked
+            reject_diagnostics = execution.diagnostics
+            if safety_checked:
+                safety_checked_actions += 1
+                if accepted:
+                    safety_accepted_actions += 1
                 else:
-                    accepted = True
+                    safety_rejected_actions += 1
 
             if accepted:
-                engine.apply_budget_updates(updates)
+                engine.apply_budget_updates(updates, source=agent_config.budget_update_source)
                 accepted_actions += 1
             else:
                 rejected_actions += 1
