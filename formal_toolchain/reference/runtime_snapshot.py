@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 
 from formal_toolchain.reference.reference_state import ReferenceState, ReferenceJob
@@ -56,4 +56,42 @@ def build_reference_runtime_snapshot(state: ReferenceState) -> ReferenceSnapshot
         ready_order=tuple(state.ready_order) if hasattr(state, "ready_order") else (),
         running=state.running,
         frontier=tuple(state.frontier) if hasattr(state, "frontier") else (),
+    )
+
+
+def _record_dict(record: Any) -> dict[str, Any]:
+    """Convert a P0 ledger record into the canonical snapshot mapping."""
+
+    if is_dataclass(record):
+        return dict(asdict(record))
+    if isinstance(record, dict):
+        return dict(record)
+    raise TypeError(f"P0_REFERENCE_LEDGER_RECORD_INVALID:{type(record).__name__}")
+
+
+def build_p0_reference_runtime_snapshot(state: Any) -> ReferenceSnapshot:
+    """Build the fresh N4/N5 reference snapshot from a paired P0 state.
+
+    ``P0ReferenceState`` is constructed from the same concrete time-0 closure
+    as the runtime snapshot.  It therefore carries release-fixed demands, the
+    actual mode, ledgers, running job, and the effective logical frontier that
+    the closed-prefix relation is required to preserve.
+    """
+
+    required = (
+        "time", "mode", "released_ledger", "terminal_ledger", "miss_ledger",
+        "ready_jobs", "running_job", "effective_event_frontier",
+    )
+    missing = [name for name in required if not hasattr(state, name)]
+    if missing:
+        raise TypeError(f"P0_REFERENCE_STATE_FIELDS_MISSING:{','.join(missing)}")
+    return ReferenceSnapshot(
+        time=int(state.time),
+        mode=str(state.mode),
+        released=tuple(_record_dict(row) for row in state.released_ledger),
+        terminal=tuple(_record_dict(row) for row in state.terminal_ledger),
+        misses=tuple(_record_dict(row) for row in state.miss_ledger),
+        ready_order=tuple(state.ready_jobs),
+        running=state.running_job,
+        frontier=tuple(state.effective_event_frontier),
     )

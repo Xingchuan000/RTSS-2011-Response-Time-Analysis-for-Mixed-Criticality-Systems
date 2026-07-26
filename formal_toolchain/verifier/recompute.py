@@ -260,8 +260,9 @@ def build_fresh_verifier_state(
     reference_preclosed_state = None
     reference_runtime_snapshot = None
     try:
-        from formal_toolchain.adapters.formal_scenario import build_formal_scenario
-        from formal_toolchain.runtime.event_runtime import EventRuntimeEngine
+        from formal_toolchain.adapters.formal_scenario_factory import build_formal_scenario
+        from formal_toolchain.adapters.runtime_config_copy import copy_runtime_config
+        from amc_py.event_runtime import EventRuntimeEngine
         from formal_toolchain.adapters.formal_runtime_snapshot import build_formal_runtime_snapshot
         scenario = build_formal_scenario(
             base_scenario=inputs.target.scenario,
@@ -270,7 +271,7 @@ def build_fresh_verifier_state(
         engine = EventRuntimeEngine.build(
             ordered_tasks=inputs.target.ordered_tasks,
             scenario=scenario,
-            config=inputs.target.runtime_config,
+            config=copy_runtime_config(inputs.target.runtime_config),
         )
         engine.run_until(0, include_boundary=True)
         concrete_preclosed_engine = engine
@@ -283,13 +284,24 @@ def build_fresh_verifier_state(
         concrete_runtime_snapshot = None
 
     try:
-        from formal_toolchain.reference.executable_semantics import (
-            initial_reference_state, close_timestamp,
+        from formal_toolchain.bridge.phase_k_runtime_states import build_preclosed_runtime_states
+        from formal_toolchain.bridge.state_relation import frontiers_isomorphic
+        from formal_toolchain.reference.runtime_snapshot import (
+            build_p0_reference_runtime_snapshot,
         )
-        from formal_toolchain.reference.runtime_snapshot import build_reference_runtime_snapshot
-        ref_initial = initial_reference_state(fresh_reference)
-        reference_preclosed_state = close_timestamp(ref_initial, fresh_reference)
-        reference_runtime_snapshot = build_reference_runtime_snapshot(reference_preclosed_state)
+
+        paired_concrete, reference_preclosed_state = build_preclosed_runtime_states(
+            inputs.target, fresh_reference.to_dict(),
+        )
+        if concrete_runtime_snapshot is None:
+            raise ValueError("FRESH_CONCRETE_RUNTIME_SNAPSHOT_MISSING")
+        if not frontiers_isomorphic(
+                concrete_runtime_snapshot.effective_event_frontier,
+                paired_concrete.effective_event_frontier):
+            raise ValueError("FRESH_CONCRETE_PAIRED_STATE_FRONTIER_MISMATCH")
+        reference_runtime_snapshot = build_p0_reference_runtime_snapshot(
+            reference_preclosed_state,
+        )
     except Exception:
         reference_preclosed_state = None
         reference_runtime_snapshot = None
@@ -516,6 +528,56 @@ def _build_phase_k_objects(*, inputs: Any, fresh_certificates: Mapping[str, Mapp
         "CLOSED_PREFIX_REFINEMENT": bridge["closed_prefix"],
         "REFERENCE_PREFIX_EXTENSION": bridge["reference_extension"],
     }, None
+
+
+def _fresh_reference_prefix_extension_object(
+    *, inputs: Any, fresh_certificates: Mapping[str, Mapping[str, Any]],
+    fresh_reference: Any | None,
+) -> tuple[Mapping[str, Any] | None, dict[str, Any] | None]:
+    """Build N5 prefix extension before transition identity/closed-prefix N5.
+
+    REFERENCE_PREFIX_EXTENSION has only REFERENCE_TASKSET, TIME_PROGRESS, and
+    EFFECTIVE_EVENT_ORDER as registry predecessors.  Building it through the
+    monolithic Phase-K compiler introduced a verifier-only cycle because that
+    compiler also builds CLOSED_PREFIX_REFINEMENT and therefore requires
+    REFERENCE_TRANSITION_SYSTEM_IDENTITY, which is topologically later.
+    """
+
+    if fresh_reference is None:
+        return None, {"route": "REFERENCE_CERTIFICATE_FAILED",
+                      "code": "FRESH_REFERENCE_TASKSET_MISSING"}
+    theorem, receipt, backend_error = _fresh_reference_prefix_backend()
+    if backend_error:
+        return None, backend_error
+    required = ("REFERENCE_TASKSET", "TIME_PROGRESS", "EFFECTIVE_EVENT_ORDER")
+    missing = [name for name in required
+               if fresh_certificates.get(name, {}).get("obligation_status") != "PASS"]
+    if missing:
+        return None, {"route": "UNRESOLVED",
+                      "code": "REFERENCE_PREFIX_UPSTREAM_CERTIFICATE_MISSING",
+                      "missing": missing}
+    from formal_toolchain.bridge.prefix_extension import (
+        build_parameterized_prefix_extension_certificate,
+    )
+    try:
+        certificate = build_parameterized_prefix_extension_certificate(
+            reference_taskset=fresh_reference.to_dict(),
+            reference_taskset_certificate=fresh_certificates["REFERENCE_TASKSET"],
+            time_progress_certificate=fresh_certificates["TIME_PROGRESS"],
+            event_order_certificate=fresh_certificates["EFFECTIVE_EVENT_ORDER"],
+            contexts=inputs.contexts,
+            context_hash=str(inputs.contexts["bridge_context"]["hash"]),
+            theorem_statement=theorem,
+            theorem_proof_receipt=receipt,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return None, {"route": "UNRESOLVED",
+                      "code": "REFERENCE_PREFIX_EXTENSION_BUILD_FAILED",
+                      "message": str(exc)}
+    if certificate.get("obligation_status") != "PASS":
+        return None, {"route": "UNRESOLVED",
+                      "code": "REFERENCE_PREFIX_EXTENSION_BUILD_UNRESOLVED"}
+    return certificate, None
 
 
 def _fresh_bridge_proofs(*, inputs: Any, fresh_certificates: Mapping[str, Mapping[str, Any]],
@@ -827,6 +889,42 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
                     )
                 )
 
+                continue
+            if obligation_id == "REFERENCE_PREFIX_EXTENSION":
+                extension_object, extension_failure = _fresh_reference_prefix_extension_object(
+                    inputs=inputs, fresh_certificates=fresh, fresh_reference=fresh_reference,
+                )
+                if extension_failure is not None or extension_object is None:
+                    fresh[obligation_id] = _semantic_certificate(
+                        obligation_id=obligation_id, candidate=candidate, status="UNRESOLVED",
+                        context_hash=expected_context_for_obligation(obligation_id, inputs.contexts),
+                        predecessors=predecessors,
+                        failure=extension_failure or {"route": "UNRESOLVED",
+                                                      "code": "REFERENCE_PREFIX_EXTENSION_UNRESOLVED"},
+                        witness={"extension_generation": extension_failure},
+                    )
+                    continue
+                checked = verify_prefix_extension_proof_object(
+                    candidate=extension_object,
+                    bridge_context_hash=inputs.contexts["bridge_context"]["hash"],
+                    contexts=inputs.contexts,
+                    predecessors=predecessors,
+                    raw_inputs=inputs,
+                    reference_taskset=fresh_reference.to_dict(),
+                    certified_envelope=envelope_state.certified_envelope,
+                )
+                extension_status = checked.get("status", "UNRESOLVED")
+                fresh[obligation_id] = _semantic_certificate(
+                    obligation_id=obligation_id, candidate=extension_object,
+                    status=extension_status,
+                    context_hash=expected_context_for_obligation(obligation_id, inputs.contexts),
+                    predecessors=predecessors,
+                    failure=(None if extension_status == "PASS" else {
+                        "route": checked.get("route", "UNRESOLVED"),
+                        "code": checked.get("code", "REFERENCE_PREFIX_EXTENSION_CHECK_FAILED"),
+                    }),
+                    witness=checked.get("witness"),
+                )
                 continue
             if bridge_generation_cache is None and bridge_generation_failure is None:
                 bridge_generation_cache, bridge_generation_failure = _fresh_bridge_proofs(
@@ -1155,9 +1253,15 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
     _write(out_dir / "artifact_manifest.json", {
         "schema_version": "verified_artifact_manifest_v2",
         "artifacts": {key: value["artifact_hash"] for key, value in certificates.items()}})
+    combined_checker_catalog = {
+        **VERIFIER_CHECKERS,
+        **(fresh_state.route_strategy.checker_catalog() if fresh_state else {}),
+    }
+    resolved_ids = {str(item["id"]) for item in registry}
     coverage = build_interface_coverage_report(
         registry=registry, spec_root=Path(__file__).parents[1] / "specs",
-        checker_catalog={**VERIFIER_CHECKERS, **(fresh_state.route_strategy.checker_catalog() if fresh_state else {})},
+        checker_catalog={key: value for key, value in combined_checker_catalog.items()
+                         if key in resolved_ids},
         structural_ids=set(closure.structural))
     _write(out_dir / "interface_coverage_report.json", coverage)
     result = {"result_status": aggregation_status, "outer_bundle_root": root,

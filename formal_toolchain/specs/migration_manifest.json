@@ -3,9 +3,9 @@
     "schema_version",
     "migration_id"
   ],
-  "migration_id": "r8-reference-model-conformance-machine-premises",
-  "previous_registry_fingerprint": "68364fceb38338cf03b153c31b94cd88a444c21e1a8f7b311771345fece61711",
-  "registry_fingerprint": "2d4fb76e5ee56976fc768b26ce0238ae7686a0d4a531084fd1b552af7c63d65a",
+  "migration_id": "r11-ppp-frontier-and-route-registry-closure",
+  "previous_registry_fingerprint": "2d4fb76e5ee56976fc768b26ce0238ae7686a0d4a531084fd1b552af7c63d65a",
+  "registry_fingerprint": "6d5f20f72cd538b57af6114a919029fa0f36afb471865b5aff3ba789ab79552d",
   "registry_schema_version": "obligation_registry_v5",
   "schema_version": "migration_manifest_v3"
 }

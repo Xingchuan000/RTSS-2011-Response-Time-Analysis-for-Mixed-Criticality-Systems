@@ -4,7 +4,9 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from formal_toolchain.core.artifact import obligation_certificate
-from formal_toolchain.core.hashing import sha256_file, sha256_object
+from formal_toolchain.core.hashing import (
+    sha256_file, sha256_file_by_mode, sha256_object,
+)
 from formal_toolchain.core.predecessor_contract import validate_verified_predecessor
 from formal_toolchain.theory.backends.reference_prefix_extension import (
     EXPECTED_CASE_IDS, EXPECTED_SOLVER_OBLIGATIONS,
@@ -24,9 +26,15 @@ def _receipt_is_valid(
     }
     if not required <= set(receipt):
         return False
-    if receipt.get("proof_object_hash") != sha256_file(proof_path):
+    proof_object = theorem.get("proof_object", {})
+    hash_mode = str(proof_object.get("hash_mode", "raw_bytes_v1"))
+    try:
+        actual_proof_hash = sha256_file_by_mode(proof_path, hash_mode)
+    except (OSError, ValueError):
         return False
-    if receipt.get("proof_object_hash") != theorem.get("proof_object", {}).get("sha256"):
+    if receipt.get("proof_object_hash") != actual_proof_hash:
+        return False
+    if receipt.get("proof_object_hash") != proof_object.get("sha256"):
         return False
     if receipt.get("theorem_statement_hash") != theorem.get("statement_hash"):
         return False

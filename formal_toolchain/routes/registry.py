@@ -37,6 +37,7 @@ def _template(source: dict[str, Any], obligation_id: str, *, depends_on: list[st
     item["context_layer"] = context_layer
     item["producer"] = {"kind": "compiler_candidate", "id": producer_id or obligation_id.lower() + "_v1"}
     item["artifact"] = f"artifacts/{obligation_id.lower()}.json"
+    item["summary_path"] = f"obligations.{obligation_id}"
     return item
 
 

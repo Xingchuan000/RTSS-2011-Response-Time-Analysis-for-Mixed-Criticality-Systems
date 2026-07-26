@@ -1868,7 +1868,7 @@
         "EFFECTIVE_EVENT_ORDER",
         "EFFECTIVE_EVENT_FRONTIER_RELATION"
       ],
-      "artifact": "artifacts/REFERENCE_TRANSITION_SYSTEM_IDENTITY.json",
+      "artifact": "artifacts/reference_transition_system_identity.json",
       "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.REFERENCE_TRANSITION_SYSTEM_IDENTITY",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
@@ -2182,11 +2182,16 @@
       "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.REFERENCE_SEMANTICS_CONTRACT",
       "failure_route": "MODEL_CONFORMANCE_FAILED",
-      "gates_claims": ["DEPLOYED_HI_SAFETY"],
+      "gates_claims": [
+        "DEPLOYED_HI_SAFETY"
+      ],
       "status_evidence_rule": "certificate_status",
       "proof_role": "mathematical_lemma",
       "context_layer": "reference_context",
-      "producer": {"kind": "compiler_candidate", "id": "reference_semantics_contract_v1"},
+      "producer": {
+        "kind": "compiler_candidate",
+        "id": "reference_semantics_contract_v1"
+      },
       "authorization_for": []
     },
     {

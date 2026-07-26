@@ -27,7 +27,7 @@
     "common_certificate_v2"
   ],
   "proof_schema_version": "common_certificate_v2",
-  "registry_fingerprint": "2d4fb76e5ee56976fc768b26ce0238ae7686a0d4a531084fd1b552af7c63d65a",
+  "registry_fingerprint": "6d5f20f72cd538b57af6114a919029fa0f36afb471865b5aff3ba789ab79552d",
   "route_derived_obligations": {
     "protected_prefix": [
       "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED",
