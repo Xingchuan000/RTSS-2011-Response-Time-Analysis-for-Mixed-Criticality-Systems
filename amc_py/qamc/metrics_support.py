@@ -14,6 +14,8 @@ from .models import QAmcProfileBundle
 
 @dataclass(frozen=True, slots=True)
 class QAmcMetrics:
+    release_count: int
+    managed_release_count: int
     paper_quality_sum: int
     paper_quality_per_release: float
     normalized_provided_quality_sum: float
@@ -56,15 +58,42 @@ class QAmcMetrics:
 
 
 def compute_qamc_metrics(result: SimulationResult, profile_bundle: QAmcProfileBundle) -> QAmcMetrics:
-    jobs = [job for job in result.jobs if job.task.criticality is Criticality.LO and job.qamc_target_runtime_level_at_release is not None]
-    releases = len(jobs)
-    completed = [job for job in jobs if job.completion_time is not None and not job.dropped and not job.qamc_result_lost_due_to_deadline]
-    quality_values = [float(job.qamc_provided_normalized_quality or 0.0) for job in jobs]
-    raw_values = [int(job.qamc_provided_raw_rank or 0) for job in jobs]
-    target_ranks = [int(job.qamc_target_raw_rank_at_release or 0) for job in jobs]
-    target_quality = [float(job.qamc_target_normalized_quality_at_release or 0.0) for job in jobs]
+    all_lo_jobs = [
+        job for job in result.jobs if job.task.criticality is Criticality.LO
+    ]
+    managed_jobs = [
+        job
+        for job in all_lo_jobs
+        if job.qamc_target_runtime_level_at_release is not None
+    ]
+    release_count = len(all_lo_jobs)
+    managed_release_count = len(managed_jobs)
+    completed_positive_quality_jobs = [
+        job
+        for job in all_lo_jobs
+        if job.completion_time is not None
+        and float(job.qamc_provided_normalized_quality or 0.0) > 0.0
+    ]
+    quality_values = [
+        float(job.qamc_provided_normalized_quality or 0.0)
+        for job in all_lo_jobs
+    ]
+    raw_values = [int(job.qamc_provided_raw_rank or 0) for job in all_lo_jobs]
+    target_ranks = [
+        int(job.qamc_target_raw_rank_at_release)
+        for job in managed_jobs
+        if job.qamc_target_raw_rank_at_release is not None
+    ]
+    target_quality = [
+        float(job.qamc_target_normalized_quality_at_release)
+        for job in managed_jobs
+        if job.qamc_target_normalized_quality_at_release is not None
+    ]
     release_counts = Counter(str(value) for value in target_ranks)
-    completed_counts = Counter(str(int(job.qamc_provided_raw_rank or 0)) for job in completed)
+    completed_counts = Counter(
+        str(int(job.qamc_provided_raw_rank or 0))
+        for job in completed_positive_quality_jobs
+    )
     depths: list[int] = []
     raw_drops: list[int] = []
     for task_name, profile in profile_bundle.profiles.items():
@@ -93,23 +122,79 @@ def compute_qamc_metrics(result: SimulationResult, profile_bundle: QAmcProfileBu
         for rank, duration in sorted(duration_by_rank_total.items())
     }
 
-    trigger_ratios = [job.qamc_trigger_budget_ratio_to_design_c_lo for job in jobs if job.qamc_stopped_by_overrun and job.qamc_trigger_budget_ratio_to_design_c_lo is not None]
+    trigger_ratios = [
+        job.qamc_trigger_budget_ratio_to_design_c_lo
+        for job in all_lo_jobs
+        if job.qamc_stopped_by_overrun
+        and job.qamc_trigger_budget_ratio_to_design_c_lo is not None
+    ]
     source_counts = Counter(event.source for event in result.budget_update_events)
     source_task_counts = Counter()
     for event in result.budget_update_events:
         source_task_counts[event.source] += len(event.updates)
+
+    provided_normalized_sum = float(sum(quality_values))
+    provided_raw_rank_sum = int(sum(raw_values))
+    zero_service_count = sum(1 for value in quality_values if value <= 0.0)
+    normalized_quality_qos = (
+        provided_normalized_sum / release_count if release_count else 0.0
+    )
+    if release_count != len(all_lo_jobs):
+        raise AssertionError(
+            "QAMC_RELEASE_COUNT_INTERNAL_MISMATCH:"
+            f"{release_count}:{len(all_lo_jobs)}"
+        )
+    if zero_service_count < 0 or zero_service_count > release_count:
+        raise AssertionError(
+            "QAMC_ZERO_SERVICE_COUNT_OUT_OF_RANGE:"
+            f"{zero_service_count}:{release_count}"
+        )
+    if not (0.0 <= normalized_quality_qos <= 1.0 + 1e-12):
+        raise AssertionError(
+            "QAMC_NORMALIZED_QOS_OUT_OF_RANGE:"
+            f"{normalized_quality_qos}"
+        )
+
     return QAmcMetrics(
-        paper_quality_sum=sum(raw_values),
-        paper_quality_per_release=sum(raw_values) / releases if releases else 0.0,
-        normalized_provided_quality_sum=sum(quality_values),
-        normalized_quality_qos=sum(quality_values) / releases if releases else 0.0,
-        zero_service_count=sum(1 for value in quality_values if value <= 0.0),
-        zero_service_ratio=sum(1 for value in quality_values if value <= 0.0) / releases if releases else 0.0,
-        release_target_rank_mean=sum(target_ranks) / releases if releases else 0.0,
-        release_target_normalized_mean=sum(target_quality) / releases if releases else 0.0,
-        completed_quality_conditional_mean=(sum(float(job.qamc_provided_normalized_quality or 0.0) for job in completed) / len(completed) if completed else 0.0),
-        completed_quality_unconditional_per_release=sum(quality_values) / releases if releases else 0.0,
-        overrun_stop_count=sum(1 for job in jobs if job.qamc_stopped_by_overrun),
+        release_count=release_count,
+        managed_release_count=managed_release_count,
+        paper_quality_sum=provided_raw_rank_sum,
+        paper_quality_per_release=(
+            provided_raw_rank_sum / release_count if release_count else 0.0
+        ),
+        normalized_provided_quality_sum=provided_normalized_sum,
+        normalized_quality_qos=normalized_quality_qos,
+        zero_service_count=zero_service_count,
+        zero_service_ratio=(
+            zero_service_count / release_count if release_count else 0.0
+        ),
+        release_target_rank_mean=(
+            sum(target_ranks) / len(target_ranks) if target_ranks else 0.0
+        ),
+        release_target_normalized_mean=(
+            sum(target_quality) / len(target_quality) if target_quality else 0.0
+        ),
+        completed_quality_conditional_mean=(
+            sum(
+                float(job.qamc_provided_normalized_quality or 0.0)
+                for job in completed_positive_quality_jobs
+            )
+            / len(completed_positive_quality_jobs)
+            if completed_positive_quality_jobs
+            else 0.0
+        ),
+        completed_quality_unconditional_per_release=(
+            sum(
+                float(job.qamc_provided_normalized_quality or 0.0)
+                for job in completed_positive_quality_jobs
+            )
+            / release_count
+            if release_count
+            else 0.0
+        ),
+        overrun_stop_count=sum(
+            1 for job in all_lo_jobs if job.qamc_stopped_by_overrun
+        ),
         quality_transition_count=len(result.qamc_quality_changes),
         min_quality_exhaustion_count=len(result.qamc_min_quality_exhaustions),
         tasks_ever_degraded=len({event.task for event in result.qamc_quality_changes}),
@@ -126,7 +211,9 @@ def compute_qamc_metrics(result: SimulationResult, profile_bundle: QAmcProfileBu
         trigger_below_design_count=sum(1 for ratio in trigger_ratios if ratio < 1.0),
         trigger_equal_design_count=sum(1 for ratio in trigger_ratios if ratio == 1.0),
         trigger_above_design_count=sum(1 for ratio in trigger_ratios if ratio > 1.0),
-        would_overrun_design_count=sum(1 for job in jobs if job.qamc_would_overrun_design_c_lo),
+        would_overrun_design_count=sum(
+            1 for job in all_lo_jobs if job.qamc_would_overrun_design_c_lo
+        ),
         dqn_budget_update_event_count=source_counts["DQN_ACTION"],
         dqn_budget_update_task_count=source_task_counts["DQN_ACTION"],
         viper_budget_update_event_count=source_counts["VIPER_ACTION"],
