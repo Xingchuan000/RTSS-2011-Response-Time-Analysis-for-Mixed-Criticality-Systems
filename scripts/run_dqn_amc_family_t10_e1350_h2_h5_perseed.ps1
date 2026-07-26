@@ -14,7 +14,19 @@ param(
   [switch]$SkipTrain,
   [switch]$SkipHout,
   [switch]$PrepareArtifactsOnly,
-  [string]$HoutSeeds = "200:249"
+  [switch]$Pilot,
+  [int[]]$TasksetSeeds = @(
+    2221, 397, 861, 639, 1264,
+    1502, 358, 185, 2535, 2829
+  ),
+  [int[]]$PilotTasksetSeeds = @(185),
+  [int]$Episodes = 1350,
+  [long]$TrainEndTime = 5000000,
+  [string]$ValidationSeeds = "200:209",
+  [long]$ValidationEndTime = 5000000,
+  [string]$HoutSeeds = "200:249",
+  [long]$HoutH2EndTime = 20000000,
+  [long]$HoutH5EndTime = 50000000
 )
 
 Set-StrictMode -Version Latest
@@ -29,10 +41,28 @@ $env:MKL_NUM_THREADS = "1"
 $env:OPENBLAS_NUM_THREADS = "1"
 $env:NUMEXPR_NUM_THREADS = "1"
 
-$TasksetSeeds = @(2221, 397, 861, 639, 1264, 1502, 358, 185, 2535, 2829)
 $RewardMode = "interval_qos_v2_single_recovery_full_C5_overinc016_abs005"
-$ValidationSeeds = "200:209"
 $CAmcSemXf = 0.5
+$ValidateEvery = 10
+$CheckpointEvery = 10
+
+if ($Pilot) {
+  $TasksetSeeds = $PilotTasksetSeeds
+  $Episodes = 2
+  $TrainEndTime = 100000
+  $ValidationSeeds = "200"
+  $ValidationEndTime = 100000
+  $HoutSeeds = "200:201"
+  $HoutH2EndTime = 100000
+  $HoutH5EndTime = 100000
+  $ValidateEvery = 1
+  $CheckpointEvery = 1
+}
+
+if ($Episodes -lt 1) {
+  throw "Episodes must be at least 1."
+}
+$TrainSeeds = "0:$($Episodes - 1)"
 
 switch ($RuntimeSemantics) {
   "C_AMC_SEM" {
@@ -77,6 +107,8 @@ switch ($RuntimeSemantics) {
         "noop_agent"
       )
       RequiredMetricColumns = @(
+        "qamc_release_count",
+        "qamc_managed_release_count",
         "qamc_paper_quality_sum",
         "qamc_paper_quality_per_release",
         "qamc_normalized_quality_qos",
@@ -97,6 +129,9 @@ $ValidationBaselineSemantics = $SemanticsConfig.ValidationBaselineSemantics
 $BaselineMethods = $SemanticsConfig.BaselineMethods -join ","
 $RequiredNewMetricColumns = $SemanticsConfig.RequiredMetricColumns
 $OutRoot = $SemanticsConfig.OutRoot
+if ($Pilot) {
+  $OutRoot = "$($OutRoot)_pilot"
+}
 $TrainRoot = "$OutRoot\tr"
 $HoutRoot = "$OutRoot\ho\$($SemanticsConfig.HoutSubdir)"
 $ArtifactRoot = "$OutRoot\artifacts"
@@ -233,14 +268,14 @@ function Invoke-TrainOneRun {
   $TrainArgs = @("-u", "scripts\train_dqn_amc.py") + $WorkloadArgs + @(
     "--fixed-taskset-seed", "$TasksetSeed",
     "--train-seed-mode", "per-episode",
-    "--train-seeds", "0:1349",
+    "--train-seeds", $TrainSeeds,
     "--scenario-seed-offset", "100000",
-    "--episodes", "1350",
-    "--end-time", "5000000",
+    "--episodes", "$Episodes",
+    "--end-time", "$TrainEndTime",
     "--validation-seeds", $ValidationSeeds,
-    "--validation-end-time", "5000000",
-    "--validate-every", "10",
-    "--checkpoint", "10",
+    "--validation-end-time", "$ValidationEndTime",
+    "--validate-every", "$ValidateEvery",
+    "--checkpoint", "$CheckpointEvery",
     "--validation-workers", "$ValidationWorkers",
     "--dqn-runtime-semantics", $DqnRuntimeSemantics,
     "--validation-baseline-semantics", $ValidationBaselineSemantics
@@ -303,9 +338,14 @@ function Invoke-HoutOneRun {
     [int]$TasksetSeed,
     [string]$RunDir,
     [long]$EndTime,
+    [string]$HorizonLabel,
     [object]$QAmcArtifacts
   )
-  $Label = Get-EndTimeLabel -EndTime $EndTime
+  $Label = if ($HorizonLabel) {
+    $HorizonLabel
+  } else {
+    Get-EndTimeLabel -EndTime $EndTime
+  }
   $OutputCsv = "$HoutRoot\$Label\r0_s$TasksetSeed\hout_$Label.csv"
   $ModelPath = Get-ModelPath -RunDir $RunDir
   if ($null -eq $ModelPath) {
@@ -376,7 +416,7 @@ if ($RuntimeSemantics -eq "Q_AMC") {
     Write-Host "Prepared artifacts for r0_s$TasksetSeed"
   }
   if ($PrepareArtifactsOnly) {
-    Write-Host "All q-AMC artifacts prepared. No training or HOUT requested."
+    Write-Host "ARTIFACT_PREPARATION_COMPLETED"
     exit 0
   }
 }
@@ -392,7 +432,7 @@ foreach ($TasksetSeed in $TasksetSeeds) {
     Invoke-TrainOneRun -TasksetSeed $TasksetSeed -OutDir $RunDir -QAmcArtifacts $QAmcArtifacts
   }
   if (-not $SkipHout) {
-    Invoke-HoutOneRun -TasksetSeed $TasksetSeed -RunDir $RunDir -EndTime 20000000 -QAmcArtifacts $QAmcArtifacts
-    Invoke-HoutOneRun -TasksetSeed $TasksetSeed -RunDir $RunDir -EndTime 50000000 -QAmcArtifacts $QAmcArtifacts
+    Invoke-HoutOneRun -TasksetSeed $TasksetSeed -RunDir $RunDir -EndTime $HoutH2EndTime -HorizonLabel "h2" -QAmcArtifacts $QAmcArtifacts
+    Invoke-HoutOneRun -TasksetSeed $TasksetSeed -RunDir $RunDir -EndTime $HoutH5EndTime -HorizonLabel "h5" -QAmcArtifacts $QAmcArtifacts
   }
 }
