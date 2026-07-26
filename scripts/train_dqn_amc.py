@@ -58,7 +58,7 @@ from amc_py.model_selection import (
     qos_recovery_stable_sort_key,
     zero_service_qos_sort_key,
 )
-from amc_py.models import Task
+from amc_py.models import Criticality, Task
 from amc_py.rl.actions import (
     compute_action_space_fingerprint,
     describe_budget_action,
@@ -962,15 +962,37 @@ def _runtime_metrics_row(
     if semantics is RuntimeSemantics.Q_AMC:
         if qamc_profile_bundle is None:
             raise ValueError("QAMC_PROFILE_REQUIRED_FOR_METRICS")
-        row.update(qamc_metrics_to_row(compute_qamc_metrics(result, qamc_profile_bundle)))
-        row.update(qamc_loss_metrics_to_row(compute_qamc_loss_metrics(result)))
+        qamc_metrics = compute_qamc_metrics(result, qamc_profile_bundle)
+        qamc_loss = compute_qamc_loss_metrics(result)
+        row.update(qamc_metrics_to_row(qamc_metrics))
+        row.update(qamc_loss_metrics_to_row(qamc_loss))
         row["qamc_legacy_degraded_metrics_applicable"] = False
+        expected_lo_releases = sum(
+            1
+            for job in result.jobs
+            if job.task.criticality is Criticality.LO
+        )
+        if qamc_metrics.release_count != expected_lo_releases:
+            raise AssertionError(
+                "QAMC_RELEASE_COUNT_MISMATCH:"
+                f"{qamc_metrics.release_count}:{expected_lo_releases}"
+            )
         generic_qos = float(row["lo_quality_qos"])
-        qamc_qos = float(row["qamc_normalized_quality_qos"])
+        qamc_qos = qamc_metrics.normalized_quality_qos
         if not math.isclose(generic_qos, qamc_qos, rel_tol=0.0, abs_tol=1e-12):
             raise AssertionError(
                 f"QAMC_GENERIC_QOS_MISMATCH:{generic_qos}:{qamc_qos}"
             )
+        classified_qamc_losses = (
+            qamc_loss.completed_positive_quality_jobs
+            + qamc_loss.overrun_stopped_zero_quality_jobs
+            + qamc_loss.deadline_lost_zero_quality_jobs
+            + qamc_loss.min_threshold_fallback_zero_quality_jobs
+            + qamc_loss.hi_mode_discard_zero_quality_jobs
+            + qamc_loss.other_zero_quality_jobs
+        )
+        if classified_qamc_losses != qamc_loss.released_lo_jobs:
+            raise AssertionError("QAMC_VALIDATION_LOSS_NOT_CONSERVATIVE")
         _blank_legacy_degraded_fields(row)
     return row
 
