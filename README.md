@@ -1705,6 +1705,38 @@ conda run -n amc-repro python scripts/train_dqn_amc.py \
 如果你想做快速 smoke test，可以先用 `--train-end-time-schedule-mode cycle`，
 这样能够更直观地看到 episode horizon 按顺序轮换。
 
+### 12.2 q-AMC 真实 seed pilot
+
+q-AMC normalized QoS 以全部 LO releases 为分母；HI mode 中释放并立即丢弃的
+LO job 计作零质量 release。release-time target quality 统计只覆盖已建立 q-AMC
+快照的 managed releases，分别由 `qamc_release_count` 和
+`qamc_managed_release_count` 标识两个集合。
+
+先预制并校验工件，再运行隔离的短 pilot：
+
+```powershell
+.\scripts\run_dqn_amc_family_t10_e1350_h2_h5_perseed.ps1 `
+  -RuntimeSemantics Q_AMC `
+  -PrepareArtifactsOnly
+
+.\scripts\run_dqn_amc_family_t10_e1350_h2_h5_perseed.ps1 `
+  -RuntimeSemantics Q_AMC `
+  -Pilot
+```
+
+第二个真实 seed 使用 `-PilotTasksetSeeds 397`。pilot 输出位于
+`outputs\dqs_t10_e1350_pilot`，不会覆盖正式 checkpoint。训练和 HOUT 完成后运行：
+
+```bash
+python -m scripts.check_qamc_pilot_readiness \
+  --train-output outputs/dqs_t10_e1350_pilot/tr \
+  --hout-output outputs/dqs_t10_e1350_pilot/ho/allbase_qamc_v5
+```
+
+只有 readiness gate 输出 `READY_FOR_FULL_TRAINING` 后，才可启动正式 q-AMC
+campaign。完整指标口径与验收条件见
+[`docs/qamc_v5_runtime_semantics.md`](docs/qamc_v5_runtime_semantics.md)。
+
 ## 13. 最小 taskset slack 验证（阶段 A/B）
 
 本节对应 `minimal_taskset_slack_validation_plan.md` 的阶段 A、阶段 B。
