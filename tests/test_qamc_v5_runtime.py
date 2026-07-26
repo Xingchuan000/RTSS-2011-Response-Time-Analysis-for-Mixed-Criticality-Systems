@@ -189,7 +189,7 @@ def test_qamc_fixed_wmax_floor_applies_even_when_reference_ratio_is_zero() -> No
         action_space="single",
         budget_decrease_ratio=0.9,
         budget_floor_ratio=0.0,
-        check_safety=False,
+        check_safety=True,
         qamc_profile_bundle=bundle,
     )
     env.reset()

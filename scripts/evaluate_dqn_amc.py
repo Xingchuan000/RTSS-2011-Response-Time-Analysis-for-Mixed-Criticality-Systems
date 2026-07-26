@@ -50,7 +50,11 @@ from amc_py.rl.actions import (
 from amc_py.rl.agents import HeuristicBudgetAgent, NoOpBudgetAgent, RandomBudgetAgent
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.rl.reward_config import available_reward_modes
-from amc_py.rl.runtime_wrapper import AgentRuntimeConfig, simulate_ordered_taskset_with_agent
+from amc_py.rl.runtime_wrapper import (
+    AgentRuntimeConfig,
+    AgentRuntimeResult,
+    simulate_ordered_taskset_with_agent,
+)
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationResult
 from amc_py.qamc.metrics_support import compute_qamc_metrics, qamc_metrics_to_row
 from amc_py.qamc.loss_metrics import (
@@ -557,6 +561,13 @@ def _eval_summary_fieldnames() -> list[str]:
             "qamc_unspecified_budget_update_task_count",
             "qamc_profile_fingerprint",
             "qamc_legacy_degraded_metrics_applicable",
+            "qamc_loss_released_lo_jobs",
+            "qamc_loss_completed_positive_quality_jobs",
+            "qamc_loss_overrun_stopped_zero_quality_jobs",
+            "qamc_loss_deadline_lost_zero_quality_jobs",
+            "qamc_loss_min_threshold_fallback_zero_quality_jobs",
+            "qamc_loss_hi_mode_discard_zero_quality_jobs",
+            "qamc_loss_other_zero_quality_jobs",
         ]
     )
     return fieldnames

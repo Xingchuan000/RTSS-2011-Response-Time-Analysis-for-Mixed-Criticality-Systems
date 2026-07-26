@@ -1661,9 +1661,9 @@ def _run_validation(
     validation_seeds: list[int],
     validation_end_time: int,
     agent_period: int,
-    dqn_runtime_semantics: RuntimeSemantics,
-    validation_baseline_semantics: RuntimeSemantics,
-    c_amc_sem_xf: float,
+    dqn_runtime_semantics: RuntimeSemantics = RuntimeSemantics.AMC_PLUS,
+    validation_baseline_semantics: RuntimeSemantics = RuntimeSemantics.AMC_PLUS,
+    c_amc_sem_xf: float = 0.5,
     reward_mode: str,
     action_space: str,
     budget_increase_ratio: float,
@@ -3877,10 +3877,14 @@ def main() -> None:
         runtime_result = (
             env._engine.finish() if env._engine is not None else SimulationResult()
         )
-        episode_runtime_metrics = _runtime_metrics_row(
-            result=runtime_result,
-            semantics=dqn_runtime_semantics,
-            qamc_profile_bundle=env.qamc_profile,
+        episode_runtime_metrics = (
+            _runtime_metrics_row(
+                result=runtime_result,
+                semantics=dqn_runtime_semantics,
+                qamc_profile_bundle=env.qamc_profile,
+            )
+            if dqn_runtime_semantics is RuntimeSemantics.Q_AMC
+            else {}
         )
         debug_stats = env.debug_statistics()
         if int(debug_stats["selected_invalid_mask_actions"]) > 0:
@@ -4783,6 +4787,10 @@ def main() -> None:
             "increase_action_usage_rate",
             "decrease_action_usage_rate",
         ]
+        for row in train_metric_rows:
+            for field_name in row:
+                if field_name not in metric_fieldnames:
+                    metric_fieldnames.append(field_name)
         with train_metrics_path.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=metric_fieldnames)
             writer.writeheader()
@@ -4907,6 +4915,10 @@ def main() -> None:
                     "policy_action_pingpong_sum_json",
                 ]
             )
+        for row in validation_rows:
+            for field_name in row:
+                if field_name not in validation_fieldnames:
+                    validation_fieldnames.append(field_name)
         with validation_metrics_path.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=validation_fieldnames)
             writer.writeheader()

@@ -36,6 +36,31 @@ def rebuild_runtime_branch_map(inputs: BridgeReplayInputs) -> dict[str, Any]:
     return build_runtime_branch_map(inputs.source_root, source_hash=inputs.source_manifest_hash, path_map=expected)
 
 
+def _handler_decomposition_replay_inputs(
+    compiled: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    """Return the same semantic proof representation used by candidate build.
+
+    ``compile_bridge`` builds the handler-decomposition certificate from
+    ``compiled["proofs"]`` (raw semantic proof rows).  Fresh replay must use
+    that exact representation as well.  Feeding certificate envelopes instead
+    changes packaging-only fields such as ``artifact_hash`` and produces a
+    false HANDLER_DECOMPOSITION_REPLAY_MISMATCH even when every formula and
+    transition contract is identical.
+    """
+    proofs = compiled.get("proofs")
+    if not isinstance(proofs, list) or not proofs:
+        return []
+    rows: list[Mapping[str, Any]] = []
+    for item in proofs:
+        if hasattr(item, "to_dict"):
+            item = item.to_dict()
+        if not isinstance(item, Mapping):
+            return []
+        rows.append(item)
+    return rows
+
+
 def replay_all_transition_cases(inputs: BridgeReplayInputs) -> dict[str, Any]:
     """每次 verifier 调用都重新编译 EffectIR 并逐 case 调用 Z3。"""
     try:
@@ -115,9 +140,13 @@ def replay_all_transition_cases(inputs: BridgeReplayInputs) -> dict[str, Any]:
         HANDLER_DECOMPOSITION_SCHEMA_VERSION,
         build_handler_decomposition_certificate,
     )
+    handler_inputs = _handler_decomposition_replay_inputs(compiled)
+    if not handler_inputs:
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED",
+                "code": "FRESH_HANDLER_PROOF_ROWS_MISSING"}
     decomposition = build_handler_decomposition_certificate(
         inputs.source_root, context_hash=inputs.bridge_context_hash,
-        transition_case_certificates=compiled.get("proof_certificates", []))
+        transition_case_certificates=handler_inputs)
     if decomposition.get("status") != "PASS" or decomposition.get("schema_version") != HANDLER_DECOMPOSITION_SCHEMA_VERSION:
         return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "FRESH_HANDLER_DECOMPOSITION_FAILED", "handler_decomposition": decomposition}
     return {"status": "PASS", "route": None, "code": None,

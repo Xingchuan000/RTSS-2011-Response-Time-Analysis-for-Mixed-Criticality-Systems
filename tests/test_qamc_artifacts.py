@@ -8,6 +8,7 @@ import pytest
 
 from amc_py.models import Criticality, Task
 from amc_py.qamc.profile_spec import QAmcProfileSpec, write_profile_spec
+from amc_py.qamc.effective_config import QAmcReferenceEffectiveConfig
 from amc_py.qamc.profiles import (
     build_qamc_profile_bundle,
     load_profile_bundle_from_manifest,
@@ -73,22 +74,36 @@ def test_frozen_reference_detects_artifact_and_effective_config_drift(
     run_dir.mkdir()
     reward = run_dir / "reward.json"
     reward.write_text('{"reward": 1}', encoding="utf-8")
+    effective = QAmcReferenceEffectiveConfig(
+        schema_version="qamc_reference_effective_config_v1",
+        action_space="single",
+        q_network_type="mlp",
+        action_feature_mode="static_v1",
+        include_explicit_noop=False,
+        budget_increase_ratio=0.1,
+        budget_decrease_ratio=0.05,
+        budget_rounding_mode="ceil_floor",
+        min_budget_delta=1,
+        budget_floor_ratio=0.5,
+        check_safety=True,
+        step_guard_semantics="checked",
+        observation_mode="v11_full_10d",
+        reward_mode="mendes",
+        reward_config_path=str(reward.resolve()),
+        reward_config_sha256=hashlib.sha256(reward.read_bytes()).hexdigest(),
+        agent_period=1000,
+        save_best_by="qos_recovery_stable",
+        selector_contract_version="selector_contract_v1",
+        enable_deploy_cap_mask=True,
+        deploy_cap_mask_ratio=4.0,
+        deploy_cap_mask_criticality="lo",
+        forbid_decreasing_hi_budgets=True,
+        action_dim=2,
+        observation_dim=10,
+    )
     config = {
-        "action_space": "single",
-        "q_network_type": "mlp",
-        "action_feature_mode": "static_v1",
-        "include_explicit_noop": False,
-        "budget_increase_ratio": 0.1,
-        "budget_decrease_ratio": 0.05,
-        "budget_rounding_mode": "ceil_floor",
-        "min_budget_delta": 1,
-        "budget_floor_ratio": 0.5,
-        "check_safety": True,
-        "observation_mode": "v11_full_10d",
-        "reward_mode": "mendes",
-        "agent_period": 1000,
-        "reward_config_path": "reward.json",
-        "selector": {"metric": "lc_qos"},
+        "effective_reference_config": effective.to_jsonable(),
+        "effective_reference_config_fingerprint": effective.fingerprint,
     }
     (run_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
     frozen_path = tmp_path / "frozen.json"

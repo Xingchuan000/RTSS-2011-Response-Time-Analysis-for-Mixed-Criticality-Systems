@@ -26,6 +26,7 @@ from amc_py.qamc.reference_config import (
     load_and_validate_frozen_reference,
 )
 from amc_py.qamc.profile_spec import load_profile_spec
+from amc_py.qamc.rl_contract import validate_qamc_rl_semantics
 from amc_py.viper.dataset import write_viper_dataset
 from amc_py.viper.fixed_point import FixedPointConfig
 from amc_py.viper.teacher import collect_teacher_labeled_rollouts
@@ -87,6 +88,15 @@ def _configure_qamc_experiment(args: argparse.Namespace, experiment_config):
         or args.qamc_profile_spec_path is None
     ):
         raise ValueError("QAMC_REFERENCE_PROFILE_ARTIFACTS_REQUIRED")
+    validate_qamc_rl_semantics(
+        semantics=RuntimeSemantics.Q_AMC,
+        action_space=args.action_space,
+        check_safety=True,
+        step_guard_semantics="checked",
+        nonvacuity_disabled_guards=(),
+        budget_rounding_mode="ceil_floor",
+        min_budget_delta=1,
+    )
     frozen = load_and_validate_frozen_reference(args.qamc_reference_config_path)
     assert_reference_matches_values(
         frozen,
