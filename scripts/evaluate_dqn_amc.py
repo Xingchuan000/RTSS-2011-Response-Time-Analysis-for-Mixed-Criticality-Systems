@@ -521,6 +521,8 @@ def _eval_summary_fieldnames() -> list[str]:
     )
     fieldnames.extend(
         [
+            "qamc_release_count",
+            "qamc_managed_release_count",
             "qamc_paper_quality_sum",
             "qamc_paper_quality_per_release",
             "qamc_normalized_provided_quality_sum",
