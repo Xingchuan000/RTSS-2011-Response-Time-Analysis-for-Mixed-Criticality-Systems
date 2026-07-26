@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import random
 import sys
 from collections import Counter, defaultdict, deque
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict, replace
+from dataclasses import asdict, fields, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -58,16 +59,70 @@ from amc_py.model_selection import (
     zero_service_qos_sort_key,
 )
 from amc_py.models import Task
-from amc_py.rl.actions import describe_budget_action
+from amc_py.rl.actions import (
+    compute_action_space_fingerprint,
+    describe_budget_action,
+)
 from amc_py.rl.feature_config import FeatureConfig
-from amc_py.rl.reward_config import available_reward_modes, load_reward_mode_config
+from amc_py.rl.reward_config import (
+    available_reward_modes,
+    load_reward_mode_config,
+    reward_config_dir,
+)
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationResult
 from amc_py.qamc.reference_config import (
     assert_reference_matches_values,
     load_and_validate_frozen_reference,
 )
+from amc_py.qamc.effective_config import QAmcReferenceEffectiveConfig
+from amc_py.qamc.loss_metrics import (
+    compute_qamc_loss_metrics,
+    qamc_loss_metrics_to_row,
+)
+from amc_py.qamc.metrics_support import (
+    QAmcMetrics,
+    compute_qamc_metrics,
+    qamc_metrics_to_row,
+)
+from amc_py.qamc.models import QAmcProfileBundle
 from amc_py.qamc.profiles import load_profile_bundle_from_manifest
 from amc_py.qamc.profile_spec import load_profile_spec
+from amc_py.qamc.rl_contract import validate_qamc_rl_semantics
+from amc_py.qamc.selector_contract import (
+    selector_is_compatible,
+    validate_selector_row,
+)
+
+
+LEGACY_DEGRADED_FIELDS = (
+    "lo_degraded_released",
+    "lo_degraded_completed",
+    "lo_degraded_cancelled",
+    "lo_degraded_deadline_missed",
+    "lo_degraded_not_completed",
+    "lo_degraded_release_ratio",
+    "lo_degraded_completion_ratio",
+    "lo_degraded_among_completed_ratio",
+    "lo_degraded_quality_sum",
+    "lo_degraded_budget_sum",
+    "lo_degraded_original_budget_sum",
+    "lo_degraded_budget_ratio_mean",
+    "lo_degraded_exec_time_sum",
+    "lo_degraded_exec_time_ratio",
+)
+
+QAMC_NUMERIC_FIELDS = tuple(
+    f"qamc_{field.name}"
+    for field in fields(QAmcMetrics)
+    if field.name
+    not in {
+        "first_degradation_time",
+        "release_count_by_raw_rank_json",
+        "completed_count_by_raw_rank_json",
+        "task_time_at_raw_rank_ratio_json",
+        "profile_fingerprint",
+    }
+)
 
 
 STEP_LOG_FIELDNAMES = [
@@ -884,6 +939,80 @@ def _trace_rows_from_runtime(result: SimulationResult) -> list[dict]:
     return rows
 
 
+def _blank_legacy_degraded_fields(row: dict[str, object]) -> None:
+    for name in LEGACY_DEGRADED_FIELDS:
+        row[name] = None
+
+
+def _runtime_metrics_row(
+    *,
+    result: SimulationResult,
+    semantics: RuntimeSemantics,
+    qamc_profile_bundle: QAmcProfileBundle | None,
+) -> dict[str, object]:
+    service = compute_service_quality_metrics(result)
+    degradation = compute_runtime_degradation_metrics(result)
+    loss = compute_lo_job_loss_breakdown_metrics(result, degradation)
+    lo_quality = compute_lo_quality_weighted_metrics(result)
+    row: dict[str, object] = {
+        **service_metrics_to_row(service),
+        **lo_job_loss_breakdown_to_row(loss),
+        **lo_quality_weighted_metrics_to_row(lo_quality),
+    }
+    if semantics is RuntimeSemantics.Q_AMC:
+        if qamc_profile_bundle is None:
+            raise ValueError("QAMC_PROFILE_REQUIRED_FOR_METRICS")
+        row.update(qamc_metrics_to_row(compute_qamc_metrics(result, qamc_profile_bundle)))
+        row.update(qamc_loss_metrics_to_row(compute_qamc_loss_metrics(result)))
+        row["qamc_legacy_degraded_metrics_applicable"] = False
+        generic_qos = float(row["lo_quality_qos"])
+        qamc_qos = float(row["qamc_normalized_quality_qos"])
+        if not math.isclose(generic_qos, qamc_qos, rel_tol=0.0, abs_tol=1e-12):
+            raise AssertionError(
+                f"QAMC_GENERIC_QOS_MISMATCH:{generic_qos}:{qamc_qos}"
+            )
+        _blank_legacy_degraded_fields(row)
+    return row
+
+
+def _build_effective_reference_config(
+    *,
+    args: argparse.Namespace,
+    initial_env,
+    agent: DqnBudgetAgent,
+) -> QAmcReferenceEffectiveConfig:
+    reward_path = reward_config_dir() / f"{args.reward_mode}.json"
+    if not reward_path.is_file():
+        raise FileNotFoundError(f"REWARD_CONFIG_MISSING:{reward_path}")
+    return QAmcReferenceEffectiveConfig(
+        schema_version="qamc_reference_effective_config_v1",
+        action_space=str(initial_env.action_space_name),
+        q_network_type=str(args.q_network_type),
+        action_feature_mode=str(args.action_feature_mode),
+        include_explicit_noop=bool(args.include_explicit_noop),
+        budget_increase_ratio=float(args.budget_increase_ratio),
+        budget_decrease_ratio=float(args.budget_decrease_ratio),
+        budget_rounding_mode=str(initial_env.budget_rounding_mode),
+        min_budget_delta=int(initial_env.min_budget_delta),
+        budget_floor_ratio=float(args.budget_floor_ratio),
+        check_safety=bool(initial_env.check_safety),
+        step_guard_semantics=str(initial_env.step_guard_semantics),
+        observation_mode=str(args.observation_mode),
+        reward_mode=str(args.reward_mode),
+        reward_config_path=str(reward_path.resolve()),
+        reward_config_sha256=hashlib.sha256(reward_path.read_bytes()).hexdigest(),
+        agent_period=int(args.agent_period),
+        save_best_by=str(args.save_best_by),
+        selector_contract_version="selector_contract_v1",
+        enable_deploy_cap_mask=bool(args.enable_deploy_cap_mask),
+        deploy_cap_mask_ratio=float(args.deploy_cap_mask_ratio),
+        deploy_cap_mask_criticality=str(args.deploy_cap_mask_criticality),
+        forbid_decreasing_hi_budgets=bool(args.forbid_decreasing_hi_budgets),
+        action_dim=int(initial_env.action_count),
+        observation_dim=int(agent.observation_dim),
+    )
+
+
 def _run_baseline_validation_seed_worker(
     args_tuple: tuple[ExperimentConfig, int, int, str, float]
 ) -> dict[str, int | float | None]:
@@ -922,21 +1051,16 @@ def _run_baseline_validation_seed_worker(
         ),
         qamc_profile_bundle=qamc_profile_bundle,
     )
-    baseline_service_metrics = compute_service_quality_metrics(baseline_result)
-    baseline_degradation = compute_runtime_degradation_metrics(baseline_result)
-    baseline_loss_breakdown = compute_lo_job_loss_breakdown_metrics(
-        baseline_result,
-        baseline_degradation,
-    )
-    baseline_lo_quality = compute_lo_quality_weighted_metrics(baseline_result)
     # worker 只返回单个 seed 的原始计数，主进程统一负责做均值聚合，
     # 这样可以保证串行路径和并行路径共用同一套聚合口径。
     return {
         "mode_changes": baseline_result.mode_change_count(),
         "lo_cancellations": baseline_result.lo_job_cancellation_count(),
-        **service_metrics_to_row(baseline_service_metrics),
-        **lo_job_loss_breakdown_to_row(baseline_loss_breakdown),
-        **lo_quality_weighted_metrics_to_row(baseline_lo_quality),
+        **_runtime_metrics_row(
+            result=baseline_result,
+            semantics=semantics,
+            qamc_profile_bundle=qamc_profile_bundle,
+        ),
     }
 
 
@@ -1171,10 +1295,11 @@ def _evaluate_agent_on_validation_seed(
         last_info = result.info
 
     runtime_result = env._engine.finish() if env._engine is not None else SimulationResult()
-    service_metrics = compute_service_quality_metrics(runtime_result)
-    degradation_metrics = compute_runtime_degradation_metrics(runtime_result)
-    loss_breakdown_metrics = compute_lo_job_loss_breakdown_metrics(runtime_result, degradation_metrics)
-    lo_quality_metrics = compute_lo_quality_weighted_metrics(runtime_result)
+    runtime_metrics = _runtime_metrics_row(
+        result=runtime_result,
+        semantics=runtime_semantics,
+        qamc_profile_bundle=env.qamc_profile,
+    )
     debug_stats = env.debug_statistics()
     row = {
         "mode_changes": int(last_info.get("mode_changes", 0)),
@@ -1200,9 +1325,7 @@ def _evaluate_agent_on_validation_seed(
         "reward": float(total_reward),
         "observation_mode": str(last_info.get("observation_mode", feature_config.observation_mode)),
         "state_dim": int(last_info.get("state_dim", len(obs.state_vector))),
-        **service_metrics_to_row(service_metrics),
-        **lo_job_loss_breakdown_to_row(loss_breakdown_metrics),
-        **lo_quality_weighted_metrics_to_row(lo_quality_metrics),
+        **runtime_metrics,
     }
     row.update(_noop_q_diagnostics_to_row(agent, diagnostic_states, diagnostic_valid_masks))
     if log_validation_policy_actions:
@@ -1665,6 +1788,30 @@ def _run_validation(
                 / len(validation_seeds)
             ),
         }
+        if validation_baseline_semantics is RuntimeSemantics.Q_AMC:
+            for field_name in QAMC_NUMERIC_FIELDS:
+                baseline_cache[f"baseline_{field_name}_mean"] = sum(
+                    float(row[field_name]) for row in baseline_rows
+                ) / len(baseline_rows)
+            baseline_cache["baseline_qamc_first_degradation_time_mean"] = (
+                _mean_optional_metric(baseline_rows, "qamc_first_degradation_time")
+            )
+            for field_name in sorted(
+                key
+                for key in baseline_rows[0]
+                if key.startswith("qamc_loss_")
+            ):
+                baseline_cache[f"baseline_{field_name}_mean"] = sum(
+                    float(row[field_name]) for row in baseline_rows
+                ) / len(baseline_rows)
+            profile_fingerprints = {
+                str(row["qamc_profile_fingerprint"]) for row in baseline_rows
+            }
+            if len(profile_fingerprints) != 1:
+                raise ValueError("QAMC_VALIDATION_PROFILE_FINGERPRINT_MIXED")
+            baseline_cache["baseline_qamc_profile_fingerprint"] = (
+                profile_fingerprints.pop()
+            )
 
     if validation_workers == 1:
         # 串行路径直接复用当前主进程中的 agent，避免默认配置下每次 validation 都发生 save/load 开销。
@@ -2020,6 +2167,52 @@ def _run_validation(
             ensure_ascii=False,
             sort_keys=True,
         )
+    if dqn_runtime_semantics is RuntimeSemantics.Q_AMC:
+        for field_name in QAMC_NUMERIC_FIELDS:
+            validation_row[f"{field_name}_mean"] = sum(
+                float(row[field_name]) for row in dqn_rows
+            ) / len(dqn_rows)
+            baseline_key = f"baseline_{field_name}_mean"
+            if baseline_key in baseline_cache:
+                validation_row[baseline_key] = baseline_cache[baseline_key]
+                validation_row[f"delta_{field_name}_mean"] = (
+                    float(validation_row[f"{field_name}_mean"])
+                    - float(baseline_cache[baseline_key])
+                )
+        validation_row["qamc_first_degradation_time_mean"] = _mean_optional_metric(
+            dqn_rows,
+            "qamc_first_degradation_time",
+        )
+        for field_name in sorted(
+            key for key in dqn_rows[0] if key.startswith("qamc_loss_")
+        ):
+            validation_row[f"{field_name}_mean"] = sum(
+                float(row[field_name]) for row in dqn_rows
+            ) / len(dqn_rows)
+            baseline_key = f"baseline_{field_name}_mean"
+            if baseline_key in baseline_cache:
+                validation_row[baseline_key] = baseline_cache[baseline_key]
+                validation_row[f"delta_{field_name}_mean"] = (
+                    float(validation_row[f"{field_name}_mean"])
+                    - float(baseline_cache[baseline_key])
+                )
+        for field_name in (
+            "qamc_release_count_by_raw_rank_json",
+            "qamc_completed_count_by_raw_rank_json",
+        ):
+            validation_row[field_name] = json.dumps(
+                _merge_counter_json(dqn_rows, field_name),
+                sort_keys=True,
+            )
+        profile_fingerprints = {
+            str(row["qamc_profile_fingerprint"]) for row in dqn_rows
+        }
+        if len(profile_fingerprints) != 1:
+            raise ValueError("QAMC_VALIDATION_PROFILE_FINGERPRINT_MIXED")
+        validation_row["qamc_profile_fingerprint"] = profile_fingerprints.pop()
+        validation_row["qamc_legacy_degraded_metrics_applicable"] = False
+        for field_name in LEGACY_DEGRADED_FIELDS:
+            validation_row[f"{field_name}_mean"] = None
     return validation_row, baseline_cache, used_baseline_cache
 
 
@@ -2882,6 +3075,15 @@ def main() -> None:
         if not args.qamc_reference_config_path.is_file():
             raise ValueError("QAMC_REFERENCE_CONFIG_MISSING")
         frozen_reference = load_and_validate_frozen_reference(args.qamc_reference_config_path)
+        validate_qamc_rl_semantics(
+            semantics=dqn_runtime_semantics,
+            action_space=args.action_space,
+            check_safety=True,
+            step_guard_semantics="checked",
+            nonvacuity_disabled_guards=(),
+            budget_rounding_mode="ceil_floor",
+            min_budget_delta=1,
+        )
         assert_reference_matches_values(
             frozen_reference,
             {
@@ -3027,13 +3229,14 @@ def main() -> None:
     )
     initial_obs = initial_env.reset(seed=initial_seed)
     if dqn_runtime_semantics is RuntimeSemantics.Q_AMC:
-        reference_action_size = frozen_reference["normalized"].get("action_space_size")
+        reference_effective = frozen_reference["effective_reference_config"]
+        reference_action_size = reference_effective.get("action_dim")
         if (
             reference_action_size is not None
             and int(reference_action_size) != initial_env.action_space_size
         ):
             raise ValueError("QAMC_REFERENCE_ACTION_DIMENSION_MISMATCH")
-        reference_observation_dim = frozen_reference["normalized"].get(
+        reference_observation_dim = reference_effective.get(
             "observation_dim"
         )
         if (
@@ -3059,6 +3262,17 @@ def main() -> None:
         action_features=action_features,
         action_feature_names=action_feature_names,
     )
+    effective_reference = _build_effective_reference_config(
+        args=args,
+        initial_env=initial_env,
+        agent=agent,
+    )
+    if (
+        dqn_runtime_semantics is RuntimeSemantics.Q_AMC
+        and effective_reference.fingerprint
+        != frozen_reference["effective_reference_config_fingerprint"]
+    ):
+        raise ValueError("QAMC_REFERENCE_EFFECTIVE_CONFIG_FINGERPRINT_MISMATCH")
 
     if args.output_dir is None:
         output_dir = (
@@ -3660,6 +3874,14 @@ def main() -> None:
             last_info = result.info
             global_step += 1
 
+        runtime_result = (
+            env._engine.finish() if env._engine is not None else SimulationResult()
+        )
+        episode_runtime_metrics = _runtime_metrics_row(
+            result=runtime_result,
+            semantics=dqn_runtime_semantics,
+            qamc_profile_bundle=env.qamc_profile,
+        )
         debug_stats = env.debug_statistics()
         if int(debug_stats["selected_invalid_mask_actions"]) > 0:
             raise RuntimeError(
@@ -3929,6 +4151,7 @@ def main() -> None:
                 "feature_safety_margin_min_p05": _percentile(feature_safety_margin_min_values, 0.05),
             }
         )
+        train_metric_rows[-1].update(episode_runtime_metrics)
         for action_id in sorted(episode_action_hist):
             action_hist = episode_action_hist[action_id]
             action_hist_rows.append(
@@ -3972,7 +4195,6 @@ def main() -> None:
         agent.on_episode_end()
 
         if args.trace_every > 0 and (episode + 1) % args.trace_every == 0 and args.trace_dir is not None:
-            runtime_result = env._engine.finish() if env._engine is not None else SimulationResult()
             _write_jsonl(args.trace_dir / f"episode_{episode + 1:04d}_action_log.jsonl", env.action_log)
             _write_jsonl(args.trace_dir / f"episode_{episode + 1:04d}_mask_log.jsonl", env.mask_log)
             _write_jsonl(
@@ -4294,6 +4516,12 @@ def main() -> None:
                     "best_transitions_added_total": int(agent.best_elite_transitions_added_total),
                 }
             )
+            if dqn_runtime_semantics is RuntimeSemantics.Q_AMC:
+                validate_selector_row(
+                    name=args.save_best_by,
+                    semantics=dqn_runtime_semantics,
+                    row=validation_row,
+                )
             validation_rows.append(validation_row)
 
             should_update_best = False
@@ -5258,6 +5486,20 @@ def main() -> None:
                 "profile_spec_fingerprint": qamc_artifact_metadata[
                     "profile_spec_fingerprint"
                 ],
+                "taskset_fingerprint": initial_bundle.taskset_fingerprint,
+                "profile_fingerprint": initial_env.qamc_profile_bundle.fingerprint,
+                "semantic_version": qamc_artifact_metadata["semantic_version"],
+                "demand_mapping_version": qamc_artifact_metadata[
+                    "demand_mapping_version"
+                ],
+                "action_dim": initial_env.action_count,
+                "observation_dim": agent.observation_dim,
+                "action_space_fingerprint": compute_action_space_fingerprint(
+                    initial_env.actions
+                ),
+                "effective_reference_config_fingerprint": (
+                    effective_reference.fingerprint
+                ),
                 "initial_taskset_fingerprint": initial_bundle.taskset_fingerprint,
                 "initial_qamc_profile_fingerprint": initial_env.qamc_profile_bundle.fingerprint,
             }
@@ -5275,6 +5517,29 @@ def main() -> None:
             else None
         ),
     }
+    config_payload.update(
+        {
+            "effective_reference_config": effective_reference.to_jsonable(),
+            "effective_reference_config_fingerprint": effective_reference.fingerprint,
+            "reward_artifact": {
+                "path": effective_reference.reward_config_path,
+                "sha256": effective_reference.reward_config_sha256,
+            },
+            "checkpoint_selector": {
+                "name": args.save_best_by,
+                "contract_version": "selector_contract_v1",
+                "q_amc_compatible": selector_is_compatible(
+                    args.save_best_by,
+                    RuntimeSemantics.Q_AMC,
+                ),
+            },
+            "budget_rounding_mode": effective_reference.budget_rounding_mode,
+            "min_budget_delta": effective_reference.min_budget_delta,
+            "check_safety": effective_reference.check_safety,
+            "step_guard_semantics": effective_reference.step_guard_semantics,
+            "reward_config_path": effective_reference.reward_config_path,
+        }
+    )
     with config_path.open("w", encoding="utf-8") as f:
         json.dump(config_payload, f, ensure_ascii=False, indent=2)
 

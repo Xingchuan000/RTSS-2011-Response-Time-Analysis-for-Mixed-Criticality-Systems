@@ -1185,43 +1185,23 @@ def check_prefix_rta(**kwargs: Any) -> dict[str, Any]:
     state = _route_state(kwargs)
     if state is None or state.selected_rta_obligation_id != "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC":
         return _finish("UNRESOLVED", "PROTECTED_PREFIX_RTA_STATE_MISSING")
+    from formal_toolchain.reference.rta_soundness import derive_all_task_rta_soundness
+
     replay = state.fresh_rta_replay
-    witness = replay.get("witness", replay.get("replay", {}).get("witness", {}))
-    taskset = state.analysis_taskset
-    expected_names = tuple(str(task.name) for task in taskset.tasks)
-    actual_names = tuple(witness.get("task_order", ())) if isinstance(witness, Mapping) else ()
-    formula_version = witness.get("schema_version") if isinstance(witness, Mapping) else None
-    rows = witness.get("tasks", ()) if isinstance(witness, Mapping) else ()
-    rows_complete = (
-        isinstance(rows, list)
-        and tuple(str(row.get("task", {}).get("name")) for row in rows) == expected_names
-        and all(isinstance(row, Mapping) and row.get("status") == "PASS" for row in rows)
+    derivation = derive_all_task_rta_soundness(
+        replay=replay,
+        taskset=state.analysis_taskset,
+        theorem_id="PREFIX_ALL_TASK_RTA_SOUNDNESS",
     )
-    ok = (
-        replay.get("status") == "PASS"
-        and isinstance(witness, Mapping)
-        and witness.get("reference_taskset_fingerprint") == taskset.to_dict()["fingerprint"]
-        and formula_version == "all_task_rta_v3"
-        and actual_names == expected_names
-        and witness.get("all_tasks_covered") is True
-        and witness.get("all_deadlines_met") is True
-        and witness.get("complete_integer_candidate_domains") is True
-        and rows_complete
+    ok = derivation.get("status") == "PASS"
+    return _finish(
+        "PASS" if ok else "UNRESOLVED",
+        None if ok else "PROTECTED_PREFIX_RTA_REPLAY_UNRESOLVED",
+        {
+            "replay": replay,
+            "soundness_receipt": derivation["soundness_receipt"],
+        },
     )
-    receipt = {
-        "theorem_id": "PREFIX_ALL_TASK_RTA_SOUNDNESS",
-        "status": "PASS" if ok else "UNRESOLVED",
-        "prefix_taskset_fingerprint": taskset.to_dict()["fingerprint"],
-        "formula_version": formula_version,
-        "all_task_name_set": list(expected_names),
-        "all_tasks_covered": bool(witness.get("all_tasks_covered") is True) if isinstance(witness, Mapping) else False,
-        "complete_integer_candidate_domains": bool(witness.get("complete_integer_candidate_domains") is True) if isinstance(witness, Mapping) else False,
-    }
-    from formal_toolchain.core.hashing import sha256_object
-    receipt["receipt_hash"] = sha256_object(receipt)
-    return _finish("PASS" if ok else "UNRESOLVED",
-                   None if ok else "PROTECTED_PREFIX_RTA_REPLAY_UNRESOLVED",
-                   {"replay": replay, "soundness_receipt": receipt})
 
 
 def check_prefix_model_conformance(**kwargs: Any) -> dict[str, Any]:

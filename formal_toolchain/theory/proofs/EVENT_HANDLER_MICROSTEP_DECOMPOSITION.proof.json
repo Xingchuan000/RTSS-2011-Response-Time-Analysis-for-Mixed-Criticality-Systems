@@ -6,7 +6,7 @@
   },
   "source_binding_hash_mode": "canonical_text_v1",
   "source_bindings": {
-    "formal_toolchain/bridge/handler_decomposition.py": "c06392ffe65ef7093dddcc5a17b7afed9f55ea48debc3ee2838178e269dd8b1f",
+    "formal_toolchain/bridge/handler_decomposition.py": "8f0b7350269c1d4284e8825e90628d7132698c277ff506cbb50db6d397d32c8d",
     "formal_toolchain/bridge/state_relation.py": "1df1edcebb0fa1bf0e8a55b1ff4132f0114997a3e16283aa03a63a892763c4f2",
     "formal_toolchain/bridge/transition_cases.py": "78ceaabfe5472bc6e3d4c332b063e5736c2fd3775eeb2f56098a35cb0055f4a1",
     "formal_toolchain/bridge/transition_compiler.py": "10771077450e985cacfd7d39f5289817ae9b073cc39ae94c3072d38b51d43d97",

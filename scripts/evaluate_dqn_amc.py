@@ -43,13 +43,20 @@ from amc_py.metrics import (
     safe_relative_reduction,
     service_metrics_to_row,
 )
-from amc_py.rl.actions import build_budget_action_space
+from amc_py.rl.actions import (
+    build_budget_action_space,
+    compute_action_space_fingerprint,
+)
 from amc_py.rl.agents import HeuristicBudgetAgent, NoOpBudgetAgent, RandomBudgetAgent
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.rl.reward_config import available_reward_modes
 from amc_py.rl.runtime_wrapper import AgentRuntimeConfig, simulate_ordered_taskset_with_agent
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationResult
 from amc_py.qamc.metrics_support import compute_qamc_metrics, qamc_metrics_to_row
+from amc_py.qamc.loss_metrics import (
+    compute_qamc_loss_metrics,
+    qamc_loss_metrics_to_row,
+)
 from amc_py.qamc.profiles import load_profile_bundle_from_manifest
 from amc_py.qamc.reference_config import (
     assert_reference_matches_values,
@@ -58,6 +65,17 @@ from amc_py.qamc.reference_config import (
 )
 from amc_py.qamc.profile_spec import load_profile_spec
 from amc_py.qamc.heuristic import QAmcBudgetPressureHeuristic
+from amc_py.qamc.rl_contract import validate_qamc_rl_semantics
+
+
+QAMC_METHOD_ALIASES = {
+    "q_amc_budget_heuristic": "heuristic_agent",
+    "q_amc_dqn_budget_overlay": "dqn_agent",
+    "q_amc_viper_budget_overlay": "viper_tree_agent",
+}
+QAMC_OUTPUT_METHOD_NAMES = {
+    value: key for key, value in QAMC_METHOD_ALIASES.items()
+}
 
 
 NOOP_Q_DIAGNOSTIC_FIELDNAMES = [
@@ -133,6 +151,28 @@ LO_QUALITY_WEIGHTED_FIELDNAMES = [
     "lo_total_service_sum",
 ]
 
+LEGACY_DEGRADED_FIELDS = (
+    "lo_degraded_released",
+    "lo_degraded_completed",
+    "lo_degraded_cancelled",
+    "lo_degraded_deadline_missed",
+    "lo_degraded_not_completed",
+    "lo_degraded_release_ratio",
+    "lo_degraded_completion_ratio",
+    "lo_degraded_among_completed_ratio",
+    "lo_degraded_quality_sum",
+    "lo_degraded_budget_sum",
+    "lo_degraded_original_budget_sum",
+    "lo_degraded_budget_ratio_mean",
+    "lo_degraded_exec_time_sum",
+    "lo_degraded_exec_time_ratio",
+)
+
+
+def _blank_legacy_degraded_fields(row: dict[str, object]) -> None:
+    for name in LEGACY_DEGRADED_FIELDS:
+        row[name] = None
+
 TASK_LEVEL_INFO_KEYS = [
     "final_budget_ratio_by_task_json",
     "max_budget_ratio_by_task_json",
@@ -194,6 +234,12 @@ def _safe_ratio(numerator: float, denominator: float) -> str | float:
             return "inf"
         return "nan"
     return numerator / denominator
+
+
+def _optional_delta(left: object, right: object) -> float | None:
+    if left in (None, "") or right in (None, ""):
+        return None
+    return float(left) - float(right)
 
 
 def _budget_overruns_from_result(result: SimulationResult) -> int:
@@ -1511,16 +1557,16 @@ def _aggregate_method_summary_rows(
             "lo_quality_loss_mean": _mean_metric(method_rows, "lo_quality_loss"),
             "lo_full_quality_completed_mean": _mean_metric(method_rows, "lo_full_quality_completed"),
             "lo_full_quality_ratio_mean": _mean_metric(method_rows, "lo_full_quality_ratio"),
-            "lo_degraded_released_mean": _mean_metric(method_rows, "lo_degraded_released"),
-            "lo_degraded_completed_mean": _mean_metric(method_rows, "lo_degraded_completed"),
-            "lo_degraded_cancelled_mean": _mean_metric(method_rows, "lo_degraded_cancelled"),
-            "lo_degraded_deadline_missed_mean": _mean_metric(
+            "lo_degraded_released_mean": _mean_optional_metric(method_rows, "lo_degraded_released"),
+            "lo_degraded_completed_mean": _mean_optional_metric(method_rows, "lo_degraded_completed"),
+            "lo_degraded_cancelled_mean": _mean_optional_metric(method_rows, "lo_degraded_cancelled"),
+            "lo_degraded_deadline_missed_mean": _mean_optional_metric(
                 method_rows,
                 "lo_degraded_deadline_missed",
             ),
-            "lo_degraded_not_completed_mean": _mean_metric(method_rows, "lo_degraded_not_completed"),
-            "lo_degraded_release_ratio_mean": _mean_metric(method_rows, "lo_degraded_release_ratio"),
-            "lo_degraded_completion_ratio_mean": _mean_metric(
+            "lo_degraded_not_completed_mean": _mean_optional_metric(method_rows, "lo_degraded_not_completed"),
+            "lo_degraded_release_ratio_mean": _mean_optional_metric(method_rows, "lo_degraded_release_ratio"),
+            "lo_degraded_completion_ratio_mean": _mean_optional_metric(
                 method_rows,
                 "lo_degraded_completion_ratio",
             ),
@@ -1528,9 +1574,9 @@ def _aggregate_method_summary_rows(
                 method_rows,
                 "lo_degraded_among_completed_ratio",
             ),
-            "lo_degraded_quality_sum_mean": _mean_metric(method_rows, "lo_degraded_quality_sum"),
-            "lo_degraded_budget_sum_mean": _mean_metric(method_rows, "lo_degraded_budget_sum"),
-            "lo_degraded_original_budget_sum_mean": _mean_metric(
+            "lo_degraded_quality_sum_mean": _mean_optional_metric(method_rows, "lo_degraded_quality_sum"),
+            "lo_degraded_budget_sum_mean": _mean_optional_metric(method_rows, "lo_degraded_budget_sum"),
+            "lo_degraded_original_budget_sum_mean": _mean_optional_metric(
                 method_rows,
                 "lo_degraded_original_budget_sum",
             ),
@@ -1538,7 +1584,7 @@ def _aggregate_method_summary_rows(
                 method_rows,
                 "lo_degraded_budget_ratio_mean",
             ),
-            "lo_degraded_exec_time_sum_mean": _mean_metric(method_rows, "lo_degraded_exec_time_sum"),
+            "lo_degraded_exec_time_sum_mean": _mean_optional_metric(method_rows, "lo_degraded_exec_time_sum"),
             "lo_degraded_exec_time_ratio_mean": mean_optional_service_metric(
                 method_rows,
                 "lo_degraded_exec_time_ratio",
@@ -1639,6 +1685,14 @@ def _aggregate_method_summary_rows(
             summary_row["qamc_profile_fingerprint"] = method_rows[0].get(
                 "qamc_profile_fingerprint", ""
             )
+            for field_name in sorted(
+                key for key in method_rows[0] if key.startswith("qamc_loss_")
+            ):
+                summary_row[f"{field_name}_mean"] = _mean_metric(
+                    method_rows,
+                    field_name,
+                )
+            summary_row["qamc_legacy_degraded_metrics_applicable"] = False
         summary_rows.append(summary_row)
     return summary_rows
 
@@ -1808,8 +1862,14 @@ def _build_dqn_reference_comparison_rows(
                     float(dqn_row["lo_quality_loss_mean"]),
                 ),
                 "delta_lo_full_quality_ratio": float(dqn_row["lo_full_quality_ratio_mean"]) - float(reference_row["lo_full_quality_ratio_mean"]),
-                "delta_lo_degraded_release_ratio": float(dqn_row["lo_degraded_release_ratio_mean"]) - float(reference_row["lo_degraded_release_ratio_mean"]),
-                "delta_lo_degraded_completion_ratio": float(dqn_row["lo_degraded_completion_ratio_mean"]) - float(reference_row["lo_degraded_completion_ratio_mean"]),
+                "delta_lo_degraded_release_ratio": _optional_delta(
+                    dqn_row["lo_degraded_release_ratio_mean"],
+                    reference_row["lo_degraded_release_ratio_mean"],
+                ),
+                "delta_lo_degraded_completion_ratio": _optional_delta(
+                    dqn_row["lo_degraded_completion_ratio_mean"],
+                    reference_row["lo_degraded_completion_ratio_mean"],
+                ),
                 "delta_lo_zero_service_ratio": float(dqn_row["lo_zero_service_ratio_mean"]) - float(reference_row["lo_zero_service_ratio_mean"]),
                 "delta_tid_ratio": float(dqn_row["tid_ratio_mean"]) - float(reference_row["tid_ratio_mean"]),
                 "accepted_action_count_mean": dqn_row["accepted_action_count_mean"],
@@ -2938,18 +2998,15 @@ def _evaluate_enabled_methods_for_seed(
             )
 
     if qamc_profile_bundle is not None:
-        qamc_method_names = {
-            "heuristic_agent": "q_amc_budget_heuristic",
-            "dqn_agent": "q_amc_dqn_budget_overlay",
-            "viper_tree_agent": "q_amc_viper_budget_overlay",
-        }
         for row in rows:
             runtime_result = qamc_runtime_results.get(str(row.get("method")))
             if runtime_result is None:
                 continue
             row.update(qamc_metrics_to_row(compute_qamc_metrics(runtime_result, qamc_profile_bundle)))
+            row.update(qamc_loss_metrics_to_row(compute_qamc_loss_metrics(runtime_result)))
             row["qamc_legacy_degraded_metrics_applicable"] = False
-            row["method"] = qamc_method_names.get(
+            _blank_legacy_degraded_fields(row)
+            row["method"] = QAMC_OUTPUT_METHOD_NAMES.get(
                 str(row.get("method")), str(row.get("method"))
             )
 
@@ -3439,6 +3496,15 @@ def main() -> None:
         if not args.qamc_reference_config_path.is_file():
             raise ValueError("QAMC_REFERENCE_CONFIG_MISSING")
         frozen_reference = load_and_validate_frozen_reference(args.qamc_reference_config_path)
+        validate_qamc_rl_semantics(
+            semantics=dqn_runtime_semantics,
+            action_space=args.action_space,
+            check_safety=True,
+            step_guard_semantics="checked",
+            nonvacuity_disabled_guards=(),
+            budget_rounding_mode="ceil_floor",
+            min_budget_delta=1,
+        )
         assert_reference_matches_values(
             frozen_reference,
             {
@@ -3469,21 +3535,69 @@ def main() -> None:
     )
 
     enabled_methods = set(_parse_baselines(args.baselines))
-    qamc_method_aliases = {
-        "q_amc_budget_heuristic": "heuristic_agent",
-        "q_amc_dqn_budget_overlay": "dqn_agent",
-        "q_amc_viper_budget_overlay": "viper_tree_agent",
-    }
     if dqn_runtime_semantics is RuntimeSemantics.Q_AMC:
         enabled_methods = {
-            qamc_method_aliases.get(method, method) for method in enabled_methods
+            QAMC_METHOD_ALIASES.get(method, method) for method in enabled_methods
         }
         if "dqn_agent" in enabled_methods:
+            binding_seeds = _parse_seeds(args.seeds)
+            if not binding_seeds:
+                raise ValueError("QAMC_MODEL_BINDING_SEED_REQUIRED")
+            binding_seed = binding_seeds[0]
+            binding_bundle = resolve_experiment_bundle(
+                experiment_config,
+                binding_seed,
+            )
+            binding_profile = load_profile_bundle_from_manifest(
+                args.qamc_profile_manifest_path,
+                taskset_fingerprint=str(binding_bundle.taskset_fingerprint),
+                spec_path=args.qamc_profile_spec_path,
+            )
+            binding_env = build_env_from_experiment_config(
+                experiment_config,
+                seed=binding_seed,
+                end_time=args.end_time,
+                agent_period=args.agent_period,
+                semantics=dqn_runtime_semantics,
+                reward_mode=args.reward_mode,
+                action_space=args.action_space,
+                budget_increase_ratio=args.budget_increase_ratio,
+                budget_decrease_ratio=args.budget_decrease_ratio,
+                include_explicit_noop=args.include_explicit_noop,
+                budget_floor_ratio=args.budget_floor_ratio,
+                forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
+                mask_detail_mode=args.mask_detail_mode,
+                enable_deploy_cap_mask=args.enable_deploy_cap_mask,
+                deploy_cap_mask_ratio=args.deploy_cap_mask_ratio,
+                deploy_cap_mask_criticality=args.deploy_cap_mask_criticality,
+                record_dropped_lo_releases=True,
+                c_amc_sem_xf=args.c_amc_sem_xf,
+                feature_config=feature_config,
+                constraint_guided_pair_top_k_risk=args.constraint_guided_pair_top_k_risk,
+                constraint_guided_pair_top_k_decrease=args.constraint_guided_pair_top_k_decrease,
+                constraint_guided_pair_prefer_lo=args.constraint_guided_pair_prefer_lo,
+                constraint_guided_pair_include_hi_risk_boost=args.constraint_guided_pair_include_hi_risk_boost,
+                constraint_guided_pair_allow_increase_only_when_safe=(
+                    args.constraint_guided_pair_allow_increase_only_when_safe
+                ),
+            )
+            binding_observation = binding_env.reset(seed=binding_seed)
             validate_qamc_model_artifact(
                 args.model,
                 frozen_reference=frozen_reference,
                 profile_manifest_path=args.qamc_profile_manifest_path,
                 profile_spec_fingerprint=qamc_spec.fingerprint,
+                expected_taskset_fingerprint=str(
+                    binding_bundle.taskset_fingerprint
+                ),
+                expected_profile_fingerprint=binding_profile.fingerprint,
+                expected_action_dim=binding_env.action_count,
+                expected_observation_dim=len(binding_observation.state_vector),
+                expected_action_space_fingerprint=compute_action_space_fingerprint(
+                    binding_env.actions
+                ),
+                expected_semantic_version=qamc_spec.semantic_version,
+                expected_demand_mapping_version=qamc_spec.demand_mapping_version,
             )
     trace_seed_set = {int(s) for s in _parse_csv_set(args.trace_seeds)}
     trace_method_set = _parse_csv_set(args.trace_methods)

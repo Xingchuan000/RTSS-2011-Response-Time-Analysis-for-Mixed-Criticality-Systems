@@ -1,4 +1,4 @@
-"""Validation helpers for frozen q-AMC reference experiment artifacts."""
+"""Validation helpers for frozen q-AMC reference and model artifacts."""
 
 from __future__ import annotations
 
@@ -7,56 +7,81 @@ import json
 from pathlib import Path
 from typing import Any
 
-
-def _canonical(value: Any) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
+from .effective_config import canonical_sha256
 
 
 def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _tree_fingerprint(root: Path) -> str:
-    entries = [
-        (str(item.relative_to(root)), _sha256_file(item))
-        for item in sorted(candidate for candidate in root.rglob("*") if candidate.is_file())
-        if ".git" not in item.parts
-    ]
-    return hashlib.sha256(_canonical(entries)).hexdigest()
+def _verify_file_hash(path_value: object, expected: object, error: str) -> Path:
+    path = Path(str(path_value))
+    if not path.is_file():
+        raise FileNotFoundError(error.replace("_HASH_", "_").replace("_MISMATCH", "_MISSING"))
+    if _sha256_file(path) != expected:
+        raise ValueError(error)
+    return path
 
 
 def load_and_validate_frozen_reference(path: str | Path) -> dict[str, Any]:
-    """Fail closed if a frozen reference or either bound source artifact changed."""
+    """Fail closed if a frozen v3 reference or any bounded artifact changed."""
 
-    frozen_path = Path(path)
-    payload = json.loads(frozen_path.read_text(encoding="utf-8"))
-    if payload.get("schema_version") != "qamc_reference_experiment_config_v2":
-        raise ValueError("QAMC_REFERENCE_CONFIG_NOT_FROZEN_V2")
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if payload.get("schema_version") != "qamc_reference_experiment_config_v3":
+        raise ValueError("QAMC_REFERENCE_CONFIG_NOT_FROZEN_V3")
     claimed = payload.get("fingerprint")
     unsigned = dict(payload)
     unsigned.pop("fingerprint", None)
-    if claimed != hashlib.sha256(_canonical(unsigned)).hexdigest():
+    if claimed != canonical_sha256(unsigned):
         raise ValueError("QAMC_REFERENCE_CONFIG_FINGERPRINT_MISMATCH")
 
-    source = Path(str(payload.get("source_config_path", "")))
-    if not source.is_file():
-        raise FileNotFoundError("QAMC_REFERENCE_SOURCE_CONFIG_MISSING")
-    if _sha256_file(source) != payload.get("source_config_sha256"):
-        raise ValueError("QAMC_REFERENCE_SOURCE_CONFIG_HASH_MISMATCH")
+    source = _verify_file_hash(
+        payload.get("source_config_path"),
+        payload.get("source_config_sha256"),
+        "QAMC_REFERENCE_SOURCE_CONFIG_HASH_MISMATCH",
+    )
     reward = payload.get("reward_artifact")
     if not isinstance(reward, dict):
         raise ValueError("QAMC_REFERENCE_REWARD_ARTIFACT_INVALID")
-    reward_path = Path(str(reward.get("path", "")))
-    if not reward_path.is_file():
-        raise FileNotFoundError("QAMC_REFERENCE_REWARD_ARTIFACT_MISSING")
-    if _sha256_file(reward_path) != reward.get("sha256"):
-        raise ValueError("QAMC_REFERENCE_REWARD_ARTIFACT_HASH_MISMATCH")
-    if _tree_fingerprint(source.parent) != payload.get("source_tree_fingerprint"):
-        raise ValueError("QAMC_REFERENCE_SOURCE_TREE_FINGERPRINT_MISMATCH")
-    if not isinstance(payload.get("normalized"), dict):
-        raise ValueError("QAMC_REFERENCE_NORMALIZED_CONFIG_MISSING")
+    reward_path = _verify_file_hash(
+        reward.get("path"),
+        reward.get("sha256"),
+        "QAMC_REFERENCE_REWARD_ARTIFACT_HASH_MISMATCH",
+    )
+    effective = payload.get("effective_reference_config")
+    if not isinstance(effective, dict):
+        raise ValueError("QAMC_REFERENCE_EFFECTIVE_CONFIG_MISSING")
+    if canonical_sha256(effective) != payload.get(
+        "effective_reference_config_fingerprint"
+    ):
+        raise ValueError("QAMC_REFERENCE_EFFECTIVE_CONFIG_FINGERPRINT_MISMATCH")
+
+    bound = payload.get("bound_artifacts")
+    if not isinstance(bound, dict):
+        raise ValueError("QAMC_REFERENCE_BOUND_ARTIFACTS_INVALID")
+    expected_required = {
+        "config.json": _sha256_file(source),
+        "reward_config": _sha256_file(reward_path),
+    }
+    for name, expected in expected_required.items():
+        if bound.get(name) != expected:
+            raise ValueError(f"QAMC_REFERENCE_BOUND_ARTIFACT_HASH_MISMATCH:{name}")
+    for optional_name in (
+        "feature_names.json",
+        "action_definitions.json",
+        "model_best_metadata.json",
+    ):
+        if optional_name not in bound:
+            continue
+        optional_path = source.parent / optional_name
+        if not optional_path.is_file():
+            raise FileNotFoundError(
+                f"QAMC_REFERENCE_BOUND_ARTIFACT_MISSING:{optional_name}"
+            )
+        if _sha256_file(optional_path) != bound[optional_name]:
+            raise ValueError(
+                f"QAMC_REFERENCE_BOUND_ARTIFACT_HASH_MISMATCH:{optional_name}"
+            )
     return payload
 
 
@@ -64,13 +89,13 @@ def assert_reference_matches_values(
     frozen: dict[str, Any],
     values: dict[str, Any],
 ) -> None:
-    """Require CLI-effective values to equal the frozen reference values."""
+    """Require CLI-effective values to equal the frozen canonical values."""
 
-    normalized = frozen["normalized"]
+    effective = frozen["effective_reference_config"]
     mismatches = [
         key
         for key, actual in values.items()
-        if key in normalized and normalized[key] is not None and normalized[key] != actual
+        if key in effective and effective[key] is not None and effective[key] != actual
     ]
     if mismatches:
         raise ValueError(
@@ -84,8 +109,15 @@ def validate_qamc_model_artifact(
     frozen_reference: dict[str, Any],
     profile_manifest_path: str | Path,
     profile_spec_fingerprint: str,
+    expected_taskset_fingerprint: str,
+    expected_profile_fingerprint: str,
+    expected_action_dim: int,
+    expected_observation_dim: int,
+    expected_action_space_fingerprint: str,
+    expected_semantic_version: str,
+    expected_demand_mapping_version: str,
 ) -> dict[str, Any]:
-    """Bind a DQN checkpoint to the q-AMC run configuration that produced it."""
+    """Bind a DQN checkpoint to every effective q-AMC run dimension."""
 
     model = Path(model_path)
     config_path = model.parent / "config.json"
@@ -102,12 +134,18 @@ def validate_qamc_model_artifact(
         "reference_config_fingerprint": frozen_reference["fingerprint"],
         "profile_manifest_fingerprint": manifest.get("fingerprint"),
         "profile_spec_fingerprint": profile_spec_fingerprint,
+        "taskset_fingerprint": expected_taskset_fingerprint,
+        "profile_fingerprint": expected_profile_fingerprint,
+        "action_dim": expected_action_dim,
+        "observation_dim": expected_observation_dim,
+        "action_space_fingerprint": expected_action_space_fingerprint,
+        "semantic_version": expected_semantic_version,
+        "demand_mapping_version": expected_demand_mapping_version,
     }
     mismatches = [key for key, value in expected.items() if qamc.get(key) != value]
     if mismatches:
         raise ValueError(
-            "QAMC_MODEL_ARTIFACT_FINGERPRINT_MISMATCH:"
-            + ",".join(sorted(mismatches))
+            "QAMC_MODEL_ARTIFACT_BINDING_MISMATCH:" + ",".join(sorted(mismatches))
         )
     return config
 

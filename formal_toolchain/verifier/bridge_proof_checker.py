@@ -9,6 +9,7 @@ from formal_toolchain.core.artifact import verify_obligation_certificate
 from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.bridge.transition_cases import REQUIRED_P0_CASE_IDS
 from formal_toolchain.bridge.state_relation import parameterized_state_relation_schema_hash, validate_n6_relation_interface
+from formal_toolchain.bridge.prefix_refinement import CLOSED_PREFIX_REFINEMENT_WITNESS_SCHEMA_VERSION
 
 
 _THEORY_HASHES = json.loads(
@@ -49,7 +50,9 @@ def _base(candidate: Mapping[str, Any], obligation_id: str,
 def _verify_cases(candidate: Mapping[str, Any], obligation_id: str,
                   bridge_context_hash: str, *, raw_inputs: Any = None,
                   reference_taskset: Mapping[str, Any] | None = None,
-                  certified_envelope: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                  certified_envelope: Mapping[str, Any] | None = None,
+                  contexts: Mapping[str, Mapping[str, Any]] | None = None,
+                  predecessors: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
     failure = _base(candidate, obligation_id, bridge_context_hash)
     if failure:
         return failure
@@ -196,8 +199,11 @@ def _verify_universal_closed_prefix(candidate: Mapping[str, Any], bridge_context
                                     reference_taskset: Mapping[str, Any] | None = None,
                                     certified_envelope: Mapping[str, Any] | None = None) -> dict[str, Any]:
     witness = candidate.get("witness", {})
-    if candidate.get("schema_version") != "closed_prefix_refinement_v2" or witness.get("schema_version") != "closed_prefix_refinement_v2":
+    witness_schema = witness.get("schema_version")
+    if witness_schema == "closed_prefix_refinement_v1":
         return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "CLOSED_PREFIX_LEGACY_SCHEMA_REJECTED"}
+    if witness_schema != CLOSED_PREFIX_REFINEMENT_WITNESS_SCHEMA_VERSION:
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "CLOSED_PREFIX_UNKNOWN_SCHEMA"}
     if "model_bounds_hash" in candidate or "job_slots" in witness:
         return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "CLOSED_PREFIX_SLOT_BASED_WITNESS_REJECTED"}
     if witness.get("parameterized_relation_schema_hash") != parameterized_state_relation_schema_hash():

@@ -9,6 +9,18 @@ from __future__ import annotations
 
 from formal_toolchain.semantics.frozen_runtime_contract import CONTRACT_VERSION
 
+COMMON_ASSERTION_KEYS = ("formal_model_evaluated", "positive_integer_time")
+
+SCENARIO_ASSERTION_CONTRACTS = {
+    "completion_at_deadline": ("completion_equals_deadline", "removal_precedes_deadline_observation", "no_deadline_miss"),
+    "deadline_observe_only": ("deadline_observed", "job_not_removed", "deadline_transition_has_no_cleanup_effect"),
+    "primary_lo_b_plus_one": ("service_ticks_recorded", "strict_overrun_boundary", "completion_or_explicit_removal"),
+    "hi_nontruncation": ("hi_completed_full_demand", "hi_not_dropped", "hi_not_truncated_to_lo_budget", "mode_switched"),
+    "idle_recovery": ("mode_switched", "recovered_to_lo", "recovery_requires_quiescence"),
+    "c_amc_single_switch": ("single_switch", "same_batch_jobs_preserved", "highest_priority_abnormal_trigger_selected"),
+    "inherited_hi_entry": ("single_switch", "same_batch_jobs_preserved", "inherited_hi_entry"),
+}
+
 SCENARIOS = (
     "completion_at_deadline",
     "deadline_observe_only",
@@ -49,10 +61,21 @@ def _model_witness(name: str) -> dict[str, object]:
         })
     elif name == "hi_nontruncation":
         raw, c_lo, c_hi = 3, 1, 3
+        mode = "LO"
+        executed = 0
+        dropped = False
+        active = True
+        if raw > c_lo:
+            mode = "HI"
+        while active and executed < raw:
+            executed += 1
+        if executed == raw:
+            active = False
         assertions.update({
-            "hi_completed_full_demand": raw == c_hi,
-            "hi_not_truncated_to_lo_budget": raw > c_lo,
-            "mode_switched": raw > c_lo,
+            "hi_completed_full_demand": executed == raw == c_hi and not active,
+            "hi_not_dropped": dropped is False,
+            "hi_not_truncated_to_lo_budget": executed > c_lo,
+            "mode_switched": mode == "HI",
         })
     elif name == "idle_recovery":
         assertions.update({
@@ -74,8 +97,13 @@ def _model_witness(name: str) -> dict[str, object]:
         })
     else:
         raise ValueError(f"UNKNOWN_FROZEN_MICRO_SCENARIO:{name}")
-    if not all(assertions.values()):
-        raise AssertionError(f"frozen micro witness failed: {name}")
+    required_keys = (*COMMON_ASSERTION_KEYS, *SCENARIO_ASSERTION_CONTRACTS[name])
+    missing = [key for key in required_keys if key not in assertions]
+    false_keys = [key for key in required_keys if assertions.get(key) is not True]
+    if missing or false_keys:
+        raise AssertionError(
+            f"frozen micro witness failed: {name}:missing={missing}:false={false_keys}"
+        )
     return {
         "status": "PASS",
         "formal_semantics_contract": CONTRACT_VERSION,
@@ -106,4 +134,9 @@ def run_p0_micro_scenarios(*, target_available: bool) -> dict[str, object]:
     }
 
 
-__all__ = ["SCENARIOS", "run_p0_micro_scenarios"]
+__all__ = [
+    "COMMON_ASSERTION_KEYS",
+    "SCENARIO_ASSERTION_CONTRACTS",
+    "SCENARIOS",
+    "run_p0_micro_scenarios",
+]

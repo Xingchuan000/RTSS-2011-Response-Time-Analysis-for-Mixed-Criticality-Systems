@@ -216,9 +216,14 @@ def load_profile_bundle_from_manifest(
         raise ValueError(f"QAMC_PROFILE_TASKSET_NOT_IN_MANIFEST:{taskset_fingerprint}")
     profile_path = Path(str(entry.get("path", "")))
     if not profile_path.is_absolute():
-        cwd_candidate = Path.cwd() / profile_path
-        manifest_candidate = manifest_file.parent / profile_path
-        profile_path = cwd_candidate if cwd_candidate.is_file() else manifest_candidate
+        profile_path = (manifest_file.parent / profile_path).resolve()
+    else:
+        profile_path = profile_path.resolve()
+    manifest_root = manifest_file.parent.resolve()
+    if profile_path != manifest_root and manifest_root not in profile_path.parents:
+        raise ValueError("QAMC_PROFILE_PATH_ESCAPES_MANIFEST_ROOT")
+    if not profile_path.is_file():
+        raise FileNotFoundError(f"QAMC_PROFILE_FILE_MISSING:{profile_path}")
     bundle = load_profile_bundle(profile_path)
     if bundle.taskset_fingerprint != taskset_fingerprint:
         raise ValueError("QAMC_PROFILE_TASKSET_FINGERPRINT_MISMATCH")

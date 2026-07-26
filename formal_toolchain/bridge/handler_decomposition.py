@@ -25,6 +25,9 @@ ARRIVAL_BATCH_ALTERNATIVES = (
     {"alternative_id": "ARRIVAL_BATCH_SWITCH_S0", "guard_kind": "BATCH_MODE_SWITCH_S0", "macro_case_id": "ARRIVAL_BATCH_SWITCH_S0"},
 )
 
+HANDLER_DECOMPOSITION_SCHEMA_VERSION = "handler_decomposition_v4_frozen_semantics"
+
+
 RESCHEDULE_ALTERNATIVES = (
     "RESCHEDULE_KEEP_SAME", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH",
 )
@@ -1409,7 +1412,7 @@ def build_handler_decomposition_certificate(
     if not all_fixed_sequences_proved:
         failures.append({"component": "fixed_sequences", "missing": ["ALL_FIXED_SEQUENCES_PROVED"]})
     result = {"status": "PASS" if not failures else "UNRESOLVED",
-              "schema_version": "handler_decomposition_v4_frozen_semantics",
+              "schema_version": HANDLER_DECOMPOSITION_SCHEMA_VERSION,
               "formal_semantics_contract_version": CONTRACT_VERSION,
               "mutable_runtime_binding": "NON_BLOCKING_AUDIT_ONLY", "backend_receipt_status": "PASS" if not failures else "UNRESOLVED", "context_hash": context_hash,
               "handlers": handlers,

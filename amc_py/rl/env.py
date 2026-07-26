@@ -47,10 +47,12 @@ from amc_py.runtime_models import (
     LO_LOSS_BUDGET_CANCELLATION,
     LO_LOSS_RELEASE_DROPPED_IN_DEGRADED_MODE,
     RuntimeConfig,
+    RuntimeSemantics,
     SimulationResult,
 )
 from amc_py.runtime_scenarios import ExecutionScenario
 from amc_py.qamc.models import QAmcProfileBundle
+from amc_py.qamc.rl_contract import validate_qamc_rl_semantics
 
 ACTION_FEATURE_PRESSURE_THRESHOLD = 0.85
 ACTION_FEATURE_NEAR_CANCEL_THRESHOLD = 0.95
@@ -301,6 +303,15 @@ class AmcBudgetEnv:
             self.action_space = "constraint_guided_transfer"
         # 保存归一化后的动作空间名称，供日志与下游 CSV 使用。
         self.action_space_name = str(self.action_space)
+        validate_qamc_rl_semantics(
+            semantics=self.runtime_config.semantics,
+            action_space=self.action_space_name,
+            check_safety=self.check_safety,
+            step_guard_semantics=self.step_guard_semantics,
+            nonvacuity_disabled_guards=self.nonvacuity_disabled_guards,
+            budget_rounding_mode=self.budget_rounding_mode,
+            min_budget_delta=self.min_budget_delta,
+        )
         self._actions = build_budget_action_space(
             self.ordered_tasks,
             action_space=self.action_space,
@@ -1954,10 +1965,22 @@ class AmcBudgetEnv:
         return len(self._actions)
 
     @property
+    def action_count(self) -> int:
+        """Return the immutable action-space dimension."""
+
+        return len(self._actions)
+
+    @property
     def actions(self) -> tuple[BudgetAction, ...]:
         """Return the immutable discrete action definitions for policy adapters."""
 
         return tuple(self._actions)
+
+    @property
+    def qamc_profile(self) -> QAmcProfileBundle | None:
+        """Return the q-AMC profile bound to this environment, if any."""
+
+        return self.qamc_profile_bundle
 
     @property
     def runtime_result(self) -> SimulationResult:

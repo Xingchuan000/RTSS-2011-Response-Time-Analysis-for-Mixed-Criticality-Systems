@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from dataclasses import dataclass
 from itertools import combinations, permutations
@@ -540,3 +542,16 @@ def describe_budget_action(action: BudgetAction) -> str:
         return "|".join(parts)
 
     return action.action_space_type
+
+
+def compute_action_space_fingerprint(actions: Sequence[BudgetAction]) -> str:
+    """Return a stable fingerprint for an ordered action-space definition."""
+
+    payload = [describe_budget_action(action) for action in actions]
+    raw = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()

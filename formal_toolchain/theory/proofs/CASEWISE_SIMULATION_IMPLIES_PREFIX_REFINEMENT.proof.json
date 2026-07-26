@@ -12,7 +12,7 @@
   "source_binding_hash_mode": "canonical_text_v1",
   "source_bindings": {
     "formal_toolchain/bridge/event_projection.py": "122786952059a08fb36f6bc0d0bb3c3cc847b65303d7e37bd6cfd1e539a2fb1e",
-    "formal_toolchain/bridge/prefix_refinement.py": "19da9f0eb05cedbcce61bfac0505a09e71a56e845c490580f291c58a17068bf7",
+    "formal_toolchain/bridge/prefix_refinement.py": "8c2f983d161a734a1bca8015e9b2436e2b7d63f25c6bbf402c1a6c9917dd62d7",
     "formal_toolchain/bridge/state_relation.py": "1df1edcebb0fa1bf0e8a55b1ff4132f0114997a3e16283aa03a63a892763c4f2",
     "formal_toolchain/bridge/transition_cases.py": "78ceaabfe5472bc6e3d4c332b063e5736c2fd3775eeb2f56098a35cb0055f4a1",
     "formal_toolchain/bridge/transition_compiler.py": "10771077450e985cacfd7d39f5289817ae9b073cc39ae94c3072d38b51d43d97"

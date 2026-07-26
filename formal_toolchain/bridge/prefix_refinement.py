@@ -10,6 +10,9 @@ from formal_toolchain.core.canonical_json import canonical_dumps
 from formal_toolchain.core.artifact import obligation_certificate
 from formal_toolchain.core.artifact import verify_obligation_certificate
 from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.bridge.handler_decomposition import HANDLER_DECOMPOSITION_SCHEMA_VERSION
+
+CLOSED_PREFIX_REFINEMENT_WITNESS_SCHEMA_VERSION = "closed_prefix_refinement_v2"
 
 from .event_projection import project_events
 from .model_bounds import P0ModelBounds
@@ -241,7 +244,7 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
                 and (expected_kind != "EXTEND_WITH_FINITE_RELEASE_BATCH" or len(r.get("batch_decomposition_receipt_hash", "")) == 64))
     if any(not contract_valid(r) for r in rows):
         return {"status": "UNRESOLVED", "failure": "PARAMETERIZED_CASE_CONTRACTS_INCOMPLETE"}
-    if not isinstance(handler_decomposition_certificate, Mapping) or handler_decomposition_certificate.get("status") != "PASS" or handler_decomposition_certificate.get("schema_version") != "handler_decomposition_v3_math_fixed":
+    if not isinstance(handler_decomposition_certificate, Mapping) or handler_decomposition_certificate.get("status") != "PASS" or handler_decomposition_certificate.get("schema_version") != HANDLER_DECOMPOSITION_SCHEMA_VERSION:
         return {"status": "UNRESOLVED", "failure": "HANDLER_DECOMPOSITION_MATH_FIXED_REQUIRED"}
     if handler_decomposition_certificate.get("reschedule_partition", {}).get("status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "RESCHEDULE_PARTITION_PROOF_REQUIRED"}
@@ -254,7 +257,7 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
         }
     identity_hash = reference_transition_identity_certificate.get("artifact_hash", sha256_object(reference_transition_identity_certificate))
     witness = {
-        "schema_version": "closed_prefix_refinement_v2",
+        "schema_version": CLOSED_PREFIX_REFINEMENT_WITNESS_SCHEMA_VERSION,
         "proof_kind": "PARAMETERIZED_FINITE_MAP_INDUCTIVE_PREFIX_REFINEMENT",
         "quantification": {"demand_oracle": "FORALL_ADMISSIBLE", "closed_prefix": "FORALL_FINITE_REACHABLE_CLOSED_PREFIXES", "released_jobs": "ARBITRARY_FINITE_PREFIX_INDEXED_MAP", "same_task_overlap": "ARBITRARY_FINITE"},
         "parameterized_relation_schema_hash": schema,

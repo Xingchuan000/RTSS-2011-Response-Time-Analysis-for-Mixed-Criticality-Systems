@@ -128,7 +128,10 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
     root = Path(source_root)
     removal_binding = bind_removal_runtime(root)
     from formal_toolchain.binding.controller_binding import bind_controller_runtime
-    from .handler_decomposition import build_handler_decomposition_certificate
+    from .handler_decomposition import (
+        HANDLER_DECOMPOSITION_SCHEMA_VERSION,
+        build_handler_decomposition_certificate,
+    )
     controller_binding = bind_controller_runtime(root)
     decomposition = build_handler_decomposition_certificate(
         root, context_hash=bridge_context_hash,
@@ -137,7 +140,7 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
         return {"status": "UNRESOLVED", "failure": "COMPOSITE_HANDLER_DECOMPOSITION_REQUIRED",
                 "transition_cases": compiled, "controller_binding": controller_binding,
                 "decomposition": decomposition}
-    if decomposition.get("schema_version") != "handler_decomposition_v3_math_fixed":
+    if decomposition.get("schema_version") != HANDLER_DECOMPOSITION_SCHEMA_VERSION:
         return {"status": "UNRESOLVED", "failure": "HANDLER_DECOMPOSITION_MATH_FIXED_REQUIRED", "transition_cases": compiled, "decomposition": decomposition}
     if decomposition.get("backend_receipt_status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "HANDLER_COMPOSITION_BACKEND_FAILED", "transition_cases": compiled, "decomposition": decomposition}

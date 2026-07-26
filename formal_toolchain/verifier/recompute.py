@@ -403,6 +403,24 @@ def _rta_replay(*, inputs: Any, certified_envelope: Mapping[str, Any] | None,
             != fresh_state.analysis_taskset.to_dict().get("fingerprint")):
         return {"status": "PROOF_BUNDLE_INVALID", "route": "PROOF_BUNDLE_INVALID",
                 "code": "ROUTE_ANALYSIS_TASKSET_MISMATCH"}
+    from formal_toolchain.reference.rta_soundness import derive_all_task_rta_soundness
+    soundness = derive_all_task_rta_soundness(
+        replay=replay,
+        taskset=taskset,
+        theorem_id=(
+            "PREFIX_ALL_TASK_RTA_SOUNDNESS"
+            if route_id == "protected_prefix"
+            else "REFERENCE_ALL_TASK_RTA_SOUNDNESS"
+        ),
+    )
+    if soundness.get("status") != "PASS":
+        return {
+            "status": "UNRESOLVED",
+            "route": "UNRESOLVED",
+            "code": "RTA_SOUNDNESS_RECEIPT_UNRESOLVED",
+            "replay": replay,
+            "soundness_receipt": soundness.get("soundness_receipt", {}),
+        }
     return {"status": "PASS", "replay": replay,
             "replay_hash": sha256_object(replay),
             "fresh_reference": taskset.to_dict(),
@@ -410,7 +428,8 @@ def _rta_replay(*, inputs: Any, certified_envelope: Mapping[str, Any] | None,
             "selected_rta_obligation_id": obligation_id,
             "route_id": route_id,
             "fresh_production_hash": sha256_object(production),
-            "replay_status": "PASS"}
+            "replay_status": "PASS",
+            "soundness_receipt": soundness["soundness_receipt"]}
 
 
 def _fresh_source_root(inputs: Any) -> Path:

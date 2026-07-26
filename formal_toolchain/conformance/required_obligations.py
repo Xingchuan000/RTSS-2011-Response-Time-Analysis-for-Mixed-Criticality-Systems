@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.conformance.micro_scenarios import SCENARIO_ASSERTION_CONTRACTS
+from formal_toolchain.semantics.frozen_runtime_contract import CONTRACT_VERSION
 
 
 def _fail(code: str, *, route: str = "MODEL_CONFORMANCE_FAILED", **extra: Any) -> dict[str, Any]:
@@ -61,22 +63,32 @@ def check_hi_execution_contract(runtime: Mapping[str, Any]) -> dict[str, Any]:
     removal = _mapping(runtime.get("removal_binding"))
     contract = _mapping(removal.get("p0_contract"))
     assertions = _mapping(scenario.get("assertions"))
+    required_assertions = SCENARIO_ASSERTION_CONTRACTS["hi_nontruncation"]
     required = {
-        "source_hi_nontruncation": removal.get("status") == "PASS" and contract.get("hi_nontruncation") is True,
-        "runtime_full_demand": assertions.get("hi_completed_full_demand") is True,
-        "runtime_not_dropped": assertions.get("hi_not_dropped") is True,
-        "switch_observed": assertions.get("mode_switched") is True,
+        "source_binding_pass": removal.get("status") == "PASS",
+        "source_contract_version": removal.get("formal_semantics_contract_version") == CONTRACT_VERSION,
+        "source_runtime_decoupled": removal.get("mutable_runtime_binding") == "NON_BLOCKING_AUDIT_ONLY",
+        "source_hi_nontruncation": contract.get("hi_nontruncation") is True,
+        "scenario_pass": scenario.get("status") == "PASS",
+        "scenario_contract_version": scenario.get("formal_semantics_contract") == CONTRACT_VERSION,
+        "scenario_runtime_independent": (
+            scenario.get("execution_mode") == "PURE_FORMAL_MODEL"
+            and scenario.get("mutable_runtime_dependency") == "NONE"
+        ),
+        **{f"scenario_assertion:{key}": assertions.get(key) is True for key in required_assertions},
     }
     failed = [key for key, value in required.items() if value is not True]
     if failed:
         return _fail("HI_EXECUTION_CONTRACT_FAILED", failed=failed, source_binding=dict(removal), scenario=dict(scenario))
     return {
         "status": "PASS",
-        "schema_version": "hi_execution_contract_v1",
+        "schema_version": "hi_execution_contract_v2",
         "source_binding_hash": sha256_object(removal),
         "runtime_scenario_hash": sha256_object(scenario),
         "hi_executes_actual_demand": True,
         "hi_not_truncated_at_c_lo": True,
+        "hi_not_dropped": True,
+        "formal_semantics_contract": CONTRACT_VERSION,
     }
 
 

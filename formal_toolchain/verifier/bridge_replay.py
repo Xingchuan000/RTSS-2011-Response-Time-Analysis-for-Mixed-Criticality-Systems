@@ -111,11 +111,14 @@ def replay_all_transition_cases(inputs: BridgeReplayInputs) -> dict[str, Any]:
                             "batch_decomposition_receipt_hash")})})
     if any(row.get("z3_proof_result") != "PASS" for row in results):
         return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "FRESH_Z3_CASE_NOT_PASS", "cases": results}
-    from formal_toolchain.bridge.handler_decomposition import build_handler_decomposition_certificate
+    from formal_toolchain.bridge.handler_decomposition import (
+        HANDLER_DECOMPOSITION_SCHEMA_VERSION,
+        build_handler_decomposition_certificate,
+    )
     decomposition = build_handler_decomposition_certificate(
         inputs.source_root, context_hash=inputs.bridge_context_hash,
         transition_case_certificates=compiled.get("proof_certificates", []))
-    if decomposition.get("status") != "PASS" or decomposition.get("schema_version") != "handler_decomposition_v3_math_fixed":
+    if decomposition.get("status") != "PASS" or decomposition.get("schema_version") != HANDLER_DECOMPOSITION_SCHEMA_VERSION:
         return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "FRESH_HANDLER_DECOMPOSITION_FAILED", "handler_decomposition": decomposition}
     return {"status": "PASS", "route": None, "code": None,
             "source_manifest_hash": inputs.source_manifest_hash,

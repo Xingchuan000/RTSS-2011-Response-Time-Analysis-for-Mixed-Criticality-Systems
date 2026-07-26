@@ -19,6 +19,7 @@ from amc_py.rl.reward_config import evaluate_reward_expression, load_reward_mode
 from amc_py.rl.safety import RuntimeBudgetSafetyChecker, merge_budget_candidate
 from amc_py.runtime_models import RuntimeConfig, SimulationResult
 from amc_py.qamc.models import QAmcProfileBundle
+from amc_py.qamc.rl_contract import validate_qamc_rl_semantics
 from amc_py.runtime_scenarios import ExecutionScenario
 
 
@@ -114,6 +115,9 @@ class AgentRuntimeConfig:
     deploy_cap_mask_ratio: float = 4.0
     deploy_cap_mask_criticality: str = "lo"
     budget_update_source: str = "UNSPECIFIED"
+    action_space: str = "single"
+    step_guard_semantics: str = "checked"
+    nonvacuity_disabled_guards: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -191,6 +195,15 @@ def simulate_ordered_taskset_with_agent(
     monitor = RuntimeMonitor(reward_mode=agent_config.reward_mode)
     reward_mode_config = load_reward_mode_config(agent_config.reward_mode)
     runtime_cfg = replace(runtime_config, end_time=agent_config.end_time)
+    validate_qamc_rl_semantics(
+        semantics=runtime_cfg.semantics,
+        action_space=agent_config.action_space,
+        check_safety=agent_config.check_safety,
+        step_guard_semantics=agent_config.step_guard_semantics,
+        nonvacuity_disabled_guards=agent_config.nonvacuity_disabled_guards,
+        budget_rounding_mode=agent_config.budget_rounding_mode,
+        min_budget_delta=agent_config.min_budget_delta,
+    )
     build_kwargs = {
         "ordered_tasks": ordered_tasks,
         "scenario": scenario,

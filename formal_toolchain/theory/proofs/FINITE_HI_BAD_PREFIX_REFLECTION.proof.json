@@ -43,7 +43,7 @@
     "formal_toolchain/bridge/bad_prefix.py": "42a90262eb499a81486cb7e078fa4159756e5ae781e52b100c58df34c134f5b5",
     "formal_toolchain/bridge/case_templates.py": "d3d25538b4a4cf5f1bed711635e6e225bd6dbdc15fe691c7167d763915793819",
     "formal_toolchain/bridge/event_projection.py": "122786952059a08fb36f6bc0d0bb3c3cc847b65303d7e37bd6cfd1e539a2fb1e",
-    "formal_toolchain/bridge/prefix_refinement.py": "19da9f0eb05cedbcce61bfac0505a09e71a56e845c490580f291c58a17068bf7",
+    "formal_toolchain/bridge/prefix_refinement.py": "8c2f983d161a734a1bca8015e9b2436e2b7d63f25c6bbf402c1a6c9917dd62d7",
     "formal_toolchain/bridge/state_relation.py": "1df1edcebb0fa1bf0e8a55b1ff4132f0114997a3e16283aa03a63a892763c4f2",
     "formal_toolchain/bridge/transition_cases.py": "78ceaabfe5472bc6e3d4c332b063e5736c2fd3775eeb2f56098a35cb0055f4a1",
     "formal_toolchain/reference/executable_semantics.py": "49b09f87507ba957f6e35c58f5e61baefdf4f3f1de8f83faa6cd9cf05792f1c4",
