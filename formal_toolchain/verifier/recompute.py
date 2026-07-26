@@ -1362,7 +1362,11 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
                    "mathematical_proof_status": "PASS" if math_root_pass else (
                        "UNRESOLVED" if aggregation_status == "UNRESOLVED" else "FAIL"),
                },
-               "rta_replay_verified": certificates.get("ALL_TASK_REFERENCE_RTA_ARITHMETIC", {}).get("obligation_status") == "PASS",
+               "rta_replay_verified": certificates.get(
+                   fresh_state.selected_rta_obligation_id
+                   if fresh_state is not None
+                   else "ALL_TASK_REFERENCE_RTA_ARITHMETIC", {}
+               ).get("obligation_status") == "PASS",
                "certified_envelope_verified": certificates.get("CERTIFIED_ENVELOPE", {}).get("obligation_status") == "PASS"
                                        and certificates.get("CERTIFIED_ENVELOPE", {}).get("witness", {}).get("verified_by") == "fresh_verifier",
                "bridge_proof_verified": all(certificates.get(key, {}).get("obligation_status") == "PASS"

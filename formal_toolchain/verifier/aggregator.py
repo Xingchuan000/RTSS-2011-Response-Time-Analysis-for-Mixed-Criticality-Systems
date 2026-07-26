@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.core.obligation_ids import LEGACY_PROTECTED_HI_IDS
+from formal_toolchain.core.registry import build_claim_closure
 
 
 PRIORITY = (
@@ -47,39 +48,16 @@ def aggregate_phase_ae_local(statuses: list[dict[str, object]]) -> str:
 
 
 def claim_dependency_closure(registry: list[dict[str, object]], claim: str) -> set[str]:
-    """由 registry 计算 claim 的完整 required active 闭包。
+    """Return the canonical verified acceptance surface for ``claim``.
 
-    required active obligations 是该 profile 的完整验收面；gate 字段只声明
-    直接 claim 入口，依赖闭包不能被调用方缩减。
+    The compiler and fresh verifier already partition the claim closure into
+    mathematical, authorization, and structural certificates through
+    :func:`build_claim_closure`.  Aggregation must consume that same set rather
+    than reconstructing only the mathematical dependency chain.  The derived
+    ``CLAIM_AGGREGATION_RESULT`` summary is intentionally excluded by the
+    canonical closure because it is produced only after aggregation.
     """
-    entries = {str(item["id"]): item for item in registry
-               if item.get("activation") == "active" and item.get("required") is True}
-    by_id = {str(item["id"]): item for item in registry}
-    known_claims = {str(value) for item in entries.values() for value in item.get("gates_claims", [])}
-    if claim not in known_claims:
-        raise ValueError(f"unknown claim: {claim}")
-    # 起点：proof_role == mathematical_root 同时 gates_claims 包含 claim
-    roots = {str(item["id"]) for item in entries.values()
-             if str(item.get("id")) != "CLAIM_AGGREGATION_RESULT"
-             and item.get("proof_role") == "mathematical_root"
-             and claim in {str(value) for value in item.get("gates_claims", [])}}
-    if not roots:
-        roots = {str(item["id"]) for item in entries.values()
-                 if str(item.get("id")) != "CLAIM_AGGREGATION_RESULT"
-                 and item.get("kind") != "derived_summary"
-                 and claim in {str(value) for value in item.get("gates_claims", [])}}
-    closure = set(roots)
-    stack = list(roots)
-    while stack:
-        current = stack.pop()
-        for dependency in entries[current].get("depends_on", []):
-            dependency = str(dependency)
-            if dependency not in entries:
-                raise ValueError(f"claim 依赖 inactive/unknown obligation: {dependency}")
-            if dependency not in closure:
-                closure.add(dependency)
-                stack.append(dependency)
-    return closure
+    return set(build_claim_closure(registry, claim).verified_artifacts)
 
 
 def mathematical_claim_closure(registry: list[dict[str, object]], claim: str) -> set[str]:

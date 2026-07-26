@@ -37,6 +37,8 @@ REGISTRY_HASH_FIELDS = (
     "proof_role", "context_layer", "producer", "authorization_for",
 )
 
+DERIVED_SUMMARY_IDS = frozenset({"CLAIM_AGGREGATION_RESULT"})
+
 STRUCTURAL_GATE_IDS = frozenset({
     "ARTIFACT_MANIFEST", "COMPONENT_CONTEXT_INTEGRITY", "DIRECT_PREDECESSOR_HASHES",
     "STATUS_EVIDENCE", "OUTER_BUNDLE_ROOT", "INDEPENDENT_BUNDLE_VERIFICATION",
@@ -56,7 +58,10 @@ class ClaimClosure:
 
     @property
     def verified_artifacts(self) -> frozenset[str]:
-        return self.candidate_artifacts | self.structural
+        # CLAIM_AGGREGATION_RESULT is a post-aggregation derived summary.
+        # It depends on the aggregation output and the already-computed outer
+        # root, so treating it as an input certificate would create a cycle.
+        return (self.candidate_artifacts | self.structural) - DERIVED_SUMMARY_IDS
 
 
 def build_claim_closure(entries: list[dict[str, Any]], claim: str) -> ClaimClosure:
