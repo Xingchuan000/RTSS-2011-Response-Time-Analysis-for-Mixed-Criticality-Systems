@@ -667,13 +667,26 @@ def _semantic_certificate(*, obligation_id: str, candidate: Mapping[str, Any],
                           status: str, context_hash: str,
                           predecessors: Mapping[str, Mapping[str, Any]],
                           failure: Mapping[str, Any] | None = None,
-                          witness: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """把 fresh checker 结果封装成标准证书，并绑定真实前驱 hash。"""
+                          witness: Mapping[str, Any] | None = None,
+                          verified_inputs: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """把 fresh checker 结果封装成标准证书，并绑定真实前驱 hash。
+
+    ``verified_inputs`` is reserved for semantic identities freshly rebuilt and
+    checked in this verifier process.  It must not be populated from an
+    unverified candidate placeholder.  Downstream proof builders may consume
+    these identities from the verified predecessor certificate.
+    """
+
+    certificate_inputs = {
+        "candidate_artifact_hash": candidate.get("artifact_hash"),
+        "fresh_process": True,
+    }
+    if verified_inputs is not None:
+        certificate_inputs.update(dict(verified_inputs))
 
     return obligation_certificate(
         obligation_id=obligation_id, status=status, context_hash=context_hash,
-        inputs={"candidate_artifact_hash": candidate.get("artifact_hash"),
-                "fresh_process": True},
+        inputs=certificate_inputs,
         witness=dict(witness or {"candidate_witness": candidate.get("witness", {})}),
         checker_id=f"formal_toolchain.verifier.checker_catalog.{obligation_id}",
         checker_version="r10-verifier-v1",
@@ -950,6 +963,11 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
                         "code": checked.get("code", "REFERENCE_PREFIX_EXTENSION_CHECK_FAILED"),
                     }),
                     witness=checked.get("witness"),
+                    verified_inputs=(
+                        extension_object.get("inputs", {})
+                        if extension_status == "PASS"
+                        else None
+                    ),
                 )
                 continue
             if bridge_generation_cache is None and bridge_generation_failure is None:

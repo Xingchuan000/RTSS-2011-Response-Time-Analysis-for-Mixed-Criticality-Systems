@@ -27,6 +27,34 @@ def _verify_hash_map(value: Any) -> bool:
     )
 
 
+def _verified_closed_prefix_witness(
+    *, candidate_witness: Mapping[str, Any], receipt_hash: str, replay_hash: str,
+) -> dict[str, Any]:
+    """Return the validated N6-facing interface of a fresh N5 certificate."""
+
+    relation_interface = candidate_witness.get("n6_relation_interface", {})
+    validate_n6_relation_interface(relation_interface)
+    transition_system_id = candidate_witness.get("reference_transition_system_id")
+    if (
+        transition_system_id != "FIXED_EXECUTABLE_REFERENCE_P0_V3"
+        or relation_interface.get("reference_transition_system_id")
+        != transition_system_id
+    ):
+        raise ValueError("CLOSED_PREFIX_REFERENCE_TRANSITION_SYSTEM_ID_MISMATCH")
+    return {
+        "fresh_theorem_receipt_hash": receipt_hash,
+        "fresh_source_replay_hash": replay_hash,
+        "reference_transition_system_id": transition_system_id,
+        "n6_relation_interface": dict(relation_interface),
+        "parameterized_relation_schema_hash": candidate_witness.get(
+            "parameterized_relation_schema_hash"
+        ),
+        "pointwise_closed_prefix_relation": candidate_witness.get(
+            "pointwise_closed_prefix_relation"
+        ),
+    }
+
+
 def _base(candidate: Mapping[str, Any], obligation_id: str,
           bridge_context_hash: str) -> dict[str, Any] | None:
     if not isinstance(candidate, Mapping):
@@ -260,7 +288,29 @@ def _verify_universal_closed_prefix(candidate: Mapping[str, Any], bridge_context
     consistency = compare_candidate_replay(candidate, replay)
     if consistency.get("status") != "PASS":
         return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "BRIDGE_CANDIDATE_REPLAY_MISMATCH", "witness": consistency}
-    return {"status": "PASS", "route": None, "code": None, "witness": {"fresh_theorem_receipt_hash": receipt["receipt_hash"], "fresh_source_replay_hash": sha256_object(replay)}}
+    # Preserve the small, validated semantic interface consumed by N6.  The
+    # fresh verifier used to replace the whole closed-prefix witness with two
+    # audit hashes; downstream N6 rebuilding then received a PASS predecessor
+    # that no longer exposed its transition-system identity or relation
+    # interface.
+    try:
+        verified_witness = _verified_closed_prefix_witness(
+            candidate_witness=witness,
+            receipt_hash=receipt["receipt_hash"],
+            replay_hash=sha256_object(replay),
+        )
+    except ValueError as exc:
+        return {
+            "status": "FAIL",
+            "route": "PROOF_BUNDLE_INVALID",
+            "code": str(exc),
+        }
+    return {
+        "status": "PASS",
+        "route": None,
+        "code": None,
+        "witness": verified_witness,
+    }
 
 
 def verify_closed_prefix_proof_object(*, candidate: Mapping[str, Any],
@@ -406,4 +456,17 @@ def verify_prefix_extension_proof_object(*, candidate: Mapping[str, Any],
         return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "REFERENCE_PREFIX_REBUILD_INVALID"}
     if candidate.get("obligation_status") == "PASS" and candidate != rebuilt:
         return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "REFERENCE_PREFIX_REPLAY_MISMATCH"}
-    return {"status": "PASS", "route": None, "code": None, "witness": rebuilt.get("witness", {})}
+    verified_witness = dict(rebuilt.get("witness", {}))
+    # N6 consumes the verified prefix-extension predecessor, not the transient
+    # rebuilt object.  Keep the verified reference-taskset identity in the
+    # witness because the generic fresh certificate envelope intentionally
+    # replaces semantic inputs with audit metadata.
+    verified_witness["reference_taskset_fingerprint"] = rebuilt.get(
+        "inputs", {}
+    ).get("reference_taskset_fingerprint")
+    return {
+        "status": "PASS",
+        "route": None,
+        "code": None,
+        "witness": verified_witness,
+    }

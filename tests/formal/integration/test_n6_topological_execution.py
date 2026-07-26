@@ -1,4 +1,4 @@
-from pathlib import Path
+import inspect
 
 from formal_toolchain.bridge.early_stop_gate import build_early_stop_configuration_gate
 from formal_toolchain.theory.loader import MACHINE_PREMISES
@@ -6,8 +6,11 @@ from formal_toolchain.theory.loader import MACHINE_PREMISES
 
 def test_n6_registry_and_source_topology_exclude_reference_safety():
     assert "REFERENCE_HI_SUBSET_SAFETY" not in MACHINE_PREMISES["FINITE_HI_BAD_PREFIX_REFLECTION"]
-    source = (Path(__file__).parents[3] / "formal_toolchain/verifier/recompute.py").read_text()
-    n6_source = source[source.index("def _fresh_bad_prefix_proof"):source.index("def _semantic_certificate")]
+    from formal_toolchain.verifier.bridge_proof_checker import (
+        verify_bad_prefix_proof_object,
+    )
+
+    n6_source = inspect.getsource(verify_bad_prefix_proof_object)
     assert "REFERENCE_HI_SUBSET_SAFETY" not in n6_source
 
 

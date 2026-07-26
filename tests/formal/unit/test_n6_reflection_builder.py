@@ -158,3 +158,66 @@ def test_n6_rejects_invalid_hi_nontruncation_interface():
             theorem_statement=theorem,
             theorem_proof_receipt=receipt,
         )
+
+
+def test_fresh_verified_predecessor_shapes_remain_n6_consumable():
+    from formal_toolchain.verifier.bridge_proof_checker import (
+        _verified_closed_prefix_witness,
+    )
+    from formal_toolchain.verifier.recompute import _semantic_certificate
+
+    predecessors = _predecessors()
+    relation = predecessors["CLOSED_PREFIX_REFINEMENT"]["witness"][
+        "n6_relation_interface"
+    ]
+    closed_witness = _verified_closed_prefix_witness(
+        candidate_witness={
+            "reference_transition_system_id":
+                "FIXED_EXECUTABLE_REFERENCE_P0_V3",
+            "n6_relation_interface": relation,
+            "parameterized_relation_schema_hash":
+                parameterized_state_relation_schema_hash(),
+            "pointwise_closed_prefix_relation": True,
+        },
+        receipt_hash="1" * 64,
+        replay_hash="2" * 64,
+    )
+    predecessors["CLOSED_PREFIX_REFINEMENT"] = obligation_certificate(
+        obligation_id="CLOSED_PREFIX_REFINEMENT",
+        status="PASS",
+        context_hash=CONTEXTS["bridge_context"]["hash"],
+        inputs={"candidate_artifact_hash": "3" * 64, "fresh_process": True},
+        witness=closed_witness,
+        checker_id="test",
+        checker_version="1",
+    )
+
+    extension_candidate = obligation_certificate(
+        obligation_id="REFERENCE_PREFIX_EXTENSION",
+        status="PASS",
+        context_hash=CONTEXTS["bridge_context"]["hash"],
+        inputs={"reference_taskset_fingerprint": "9" * 64},
+        witness={"schema_version": "reference_prefix_extension_v4"},
+        checker_id="test",
+        checker_version="1",
+    )
+    predecessors["REFERENCE_PREFIX_EXTENSION"] = _semantic_certificate(
+        obligation_id="REFERENCE_PREFIX_EXTENSION",
+        candidate=extension_candidate,
+        status="PASS",
+        context_hash=CONTEXTS["bridge_context"]["hash"],
+        predecessors={},
+        witness=extension_candidate["witness"],
+        verified_inputs=extension_candidate["inputs"],
+    )
+
+    theorem, receipt = _theorem_and_receipt()
+    result = build_hi_bad_prefix_reflection_certificate(
+        verified_predecessors=predecessors,
+        contexts=CONTEXTS,
+        context_hash=CONTEXTS["bridge_context"]["hash"],
+        theorem_statement=theorem,
+        theorem_proof_receipt=receipt,
+    )
+    assert result["obligation_status"] == "PASS"
+    assert result["witness"]["reference_taskset_fingerprint"] == "9" * 64
