@@ -15,7 +15,7 @@
     "backend": "event-handler-decomposition-v1",
     "hash_mode": "canonical_json_v1",
     "path": "proofs/EVENT_HANDLER_MICROSTEP_DECOMPOSITION.proof.json",
-    "sha256": "2dbe35c0035658fccb3a42db4f1fda2c0a0e2ce3ed968b5bbd8a411e85b4d8bb"
+    "sha256": "e47f4897ecf808f92fbb13c5171f8a8ce36b38600550e2d8b791e40a5dd1f830"
   },
   "source_reference": "Phase I-K runtime handler decomposition contract",
   "statement_hash": "c6c01133e551541de484a3b369fe53ad872dac66ea2f2806ba7bb03ac7910e5b",

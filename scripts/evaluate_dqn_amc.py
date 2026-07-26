@@ -49,7 +49,15 @@ from amc_py.rl.feature_config import FeatureConfig
 from amc_py.rl.reward_config import available_reward_modes
 from amc_py.rl.runtime_wrapper import AgentRuntimeConfig, simulate_ordered_taskset_with_agent
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationResult
-from amc_py.qamc.profiles import load_profile_bundle
+from amc_py.qamc.metrics_support import compute_qamc_metrics, qamc_metrics_to_row
+from amc_py.qamc.profiles import load_profile_bundle_from_manifest
+from amc_py.qamc.reference_config import (
+    assert_reference_matches_values,
+    load_and_validate_frozen_reference,
+    validate_qamc_model_artifact,
+)
+from amc_py.qamc.profile_spec import load_profile_spec
+from amc_py.qamc.heuristic import QAmcBudgetPressureHeuristic
 
 
 NOOP_Q_DIAGNOSTIC_FIELDNAMES = [
@@ -459,6 +467,50 @@ def _eval_summary_fieldnames() -> list[str]:
             "tree_raw_action_match_teacher_rate",
             "tree_q_regret_mean",
             "tree_q_regret_p95",
+        ]
+    )
+    fieldnames.extend(
+        [
+            "qamc_paper_quality_sum",
+            "qamc_paper_quality_per_release",
+            "qamc_normalized_provided_quality_sum",
+            "qamc_normalized_quality_qos",
+            "qamc_zero_service_count",
+            "qamc_zero_service_ratio",
+            "qamc_release_target_rank_mean",
+            "qamc_release_target_normalized_mean",
+            "qamc_completed_quality_conditional_mean",
+            "qamc_completed_quality_unconditional_per_release",
+            "qamc_overrun_stop_count",
+            "qamc_quality_transition_count",
+            "qamc_min_quality_exhaustion_count",
+            "qamc_tasks_ever_degraded",
+            "qamc_first_degradation_time",
+            "qamc_runtime_level_depth_mean",
+            "qamc_runtime_level_depth_max",
+            "qamc_raw_rank_drop_mean",
+            "qamc_raw_rank_drop_max",
+            "qamc_release_count_by_raw_rank_json",
+            "qamc_completed_count_by_raw_rank_json",
+            "qamc_task_time_at_raw_rank_ratio_json",
+            "qamc_non_degradable_task_count",
+            "qamc_trigger_budget_mean_ratio_to_c_lo",
+            "qamc_trigger_below_design_count",
+            "qamc_trigger_equal_design_count",
+            "qamc_trigger_above_design_count",
+            "qamc_would_overrun_design_count",
+            "qamc_dqn_budget_update_event_count",
+            "qamc_dqn_budget_update_task_count",
+            "qamc_viper_budget_update_event_count",
+            "qamc_viper_budget_update_task_count",
+            "qamc_heuristic_budget_update_event_count",
+            "qamc_heuristic_budget_update_task_count",
+            "qamc_offline_budget_update_event_count",
+            "qamc_offline_budget_update_task_count",
+            "qamc_unspecified_budget_update_event_count",
+            "qamc_unspecified_budget_update_task_count",
+            "qamc_profile_fingerprint",
+            "qamc_legacy_degraded_metrics_applicable",
         ]
     )
     return fieldnames
@@ -1153,6 +1205,33 @@ def _evaluate_tree_once(
     from amc_py.viper.metrics import evaluate_tree_policy_once
 
     tree_policy = load_tree_policy_artifact(tree_artifact_dir, require_integer_tree=require_integer_tree)
+    metadata = tree_policy.metadata
+    if dqn_runtime_semantics is RuntimeSemantics.Q_AMC:
+        if (
+            experiment_config.qamc_reference_config_path is None
+            or experiment_config.qamc_profile_manifest_path is None
+            or experiment_config.qamc_profile_spec_path is None
+        ):
+            raise ValueError("QAMC_REFERENCE_PROFILE_ARTIFACTS_REQUIRED")
+        frozen = load_and_validate_frozen_reference(
+            experiment_config.qamc_reference_config_path
+        )
+        manifest = json.loads(
+            Path(experiment_config.qamc_profile_manifest_path).read_text(
+                encoding="utf-8"
+            )
+        )
+        spec = load_profile_spec(experiment_config.qamc_profile_spec_path)
+        expected = {
+            "reference_config_fingerprint": frozen["fingerprint"],
+            "profile_manifest_fingerprint": manifest.get("fingerprint"),
+            "profile_spec_fingerprint": spec.fingerprint,
+        }
+        qamc_metadata = metadata.get("qamc")
+        if not isinstance(qamc_metadata, dict) or any(
+            qamc_metadata.get(key) != value for key, value in expected.items()
+        ):
+            raise ValueError("QAMC_TREE_ARTIFACT_FINGERPRINT_MISMATCH")
     teacher = DqnBudgetAgent.load(teacher_model_path) if teacher_model_path is not None else None
     tree_metrics, runtime_result, action_log = evaluate_tree_policy_once(
         tree_policy=tree_policy,
@@ -1179,7 +1258,6 @@ def _evaluate_tree_once(
         leaf_audit_state_mode=leaf_audit_state_mode,
         leaf_audit_top_k_actions=leaf_audit_top_k_actions,
     )
-    metadata = tree_policy.metadata
     step_count = int(tree_metrics.get("step_count", 0))
     accepted_actions = int(tree_metrics.get("accepted_actions", 0))
     row = {
@@ -1514,6 +1592,53 @@ def _aggregate_method_summary_rows(
                 if fieldname == "noop_q_sample_count"
                 else _mean_optional_metric(method_rows, fieldname)
             )
+        qamc_numeric_fields = (
+            "paper_quality_sum",
+            "paper_quality_per_release",
+            "normalized_provided_quality_sum",
+            "normalized_quality_qos",
+            "zero_service_count",
+            "zero_service_ratio",
+            "release_target_rank_mean",
+            "release_target_normalized_mean",
+            "completed_quality_conditional_mean",
+            "completed_quality_unconditional_per_release",
+            "overrun_stop_count",
+            "quality_transition_count",
+            "min_quality_exhaustion_count",
+            "tasks_ever_degraded",
+            "runtime_level_depth_mean",
+            "runtime_level_depth_max",
+            "raw_rank_drop_mean",
+            "raw_rank_drop_max",
+            "non_degradable_task_count",
+            "trigger_budget_mean_ratio_to_c_lo",
+            "trigger_below_design_count",
+            "trigger_equal_design_count",
+            "trigger_above_design_count",
+            "would_overrun_design_count",
+            "dqn_budget_update_event_count",
+            "dqn_budget_update_task_count",
+            "viper_budget_update_event_count",
+            "viper_budget_update_task_count",
+            "heuristic_budget_update_event_count",
+            "heuristic_budget_update_task_count",
+            "offline_budget_update_event_count",
+            "offline_budget_update_task_count",
+            "unspecified_budget_update_event_count",
+            "unspecified_budget_update_task_count",
+        )
+        if "qamc_normalized_quality_qos" in method_rows[0]:
+            for field in qamc_numeric_fields:
+                summary_row[f"qamc_{field}_mean"] = _mean_metric(
+                    method_rows, f"qamc_{field}"
+                )
+            summary_row["qamc_first_degradation_time_mean"] = _mean_optional_metric(
+                method_rows, "qamc_first_degradation_time"
+            )
+            summary_row["qamc_profile_fingerprint"] = method_rows[0].get(
+                "qamc_profile_fingerprint", ""
+            )
         summary_rows.append(summary_row)
     return summary_rows
 
@@ -1528,12 +1653,16 @@ def _build_dqn_reference_comparison_rows(
         for row in method_summary_rows
         if str(row.get("row_type", "")) == "method_summary"
     }
-    dqn_row = summary_by_method.get("dqn_agent")
+    dqn_row = summary_by_method.get("q_amc_dqn_budget_overlay") or summary_by_method.get(
+        "dqn_agent"
+    )
     if dqn_row is None:
         return []
 
     comparison_rows: list[dict[str, int | float | str | bool | None]] = []
     for reference_method in [
+        "q_amc_native",
+        "amc_same_full_sample_native",
         "amc_plus_baseline",
         "amc_ra_baseline",
         "amc_rh_baseline",
@@ -1570,7 +1699,7 @@ def _build_dqn_reference_comparison_rows(
                 },
                 **_tree_summary_context(dqn_row),
                 "row_type": "dqn_vs_reference",
-                "method": "dqn_agent",
+                "method": str(dqn_row["method"]),
                 "reference_method": reference_method,
                 "seed_count": dqn_row["seed_count"],
                 "mode_changes_mean": dqn_row["mode_changes_mean"],
@@ -1697,6 +1826,32 @@ def _build_dqn_reference_comparison_rows(
                 **{fieldname: dqn_row.get(fieldname) for fieldname in NOOP_Q_DIAGNOSTIC_FIELDNAMES},
             }
         )
+        comparison = comparison_rows[-1]
+        qamc_qos_key = "qamc_normalized_quality_qos_mean"
+        if qamc_qos_key in dqn_row and qamc_qos_key in reference_row:
+            qamc_summary_fields = (
+                "qamc_paper_quality_sum_mean",
+                "qamc_paper_quality_per_release_mean",
+                "qamc_normalized_provided_quality_sum_mean",
+                "qamc_normalized_quality_qos_mean",
+                "qamc_zero_service_count_mean",
+                "qamc_zero_service_ratio_mean",
+                "qamc_overrun_stop_count_mean",
+                "qamc_quality_transition_count_mean",
+                "qamc_min_quality_exhaustion_count_mean",
+                "qamc_runtime_level_depth_mean_mean",
+                "qamc_raw_rank_drop_mean_mean",
+                "qamc_trigger_budget_mean_ratio_to_c_lo_mean",
+            )
+            comparison.update(
+                {field: dqn_row.get(field) for field in qamc_summary_fields}
+            )
+            comparison["delta_qamc_normalized_quality_qos"] = float(
+                dqn_row[qamc_qos_key]
+            ) - float(reference_row[qamc_qos_key])
+            comparison["delta_qamc_zero_service_ratio"] = float(
+                dqn_row["qamc_zero_service_ratio_mean"]
+            ) - float(reference_row["qamc_zero_service_ratio_mean"])
     return comparison_rows
 
 
@@ -1735,6 +1890,10 @@ def _write_unified_summary_csv(
     fieldnames = list(UNIFIED_SUMMARY_FIELDNAMES)
     fieldnames.extend(TASK_LEVEL_INFO_KEYS)
     fieldnames.extend(NOOP_Q_DIAGNOSTIC_FIELDNAMES)
+    known = set(fieldnames)
+    fieldnames.extend(
+        sorted({key for row in summary_rows for key in row} - known)
+    )
     with summary_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -1953,6 +2112,82 @@ def _deadline_miss_rows(rows: list[dict[str, int | float | str]]) -> list[dict[s
     return [row for row in rows if int(row["deadline_misses"]) > 0]
 
 
+def _run_qamc_budget_heuristic(
+    *,
+    experiment_config,
+    seed: int,
+    end_time: int,
+    agent_period: int,
+    reward_mode: str,
+    action_space: str,
+    budget_increase_ratio: float,
+    budget_decrease_ratio: float,
+    include_explicit_noop: bool,
+    budget_floor_ratio: float,
+    forbid_decreasing_hi_budgets: bool,
+    mask_detail_mode: str,
+    enable_deploy_cap_mask: bool,
+    deploy_cap_mask_ratio: float,
+    deploy_cap_mask_criticality: str,
+    feature_config: FeatureConfig,
+    c_amc_sem_xf: float,
+) -> AgentRuntimeResult:
+    """Run the q-AMC heuristic through the same env executor as DQN/VIPER."""
+
+    env = build_env_from_experiment_config(
+        experiment_config,
+        seed=seed,
+        end_time=end_time,
+        agent_period=agent_period,
+        semantics=RuntimeSemantics.Q_AMC,
+        reward_mode=reward_mode,
+        action_space=action_space,
+        budget_increase_ratio=budget_increase_ratio,
+        budget_decrease_ratio=budget_decrease_ratio,
+        include_explicit_noop=include_explicit_noop,
+        budget_floor_ratio=budget_floor_ratio,
+        forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+        mask_detail_mode=mask_detail_mode,
+        enable_deploy_cap_mask=enable_deploy_cap_mask,
+        deploy_cap_mask_ratio=deploy_cap_mask_ratio,
+        deploy_cap_mask_criticality=deploy_cap_mask_criticality,
+        feature_config=feature_config,
+        record_dropped_lo_releases=True,
+        c_amc_sem_xf=c_amc_sem_xf,
+        budget_update_source="HEURISTIC_ACTION",
+    )
+    policy = QAmcBudgetPressureHeuristic()
+    observation = env.reset(seed=seed)
+    total_reward = 0.0
+    done = False
+    while not done:
+        mask = env.valid_action_mask()
+        action_id = policy.select_action_id(observation, env.actions, mask)
+        step = env.step(action_id)
+        observation = step.observation
+        total_reward += float(step.reward)
+        done = step.done
+    action_log = list(env.action_log)
+    debug = env.debug_statistics()
+    accepted = sum(int(bool(row.get("accepted", False))) for row in action_log)
+    rejected = sum(
+        int(not bool(row.get("accepted", False)) and not bool(row.get("noop", False)))
+        for row in action_log
+    )
+    noop = sum(int(bool(row.get("noop", False))) for row in action_log)
+    return AgentRuntimeResult(
+        runtime_result=env.runtime_result,
+        accepted_actions=accepted,
+        rejected_actions=rejected,
+        noop_actions=noop,
+        total_reward=total_reward,
+        action_log=action_log,
+        safety_checked_actions=int(debug["safety_checked_actions"]),
+        safety_accepted_actions=int(debug["safety_accepted_actions"]),
+        safety_rejected_actions=int(debug["safety_rejected_actions"]),
+    )
+
+
 def _evaluate_enabled_methods_for_seed(
     *,
     seed: int,
@@ -2021,11 +2256,13 @@ def _evaluate_enabled_methods_for_seed(
         manifest_path = experiment_config.qamc_profile_manifest_path
         if manifest_path is None:
             raise ValueError("QAMC_PROFILE_MANIFEST_REQUIRED")
-        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-        entry = manifest.get("profiles", {}).get(bundle.taskset_fingerprint)
-        if entry is None:
-            raise ValueError(f"QAMC_PROFILE_TASKSET_NOT_IN_MANIFEST:{bundle.taskset_fingerprint}")
-        qamc_profile_bundle = load_profile_bundle(entry["path"])
+        if experiment_config.qamc_profile_spec_path is None:
+            raise ValueError("QAMC_PROFILE_SPEC_REQUIRED")
+        qamc_profile_bundle = load_profile_bundle_from_manifest(
+            manifest_path,
+            taskset_fingerprint=str(bundle.taskset_fingerprint),
+            spec_path=experiment_config.qamc_profile_spec_path,
+        )
     actions = build_budget_action_space(
         list(bundle.ordered_tasks),
         action_space=action_space,
@@ -2097,6 +2334,61 @@ def _evaluate_enabled_methods_for_seed(
 
     rows: list[dict[str, int | float | str | bool]] = []
     deadline_miss_details: list[dict[str, object]] = []
+    qamc_runtime_results: dict[str, SimulationResult] = {}
+
+    if "amc_same_full_sample_native" in enabled_methods:
+        baseline_result = simulate_ordered_taskset_event_driven(
+            ordered_tasks=list(bundle.ordered_tasks),
+            scenario=bundle.scenario,
+            config=_baseline_runtime_config(
+                end_time=end_time,
+                semantics=RuntimeSemantics.AMC,
+                capture_trace=capture_runtime_trace_for_seed,
+                capture_debug_events=capture_debug_events_for_seed,
+                c_amc_sem_xf=c_amc_sem_xf,
+            ),
+        )
+        rows.append(
+            _build_pure_runtime_baseline_row(
+                row_base=row_base,
+                method="amc_same_full_sample_native",
+                runtime_result=baseline_result,
+                action_space=action_space,
+                action_count=len(actions),
+                budget_increase_ratio=budget_increase_ratio,
+                budget_decrease_ratio=budget_decrease_ratio,
+                budget_floor_ratio=budget_floor_ratio,
+            )
+        )
+
+    if "q_amc_native" in enabled_methods:
+        if qamc_profile_bundle is None:
+            raise ValueError("QAMC_NATIVE_BASELINE_REQUIRES_QAMC_RUNTIME")
+        native_result = simulate_ordered_taskset_event_driven(
+            ordered_tasks=list(bundle.ordered_tasks),
+            scenario=bundle.scenario,
+            config=_baseline_runtime_config(
+                end_time=end_time,
+                semantics=RuntimeSemantics.Q_AMC,
+                capture_trace=capture_runtime_trace_for_seed,
+                capture_debug_events=capture_debug_events_for_seed,
+                c_amc_sem_xf=c_amc_sem_xf,
+            ),
+            qamc_profile_bundle=qamc_profile_bundle,
+        )
+        rows.append(
+            _build_pure_runtime_baseline_row(
+                row_base=row_base,
+                method="q_amc_native",
+                runtime_result=native_result,
+                action_space=action_space,
+                action_count=len(actions),
+                budget_increase_ratio=budget_increase_ratio,
+                budget_decrease_ratio=budget_decrease_ratio,
+                budget_floor_ratio=budget_floor_ratio,
+            )
+        )
+        qamc_runtime_results["q_amc_native"] = native_result
 
     if "amc_plus_baseline" in enabled_methods:
         baseline_result = simulate_ordered_taskset_event_driven(
@@ -2202,10 +2494,16 @@ def _evaluate_enabled_methods_for_seed(
                 reward_mode=reward_mode,
                 forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
                 budget_floor_ratio=budget_floor_ratio,
+                budget_rounding_mode="ceil_floor",
+                min_budget_delta=1,
+                enable_deploy_cap_mask=enable_deploy_cap_mask,
+                deploy_cap_mask_ratio=deploy_cap_mask_ratio,
+                deploy_cap_mask_criticality=deploy_cap_mask_criticality,
             ),
             bounds=bundle.normalization_bounds,
             qamc_profile_bundle=qamc_profile_bundle,
         )
+        qamc_runtime_results["noop_agent"] = noop_result.runtime_result
         # wrapper 类 baseline 自己不返回显式的 step_count 字段，
         # 因此统一用 action_log 行数来定义“发生了多少次 agent 决策”。
         noop_step_count = len(noop_result.action_log)
@@ -2296,10 +2594,16 @@ def _evaluate_enabled_methods_for_seed(
                 reward_mode=reward_mode,
                 forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
                 budget_floor_ratio=budget_floor_ratio,
+                budget_rounding_mode="ceil_floor",
+                min_budget_delta=1,
+                enable_deploy_cap_mask=enable_deploy_cap_mask,
+                deploy_cap_mask_ratio=deploy_cap_mask_ratio,
+                deploy_cap_mask_criticality=deploy_cap_mask_criticality,
             ),
             bounds=bundle.normalization_bounds,
             qamc_profile_bundle=qamc_profile_bundle,
         )
+        qamc_runtime_results["random_agent"] = random_result.runtime_result
         random_step_count = len(random_result.action_log)
         random_selected_action_count = sum(int(row.get("action_id") is not None) for row in random_result.action_log)
         random_explicit_noop_actions = sum(
@@ -2378,22 +2682,49 @@ def _evaluate_enabled_methods_for_seed(
             )
 
     if "heuristic_agent" in enabled_methods:
-        heuristic_result = simulate_ordered_taskset_with_agent(
-            ordered_tasks=list(bundle.ordered_tasks),
-            scenario=bundle.scenario,
-            agent=HeuristicBudgetAgent(actions=actions),
-            runtime_config=runtime_config,
-            agent_config=AgentRuntimeConfig(
-                agent_period=agent_period,
+        if qamc_profile_bundle is not None:
+            heuristic_result = _run_qamc_budget_heuristic(
+                experiment_config=experiment_config,
+                seed=seed,
                 end_time=end_time,
-                check_safety=True,
+                agent_period=agent_period,
                 reward_mode=reward_mode,
-                forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+                action_space=action_space,
+                budget_increase_ratio=budget_increase_ratio,
+                budget_decrease_ratio=budget_decrease_ratio,
+                include_explicit_noop=include_explicit_noop,
                 budget_floor_ratio=budget_floor_ratio,
-            ),
-            bounds=bundle.normalization_bounds,
-            qamc_profile_bundle=qamc_profile_bundle,
-        )
+                forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+                mask_detail_mode=mask_detail_mode,
+                enable_deploy_cap_mask=enable_deploy_cap_mask,
+                deploy_cap_mask_ratio=deploy_cap_mask_ratio,
+                deploy_cap_mask_criticality=deploy_cap_mask_criticality,
+                feature_config=feature_config,
+                c_amc_sem_xf=c_amc_sem_xf,
+            )
+        else:
+            heuristic_result = simulate_ordered_taskset_with_agent(
+                ordered_tasks=list(bundle.ordered_tasks),
+                scenario=bundle.scenario,
+                agent=HeuristicBudgetAgent(actions=actions),
+                runtime_config=runtime_config,
+                agent_config=AgentRuntimeConfig(
+                    agent_period=agent_period,
+                    end_time=end_time,
+                    check_safety=True,
+                    reward_mode=reward_mode,
+                    forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+                    budget_floor_ratio=budget_floor_ratio,
+                    budget_rounding_mode="ceil_floor",
+                    min_budget_delta=1,
+                    enable_deploy_cap_mask=enable_deploy_cap_mask,
+                    deploy_cap_mask_ratio=deploy_cap_mask_ratio,
+                    deploy_cap_mask_criticality=deploy_cap_mask_criticality,
+                    budget_update_source="HEURISTIC_ACTION",
+                ),
+                bounds=bundle.normalization_bounds,
+            )
+        qamc_runtime_results["heuristic_agent"] = heuristic_result.runtime_result
         heuristic_step_count = len(heuristic_result.action_log)
         heuristic_selected_action_count = sum(
             int(row.get("action_id") is not None) for row in heuristic_result.action_log
@@ -2522,6 +2853,7 @@ def _evaluate_enabled_methods_for_seed(
             constraint_guided_pair_allow_increase_only_when_safe=constraint_guided_pair_allow_increase_only_when_safe,
         )
         rows.append(dqn_row)
+        qamc_runtime_results["dqn_agent"] = dqn_runtime_result
         deadline_miss_details.extend(
             _deadline_miss_detail_rows(
                 row_base=row_base,
@@ -2575,6 +2907,7 @@ def _evaluate_enabled_methods_for_seed(
             leaf_audit_top_k_actions=tree_audit_top_k_actions,
         )
         rows.append(tree_row)
+        qamc_runtime_results[method_name] = tree_runtime_result
         deadline_miss_details.extend(
             _deadline_miss_detail_rows(
                 row_base=row_base,
@@ -2602,6 +2935,22 @@ def _evaluate_enabled_methods_for_seed(
                 action_log=tree_action_log,
                 row_base=row_base,
                 tree_metadata=tree_metadata,
+            )
+
+    if qamc_profile_bundle is not None:
+        qamc_method_names = {
+            "heuristic_agent": "q_amc_budget_heuristic",
+            "dqn_agent": "q_amc_dqn_budget_overlay",
+            "viper_tree_agent": "q_amc_viper_budget_overlay",
+        }
+        for row in rows:
+            runtime_result = qamc_runtime_results.get(str(row.get("method")))
+            if runtime_result is None:
+                continue
+            row.update(qamc_metrics_to_row(compute_qamc_metrics(runtime_result, qamc_profile_bundle)))
+            row["qamc_legacy_degraded_metrics_applicable"] = False
+            row["method"] = qamc_method_names.get(
+                str(row.get("method")), str(row.get("method"))
             )
 
     return rows, deadline_miss_details
@@ -2865,7 +3214,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--action-space",
-        choices=["triple", "pair", "single", "constraint_guided_pair", "constraint_guided_transfer"],
+        choices=[
+            "triple",
+            "pair",
+            "single",
+            "constraint_guided_pair",
+            "constraint_guided_transfer",
+            "residual_ranked",
+            "residual_safe_ranked",
+            "residual_anchor_mc_lo_2",
+            "residual_safe_adjust_15a",
+        ],
         default="triple",
     )
     parser.add_argument("--budget-increase-ratio", type=float, default=0.10)
@@ -3079,13 +3438,29 @@ def main() -> None:
             raise ValueError("QAMC_REFERENCE_CONFIG_REQUIRED")
         if not args.qamc_reference_config_path.is_file():
             raise ValueError("QAMC_REFERENCE_CONFIG_MISSING")
-        frozen_reference = json.loads(args.qamc_reference_config_path.read_text(encoding="utf-8"))
-        if frozen_reference.get("schema_version") != "qamc_reference_experiment_config_v2":
-            raise ValueError("QAMC_REFERENCE_CONFIG_NOT_FROZEN_V2")
+        frozen_reference = load_and_validate_frozen_reference(args.qamc_reference_config_path)
+        assert_reference_matches_values(
+            frozen_reference,
+            {
+                "action_space": args.action_space,
+                "include_explicit_noop": args.include_explicit_noop,
+                "budget_increase_ratio": args.budget_increase_ratio,
+                "budget_decrease_ratio": args.budget_decrease_ratio,
+                "budget_rounding_mode": "ceil_floor",
+                "min_budget_delta": 1,
+                "budget_floor_ratio": args.budget_floor_ratio,
+                "observation_mode": args.observation_mode,
+                "reward_mode": args.reward_mode,
+                "agent_period": args.agent_period,
+                "check_safety": True,
+            },
+        )
         if args.qamc_profile_manifest_path is None or args.qamc_profile_spec_path is None:
             raise ValueError("QAMC_PROFILE_MANIFEST_AND_SPEC_REQUIRED")
+        qamc_spec = load_profile_spec(args.qamc_profile_spec_path)
         experiment_config = replace(
             experiment_config,
+            qamc_reference_config_path=str(args.qamc_reference_config_path),
             qamc_profile_manifest_path=str(args.qamc_profile_manifest_path),
             qamc_profile_spec_path=str(args.qamc_profile_spec_path),
         )
@@ -3094,9 +3469,30 @@ def main() -> None:
     )
 
     enabled_methods = set(_parse_baselines(args.baselines))
+    qamc_method_aliases = {
+        "q_amc_budget_heuristic": "heuristic_agent",
+        "q_amc_dqn_budget_overlay": "dqn_agent",
+        "q_amc_viper_budget_overlay": "viper_tree_agent",
+    }
+    if dqn_runtime_semantics is RuntimeSemantics.Q_AMC:
+        enabled_methods = {
+            qamc_method_aliases.get(method, method) for method in enabled_methods
+        }
+        if "dqn_agent" in enabled_methods:
+            validate_qamc_model_artifact(
+                args.model,
+                frozen_reference=frozen_reference,
+                profile_manifest_path=args.qamc_profile_manifest_path,
+                profile_spec_fingerprint=qamc_spec.fingerprint,
+            )
     trace_seed_set = {int(s) for s in _parse_csv_set(args.trace_seeds)}
     trace_method_set = _parse_csv_set(args.trace_methods)
     valid_methods = {
+        "amc_same_full_sample_native",
+        "q_amc_native",
+        "q_amc_budget_heuristic",
+        "q_amc_dqn_budget_overlay",
+        "q_amc_viper_budget_overlay",
         "amc_plus_baseline",
         "amc_ra_baseline",
         "amc_rh_baseline",

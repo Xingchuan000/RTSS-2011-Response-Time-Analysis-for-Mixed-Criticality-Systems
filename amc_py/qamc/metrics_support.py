@@ -42,6 +42,16 @@ class QAmcMetrics:
     trigger_equal_design_count: int
     trigger_above_design_count: int
     would_overrun_design_count: int
+    dqn_budget_update_event_count: int
+    dqn_budget_update_task_count: int
+    viper_budget_update_event_count: int
+    viper_budget_update_task_count: int
+    heuristic_budget_update_event_count: int
+    heuristic_budget_update_task_count: int
+    offline_budget_update_event_count: int
+    offline_budget_update_task_count: int
+    unspecified_budget_update_event_count: int
+    unspecified_budget_update_task_count: int
     profile_fingerprint: str
 
 
@@ -65,20 +75,29 @@ def compute_qamc_metrics(result: SimulationResult, profile_bundle: QAmcProfileBu
         depths.append(profile.initial_runtime_level - current)
         raw_drops.append(profile.level(profile.initial_runtime_level).raw_rank - profile.level(current).raw_rank)
 
-    horizon = max(1, result.end_time)
-    occupancy: dict[str, float] = {}
+    horizon = max(1, result.qamc_evaluation_horizon or result.end_time)
+    duration_by_rank_total: defaultdict[str, int] = defaultdict(int)
     for task_name, profile in profile_bundle.profiles.items():
         cursor = 0
         level = profile.initial_runtime_level
-        duration_by_rank: defaultdict[str, int] = defaultdict(int)
         for event in sorted((e for e in result.qamc_quality_changes if e.task == task_name), key=lambda e: e.time):
-            duration_by_rank[str(profile.level(level).raw_rank)] += max(0, min(event.time, horizon) - cursor)
+            duration_by_rank_total[str(profile.level(level).raw_rank)] += max(
+                0, min(event.time, horizon) - cursor
+            )
             cursor = min(horizon, event.time)
             level = event.new_runtime_level
-        duration_by_rank[str(profile.level(level).raw_rank)] += max(0, horizon - cursor)
-        occupancy[task_name] = sum(duration_by_rank.values()) / horizon
+        duration_by_rank_total[str(profile.level(level).raw_rank)] += max(0, horizon - cursor)
+    occupancy_denominator = max(1, len(profile_bundle.profiles) * horizon)
+    occupancy = {
+        rank: duration / occupancy_denominator
+        for rank, duration in sorted(duration_by_rank_total.items())
+    }
 
     trigger_ratios = [job.qamc_trigger_budget_ratio_to_design_c_lo for job in jobs if job.qamc_stopped_by_overrun and job.qamc_trigger_budget_ratio_to_design_c_lo is not None]
+    source_counts = Counter(event.source for event in result.budget_update_events)
+    source_task_counts = Counter()
+    for event in result.budget_update_events:
+        source_task_counts[event.source] += len(event.updates)
     return QAmcMetrics(
         paper_quality_sum=sum(raw_values),
         paper_quality_per_release=sum(raw_values) / releases if releases else 0.0,
@@ -108,6 +127,16 @@ def compute_qamc_metrics(result: SimulationResult, profile_bundle: QAmcProfileBu
         trigger_equal_design_count=sum(1 for ratio in trigger_ratios if ratio == 1.0),
         trigger_above_design_count=sum(1 for ratio in trigger_ratios if ratio > 1.0),
         would_overrun_design_count=sum(1 for job in jobs if job.qamc_would_overrun_design_c_lo),
+        dqn_budget_update_event_count=source_counts["DQN_ACTION"],
+        dqn_budget_update_task_count=source_task_counts["DQN_ACTION"],
+        viper_budget_update_event_count=source_counts["VIPER_ACTION"],
+        viper_budget_update_task_count=source_task_counts["VIPER_ACTION"],
+        heuristic_budget_update_event_count=source_counts["HEURISTIC_ACTION"],
+        heuristic_budget_update_task_count=source_task_counts["HEURISTIC_ACTION"],
+        offline_budget_update_event_count=source_counts["OFFLINE_PREQUEUED"],
+        offline_budget_update_task_count=source_task_counts["OFFLINE_PREQUEUED"],
+        unspecified_budget_update_event_count=source_counts["UNSPECIFIED"],
+        unspecified_budget_update_task_count=source_task_counts["UNSPECIFIED"],
         profile_fingerprint=profile_bundle.fingerprint,
     )
 

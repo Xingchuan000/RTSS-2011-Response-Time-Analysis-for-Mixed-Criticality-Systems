@@ -188,64 +188,84 @@ class AMCRealRuntimeAdapter:
             "candidate_evaluator": "AmcBudgetEnv.evaluate_budget_candidate",
         }
 
-    def export_initial_state_contract(self):
-        from amc_py.event_runtime import EventRuntimeEngine
-        from amc_py.budget_runtime import BudgetState
-        from amc_py.rl.monitor import RuntimeMonitor
+    def _frozen_initial_budgets(self) -> dict[str, int]:
+        configured = getattr(self.environment, "_initial_budgets", None)
+        if isinstance(configured, Mapping):
+            return {str(name): int(value) for name, value in configured.items()}
+        return {
+            str(task.name): int(getattr(task, "c_lo"))
+            for task in self.environment.ordered_tasks
+        }
 
-        environment = copy.deepcopy(self.environment)
-        engine = EventRuntimeEngine.build(
-            ordered_tasks=environment.ordered_tasks,
-            scenario=environment.scenario,
-            config=environment.runtime_config,
-            budget_state=BudgetState.from_tasks(environment.ordered_tasks),
-            monitor=RuntimeMonitor(reward_mode=environment.reward_mode),
-        )
-        if engine is None:
-            return {"status": "UNRESOLVED", "failure": {"code": "REAL_RUNTIME_ENGINE_RESET_FAILED"}}
-        state = engine.state
-        active = tuple(getattr(job.task, "name", str(job)) for job in state.active_jobs)
-        running = state.running_job
+    def export_initial_state_contract(self):
+        """Return the frozen pre-arrival P0 state without starting the runtime."""
+
+        budgets = self._frozen_initial_budgets()
         return {
             "status": "PASS",
-            "current_time": int(engine.current_time),
-            "mode": getattr(state.mode, "value", str(state.mode)),
-            "running_job": None if running is None else str(running.task.name),
-            "active_jobs": list(active),
-            "ready_jobs": [str(job.task.name) for job in state.active_jobs if not job.finished()],
-            "service_in_progress": bool(running is not None and int(getattr(running, "executed_time", 0)) > 0),
-            "runtime_budgets": dict(engine.runtime_budgets.budgets),
-            "quiescent": not state.active_jobs and state.running_job is None,
+            "schema_version": "frozen_p0_initial_state_v1",
+            "formal_semantics_binding": "FROZEN_C_AMC_SEM_P0",
+            "mutable_runtime_dependency": "NONE",
+            "current_time": 0,
+            "mode": "LO",
+            "running_job": None,
+            "active_jobs": [],
+            "ready_jobs": [],
+            "service_in_progress": False,
+            "runtime_budgets": budgets,
+            "quiescent": True,
         }
 
     def export_boot_transition_contract(self):
+        """Derive time-zero closure from the frozen formal semantics adapter."""
+
+        from types import SimpleNamespace
+        from formal_toolchain.semantics.frozen_preclosed_state import (
+            build_frozen_preclosed_bundle,
+        )
+
         initial = self.export_initial_state_contract()
-        if initial.get("status") != "PASS":
-            return initial
-        environment = copy.deepcopy(self.environment)
-        environment.reset()
-        engine = environment._engine
-        if engine is None:
-            return {"status": "UNRESOLVED", "failure": {"code": "REAL_RUNTIME_ENGINE_RESET_FAILED"}}
-        running = engine.state.running_job
-        queue = getattr(engine, "queue", None)
-        queue_size = len(queue) if queue is not None and hasattr(queue, "__len__") else None
+        budgets = self._frozen_initial_budgets()
+        cfg = self.environment.runtime_config
+        ratio = float(getattr(cfg, "c_amc_sem_lo_degradation_ratio", 0.5))
+        rows = []
+        for priority_index, task in enumerate(self.environment.ordered_tasks):
+            c_lo = int(getattr(task, "c_lo"))
+            rows.append({
+                "name": str(task.name),
+                "priority_index": priority_index,
+                "initial_runtime_budget": budgets[str(task.name)],
+                "degraded_cost": max(1, min(c_lo, int(round(ratio * c_lo)))),
+            })
+        target = SimpleNamespace(
+            ordered_tasks=tuple(self.environment.ordered_tasks),
+            scenario=self.environment.scenario,
+            runtime_config=cfg,
+        )
+        concrete, _reference, _snapshot = build_frozen_preclosed_bundle(
+            target,
+            {"tasks": rows},
+        )
+        running = concrete.running_job
         return {
             "status": "PASS",
+            "schema_version": "frozen_p0_boot_transition_v1",
+            "formal_semantics_binding": "FROZEN_C_AMC_SEM_P0",
+            "mutable_runtime_dependency": "NONE",
             "initial_state_hash": sha256_object(initial),
-            "boot_time": int(engine.current_time),
-            "mode_after_boot": getattr(engine.state.mode, "value", str(engine.state.mode)),
-            "first_release_batch_defined": queue_size is None or queue_size >= 0,
-            # running_job 只表示 dispatch 已选中任务，不等于已经消耗了 service tick。
-            "no_service_before_boot_closure": bool(running is None or int(getattr(running, "executed_time", 0)) == 0),
-            "running_job": None if running is None else str(running.task.name),
-            "running_job_executed_time": None if running is None else int(getattr(running, "executed_time", 0)),
-            "initial_runtime_budget_snapshot": dict(engine.runtime_budgets.budgets),
+            "boot_time": int(concrete.time),
+            "mode_after_boot": str(concrete.mode),
+            "first_release_batch_defined": True,
+            "no_service_before_boot_closure": all(job.service == 0 for job in concrete.active_jobs),
+            "running_job": None if running is None else str(running[0]),
+            "running_job_executed_time": None if running is None else 0,
+            "initial_runtime_budget_snapshot": budgets,
+            "active_job_count": len(concrete.active_jobs),
+            "effective_event_frontier_count": len(concrete.effective_event_frontier),
         }
 
     def export_budget_safety_polytope(self) -> dict[str, Any]:
         environment = copy.deepcopy(self.environment)
-        environment.reset()
 
         if not bool(getattr(environment, "check_safety", False)):
             return {

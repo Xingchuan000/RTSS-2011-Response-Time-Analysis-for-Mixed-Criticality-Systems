@@ -62,6 +62,12 @@ from amc_py.rl.actions import describe_budget_action
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.rl.reward_config import available_reward_modes, load_reward_mode_config
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationResult
+from amc_py.qamc.reference_config import (
+    assert_reference_matches_values,
+    load_and_validate_frozen_reference,
+)
+from amc_py.qamc.profiles import load_profile_bundle_from_manifest
+from amc_py.qamc.profile_spec import load_profile_spec
 
 
 STEP_LOG_FIELDNAMES = [
@@ -891,6 +897,18 @@ def _run_baseline_validation_seed_worker(
     experiment_config, seed, validation_end_time, semantics_value, c_amc_sem_xf = args_tuple
     semantics = RuntimeSemantics(semantics_value)
     bundle = resolve_experiment_bundle(experiment_config, seed)
+    qamc_profile_bundle = None
+    if semantics is RuntimeSemantics.Q_AMC:
+        if (
+            experiment_config.qamc_profile_manifest_path is None
+            or experiment_config.qamc_profile_spec_path is None
+        ):
+            raise ValueError("QAMC_PROFILE_MANIFEST_AND_SPEC_REQUIRED")
+        qamc_profile_bundle = load_profile_bundle_from_manifest(
+            experiment_config.qamc_profile_manifest_path,
+            taskset_fingerprint=str(bundle.taskset_fingerprint),
+            spec_path=experiment_config.qamc_profile_spec_path,
+        )
     baseline_result = simulate_ordered_taskset_event_driven(
         ordered_tasks=list(bundle.ordered_tasks),
         scenario=bundle.scenario,
@@ -902,6 +920,7 @@ def _run_baseline_validation_seed_worker(
             record_dropped_lo_releases=True,
             c_amc_sem_xf=c_amc_sem_xf,
         ),
+        qamc_profile_bundle=qamc_profile_bundle,
     )
     baseline_service_metrics = compute_service_quality_metrics(baseline_result)
     baseline_degradation = compute_runtime_degradation_metrics(baseline_result)
@@ -2856,18 +2875,50 @@ def main() -> None:
     )
 
     experiment_config = _build_experiment_config(args)
+    qamc_artifact_metadata: dict[str, object] | None = None
     if dqn_runtime_semantics is RuntimeSemantics.Q_AMC:
         if args.qamc_reference_config_path is None:
             raise ValueError("QAMC_REFERENCE_CONFIG_REQUIRED")
         if not args.qamc_reference_config_path.is_file():
             raise ValueError("QAMC_REFERENCE_CONFIG_MISSING")
-        frozen_reference = json.loads(args.qamc_reference_config_path.read_text(encoding="utf-8"))
-        if frozen_reference.get("schema_version") != "qamc_reference_experiment_config_v2":
-            raise ValueError("QAMC_REFERENCE_CONFIG_NOT_FROZEN_V2")
+        frozen_reference = load_and_validate_frozen_reference(args.qamc_reference_config_path)
+        assert_reference_matches_values(
+            frozen_reference,
+            {
+                "action_space": args.action_space,
+                "q_network_type": args.q_network_type,
+                "action_feature_mode": args.action_feature_mode,
+                "include_explicit_noop": args.include_explicit_noop,
+                "budget_increase_ratio": args.budget_increase_ratio,
+                "budget_decrease_ratio": args.budget_decrease_ratio,
+                "budget_rounding_mode": "ceil_floor",
+                "min_budget_delta": 1,
+                "budget_floor_ratio": args.budget_floor_ratio,
+                "observation_mode": args.observation_mode,
+                "reward_mode": args.reward_mode,
+                "agent_period": args.agent_period,
+                "check_safety": True,
+            },
+        )
         if args.qamc_profile_manifest_path is None or args.qamc_profile_spec_path is None:
             raise ValueError("QAMC_PROFILE_MANIFEST_AND_SPEC_REQUIRED")
+        qamc_spec = load_profile_spec(args.qamc_profile_spec_path)
+        qamc_manifest = json.loads(
+            args.qamc_profile_manifest_path.read_text(encoding="utf-8")
+        )
+        if qamc_manifest.get("spec_fingerprint") != qamc_spec.fingerprint:
+            raise ValueError("QAMC_PROFILE_MANIFEST_SPEC_FINGERPRINT_MISMATCH")
+        qamc_artifact_metadata = {
+            "reference_config_fingerprint": frozen_reference["fingerprint"],
+            "profile_manifest_fingerprint": qamc_manifest.get("fingerprint"),
+            "profile_spec_fingerprint": qamc_spec.fingerprint,
+            "isolated_to_interference_ratio": qamc_spec.isolated_to_interference_ratio,
+            "semantic_version": qamc_spec.semantic_version,
+            "demand_mapping_version": qamc_spec.demand_mapping_version,
+        }
         experiment_config = replace(
             experiment_config,
+            qamc_reference_config_path=str(args.qamc_reference_config_path),
             qamc_profile_manifest_path=str(args.qamc_profile_manifest_path),
             qamc_profile_spec_path=str(args.qamc_profile_spec_path),
         )
@@ -2975,6 +3026,21 @@ def main() -> None:
         c_amc_sem_xf=args.c_amc_sem_xf,
     )
     initial_obs = initial_env.reset(seed=initial_seed)
+    if dqn_runtime_semantics is RuntimeSemantics.Q_AMC:
+        reference_action_size = frozen_reference["normalized"].get("action_space_size")
+        if (
+            reference_action_size is not None
+            and int(reference_action_size) != initial_env.action_space_size
+        ):
+            raise ValueError("QAMC_REFERENCE_ACTION_DIMENSION_MISMATCH")
+        reference_observation_dim = frozen_reference["normalized"].get(
+            "observation_dim"
+        )
+        if (
+            reference_observation_dim is not None
+            and int(reference_observation_dim) != len(initial_obs.state_vector)
+        ):
+            raise ValueError("QAMC_REFERENCE_OBSERVATION_DIMENSION_MISMATCH")
     action_features = None
     action_feature_names = None
     if args.q_network_type == "action_aware":
@@ -5165,10 +5231,12 @@ def main() -> None:
         },
         "qamc": (
             {
-                "qamc_semantic_version": "qamc_budget_overlay_v5",
-                "qamc_demand_mapping_version": "wcet_capped_component_split_v1",
+                "qamc_semantic_version": qamc_artifact_metadata["semantic_version"],
+                "qamc_demand_mapping_version": qamc_artifact_metadata["demand_mapping_version"],
                 "qamc_ratio_semantics": "isolated_work_to_interference",
-                "qamc_isolated_to_interference_ratio": 0.5,
+                "qamc_isolated_to_interference_ratio": qamc_artifact_metadata[
+                    "isolated_to_interference_ratio"
+                ],
                 "qamc_native_controls_quality": True,
                 "dqn_controls_quality": False,
                 "dqn_controls_budget_threshold": True,
@@ -5181,6 +5249,17 @@ def main() -> None:
                 "reference_config_path": str(args.qamc_reference_config_path),
                 "profile_manifest_path": str(args.qamc_profile_manifest_path),
                 "profile_spec_path": str(args.qamc_profile_spec_path),
+                "reference_config_fingerprint": qamc_artifact_metadata[
+                    "reference_config_fingerprint"
+                ],
+                "profile_manifest_fingerprint": qamc_artifact_metadata[
+                    "profile_manifest_fingerprint"
+                ],
+                "profile_spec_fingerprint": qamc_artifact_metadata[
+                    "profile_spec_fingerprint"
+                ],
+                "initial_taskset_fingerprint": initial_bundle.taskset_fingerprint,
+                "initial_qamc_profile_fingerprint": initial_env.qamc_profile_bundle.fingerprint,
             }
             if dqn_runtime_semantics is RuntimeSemantics.Q_AMC
             else None

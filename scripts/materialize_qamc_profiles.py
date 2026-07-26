@@ -10,14 +10,15 @@ from typing import Any
 
 from amc_py.models import Criticality, Task
 from amc_py.qamc.profile_spec import load_profile_spec
-from amc_py.qamc.profiles import build_qamc_profile_bundle, write_profile_bundle
+from amc_py.qamc.profiles import (
+    build_qamc_profile_bundle,
+    compute_taskset_fingerprint,
+    write_profile_bundle,
+)
 
 
 def _taskset_fingerprint(tasks: list[Task]) -> str:
-    payload = [(t.name, t.period, t.deadline, t.c_lo, t.c_hi, t.criticality.value) for t in tasks]
-    # Keep the same fingerprint recipe as amc_py.dqn.experiment so a
-    # materialized profile can be resolved by the training/evaluation factory.
-    return hashlib.sha256(str(payload).encode("utf-8")).hexdigest()[:12]
+    return compute_taskset_fingerprint(tasks)
 
 
 def _parse_task(raw: dict[str, Any]) -> Task:
@@ -39,7 +40,14 @@ def materialize(tasksets_path: str | Path, spec_path: str | Path, output_dir: st
     for item in tasksets:
         raw_tasks = item.get("tasks", item) if isinstance(item, dict) else item
         tasks = [_parse_task(raw) for raw in raw_tasks]
-        fingerprint = str(item.get("taskset_fingerprint", _taskset_fingerprint(tasks))) if isinstance(item, dict) else _taskset_fingerprint(tasks)
+        computed_fingerprint = _taskset_fingerprint(tasks)
+        fingerprint = (
+            str(item.get("taskset_fingerprint", computed_fingerprint))
+            if isinstance(item, dict)
+            else computed_fingerprint
+        )
+        if fingerprint != computed_fingerprint:
+            raise ValueError("QAMC_TASKSET_REGISTRY_FINGERPRINT_MISMATCH")
         bundle = build_qamc_profile_bundle(tasks, taskset_fingerprint=fingerprint, spec=spec)
         path = root / fingerprint / "profile.json"
         write_profile_bundle(bundle, path)

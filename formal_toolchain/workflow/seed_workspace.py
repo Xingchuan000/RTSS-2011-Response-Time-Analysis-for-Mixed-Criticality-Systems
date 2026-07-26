@@ -102,7 +102,19 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
     # derive it automatically from the current source tree so the caller only
     # needs to provide the seed folder.
     phase_k_case_map = seed_dir / "phase_k_case_map.json"
-    phase_k_map_refreshed = bool(refresh_phase_k_map or not phase_k_case_map.is_file())
+    existing_phase_k_schema = None
+    if phase_k_case_map.is_file():
+        try:
+            existing_phase_k_schema = json.loads(
+                phase_k_case_map.read_text(encoding="utf-8")
+            ).get("schema_version")
+        except (OSError, ValueError, TypeError):
+            existing_phase_k_schema = None
+    phase_k_map_refreshed = bool(
+        refresh_phase_k_map
+        or not phase_k_case_map.is_file()
+        or existing_phase_k_schema != "phase_k_transition_path_map_v3_frozen_semantics"
+    )
     if phase_k_map_refreshed:
         from formal_toolchain.adapters.source_manifest import build_source_manifest
         from formal_toolchain.bridge.p0_case_manifest import p0_case_manifest_hash
@@ -110,8 +122,12 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
             PATH_SPECS, _path_row, build_normal_runtime_path_coverage,
         )
         from formal_toolchain.core.hashing import sha256_object
+        from formal_toolchain.semantics.frozen_runtime_contract import (
+            CONTRACT_VERSION, frozen_contract_manifest,
+        )
 
         source_hash = build_source_manifest(code_root)["semantic_hash"]
+        contract_manifest = frozen_contract_manifest(code_root)
         paths = {spec[0]: _path_row(code_root, spec) for spec in PATH_SPECS}
         coverage = build_normal_runtime_path_coverage(code_root)
         if coverage.get("status") != "PASS":
@@ -120,13 +136,17 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
                 f"branch map coverage incomplete: {coverage}",
             )
         generated_map = {
-            "schema_version": "phase_k_transition_path_map_v2_cfg_ir",
+            "schema_version": "phase_k_transition_path_map_v3_frozen_semantics",
             "source_hash": source_hash,
+            "formal_semantics_contract_version": CONTRACT_VERSION,
+            "formal_semantics_contract_hash": contract_manifest["semantic_hash"],
+            "mutable_runtime_binding": "NON_BLOCKING_AUDIT_ONLY",
             "paths": paths,
             "coverage": coverage,
             "case_manifest_hash": p0_case_manifest_hash(),
             "path_map_hash": sha256_object({
-                "paths": paths, "coverage": coverage["artifact_hash"]
+                "paths": paths, "coverage": coverage["artifact_hash"],
+                "formal_semantics_contract_hash": contract_manifest["semantic_hash"],
             }),
             "generated_during_request_freeze": True,
         }
@@ -183,7 +203,11 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
     )
 
     from formal_toolchain.adapters.source_manifest import build_source_manifest
+    from formal_toolchain.semantics.frozen_runtime_contract import (
+        CONTRACT_VERSION, frozen_contract_manifest,
+    )
     source_manifest = build_source_manifest(code_root)
+    contract_manifest = frozen_contract_manifest(code_root)
     from formal_toolchain.routes.config import route_config
     resolved_route = route_config(proof_route)
     request = {
@@ -202,8 +226,11 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
         "expected_tree_file_sha256": sha256_file(copied_tree / "integer_tree.json"),
         "source_binding": {
             "source_root_role": "external_argument",
+            "binding_mode": "FROZEN_FORMAL_SEMANTICS",
             "source_manifest_semantic_hash": source_manifest["semantic_hash"],
-            "required_paths": ["amc_py", "formal_toolchain", "scripts"],
+            "implementation_audit_hash": source_manifest.get("implementation_audit_hash"),
+            "required_paths": ["formal_toolchain", "amc_py/rl", "amc_py/viper"],
+            "mutable_runtime_policy": "NON_BLOCKING_AUDIT_ONLY",
         },
         "optional_claims": [],
         "nonvacuity_profile": str(nonvacuity_profile or "off"),
@@ -224,6 +251,11 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
                   "nonvacuity_profile": str(nonvacuity_profile or "off"),
                   "nonvacuity_params": dict(nonvacuity_params or {}),
                   "phase_k_map_refreshed": phase_k_map_refreshed,
+                  "formal_semantics_binding_mode": "FROZEN_FORMAL_SEMANTICS",
+                  "formal_semantics_contract_version": CONTRACT_VERSION,
+                  "formal_semantics_contract_hash": contract_manifest["semantic_hash"],
+                  "mutable_runtime_policy": "NON_BLOCKING_AUDIT_ONLY",
+                  "implementation_audit_hash": source_manifest.get("implementation_audit_hash"),
                   "effective_runtime_config_refreshed": True,
                   "action_definitions_canonical_refreshed": True}
     (output_dir / "seed_import_diagnostic.json").write_text(

@@ -286,6 +286,7 @@ def evaluate_tree_policy_once(
         record_dropped_lo_releases=True,
         c_amc_sem_xf=c_amc_sem_xf,
         feature_config=feature_config,
+        budget_update_source="VIPER_ACTION",
     )
     obs = env.reset(seed=seed)
     done = False

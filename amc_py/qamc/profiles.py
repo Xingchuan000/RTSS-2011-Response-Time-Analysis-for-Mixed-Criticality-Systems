@@ -19,6 +19,21 @@ def _canonical(payload: Any) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
 
 
+def compute_taskset_fingerprint(ordered_tasks: Sequence[Task]) -> str:
+    payload = [
+        (
+            task.name,
+            task.period,
+            task.deadline,
+            task.c_lo,
+            task.c_hi,
+            task.criticality.value,
+        )
+        for task in ordered_tasks
+    ]
+    return hashlib.sha256(str(payload).encode("utf-8")).hexdigest()[:12]
+
+
 def partition_design_budget(
     design_c_lo: int,
     *,
@@ -28,7 +43,7 @@ def partition_design_budget(
 
     if design_c_lo <= 0:
         raise ValueError("QAMC_C_LO_MUST_BE_POSITIVE")
-    if isolated_to_interference_ratio < 0.0:
+    if not math.isfinite(isolated_to_interference_ratio) or isolated_to_interference_ratio < 0.0:
         raise ValueError("QAMC_RATIO_MUST_BE_NONNEGATIVE")
     if design_c_lo == 1:
         return 1, 0
@@ -171,9 +186,54 @@ def load_profile_bundle(path: str | Path) -> QAmcProfileBundle:
         return profile_bundle_from_jsonable(json.load(handle))
 
 
+def load_profile_bundle_from_manifest(
+    manifest_path: str | Path,
+    *,
+    taskset_fingerprint: str,
+    spec_path: str | Path,
+) -> QAmcProfileBundle:
+    """Load a taskset profile after validating the complete artifact chain."""
+
+    manifest_file = Path(manifest_path)
+    manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    if manifest.get("schema_version") != "qamc_profile_manifest_v1":
+        raise ValueError("QAMC_UNSUPPORTED_PROFILE_MANIFEST_SCHEMA")
+    claimed_manifest_fingerprint = manifest.get("fingerprint")
+    manifest_without_fingerprint = dict(manifest)
+    manifest_without_fingerprint.pop("fingerprint", None)
+    actual_manifest_fingerprint = hashlib.sha256(_canonical(manifest_without_fingerprint)).hexdigest()
+    if claimed_manifest_fingerprint != actual_manifest_fingerprint:
+        raise ValueError("QAMC_PROFILE_MANIFEST_FINGERPRINT_MISMATCH")
+
+    spec = QAmcProfileSpec.from_jsonable(
+        json.loads(Path(spec_path).read_text(encoding="utf-8"))
+    )
+    if manifest.get("spec_fingerprint") != spec.fingerprint:
+        raise ValueError("QAMC_PROFILE_MANIFEST_SPEC_FINGERPRINT_MISMATCH")
+
+    entry = manifest.get("profiles", {}).get(taskset_fingerprint)
+    if not isinstance(entry, dict):
+        raise ValueError(f"QAMC_PROFILE_TASKSET_NOT_IN_MANIFEST:{taskset_fingerprint}")
+    profile_path = Path(str(entry.get("path", "")))
+    if not profile_path.is_absolute():
+        cwd_candidate = Path.cwd() / profile_path
+        manifest_candidate = manifest_file.parent / profile_path
+        profile_path = cwd_candidate if cwd_candidate.is_file() else manifest_candidate
+    bundle = load_profile_bundle(profile_path)
+    if bundle.taskset_fingerprint != taskset_fingerprint:
+        raise ValueError("QAMC_PROFILE_TASKSET_FINGERPRINT_MISMATCH")
+    if bundle.spec_fingerprint != spec.fingerprint:
+        raise ValueError("QAMC_PROFILE_SPEC_FINGERPRINT_MISMATCH")
+    if entry.get("fingerprint") != bundle.fingerprint:
+        raise ValueError("QAMC_PROFILE_MANIFEST_ENTRY_FINGERPRINT_MISMATCH")
+    return bundle
+
+
 __all__ = [
     "build_qamc_profile_bundle",
+    "compute_taskset_fingerprint",
     "load_profile_bundle",
+    "load_profile_bundle_from_manifest",
     "partition_design_budget",
     "profile_bundle_from_jsonable",
     "qamc_profile_bundle_fingerprint",

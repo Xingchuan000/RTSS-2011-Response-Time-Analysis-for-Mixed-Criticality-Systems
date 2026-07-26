@@ -98,18 +98,14 @@ def test_batch_frozen_execution_scenario_exports_actual_cost_for():
     assert adapter.actual_cost_for(task, 0) == 2
 
 
-def test_preclosed_builder_uses_target_scenario_and_runtime_budget_state(monkeypatch):
-    captured = {}
+def test_preclosed_builder_uses_frozen_semantics_not_runtime_engine(monkeypatch):
+    reads = []
 
     class _RuntimeConfig:
         def __init__(self):
-            self.semantics = "P0"
-            self.drop_lo_jobs_on_hi_switch = True
+            self.semantics = "C_AMC_SEM"
             self.c_amc_sem_lo_degradation_ratio = 0.5
             self.c_amc_sem_primary_on_switch_time = True
-            self.stop_at_first_miss = True
-            self.capture_trace = False
-            self.capture_debug_events = False
             self.end_time = 17
 
     class _Target:
@@ -119,39 +115,33 @@ def test_preclosed_builder_uses_target_scenario_and_runtime_budget_state(monkeyp
             self.scenario = type(
                 "_Scenario",
                 (),
-                {"actual_cost_for": lambda self, task, release_index: task.c_lo + release_index},
+                {"actual_cost_for": lambda self, task, release_index: (
+                    reads.append((task.name, release_index)) or task.c_lo + release_index
+                )},
             )()
 
-    def fake_build(*, ordered_tasks, scenario, config):
-        captured["ordered_tasks"] = tuple(ordered_tasks)
-        captured["scenario"] = scenario
-        captured["config"] = config
+    # A mutable runtime construction would be a regression: Phase K must use
+    # the frozen formal adapter even when the implementation runtime changes.
+    def forbidden_build(*_args, **_kwargs):
+        raise AssertionError("mutable EventRuntimeEngine must not be executed")
 
-        class _EngineStub:
-            def run_until(self, *_args, **_kwargs):
-                return None
-
-        return _EngineStub()
-
-    def fake_snapshot(_engine):
-        return P0ConcreteState(
-            time=0,
-            mode="LO",
-            active_jobs=(P0Job(("tau", 0), 0, 0, 10, "normal", 2, 7, raw_actual_cost=7, removal_demand=3),),
-            ready_jobs=(("tau", 0),),
-            queue_projection=((0, "JOB_ARRIVAL", "tau", 0, None),),
-            next_timing_boundary=0,
-        )
-
-    monkeypatch.setattr("formal_toolchain.bridge.phase_k_runtime_states.EventRuntimeEngine.build", fake_build)
-    monkeypatch.setattr("formal_toolchain.bridge.phase_k_runtime_states.p0_state_from_runtime_engine", fake_snapshot)
+    monkeypatch.setattr("amc_py.event_runtime.EventRuntimeEngine.build", forbidden_build)
 
     target = _Target()
-    reference_taskset = {"tasks": [{"name": "tau", "priority_index": 0, "degraded_cost": 3}]}
-    build_preclosed_runtime_states(target, reference_taskset)
+    reference_taskset = {
+        "tasks": [{
+            "name": "tau",
+            "priority_index": 0,
+            "initial_runtime_budget": 2,
+            "degraded_cost": 1,
+        }]
+    }
+    concrete, reference = build_preclosed_runtime_states(target, reference_taskset)
 
-    assert captured["scenario"].delegate is target.scenario
-    assert captured["config"].end_time == target.runtime_config.end_time
+    assert reads == [("tau", 0)]
+    assert concrete.time == reference.time == 0
+    assert concrete.running_job == reference.running_job == ("tau", 0)
+    assert concrete.active_jobs[0].removal_demand == 2
 
 
 def test_formal_runtime_snapshot_uses_original_actual_cost_and_removal_demand():

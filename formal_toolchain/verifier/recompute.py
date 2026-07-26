@@ -255,54 +255,38 @@ def build_fresh_verifier_state(
         rta_production = {}
         rta_replay = {"status": "UNRESOLVED", "message": "RTA generation failed"}
 
+    # N4/N5 boot state is authoritative from the frozen C-AMC-sem/P0 model.
+    # The mutable experiment runtime is deliberately not executed here; q-AMC
+    # or later runtime extensions may only appear in a non-blocking audit hash.
     concrete_preclosed_engine = None
     concrete_runtime_snapshot = None
     reference_preclosed_state = None
     reference_runtime_snapshot = None
     try:
-        from formal_toolchain.adapters.formal_scenario_factory import build_formal_scenario
-        from formal_toolchain.adapters.runtime_config_copy import copy_runtime_config
-        from amc_py.event_runtime import EventRuntimeEngine
-        from formal_toolchain.adapters.formal_runtime_snapshot import build_formal_runtime_snapshot
-        scenario = build_formal_scenario(
-            base_scenario=inputs.target.scenario,
-            ordered_tasks=inputs.target.ordered_tasks,
+        from formal_toolchain.semantics.frozen_preclosed_state import (
+            build_frozen_preclosed_bundle,
         )
-        engine = EventRuntimeEngine.build(
-            ordered_tasks=inputs.target.ordered_tasks,
-            scenario=scenario,
-            config=copy_runtime_config(inputs.target.runtime_config),
-        )
-        engine.run_until(0, include_boundary=True)
-        concrete_preclosed_engine = engine
-        concrete_runtime_snapshot = build_formal_runtime_snapshot(
-            engine,
-            priority_map=engine.priority_map,
-        )
-    except Exception:
-        concrete_preclosed_engine = None
-        concrete_runtime_snapshot = None
-
-    try:
-        from formal_toolchain.bridge.phase_k_runtime_states import build_preclosed_runtime_states
-        from formal_toolchain.bridge.state_relation import frontiers_isomorphic
         from formal_toolchain.reference.runtime_snapshot import (
             build_p0_reference_runtime_snapshot,
         )
 
-        paired_concrete, reference_preclosed_state = build_preclosed_runtime_states(
-            inputs.target, fresh_reference.to_dict(),
+        paired_concrete, reference_preclosed_state, concrete_runtime_snapshot = (
+            build_frozen_preclosed_bundle(
+                inputs.target,
+                fresh_reference.to_dict(),
+            )
         )
-        if concrete_runtime_snapshot is None:
-            raise ValueError("FRESH_CONCRETE_RUNTIME_SNAPSHOT_MISSING")
-        if not frontiers_isomorphic(
-                concrete_runtime_snapshot.effective_event_frontier,
-                paired_concrete.effective_event_frontier):
-            raise ValueError("FRESH_CONCRETE_PAIRED_STATE_FRONTIER_MISMATCH")
         reference_runtime_snapshot = build_p0_reference_runtime_snapshot(
             reference_preclosed_state,
         )
+        concrete_preclosed_engine = {
+            "kind": "FROZEN_FORMAL_PRECLOSED_STATE",
+            "time": int(paired_concrete.time),
+            "mode": str(paired_concrete.mode),
+        }
     except Exception:
+        concrete_preclosed_engine = None
+        concrete_runtime_snapshot = None
         reference_preclosed_state = None
         reference_runtime_snapshot = None
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 from typing import Any
+from formal_toolchain.semantics.frozen_runtime_contract import frozen_event_runtime_path, frozen_event_models_path, CONTRACT_VERSION
 
 
 def _function_node(source: str, qualified_name: str) -> ast.AST | None:
@@ -14,7 +15,7 @@ def _function_node(source: str, qualified_name: str) -> ast.AST | None:
     unsupported AST 子节点误判成“绑定缺失”。
     """
 
-    tree = ast.parse(source, filename="amc_py/event_runtime.py")
+    tree = ast.parse(source, filename="formal_toolchain/semantics/frozen_c_amc_sem_event_runtime.py")
     if "." in qualified_name:
         class_name, function_name = qualified_name.split(".", 1)
         for item in tree.body:
@@ -53,8 +54,8 @@ def _function_present(source: str, qualified_name: str) -> dict[str, Any]:
 
 
 def bind_time_progress_runtime(source_root: Path) -> dict[str, Any]:
-    runtime_path = Path(source_root) / "amc_py/event_runtime.py"
-    event_model_path = Path(source_root) / "amc_py/event_models.py"
+    runtime_path = frozen_event_runtime_path(source_root)
+    event_model_path = frozen_event_models_path(source_root)
     source = runtime_path.read_text(encoding="utf-8")
     targets = {
         "EventRuntimeEngine._advance_time": _function_present(source, "EventRuntimeEngine._advance_time"),
@@ -95,12 +96,17 @@ def bind_time_progress_runtime(source_root: Path) -> dict[str, Any]:
             "status": "UNRESOLVED",
             "route": "UNRESOLVED",
             "failure": {"code": "TIME_PROGRESS_BINDING_UNRESOLVED", "targets": unresolved},
+            "formal_semantics_contract": CONTRACT_VERSION,
+            "runtime_dependency": "FROZEN_FORMAL_SEMANTICS",
             "ready_branch": ready_branch,
             "empty_ready_branch": empty_ready_branch,
             "zero_time_closure_finite": zero_time_closure_finite,
         }
     return {
         "status": "PASS",
+        "formal_semantics_contract": CONTRACT_VERSION,
+        "runtime_dependency": "FROZEN_FORMAL_SEMANTICS",
+        "mutable_runtime_policy": "NON_BLOCKING_AUDIT_ONLY",
         "ready_branch": ready_branch,
         "empty_ready_branch": empty_ready_branch,
         "zero_time_closure_finite": zero_time_closure_finite,

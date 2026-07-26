@@ -8,7 +8,7 @@ from formal_toolchain.core.hashing import sha256_object, sha256_text_file_normal
 
 
 SOURCE_FILES = (
-    "amc_py/event_runtime.py",
+    "formal_toolchain/semantics/frozen_c_amc_sem_event_runtime.py",
     "formal_toolchain/bridge/handler_decomposition.py",
     "formal_toolchain/bridge/transition_cases.py",
     "formal_toolchain/bridge/transition_compiler.py",

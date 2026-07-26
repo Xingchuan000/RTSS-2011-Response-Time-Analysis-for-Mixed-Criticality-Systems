@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,11 @@ from amc_py.dqn import (
 )
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.runtime_models import RuntimeSemantics
+from amc_py.qamc.reference_config import (
+    assert_reference_matches_values,
+    load_and_validate_frozen_reference,
+)
+from amc_py.qamc.profile_spec import load_profile_spec
 from amc_py.viper.dataset import write_viper_dataset
 from amc_py.viper.fixed_point import FixedPointConfig
 from amc_py.viper.teacher import collect_teacher_labeled_rollouts
@@ -72,6 +78,53 @@ def _build_experiment_config(args: argparse.Namespace):
     raise ValueError(f"unsupported workload: {args.workload}")
 
 
+def _configure_qamc_experiment(args: argparse.Namespace, experiment_config):
+    if RuntimeSemantics(args.dqn_runtime_semantics) is not RuntimeSemantics.Q_AMC:
+        return experiment_config, None
+    if (
+        args.qamc_reference_config_path is None
+        or args.qamc_profile_manifest_path is None
+        or args.qamc_profile_spec_path is None
+    ):
+        raise ValueError("QAMC_REFERENCE_PROFILE_ARTIFACTS_REQUIRED")
+    frozen = load_and_validate_frozen_reference(args.qamc_reference_config_path)
+    assert_reference_matches_values(
+        frozen,
+        {
+            "action_space": args.action_space,
+            "include_explicit_noop": args.include_explicit_noop,
+            "budget_increase_ratio": args.budget_increase_ratio,
+            "budget_decrease_ratio": args.budget_decrease_ratio,
+            "budget_floor_ratio": args.budget_floor_ratio,
+            "observation_mode": args.observation_mode,
+            "reward_mode": args.reward_mode,
+            "agent_period": args.agent_period,
+            "check_safety": True,
+        },
+    )
+    spec = load_profile_spec(args.qamc_profile_spec_path)
+    manifest = json.loads(args.qamc_profile_manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("spec_fingerprint") != spec.fingerprint:
+        raise ValueError("QAMC_PROFILE_MANIFEST_SPEC_FINGERPRINT_MISMATCH")
+    metadata = {
+        "reference_config_fingerprint": frozen["fingerprint"],
+        "profile_manifest_fingerprint": manifest.get("fingerprint"),
+        "profile_spec_fingerprint": spec.fingerprint,
+        "runtime_semantics": RuntimeSemantics.Q_AMC.value,
+        "quality_visible_to_agent": False,
+        "formal_safety_claim": False,
+    }
+    return (
+        replace(
+            experiment_config,
+            qamc_reference_config_path=str(args.qamc_reference_config_path),
+            qamc_profile_manifest_path=str(args.qamc_profile_manifest_path),
+            qamc_profile_spec_path=str(args.qamc_profile_spec_path),
+        ),
+        metadata,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=Path, required=True)
@@ -83,10 +136,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--end-time", type=int, default=100)
     parser.add_argument("--agent-period", type=int, default=1000)
     parser.add_argument("--scenario-split", type=str, default="train")
-    parser.add_argument("--dqn-runtime-semantics", choices=["AMC_PLUS", "AMC_RA", "AMC_RH", "C_AMC_SEM"], default="AMC_PLUS")
+    parser.add_argument("--dqn-runtime-semantics", choices=["AMC_PLUS", "AMC_RA", "AMC_RH", "C_AMC_SEM", "Q_AMC"], default="AMC_PLUS")
     parser.add_argument("--c-amc-sem-xf", type=float, default=0.5)
+    parser.add_argument("--qamc-reference-config-path", type=Path, default=None)
+    parser.add_argument("--qamc-profile-manifest-path", type=Path, default=None)
+    parser.add_argument("--qamc-profile-spec-path", type=Path, default=None)
     parser.add_argument("--reward-mode", type=str, default="mendes")
-    parser.add_argument("--action-space", choices=["triple", "pair", "single", "constraint_guided_pair", "constraint_guided_transfer"], default="single")
+    parser.add_argument(
+        "--action-space",
+        choices=[
+            "triple",
+            "pair",
+            "single",
+            "constraint_guided_pair",
+            "constraint_guided_transfer",
+            "residual_ranked",
+            "residual_safe_ranked",
+            "residual_anchor_mc_lo_2",
+            "residual_safe_adjust_15a",
+        ],
+        default="single",
+    )
     parser.add_argument("--budget-increase-ratio", type=float, default=0.10)
     parser.add_argument("--budget-decrease-ratio", type=float, default=0.05)
     parser.add_argument("--include-explicit-noop", action=argparse.BooleanOptionalAction, default=False)
@@ -133,7 +203,9 @@ def main() -> None:
         risk_max_scale=args.risk_max_scale,
         include_safety_margin=args.include_safety_margin,
     )
-    experiment_config = _build_experiment_config(args)
+    experiment_config, qamc_metadata = _configure_qamc_experiment(
+        args, _build_experiment_config(args)
+    )
     fixed_point_config = FixedPointConfig(scale=args.tree_fixed_point_scale, output_max=args.tree_fixed_point_scale, rounding_mode=args.tree_fixed_point_rounding) if args.tree_state_encoding == "fixed_point_int" else None
     samples, manifest = collect_teacher_labeled_rollouts(
         teacher=teacher,
@@ -162,6 +234,8 @@ def main() -> None:
         fixed_point_config=fixed_point_config,
     )
     manifest["teacher_model_path"] = str(args.model)
+    if qamc_metadata is not None:
+        manifest["qamc"] = qamc_metadata
     # 无论后续数据集被谁消费，都把 workload CLI 口径完整落盘，便于检查
     # teacher 采样分布是否与 tree 训练/HOUT 评估保持一致。
     manifest["workload_cli_config"] = build_workload_cli_config(args)

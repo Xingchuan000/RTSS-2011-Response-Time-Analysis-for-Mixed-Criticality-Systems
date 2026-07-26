@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -30,16 +31,30 @@ class QAmcProfileSpec:
         }
         if len(lengths) != 1 or not self.raw_quality_ranks:
             raise ValueError("QAMC_PROFILE_SPEC_LENGTH_MISMATCH")
-        if tuple(sorted(self.raw_quality_ranks)) != self.raw_quality_ranks:
-            raise ValueError("QAMC_RAW_RANKS_MUST_BE_SORTED")
+        if tuple(sorted(self.raw_quality_ranks)) != self.raw_quality_ranks or len(set(self.raw_quality_ranks)) != len(self.raw_quality_ranks):
+            raise ValueError("QAMC_RAW_RANKS_MUST_BE_STRICTLY_INCREASING")
         if any(not 0.0 < value <= 1.0 for value in self.normalized_quality):
             raise ValueError("QAMC_NORMALIZED_QUALITY_OUT_OF_RANGE")
         if any(not 0.0 < value <= 1.0 for value in self.isolated_work_ratios):
             raise ValueError("QAMC_ISOLATED_WORK_RATIO_OUT_OF_RANGE")
+        if tuple(sorted(self.normalized_quality)) != self.normalized_quality:
+            raise ValueError("QAMC_NORMALIZED_QUALITY_NOT_MONOTONIC")
+        if tuple(sorted(self.isolated_work_ratios)) != self.isolated_work_ratios:
+            raise ValueError("QAMC_ISOLATED_WORK_RATIO_NOT_MONOTONIC")
         if self.normalized_quality[-1] != 1.0:
             raise ValueError("QAMC_MAX_NORMALIZED_QUALITY_MUST_BE_ONE")
-        if not self.isolated_to_interference_ratio >= 0.0:
+        if self.isolated_work_ratios[-1] != 1.0:
+            raise ValueError("QAMC_MAX_ISOLATED_WORK_RATIO_MUST_BE_ONE")
+        if not math.isfinite(self.isolated_to_interference_ratio) or self.isolated_to_interference_ratio < 0.0:
             raise ValueError("QAMC_RATIO_MUST_BE_NONNEGATIVE")
+        if self.integer_partition_rule != "minimum_ratio_error_then_lower_w":
+            raise ValueError("QAMC_UNSUPPORTED_INTEGER_PARTITION_RULE")
+        if self.duplicate_level_rule != "keep_higher_raw_rank":
+            raise ValueError("QAMC_UNSUPPORTED_DUPLICATE_LEVEL_RULE")
+        if self.quality_recovery_policy != "persistent_no_restore":
+            raise ValueError("QAMC_UNSUPPORTED_QUALITY_RECOVERY_POLICY")
+        if self.demand_mapping_version != "wcet_capped_component_split_v1":
+            raise ValueError("QAMC_UNSUPPORTED_DEMAND_MAPPING_VERSION")
 
     def to_jsonable(self) -> dict[str, Any]:
         payload = asdict(self)

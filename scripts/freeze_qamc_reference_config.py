@@ -143,6 +143,12 @@ def freeze_reference_config(reference_run_dir: str | Path, output: str | Path) -
     normalized["selector"] = selector
     normalized["workload_taskset_scenario_protocol"] = _find_key(raw, {"workload", "taskset", "scenario"})
     normalized["training_episode_organization"] = _find_key(raw, {"episodes", "training_episodes", "episode_organization"})
+    normalized["action_space_size"] = _find_key(
+        raw, {"action_space_size", "action_dim", "num_actions"}
+    )
+    normalized["observation_dim"] = _find_key(
+        raw, {"observation_dim", "state_dim"}
+    )
 
     artifact = {
         "path": str(reward_path),

@@ -1,7 +1,7 @@
 """从真实 runtime handler 生成 Phase K 完整 transition-path map。
 
 这里不把任意 ``if`` 节点当作 transition。path selector 是有限的人工维护
-绑定，但每条 path 必须绑定实际 handler 的源码 hash、guard hash、effect
+绑定，但每条 path 必须绑定冻结 C-AMC-sem handler 的语义 hash、guard hash、effect
 hash 和 terminal point；源码变化会使旧 map 失效。
 """
 
@@ -17,6 +17,11 @@ from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.binding.event_runtime_binding import bind_event_runtime
 from formal_toolchain.binding.removal_binding import bind_removal_runtime
 from formal_toolchain.binding.python_cfg_ir import ExecutablePath, enumerate_function_paths, _effect, _ast_hash
+from formal_toolchain.semantics.frozen_runtime_contract import (
+    FROZEN_EVENT_RUNTIME, FROZEN_RUNTIME_WRAPPER, CONTRACT_VERSION,
+    frozen_event_runtime_path, frozen_runtime_wrapper_path,
+    frozen_contract_manifest,
+)
 from .p0_case_manifest import p0_case_manifest_hash
 from .transition_cases import REQUIRED_P0_CASE_IDS
 
@@ -37,7 +42,7 @@ class RescheduleBranchBinding:
 
 
 def _reschedule_function(source_root: str | Path) -> ast.FunctionDef:
-    path = Path(source_root) / "amc_py/event_runtime.py"
+    path = frozen_event_runtime_path(source_root)
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     matches = [node for node in tree.body
                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -189,7 +194,7 @@ def _semantic_path_predicate(case_id: str):
 
 def select_unique_path(source_root: str | Path, spec: "PathSpec") -> ExecutablePath:
     """只返回满足完整 guard/effect predicate 的真实可执行路径。"""
-    candidates = [path for path in enumerate_function_paths(source_root, spec.entry_function)
+    candidates = [path for path in enumerate_function_paths(source_root, spec.entry_function, source_relative=FROZEN_EVENT_RUNTIME)
                   if spec.predicate(path)]
     if len(candidates) != 1:
         raise ValueError(f"PATH_NOT_UNIQUE:{spec.semantic_path_id}:candidate_count={len(candidates)}")
@@ -233,10 +238,10 @@ PATH_SPECS = (
 def _handler_source(root: Path, qualified: str) -> tuple[str, int, int]:
     module, name = qualified.split(".", 1) if "." in qualified else ("", qualified)
     if qualified.startswith("EventRuntimeEngine."):
-        path = root / "amc_py/event_runtime.py"
+        path = frozen_event_runtime_path(root)
         class_name, fn_name = qualified.split(".", 1)
     else:
-        path = root / "amc_py/event_runtime.py"
+        path = frozen_event_runtime_path(root)
         class_name, fn_name = None, qualified
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -265,7 +270,7 @@ def _path_row(root: Path, spec: tuple[Any, ...]) -> dict[str, Any]:
                                  for token in ("queue", "token", "_schedule", "_invalidate"))]
         return {
             "path_id": path_id, "handler": handler, "case_id": case_id,
-            "source_file": "amc_py/event_runtime.py", "guard": guard_ir,
+            "source_file": FROZEN_EVENT_RUNTIME, "guard": guard_ir,
             "guard_ir": guard_ir, "guard_hash": sha256_object(guard_ir),
             "guard_ast_hash": sha256_object(guard_ir), "effects": list(effects),
             "effect_ir": effect_ir, "effect_ir_hash": sha256_object(effect_ir),
@@ -327,7 +332,7 @@ def _path_row(root: Path, spec: tuple[Any, ...]) -> dict[str, Any]:
                                       "guard_ir": guard_ir, "effect_ir": effect_ir,
                                       "effects": effects})
     return {"path_id": path_id, "handler": handler, "case_id": case_id,
-            "source_file": "amc_py/event_runtime.py",
+            "source_file": FROZEN_EVENT_RUNTIME,
             # 对外暴露的 guard 不再是 PATH_SPECS 中的人工描述，而是
             # extractor 返回的实际 AST guard 集合；PATH_SPECS 只负责选择
             # 要审计的源码区间。
@@ -346,6 +351,7 @@ def build_runtime_branch_map(source_root: str | Path, *, source_hash: str,
                              schema_ir: Mapping[str, Any] | None = None) -> dict[str, Any]:
     root = Path(source_root)
     actual_source_hash = build_source_manifest(root)["semantic_hash"]
+    contract_manifest = frozen_contract_manifest(root)
     if source_hash != actual_source_hash:
         return {"status": "FAIL", "failure": "SOURCE_HASH_MISMATCH", "expected": actual_source_hash, "provided": source_hash}
     event = bind_event_runtime(root)
@@ -355,8 +361,17 @@ def build_runtime_branch_map(source_root: str | Path, *, source_hash: str,
     if path_map is None:
         # 兼容旧 API，但不再把 if-node mapping 当成正式路径证明。
         return {"status": "UNRESOLVED", "failure": "COMPLETE_TRANSITION_PATH_MAP_REQUIRED"}
-    if path_map.get("schema_version") != "phase_k_transition_path_map_v2_cfg_ir":
+    schema_version = path_map.get("schema_version")
+    if schema_version not in {
+        "phase_k_transition_path_map_v2_cfg_ir",
+        "phase_k_transition_path_map_v3_frozen_semantics",
+    }:
         return {"status": "UNRESOLVED", "failure": "TRANSITION_PATH_MAP_SCHEMA_VERSION_REQUIRED"}
+    if schema_version == "phase_k_transition_path_map_v3_frozen_semantics":
+        if path_map.get("formal_semantics_contract_version") != CONTRACT_VERSION:
+            return {"status": "UNRESOLVED", "failure": "FORMAL_SEMANTICS_CONTRACT_VERSION_MISMATCH"}
+        if path_map.get("formal_semantics_contract_hash") != contract_manifest["semantic_hash"]:
+            return {"status": "UNRESOLVED", "failure": "FORMAL_SEMANTICS_CONTRACT_HASH_MISMATCH"}
     if not isinstance(path_map.get("paths"), Mapping):
         return {"status": "UNRESOLVED", "failure": "TRANSITION_PATH_MAP_SCHEMA_INVALID"}
     expected = {spec[0]: spec for spec in PATH_SPECS}
@@ -380,6 +395,8 @@ def build_runtime_branch_map(source_root: str | Path, *, source_hash: str,
         for field in fields:
             if field not in actual:
                 continue
+            if schema_version == "phase_k_transition_path_map_v2_cfg_ir" and field == "source_file":
+                continue
             if supplied.get(field) != actual[field]:
                 return {"status": "UNRESOLVED", "failure": "TRANSITION_PATH_BINDING_STALE", "path_id": path_id, "field": field}
         rows.append(actual)
@@ -391,18 +408,22 @@ def build_runtime_branch_map(source_root: str | Path, *, source_hash: str,
                 "coverage": coverage}
     return {"status": "PASS", "source_hash": source_hash, "path_count": len(rows),
             "paths": rows, "coverage": coverage, "case_manifest_hash": p0_case_manifest_hash(),
-            "path_map_hash": sha256_object({"paths": rows, "coverage": coverage["artifact_hash"]})}
+            "formal_semantics_contract_version": CONTRACT_VERSION,
+            "formal_semantics_contract_hash": contract_manifest["semantic_hash"],
+            "mutable_runtime_binding": "NON_BLOCKING_AUDIT_ONLY",
+            "path_map_hash": sha256_object({"paths": rows, "coverage": coverage["artifact_hash"],
+                                             "formal_semantics_contract_hash": contract_manifest["semantic_hash"]})}
 
 
 def build_normal_runtime_path_coverage(root: Path) -> dict[str, Any]:
     """检查正常 runtime 中会消费的 no-op、queue 和 controller 路径。
 
     这些路径不都改变 P0 macro-state，但不能从 coverage 中省略；每个条目
-    都绑定到实际源码片段哈希，后续由 closure certificate 消费。
+    都绑定到冻结形式化语义片段哈希，后续由 closure certificate 消费。
     """
-    runtime_path = root / "amc_py/event_runtime.py"
+    runtime_path = frozen_event_runtime_path(root)
     runtime_tree = ast.parse(runtime_path.read_text(encoding="utf-8"), filename=str(runtime_path))
-    wrapper_path = root / "amc_py/rl/runtime_wrapper.py"
+    wrapper_path = frozen_runtime_wrapper_path(root)
     wrapper_tree = ast.parse(wrapper_path.read_text(encoding="utf-8"), filename=str(wrapper_path))
 
     def function_node(qualified: str) -> ast.FunctionDef | None:

@@ -365,6 +365,7 @@ def run_viper_iterations(
             "tree_state_encoding": student_state_encoding,
             "tree_fixed_point_scale": (None if fixed_point_config is None else int(fixed_point_config.scale)),
             "tree_fixed_point_config_hash": (None if fixed_point_config is None else fixed_point_config_hash(fixed_point_config)),
+            "qamc": aggregate_manifest.get("qamc"),
         }
         if int(metadata["state_dim"]) != len(feature_names):
             raise ValueError("tree metadata.state_dim 与 feature_names 长度不一致")
@@ -651,6 +652,8 @@ def run_viper_iterations(
                 # 训练产物必须显式记录本次 tree 训练所使用的 workload 参数，
                 # 这样后续检查时才能确认它与 teacher dataset / HOUT 评估完全同口径。
                 "workload_cli_config": workload_cli_config or {},
+                "runtime_semantics": runtime_semantics.value,
+                "qamc": aggregate_manifest.get("qamc"),
                 # 仅在用户显式允许 mismatch 时才记录 warning；默认情况下前面已经直接报错阻止继续运行。
                 "workload_mismatch_warning": workload_mismatch_warning,
             },

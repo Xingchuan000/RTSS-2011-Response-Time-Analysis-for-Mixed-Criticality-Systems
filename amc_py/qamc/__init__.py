@@ -19,6 +19,12 @@ from .runtime_controller import (
     QAmcRuntimeController,
 )
 from .metrics_support import QAmcMetrics, compute_qamc_metrics, qamc_metrics_to_row
+from .heuristic import QAmcBudgetPressureHeuristic
+from .reference_config import (
+    assert_reference_matches_values,
+    load_and_validate_frozen_reference,
+    validate_qamc_model_artifact,
+)
 
 __all__ = [
     "QAmcDemandSnapshot",
@@ -30,6 +36,7 @@ __all__ = [
     "QAmcRuntimeController",
     "QAmcTaskProfile",
     "QAmcMetrics",
+    "QAmcBudgetPressureHeuristic",
     "build_qamc_profile_bundle",
     "load_profile_bundle",
     "map_full_cost_to_quality_cost",
@@ -37,4 +44,7 @@ __all__ = [
     "write_profile_bundle",
     "compute_qamc_metrics",
     "qamc_metrics_to_row",
+    "assert_reference_matches_values",
+    "load_and_validate_frozen_reference",
+    "validate_qamc_model_artifact",
 ]

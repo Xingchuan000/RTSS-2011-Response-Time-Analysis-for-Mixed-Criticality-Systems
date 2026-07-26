@@ -401,6 +401,7 @@ class SimulationResult:
     qamc_min_quality_exhaustions: list[QAmcMinQualityExhaustionEvent] = field(default_factory=list)
     qamc_profile_fingerprint: str | None = None
     qamc_spec_fingerprint: str | None = None
+    qamc_evaluation_horizon: int | None = None
     end_time: int = 0
     final_mode: SystemMode = SystemMode.LO
 

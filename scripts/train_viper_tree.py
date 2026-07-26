@@ -16,7 +16,11 @@ from amc_py.runtime_models import RuntimeSemantics
 from amc_py.viper.training import TreeHyperParams, run_viper_iterations
 from amc_py.viper.fixed_point import FixedPointConfig
 
-from scripts.collect_viper_teacher_data import _build_experiment_config, _parse_seeds
+from scripts.collect_viper_teacher_data import (
+    _build_experiment_config,
+    _configure_qamc_experiment,
+    _parse_seeds,
+)
 from scripts.common_mc_fairgen_cli import (
     add_mc_fairgen_args,
     assert_mc_fairgen_args_match_dataset,
@@ -45,10 +49,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--random-seed", type=int, default=0)
     parser.add_argument("--workload", choices=["small", "rtss11", "automotive", "mc_fairgen"], default="small")
     parser.add_argument("--scenario", choices=["nominal", "stress"], default="stress")
-    parser.add_argument("--dqn-runtime-semantics", choices=["AMC_PLUS", "AMC_RA", "AMC_RH", "C_AMC_SEM"], default="AMC_PLUS")
+    parser.add_argument("--dqn-runtime-semantics", choices=["AMC_PLUS", "AMC_RA", "AMC_RH", "C_AMC_SEM", "Q_AMC"], default="AMC_PLUS")
     parser.add_argument("--c-amc-sem-xf", type=float, default=0.5)
+    parser.add_argument("--qamc-reference-config-path", type=Path, default=None)
+    parser.add_argument("--qamc-profile-manifest-path", type=Path, default=None)
+    parser.add_argument("--qamc-profile-spec-path", type=Path, default=None)
     parser.add_argument("--reward-mode", type=str, default="mendes")
-    parser.add_argument("--action-space", choices=["triple", "pair", "single", "constraint_guided_pair", "constraint_guided_transfer"], default="single")
+    parser.add_argument(
+        "--action-space",
+        choices=[
+            "triple",
+            "pair",
+            "single",
+            "constraint_guided_pair",
+            "constraint_guided_transfer",
+            "residual_ranked",
+            "residual_safe_ranked",
+            "residual_anchor_mc_lo_2",
+            "residual_safe_adjust_15a",
+        ],
+        default="single",
+    )
     parser.add_argument("--budget-increase-ratio", type=float, default=0.10)
     parser.add_argument("--budget-decrease-ratio", type=float, default=0.05)
     parser.add_argument("--include-explicit-noop", action=argparse.BooleanOptionalAction, default=False)
@@ -97,7 +118,9 @@ def main() -> None:
         risk_max_scale=args.risk_max_scale,
         include_safety_margin=args.include_safety_margin,
     )
-    experiment_config = _build_experiment_config(args)
+    experiment_config, _qamc_metadata = _configure_qamc_experiment(
+        args, _build_experiment_config(args)
+    )
     workload_cli_config = build_workload_cli_config(args)
     fixed_point_config = FixedPointConfig(scale=args.tree_fixed_point_scale, output_max=args.tree_fixed_point_scale, rounding_mode=args.tree_fixed_point_rounding) if args.tree_state_encoding == "fixed_point_int" else None
     workload_mismatch_warning: str | None = None

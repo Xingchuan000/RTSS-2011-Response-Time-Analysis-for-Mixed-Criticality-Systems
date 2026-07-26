@@ -20,6 +20,7 @@ from amc_py.rl.actions import (
     apply_budget_action_candidate,
     build_budget_action_space,
 )
+from amc_py.rl.action_execution import BudgetActionExecutionConfig, evaluate_budget_action
 from amc_py.rl.constraint_guided_pair import (
     ConstraintGuidedResolvedAction,
     ConstraintGuidedTransferCandidate,
@@ -757,6 +758,53 @@ class AmcBudgetEnv:
                 candidate_budgets=dict(before),
                 updates={},
                 safety_checked=False,
+            )
+
+        shared_guards = {
+            "deploy_cap",
+            "hi_decrease",
+            "budget_floor",
+            "safety_checker",
+        }
+        if (
+            not self.enable_residual_safety_fallback
+            and not (shared_guards & set(self.nonvacuity_disabled_guards))
+        ):
+            budget_state = self._engine.runtime_budgets.copy()
+            budget_state.budgets = dict(before)
+            shared = evaluate_budget_action(
+                action=action,
+                ordered_tasks=self.ordered_tasks,
+                budget_state=budget_state,
+                initial_budgets=self._initial_budgets,
+                config=BudgetActionExecutionConfig(
+                    rounding_mode=self.budget_rounding_mode,
+                    min_budget_delta=self.min_budget_delta,
+                    budget_floor_ratio=self.budget_floor_ratio,
+                    fixed_floor_by_task=(
+                        {
+                            name: profile.full_quality_isolated_wcet
+                            for name, profile in self.qamc_profile_bundle.profiles.items()
+                        }
+                        if self.qamc_profile_bundle is not None
+                        else {}
+                    ),
+                    enable_deploy_cap_mask=self.enable_deploy_cap_mask,
+                    deploy_cap_mask_ratio=self.deploy_cap_mask_ratio,
+                    deploy_cap_mask_criticality=self.deploy_cap_mask_criticality,
+                    forbid_decreasing_hi_budgets=self.forbid_decreasing_hi_budgets,
+                    check_safety=self.check_safety,
+                ),
+                safety_checker=self._ensure_checker() if self.check_safety else None,
+            )
+            return BudgetCandidateEvaluation(
+                action_id=int(action.action_id),
+                accepted=shared.accepted,
+                reject_reason=shared.reject_reason,
+                candidate_budgets=dict(shared.candidate_budgets),
+                updates=dict(shared.updates),
+                safety_checked=shared.safety_checked,
+                reject_diagnostics=shared.diagnostics,
             )
 
         cap_reason = None if self._guard_disabled("deploy_cap") else self._deploy_cap_increase_reject_reason(
@@ -1603,12 +1651,16 @@ class AmcBudgetEnv:
         - 一旦发现第一个违规任务，立即返回带任务名的 reject_reason，便于日志定位。
         """
 
-        if self.budget_floor_ratio <= 0.0:
+        if self.budget_floor_ratio <= 0.0 and self.qamc_profile_bundle is None:
             return None
 
         for task_name, candidate_budget in updates.items():
             initial_budget = self._initial_budgets[task_name]
-            floor_value = max(1, math.ceil(initial_budget * self.budget_floor_ratio))
+            floor_value = (
+                max(1, math.ceil(initial_budget * self.budget_floor_ratio))
+                if self.budget_floor_ratio > 0.0
+                else 1
+            )
             if self.qamc_profile_bundle is not None and task_name in self.qamc_profile_bundle.profiles:
                 floor_value = max(
                     floor_value,
@@ -1900,6 +1952,20 @@ class AmcBudgetEnv:
         """返回离散动作空间大小。"""
 
         return len(self._actions)
+
+    @property
+    def actions(self) -> tuple[BudgetAction, ...]:
+        """Return the immutable discrete action definitions for policy adapters."""
+
+        return tuple(self._actions)
+
+    @property
+    def runtime_result(self) -> SimulationResult:
+        """Return the current runtime snapshot without mutating the engine."""
+
+        if self._engine is None:
+            raise RuntimeError("环境尚未 reset")
+        return self._engine.finish()
 
     def get_action_feature_names(self, mode: str = "static_v1") -> tuple[str, ...]:
         """返回动作描述符名称列表。"""

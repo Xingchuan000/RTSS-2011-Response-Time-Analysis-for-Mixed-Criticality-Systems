@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
 
 
@@ -17,6 +18,10 @@ class QAmcQualityLevel:
     def __post_init__(self) -> None:
         if self.runtime_level < 0 or self.raw_rank <= 0 or self.isolated_wcet <= 0:
             raise ValueError("QAMC_INVALID_QUALITY_LEVEL")
+        if not math.isfinite(self.normalized_quality) or not 0.0 < self.normalized_quality <= 1.0:
+            raise ValueError("QAMC_NORMALIZED_QUALITY_OUT_OF_RANGE")
+        if not math.isfinite(self.isolated_work_ratio) or not 0.0 < self.isolated_work_ratio <= 1.0:
+            raise ValueError("QAMC_ISOLATED_WORK_RATIO_OUT_OF_RANGE")
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +38,8 @@ class QAmcTaskProfile:
     def __post_init__(self) -> None:
         if not self.task_name or self.design_c_lo <= 0:
             raise ValueError("QAMC_INVALID_TASK_PROFILE")
+        if self.full_quality_isolated_wcet <= 0 or self.design_lo_interference_budget < 0:
+            raise ValueError("QAMC_INVALID_DESIGN_COMPONENTS")
         if not self.levels:
             raise ValueError("QAMC_PROFILE_HAS_NO_LEVELS")
         if self.full_quality_isolated_wcet + self.design_lo_interference_budget != self.design_c_lo:
@@ -45,6 +52,8 @@ class QAmcTaskProfile:
             raise ValueError("QAMC_THRESHOLD_LEVEL_MUST_BE_LOWEST")
         if not self.degradable and len(self.levels) != 1:
             raise ValueError("QAMC_NON_DEGRADABLE_PROFILE_MUST_HAVE_ONE_LEVEL")
+        if self.degradable != (len(self.levels) > 1):
+            raise ValueError("QAMC_DEGRADABLE_FLAG_LEVEL_COUNT_MISMATCH")
         previous: QAmcQualityLevel | None = None
         for level in self.levels:
             if previous is not None:
@@ -111,7 +120,17 @@ class QAmcProfileBundle:
     def __post_init__(self) -> None:
         if not self.taskset_fingerprint or not self.spec_fingerprint:
             raise ValueError("QAMC_PROFILE_FINGERPRINT_FIELDS_REQUIRED")
-        if set(self.profiles) != {name for name in self.profiles}:
+        if self.schema_version != "qamc_profile_bundle_v2":
+            raise ValueError("QAMC_UNSUPPORTED_PROFILE_BUNDLE_SCHEMA")
+        if self.semantic_version != "qamc_budget_overlay_v5":
+            raise ValueError("QAMC_UNSUPPORTED_PROFILE_SEMANTIC_VERSION")
+        if self.ratio_semantics != "isolated_work_to_interference":
+            raise ValueError("QAMC_UNSUPPORTED_RATIO_SEMANTICS")
+        if self.integer_partition_rule != "minimum_ratio_error_then_lower_w":
+            raise ValueError("QAMC_UNSUPPORTED_INTEGER_PARTITION_RULE")
+        if self.demand_mapping_version != "wcet_capped_component_split_v1":
+            raise ValueError("QAMC_UNSUPPORTED_DEMAND_MAPPING_VERSION")
+        if any(name != profile.task_name for name, profile in self.profiles.items()):
             raise ValueError("QAMC_PROFILE_TASK_NAMES_INVALID")
 
     def to_jsonable(self) -> dict[str, Any]:

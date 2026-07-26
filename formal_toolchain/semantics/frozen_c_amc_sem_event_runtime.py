@@ -26,9 +26,6 @@ from .runtime_models import (
     LO_LOSS_ACTIVE_DROPPED_ON_MODE_SWITCH,
     LO_LOSS_BUDGET_CANCELLATION,
     LO_LOSS_RELEASE_DROPPED_IN_DEGRADED_MODE,
-    LO_LOSS_QAMC_MIN_QUALITY_EXHAUSTED,
-    LO_LOSS_QAMC_OVERRUN_STOP,
-    LO_LOSS_QAMC_TERMINAL_HI_DROP,
     ModeRecoveryEvent,
     ModeSwitchEvent,
     RuntimeConfig,
@@ -36,13 +33,7 @@ from .runtime_models import (
     ScheduleTick,
     SimulationResult,
     SystemMode,
-    QAmcQualityChangeEvent,
-    QAmcMinQualityExhaustionEvent,
 )
-from .qamc.demand import map_full_cost_to_quality_cost
-from .qamc.models import QAmcProfileBundle
-from .qamc.profiles import compute_taskset_fingerprint
-from .qamc.runtime_controller import QAmcRuntimeController
 from .runtime_scenarios import ExecutionScenario
 
 
@@ -80,7 +71,6 @@ def _uses_idle_recovery(semantics: RuntimeSemantics) -> bool:
         RuntimeSemantics.AMC_PLUS,
         RuntimeSemantics.AMC_RA,
         RuntimeSemantics.C_AMC_SEM,
-        RuntimeSemantics.Q_AMC,
     }
 
 
@@ -96,7 +86,6 @@ def _build_job(
     service_quality_if_completed: float = 1.0,
     original_actual_cost: int | None = None,
     original_runtime_budget_at_release: int | None = None,
-    qamc_snapshot: dict[str, object] | None = None,
 ) -> Job:
     """按现有 tick runtime 的同等逻辑构建 job。"""
 
@@ -104,7 +93,6 @@ def _build_job(
     absolute_deadline = release_time + task.deadline
     raw_actual_cost = scenario.actual_cost_for(task, release_index)
     actual_cost = actual_cost_override if actual_cost_override is not None else raw_actual_cost
-    qamc_snapshot = qamc_snapshot or {}
     return Job(
         task=task,
         release_index=release_index,
@@ -120,21 +108,6 @@ def _build_job(
             runtime_budget_at_release
             if original_runtime_budget_at_release is None
             else original_runtime_budget_at_release
-        ),
-        qamc_target_runtime_level_at_release=qamc_snapshot.get("runtime_level"),
-        qamc_target_raw_rank_at_release=qamc_snapshot.get("raw_rank"),
-        qamc_target_normalized_quality_at_release=qamc_snapshot.get("normalized_quality"),
-        qamc_full_quality_actual_cost=qamc_snapshot.get("full_quality_actual_cost"),
-        qamc_full_quality_application_component=qamc_snapshot.get("full_quality_application_component"),
-        qamc_observed_interference_component=qamc_snapshot.get("observed_interference_component"),
-        qamc_target_application_component=qamc_snapshot.get("target_application_component"),
-        qamc_quality_specific_actual_cost=qamc_snapshot.get("quality_specific_actual_cost"),
-        qamc_trigger_budget=runtime_budget_at_release if qamc_snapshot else None,
-        qamc_trigger_budget_ratio_to_design_c_lo=(
-            runtime_budget_at_release / task.c_lo if qamc_snapshot else None
-        ),
-        qamc_would_overrun_design_c_lo=(
-            actual_cost > task.c_lo if qamc_snapshot else None
         ),
     )
 
@@ -350,35 +323,6 @@ def _schedule_running_job_events(
     job = state.running_job
     key = _job_key(job.task.name, job.release_index)
 
-    # q-AMC has a deliberately local strict-overrun rule.  When a job needs
-    # exactly one tick beyond its release snapshot, completion and overrun
-    # would otherwise be scheduled at the same instant; q-AMC must accept the
-    # overrun and discard the result.  Legacy semantics retain their original
-    # completion-first behavior below.
-    if cfg.semantics is RuntimeSemantics.Q_AMC and not (
-        state.mode is SystemMode.HI and job.task.criticality is Criticality.HI
-    ):
-        budget = job.runtime_budget_at_release
-        if budget is None:
-            budget = runtime_budgets.budget_of(job.task)
-        remaining_to_completion = job.actual_cost - job.executed_time
-        remaining_to_overrun = budget + 1 - job.executed_time
-        if remaining_to_overrun <= 0 or remaining_to_overrun <= remaining_to_completion:
-            overrun_token = state.next_token()
-            state.valid_overrun_tokens[key] = overrun_token
-            queue.push(
-                Event(
-                    time=now + max(0, remaining_to_overrun),
-                    event_type=EventType.BUDGET_OVERRUN,
-                    task_name=job.task.name,
-                    release_index=job.release_index,
-                    token=overrun_token,
-                )
-            )
-            state.valid_completion_tokens.pop(key, None)
-            return
-        state.valid_overrun_tokens.pop(key, None)
-
     completion_token = state.next_token()
     state.valid_completion_tokens[key] = completion_token
     queue.push(
@@ -392,10 +336,6 @@ def _schedule_running_job_events(
     )
 
     if state.mode is not SystemMode.LO:
-        if cfg.semantics is RuntimeSemantics.Q_AMC and job.task.criticality is Criticality.HI:
-            # The triggering HI job follows the standard AMC continuation after
-            # its first strict overrun; do not schedule a second overrun event.
-            return
         # C-AMC-sem 的计划边界要求：HI mode 中新释放的 LO job 仍然会运行，
         # 因此必须继续安排预算超限事件，才能复用既有的取消统计口径。
         # 除了这一种情况之外，其余语义在 HI mode 下保持原实现不变。
@@ -548,8 +488,6 @@ def _apply_retroactive_release_budget_mutation(
 
     if cfg.nonvacuity_profile != "c3_retroactive_release_budget":
         return []
-    if cfg.semantics is RuntimeSemantics.Q_AMC:
-        return []
     changed: list[tuple[str, int, int]] = []
     for job in state.active_jobs:
         if job.task.name in updates and not job.finished():
@@ -568,8 +506,6 @@ class EventRuntimeEngine:
     budget_state: BudgetState
     end_time: int
     monitor: RuntimeMonitor | None = None
-    qamc_profile_bundle: QAmcProfileBundle | None = None
-    qamc_controller: QAmcRuntimeController | None = None
     design_r_lo: dict[str, int] = None  # type: ignore[assignment]
     task_names: list[str] = None  # type: ignore[assignment]
     priority_map: dict[str, int] = None  # type: ignore[assignment]
@@ -614,13 +550,6 @@ class EventRuntimeEngine:
         if self.monitor is not None:
             self.monitor.ensure_tasks(self.task_names)
 
-        if self.config.semantics is RuntimeSemantics.Q_AMC:
-            if self.qamc_profile_bundle is None or self.qamc_controller is None:
-                raise ValueError("QAMC_PROFILE_BUNDLE_REQUIRED")
-            self.result.qamc_profile_fingerprint = self.qamc_profile_bundle.fingerprint
-            self.result.qamc_spec_fingerprint = self.qamc_profile_bundle.spec_fingerprint
-            self.result.qamc_evaluation_horizon = self.end_time
-
         for task in self.ordered_tasks:
             self.queue.push(
                 Event(
@@ -641,7 +570,6 @@ class EventRuntimeEngine:
         budget_state: BudgetState | None = None,
         budget_updates: Sequence[BudgetUpdate] | None = None,
         monitor: RuntimeMonitor | None = None,
-        qamc_profile_bundle: QAmcProfileBundle | None = None,
     ) -> "EventRuntimeEngine":
         """按旧入口参数构建可运行引擎。"""
 
@@ -653,18 +581,6 @@ class EventRuntimeEngine:
             raise ValueError("ordered_tasks 中存在重复任务名")
 
         cfg = config or RuntimeConfig()
-        if cfg.semantics is RuntimeSemantics.Q_AMC and qamc_profile_bundle is None:
-            raise ValueError("QAMC_PROFILE_BUNDLE_REQUIRED")
-        if cfg.semantics is not RuntimeSemantics.Q_AMC and qamc_profile_bundle is not None:
-            raise ValueError("QAMC_PROFILE_BUNDLE_ONLY_VALID_FOR_QAMC")
-        if qamc_profile_bundle is not None:
-            if qamc_profile_bundle.taskset_fingerprint != compute_taskset_fingerprint(
-                ordered_tasks
-            ):
-                raise ValueError("QAMC_PROFILE_TASKSET_FINGERPRINT_MISMATCH")
-            expected_names = {task.name for task in ordered_tasks if task.criticality is Criticality.LO}
-            if set(qamc_profile_bundle.profiles) != expected_names:
-                raise ValueError("QAMC_PROFILE_TASKSET_MISMATCH")
         runtime_budgets = (
             budget_state.copy() if budget_state is not None else BudgetState.from_tasks(ordered_tasks)
         )
@@ -685,12 +601,6 @@ class EventRuntimeEngine:
             budget_state=runtime_budgets,
             end_time=end_time,
             monitor=monitor,
-            qamc_profile_bundle=qamc_profile_bundle,
-            qamc_controller=(
-                QAmcRuntimeController.from_profile_bundle(qamc_profile_bundle)
-                if qamc_profile_bundle is not None
-                else None
-            ),
         )
         for update in budget_updates or []:
             if update.time < 0:
@@ -699,10 +609,7 @@ class EventRuntimeEngine:
                 Event(
                     time=update.time,
                     event_type=EventType.BUDGET_UPDATE,
-                    payload={
-                        "updates": dict(update.updates),
-                        "source": "OFFLINE_PREQUEUED",
-                    },
+                    payload={"updates": dict(update.updates)},
                 )
             )
         return engine
@@ -825,7 +732,7 @@ class EventRuntimeEngine:
         _update_running_progress(self.state, now)
         self.state.current_time = now
 
-    def apply_budget_updates(self, updates: Mapping[str, int], source: str = "UNSPECIFIED") -> None:
+    def apply_budget_updates(self, updates: Mapping[str, int]) -> None:
         """在当前时刻应用预算更新，并强制触发重调度。
 
         这里显式调用 `_advance_time(self.state.current_time)` 不是多余操作。
@@ -843,7 +750,7 @@ class EventRuntimeEngine:
             state=self.state, updates=update_payload, cfg=self.config
         )
         self.result.budget_update_events.append(
-            BudgetUpdateEvent(time=self.state.current_time, updates=update_payload, source=source)
+            BudgetUpdateEvent(time=self.state.current_time, updates=update_payload)
         )
         self._append_debug_event("budget_update", updates=update_payload)
         self._reschedule(self.state.current_time, force=True)
@@ -1000,35 +907,6 @@ class EventRuntimeEngine:
         service_quality_if_completed = 1.0
         original_actual_cost = None
         original_runtime_budget_at_release = runtime_budget_at_release
-        qamc_snapshot: dict[str, object] | None = None
-
-        if self.config.semantics is RuntimeSemantics.Q_AMC and task.criticality is Criticality.LO:
-            if release_mode is SystemMode.HI:
-                self._record_or_suppress_dropped_lo_release(task, event.release_index, now)
-                return
-            assert self.qamc_profile_bundle is not None
-            assert self.qamc_controller is not None
-            profile = self.qamc_profile_bundle.profiles[task.name]
-            runtime_level = self.qamc_controller.current_level(task.name)
-            level = profile.level(runtime_level)
-            full_cost = self.scenario.actual_cost_for(task, event.release_index)
-            demand = map_full_cost_to_quality_cost(
-                full_quality_actual_cost=full_cost,
-                profile=profile,
-                runtime_level=runtime_level,
-            )
-            actual_cost_override = demand.quality_specific_actual_cost
-            service_quality_if_completed = level.normalized_quality
-            qamc_snapshot = {
-                "runtime_level": runtime_level,
-                "raw_rank": level.raw_rank,
-                "normalized_quality": level.normalized_quality,
-                "full_quality_actual_cost": demand.full_quality_actual_cost,
-                "full_quality_application_component": demand.full_quality_application_component,
-                "observed_interference_component": demand.observed_interference_component,
-                "target_application_component": demand.target_application_component,
-                "quality_specific_actual_cost": demand.quality_specific_actual_cost,
-            }
 
         # 先把 HI task release 作为独立源码分支暴露给 CFG/formal binder。
         # HI release 的 demand 与是否启用 response-time-expiry 无关；后者只
@@ -1077,7 +955,6 @@ class EventRuntimeEngine:
             service_quality_if_completed=service_quality_if_completed,
             original_actual_cost=original_actual_cost,
             original_runtime_budget_at_release=original_runtime_budget_at_release,
-            qamc_snapshot=qamc_snapshot,
         )
         job.busy_period_start = _compute_busy_period_start_for_new_job(
             active_jobs=self.state.active_jobs,
@@ -1149,111 +1026,6 @@ class EventRuntimeEngine:
         self._reschedule(now)
         return True
 
-    def _stop_qamc_overrun_job(self, job: Job, now: int, reason: str) -> None:
-        """Stop a q-AMC job and record exactly one zero-service loss."""
-
-        budget = job.runtime_budget_at_release or self.budget_state.budget_of(job.task)
-        job.qamc_stopped_by_overrun = True
-        job.qamc_overrun_stop_time = now
-        job.qamc_provided_raw_rank = 0
-        job.qamc_provided_normalized_quality = 0.0
-        job.qamc_trigger_budget = budget
-        job.qamc_trigger_budget_ratio_to_design_c_lo = budget / job.task.c_lo
-        # This diagnostic asks whether the release demand would also have
-        # exceeded the paper's design C_LO.  A learned threshold may stop the
-        # job earlier, so executed_time is not the right quantity here.
-        job.qamc_would_overrun_design_c_lo = job.actual_cost > job.task.c_lo
-        job.dropped = True
-        job.drop_time = now
-        if job in self.state.active_jobs:
-            self.state.active_jobs.remove(job)
-        self.result.job_cancellations.append(
-            JobCancellationEvent(
-                cancel_time=now,
-                task=job.task.name,
-                release_index=job.release_index,
-                executed_at_cancel=job.executed_time,
-                budget_at_cancel=budget,
-                reason=reason,
-            )
-        )
-        _record_lo_job_loss(
-            self.result,
-            loss_time=now,
-            job=job,
-            reason=reason,
-            budget_at_loss=budget,
-        )
-        _invalidate_job_events(self.state, job)
-        if self.state.running_job is job:
-            self.state.running_job = None
-            self.state.run_started_at = None
-
-    def _enter_qamc_terminal_hi_mode(self, triggering_job: Job, now: int) -> None:
-        self.state.mode = SystemMode.HI
-        self.result.mode_switches.append(
-            ModeSwitchEvent(
-                switch_time=now,
-                triggering_task=triggering_job.task.name,
-                triggering_release_index=triggering_job.release_index,
-                executed_at_switch=triggering_job.executed_time,
-                budget_at_switch=triggering_job.runtime_budget_at_release,
-                reason="qamc_min_quality_exhausted",
-            )
-        )
-        if not self.config.drop_lo_jobs_on_hi_switch:
-            return
-        dropped = _drop_active_lo_jobs(self.state.active_jobs, now)
-        for job in dropped:
-            if job.qamc_provided_normalized_quality is None:
-                job.qamc_provided_raw_rank = 0
-                job.qamc_provided_normalized_quality = 0.0
-            _record_lo_job_loss(
-                self.result,
-                loss_time=now,
-                job=job,
-                reason=LO_LOSS_QAMC_TERMINAL_HI_DROP,
-                budget_at_loss=job.runtime_budget_at_release,
-            )
-
-    def _handle_qamc_lo_overrun(self, job: Job, now: int) -> None:
-        assert self.qamc_controller is not None
-        decision = self.qamc_controller.plan_lo_overrun(job.task.name)
-        if decision.action == "DEGRADE_NEXT_RELEASE":
-            self._stop_qamc_overrun_job(job, now, LO_LOSS_QAMC_OVERRUN_STOP)
-            self.qamc_controller.commit(decision)
-            profile = self.qamc_controller.profile(job.task.name)
-            old_level = profile.level(decision.old_level)
-            new_level = profile.level(decision.new_level)  # type: ignore[arg-type]
-            self.result.qamc_quality_changes.append(
-                QAmcQualityChangeEvent(
-                    time=now,
-                    task=job.task.name,
-                    old_runtime_level=decision.old_level,
-                    new_runtime_level=decision.new_level,  # type: ignore[arg-type]
-                    old_raw_rank=old_level.raw_rank,
-                    new_raw_rank=new_level.raw_rank,
-                    old_normalized_quality=old_level.normalized_quality,
-                    new_normalized_quality=new_level.normalized_quality,
-                    trigger_release_index=job.release_index,
-                )
-            )
-            return
-        self._stop_qamc_overrun_job(job, now, LO_LOSS_QAMC_MIN_QUALITY_EXHAUSTED)
-        profile = self.qamc_controller.profile(job.task.name)
-        level = profile.level(decision.old_level)
-        self.result.qamc_min_quality_exhaustions.append(
-            QAmcMinQualityExhaustionEvent(
-                time=now,
-                task=job.task.name,
-                runtime_level=decision.old_level,
-                raw_rank=level.raw_rank,
-                trigger_release_index=job.release_index,
-            )
-        )
-        self._enter_qamc_terminal_hi_mode(job, now)
-        _maybe_recover_to_lo(self.state, self.result, now, self.config)
-
     def _process_event(self, event: Event) -> bool:
         """处理单个事件。返回 False 表示应终止运行。"""
 
@@ -1261,13 +1033,12 @@ class EventRuntimeEngine:
 
         if event.event_type is EventType.BUDGET_UPDATE:
             update_payload = dict(event.payload.get("updates", {}))
-            update_source = str(event.payload.get("source", "UNSPECIFIED"))
             self.budget_state.apply_updates(update_payload)
             _apply_retroactive_release_budget_mutation(
                 state=self.state, updates=update_payload, cfg=self.config
             )
             self.result.budget_update_events.append(
-                BudgetUpdateEvent(time=event.time, updates=dict(update_payload), source=update_source)
+                BudgetUpdateEvent(time=event.time, updates=dict(update_payload))
             )
             self._append_debug_event("budget_update", updates=dict(update_payload))
             self._reschedule(event.time, force=True)
@@ -1284,10 +1055,6 @@ class EventRuntimeEngine:
             if job is None:
                 return True
             if not job.finished():
-                if self.config.semantics is RuntimeSemantics.Q_AMC and job.task.criticality is Criticality.LO:
-                    job.qamc_result_lost_due_to_deadline = True
-                    job.qamc_provided_raw_rank = 0
-                    job.qamc_provided_normalized_quality = 0.0
                 self._append_debug_event(
                     "deadline_miss",
                     task=job.task.name,
@@ -1351,10 +1118,6 @@ class EventRuntimeEngine:
 
             job.executed_time = job.actual_cost
             job.completion_time = event.time
-            if self.config.semantics is RuntimeSemantics.Q_AMC and job.task.criticality is Criticality.LO:
-                if not job.qamc_result_lost_due_to_deadline and not job.qamc_stopped_by_overrun:
-                    job.qamc_provided_raw_rank = job.qamc_target_raw_rank_at_release
-                    job.qamc_provided_normalized_quality = job.qamc_target_normalized_quality_at_release
             self._append_debug_event(
                 "job_completion",
                 task=job.task.name,
@@ -1379,10 +1142,7 @@ class EventRuntimeEngine:
                 _maybe_recover_rh_to_lo(self.state, self.result, event.time)
             else:
                 _maybe_recover_to_lo(self.state, self.result, event.time, self.config)
-            self._reschedule(
-                event.time,
-                force=self.config.semantics is RuntimeSemantics.Q_AMC,
-            )
+            self._reschedule(event.time)
             return True
 
         if event.event_type is EventType.RESPONSE_TIME_EXPIRY:
@@ -1435,17 +1195,6 @@ class EventRuntimeEngine:
 
             job = self.jobs_by_key.get(key)
             if job is None or self.state.running_job is not job:
-                return True
-
-            if (
-                self.config.semantics is RuntimeSemantics.Q_AMC
-                and job.task.criticality is Criticality.LO
-            ):
-                budget = job.runtime_budget_at_release or self.budget_state.budget_of(job.task)
-                if job.executed_time <= budget:
-                    return True
-                self._handle_qamc_lo_overrun(job, event.time)
-                self._reschedule(event.time, force=True)
                 return True
 
             if (
@@ -1566,21 +1315,6 @@ class EventRuntimeEngine:
                     event.time,
                 )
 
-            if (
-                self.config.semantics is RuntimeSemantics.Q_AMC
-                and job.task.criticality is Criticality.HI
-                and job.remaining() == 0
-            ):
-                # A q-AMC HI trigger may cross the LO threshold on its final
-                # tick.  It still follows AMC continuation, so its result is
-                # accepted after the mode switch at this same instant.
-                job.completion_time = event.time
-                if job in self.state.active_jobs:
-                    self.state.active_jobs.remove(job)
-                _invalidate_job_events(self.state, job)
-                self.state.running_job = None
-                self.state.run_started_at = None
-
             if self.state.running_job is not None and (
                 self.state.running_job.dropped or self.state.running_job.finished()
             ):
@@ -1589,10 +1323,7 @@ class EventRuntimeEngine:
                 self.state.run_started_at = None
 
             _maybe_recover_to_lo(self.state, self.result, event.time, self.config)
-            self._reschedule(
-                event.time,
-                force=self.config.semantics is RuntimeSemantics.Q_AMC,
-            )
+            self._reschedule(event.time)
             return True
 
         return True
@@ -1640,7 +1371,6 @@ def simulate_ordered_taskset_event_driven(
     budget_state: BudgetState | None = None,
     budget_updates: Sequence[BudgetUpdate] | None = None,
     monitor: RuntimeMonitor | None = None,
-    qamc_profile_bundle: QAmcProfileBundle | None = None,
 ) -> SimulationResult:
     """事件驱动仿真入口（保持原 API，内部转发到 EventRuntimeEngine）。"""
 
@@ -1651,7 +1381,6 @@ def simulate_ordered_taskset_event_driven(
         budget_state=budget_state,
         budget_updates=budget_updates,
         monitor=monitor,
-        qamc_profile_bundle=qamc_profile_bundle,
     )
     engine.run_until(engine.end_time)
     return engine.finish()

@@ -6,12 +6,14 @@ from pathlib import Path
 import ast
 
 from .python_ast_ir import function_to_ir
+from formal_toolchain.semantics.frozen_runtime_contract import frozen_event_runtime_path, CONTRACT_VERSION
 
 
 def bind_removal_runtime(source_root: Path) -> dict[str, object]:
-    source = (Path(source_root) / "amc_py/event_runtime.py").read_text(encoding="utf-8")
+    runtime_path = frozen_event_runtime_path(source_root)
+    source = runtime_path.read_text(encoding="utf-8")
     boundary_ok = "job.executed_time <= budget" in source and "primary_on_switch_time" in source
-    tree = ast.parse(source, filename=str(Path(source_root) / "amc_py/event_runtime.py"))
+    tree = ast.parse(source, filename=str(runtime_path))
     process = next((node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
                     and node.name == "_process_event"), None)
     deadline_nodes = []
@@ -45,6 +47,8 @@ def bind_removal_runtime(source_root: Path) -> dict[str, object]:
         return {"status": "FAIL", "failure": {"code": "REMOVAL_BOUNDARY_SEMANTICS_FAILED",
                 "route": "MODEL_CONFORMANCE_FAILED"}, "targets": targets}
     result: dict[str, object] = {"status": "PASS" if not unresolved else "UNRESOLVED",
+        "formal_semantics_contract_version": CONTRACT_VERSION,
+        "mutable_runtime_binding": "NON_BLOCKING_AUDIT_ONLY",
         "targets": targets,
         "removal_paths": ["normal_completion", "primary_lo_budget_cancellation",
                           "mode_switch_active_lo_drop", "degraded_release_drop", "response_time_expiry"],

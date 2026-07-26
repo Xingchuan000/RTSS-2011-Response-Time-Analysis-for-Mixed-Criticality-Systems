@@ -5,10 +5,13 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Sequence
 import json
+from pathlib import Path
 
 from amc_py.dqn import DqnBudgetAgent, ExperimentConfig, build_env_from_experiment_config, resolve_experiment_bundle
 from amc_py.rl.feature_config import FeatureConfig
 from amc_py.runtime_models import RuntimeSemantics
+from amc_py.qamc.reference_config import load_and_validate_frozen_reference
+from amc_py.qamc.profile_spec import load_profile_spec
 from amc_py.viper.dataset import ViperSample
 from amc_py.viper.fixed_point import (
     FixedPointConfig,
@@ -207,4 +210,27 @@ def collect_teacher_labeled_rollouts(
         "action_definitions": action_definitions or [],
         "mask_reject_reasons": dict(manifest_mask_reasons),
     }
+    if runtime_semantics is RuntimeSemantics.Q_AMC:
+        if (
+            experiment_config.qamc_reference_config_path is None
+            or experiment_config.qamc_profile_manifest_path is None
+            or experiment_config.qamc_profile_spec_path is None
+        ):
+            raise ValueError("QAMC_REFERENCE_PROFILE_ARTIFACTS_REQUIRED")
+        frozen = load_and_validate_frozen_reference(
+            experiment_config.qamc_reference_config_path
+        )
+        profile_manifest = json.loads(
+            Path(experiment_config.qamc_profile_manifest_path).read_text(
+                encoding="utf-8"
+            )
+        )
+        spec = load_profile_spec(experiment_config.qamc_profile_spec_path)
+        manifest["qamc"] = {
+            "reference_config_fingerprint": frozen["fingerprint"],
+            "profile_manifest_fingerprint": profile_manifest.get("fingerprint"),
+            "profile_spec_fingerprint": spec.fingerprint,
+            "quality_visible_to_agent": False,
+            "formal_safety_claim": False,
+        }
     return samples, manifest

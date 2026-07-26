@@ -79,8 +79,19 @@ def evaluate_budget_action(
     if cfg.enable_deploy_cap_mask and action.increase_idx is not None:
         task = ordered_tasks[action.increase_idx]
         if cfg.deploy_cap_mask_criticality == "all" or task.criticality is Criticality.LO:
-            if candidate[task.name] > initial[task.name] * cfg.deploy_cap_mask_ratio:
-                return BudgetActionExecutionResult(False, False, {}, before, "deploy_cap_increase_mask", False)
+            current_ratio = before[task.name] / max(1, initial[task.name])
+            if current_ratio >= cfg.deploy_cap_mask_ratio:
+                return BudgetActionExecutionResult(
+                    False,
+                    False,
+                    {},
+                    before,
+                    (
+                        f"deploy_cap_increase_mask:{task.name}:"
+                        f"ratio={current_ratio:.6g}:cap={cfg.deploy_cap_mask_ratio:.6g}"
+                    ),
+                    False,
+                )
     # The primitive already clips to the legacy upper bounds; retain an explicit
     # check so callers receive a deterministic result if a custom action is used.
     for task in ordered_tasks:

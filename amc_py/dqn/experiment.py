@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-import hashlib
 import random
 
 from amc_py.experiments import evaluate_taskset, resolve_ordering
@@ -21,7 +20,7 @@ from amc_py.runtime_scenarios import (
     make_table_scenario,
 )
 from amc_py.qamc.models import QAmcProfileBundle
-from amc_py.qamc.profiles import load_profile_bundle
+from amc_py.qamc.profiles import compute_taskset_fingerprint, load_profile_bundle_from_manifest
 from amc_py.workloads.base import WorkloadProvider
 
 TasksetFactory = Callable[[int], list[Task]]
@@ -39,6 +38,7 @@ class ExperimentConfig:
     normalization_bounds_factory: NormalizationBoundsFactory | None = None
     workload_provider: WorkloadProvider | None = None
     check_safety: bool = True
+    qamc_reference_config_path: str | None = None
     qamc_profile_manifest_path: str | None = None
     qamc_profile_spec_path: str | None = None
 
@@ -347,13 +347,7 @@ def resolve_experiment_bundle(config: ExperimentConfig, seed: int) -> Experiment
             method="amc_rtb",
             priority_policy="dm",
         )
-        fingerprint_source = str(
-            [
-                (task.name, task.period, task.deadline, task.c_lo, task.c_hi, task.criticality.value)
-                for task in ordered_tasks
-            ]
-        ).encode("utf-8")
-        taskset_fingerprint = hashlib.sha256(fingerprint_source).hexdigest()[:12]
+        taskset_fingerprint = compute_taskset_fingerprint(ordered_tasks)
         return ExperimentBundle(
             ordered_tasks=tuple(ordered_tasks),
             scenario=workload_bundle.scenario,
@@ -381,13 +375,7 @@ def resolve_experiment_bundle(config: ExperimentConfig, seed: int) -> Experiment
     taskset_seed = int(resolve_taskset_seed(seed)) if callable(resolve_taskset_seed) else seed
     scenario_seed = int(resolve_scenario_seed(seed)) if callable(resolve_scenario_seed) else seed
     taskset_attempts = int(resolve_taskset_attempts(seed)) if callable(resolve_taskset_attempts) else 1
-    fingerprint_source = str(
-        [
-            (task.name, task.period, task.deadline, task.c_lo, task.c_hi, task.criticality.value)
-            for task in ordered_tasks
-        ]
-    ).encode("utf-8")
-    taskset_fingerprint = hashlib.sha256(fingerprint_source).hexdigest()[:12]
+    taskset_fingerprint = compute_taskset_fingerprint(ordered_tasks)
     return ExperimentBundle(
         ordered_tasks=ordered_tasks,
         scenario=scenario,
@@ -446,6 +434,7 @@ def build_env_from_experiment_config(
     residual_guard_use_hi_pressure_max: bool = False,
     qamc_profile_bundle: QAmcProfileBundle | None = None,
     qamc_profile_manifest_path: str | None = None,
+    budget_update_source: str = "DQN_ACTION",
 ) -> AmcBudgetEnv:
     """根据实验配置构造 `AmcBudgetEnv`，供训练与评估入口复用。"""
 
@@ -455,16 +444,13 @@ def build_env_from_experiment_config(
         manifest_path = qamc_profile_manifest_path or config.qamc_profile_manifest_path
         if manifest_path is None:
             raise ValueError("QAMC_PROFILE_MANIFEST_REQUIRED")
-        import json
-        from pathlib import Path
-
-        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-        entry = manifest.get("profiles", {}).get(bundle.taskset_fingerprint)
-        if entry is None:
-            raise ValueError(f"QAMC_PROFILE_TASKSET_NOT_IN_MANIFEST:{bundle.taskset_fingerprint}")
-        resolved_qamc_profile = load_profile_bundle(entry["path"])
-        if resolved_qamc_profile.taskset_fingerprint != bundle.taskset_fingerprint:
-            raise ValueError("QAMC_PROFILE_TASKSET_FINGERPRINT_MISMATCH")
+        if config.qamc_profile_spec_path is None:
+            raise ValueError("QAMC_PROFILE_SPEC_REQUIRED")
+        resolved_qamc_profile = load_profile_bundle_from_manifest(
+            manifest_path,
+            taskset_fingerprint=str(bundle.taskset_fingerprint),
+            spec_path=config.qamc_profile_spec_path,
+        )
     return AmcBudgetEnv(
         ordered_tasks=bundle.ordered_tasks,
         scenario=bundle.scenario,
@@ -515,6 +501,7 @@ def build_env_from_experiment_config(
         residual_guard_reject_decrease_pressure_threshold=residual_guard_reject_decrease_pressure_threshold,
         residual_guard_use_hi_pressure_max=residual_guard_use_hi_pressure_max,
         qamc_profile_bundle=resolved_qamc_profile,
+        budget_update_source=budget_update_source,
     )
 
 

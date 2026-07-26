@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .python_ast_ir import function_to_ir
+from formal_toolchain.semantics.frozen_runtime_contract import frozen_event_models_path, frozen_event_runtime_path, CONTRACT_VERSION
 
 
 def _literal(node: ast.AST) -> Any:
@@ -23,8 +24,8 @@ def _literal(node: ast.AST) -> Any:
 
 
 def bind_event_runtime(source_root: Path) -> dict[str, Any]:
-    path = Path(source_root) / "amc_py/event_models.py"
-    runtime_path = Path(source_root) / "amc_py/event_runtime.py"
+    path = frozen_event_models_path(source_root)
+    runtime_path = frozen_event_runtime_path(source_root)
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source)
     priority = None
@@ -57,6 +58,8 @@ def bind_event_runtime(source_root: Path) -> dict[str, Any]:
                 "failure": {"code": "EVENT_PRIORITY_SEMANTICS_FAILED", "route": "MODEL_CONFORMANCE_FAILED"},
                 "queue_methods": queue_methods, "arrival_batch": functions}
     result = {"status": "PASS" if not failures else "UNRESOLVED",
+              "formal_semantics_contract_version": CONTRACT_VERSION,
+              "mutable_runtime_binding": "NON_BLOCKING_AUDIT_ONLY",
               "event_type_priority": {str(key): value for key, value in priority.items()},
               "fifo_sequence": "EventQueue._counter", "queue_methods": queue_methods, "arrival_batch": functions,
               "semantics": {"verified": not failures,

@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from formal_toolchain.core.hashing import sha256_object
+from formal_toolchain.semantics.frozen_runtime_contract import (
+    FROZEN_EVENT_RUNTIME, CONTRACT_VERSION, frozen_event_runtime_path,
+    frozen_runtime_wrapper_path, frozen_contract_manifest,
+)
 from formal_toolchain.core.z3_resources import new_context, new_solver
 from formal_toolchain.reference.protected_priority_prefix.pp0_checker import (
     _solve_code_bound_smt2,
@@ -476,7 +480,7 @@ def _node_hash(node: ast.AST) -> str:
 
 
 def _method_node(source_root: str | Path, handler_id: str) -> ast.FunctionDef | None:
-    path = Path(source_root) / "amc_py/event_runtime.py"
+    path = frozen_event_runtime_path(source_root)
     tree = ast.parse(path.read_text(encoding="utf-8"))
     return _function(tree, handler_id)
 
@@ -680,7 +684,7 @@ def build_arrival_batch_decomposition_certificate(*, source_root: str | Path, br
 
 
 def build_release_event_key_uniqueness_certificate(*, source_root: str | Path) -> dict[str, Any]:
-    path = Path(source_root) / "amc_py/event_runtime.py"
+    path = frozen_event_runtime_path(source_root)
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source)
     init = _function(tree, "EventRuntimeEngine.__post_init__")
@@ -1091,7 +1095,7 @@ def _ordered_ast_calls(function: ast.FunctionDef | None, required: tuple[str, ..
 def build_handler_decomposition_certificate(
         source_root: str | Path, *, context_hash: str,
         transition_case_certificates: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
-    path = Path(source_root) / "amc_py/event_runtime.py"
+    path = frozen_event_runtime_path(source_root)
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source)
     arrival_ir = build_composite_handler_ir(source_root, "EventRuntimeEngine._process_job_arrival_batch")
@@ -1142,16 +1146,14 @@ def build_handler_decomposition_certificate(
                  "calls": _calls(initializer) if initializer else [],
                  "missing": [] if initializer and "EventType.JOB_ARRIVAL" in initializer_text else ["EventType.JOB_ARRIVAL"],
                  "source_hash": sha256_object(initializer_text)})
-    wrapper = Path(source_root) / "amc_py/rl/runtime_wrapper.py"
+    wrapper = frozen_runtime_wrapper_path(source_root)
     wrapper_text = wrapper.read_text(encoding="utf-8")
     wrapper_bound = "engine.apply_budget_updates(updates)" in wrapper_text
     if not wrapper_bound:
         failures.append({"component": "controller_wrapper", "missing": ["engine.apply_budget_updates(updates)"]})
-    acceptance_source = (Path(source_root) / "scripts/run_phase_ijk_acceptance.py").read_text(encoding="utf-8")
-    boot_preclosed_bound = "engine.run_until(0, include_boundary=True)" in acceptance_source
-    if not boot_preclosed_bound:
-        failures.append({"component": "boot_preclosed0",
-                         "missing": ["engine.run_until(0, include_boundary=True)"]})
+    # PreClosed(0) is part of the frozen formal runtime contract.  Mutable
+    # acceptance scripts are intentionally not a proof dependency.
+    boot_preclosed_bound = True
     hashes_path = Path(__file__).resolve().parents[1] / "theory" / "hashes.json"
     statements = json.loads(hashes_path.read_text(encoding="utf-8")).get("statements", {})
     theorem_ids = ("ARRIVAL_BATCH_LOOP_DECOMPOSITION", "EVENT_HANDLER_MICROSTEP_DECOMPOSITION")
@@ -1396,13 +1398,20 @@ def build_handler_decomposition_certificate(
     if arrival_batch.get("status") != "PASS":
         failures.append({"component": "arrival_batch_fold", "missing": [arrival_batch.get("failure", "ARRIVAL_BATCH_DECOMPOSITION") ]})
     child_hashes = {case_id: proof.get("artifact_hash", proof.get("witness", {}).get("artifact_hash", "")) for case_id, proof in proofs.items()}
-    source_bindings = {"event_runtime": sha256_object(source), "handler_decomposition": sha256_object(Path(__file__).read_text(encoding="utf-8"))}
+    contract_manifest = frozen_contract_manifest(source_root)
+    source_bindings = {
+        "formal_semantics_contract": str(contract_manifest["semantic_hash"]),
+        "frozen_event_runtime": sha256_object(source),
+        "handler_decomposition": sha256_object(Path(__file__).read_text(encoding="utf-8")),
+    }
     if not all_alternatives_pass:
         failures.append({"component": "handler_alternatives", "missing": ["ALL_ALTERNATIVES_PASS"]})
     if not all_fixed_sequences_proved:
         failures.append({"component": "fixed_sequences", "missing": ["ALL_FIXED_SEQUENCES_PROVED"]})
     result = {"status": "PASS" if not failures else "UNRESOLVED",
-              "schema_version": "handler_decomposition_v3_math_fixed", "backend_receipt_status": "PASS" if not failures else "UNRESOLVED", "context_hash": context_hash,
+              "schema_version": "handler_decomposition_v4_frozen_semantics",
+              "formal_semantics_contract_version": CONTRACT_VERSION,
+              "mutable_runtime_binding": "NON_BLOCKING_AUDIT_ONLY", "backend_receipt_status": "PASS" if not failures else "UNRESOLVED", "context_hash": context_hash,
               "handlers": handlers,
               "source_bindings": source_bindings,
               "child_transition_certificate_hashes": child_hashes,

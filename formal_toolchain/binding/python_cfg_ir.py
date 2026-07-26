@@ -126,8 +126,9 @@ def find_qualified_function(tree: ast.Module, qualified_function: str) -> ast.Fu
     return matches[0] if len(matches) == 1 else None
 
 
-def enumerate_function_paths(source_root: str | Path, qualified_function: str) -> tuple[ExecutablePath, ...]:
-    source_path = Path(source_root) / "amc_py" / "event_runtime.py"
+def enumerate_function_paths(source_root: str | Path, qualified_function: str, *,
+                             source_relative: str = "amc_py/event_runtime.py") -> tuple[ExecutablePath, ...]:
+    source_path = Path(source_root) / source_relative
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
     function = find_qualified_function(tree, qualified_function)
     if function is None:
@@ -137,10 +138,11 @@ def enumerate_function_paths(source_root: str | Path, qualified_function: str) -
 
 
 def extract_path_ir(source_root: str | Path, qualified: str, start: int | None = None,
-                    end: int | None = None) -> dict[str, Any]:
+                    end: int | None = None, *,
+                    source_relative: str = "amc_py/event_runtime.py") -> dict[str, Any]:
     """兼容旧调用，但正式路径选择不再接受行号范围。"""
     try:
-        paths = enumerate_function_paths(source_root, qualified)
+        paths = enumerate_function_paths(source_root, qualified, source_relative=source_relative)
     except (OSError, SyntaxError, ValueError) as exc:
         return {"status": "UNRESOLVED", "failure": str(exc)}
     if start is not None or end is not None:
