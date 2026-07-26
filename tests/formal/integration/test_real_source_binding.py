@@ -147,6 +147,82 @@ def test_frozen_semantics_mutation_is_rejected(tmp_path: Path):
     assert bind_removal_runtime(root)["status"] in {"FAIL", "UNRESOLVED"}
 
 
+
+def test_mutable_action_and_observation_runtime_changes_are_non_blocking(tmp_path: Path):
+    root = _copy_sources(tmp_path)
+    feature_artifact = root / "tests/formal/fixtures/synthetic_p0/feature_names.json"
+    feature_artifact.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / "tests/formal/fixtures/synthetic_p0/feature_names.json", feature_artifact)
+
+    before = build_source_manifest(root)
+    assert bind_action_runtime(root)["status"] == "PASS"
+    assert bind_observation_runtime(
+        root,
+        feature_artifact,
+        runtime_feature_names=json.loads(feature_artifact.read_text())["feature_names"],
+        ordered_tasks=["SYN_HI", "SYN_LO"],
+        feature_task_order=["SYN_HI", "SYN_LO"],
+    )["status"] == "PASS"
+
+    for relative, marker in (
+        ("amc_py/rl/env.py", "# q-AMC action guard added after formal freeze\n"),
+        ("amc_py/rl/actions.py", "# q-AMC action type added after formal freeze\n"),
+        ("amc_py/rl/safety.py", "# q-AMC safety diagnostic added after formal freeze\n"),
+        ("amc_py/rl/observation.py", "# q-AMC observation branch added after formal freeze\n"),
+        ("amc_py/rl/feature_state.py", "# q-AMC feature state added after formal freeze\n"),
+        ("amc_py/rl/feature_config.py", "# q-AMC feature schema added after formal freeze\n"),
+    ):
+        path = root / relative
+        path.write_text(path.read_text(encoding="utf-8") + "\n" + marker, encoding="utf-8")
+
+    after = build_source_manifest(root)
+    assert after["semantic_hash"] == before["semantic_hash"]
+    assert after["implementation_audit_hash"] != before["implementation_audit_hash"]
+    assert bind_action_runtime(root)["status"] == "PASS"
+    observation = bind_observation_runtime(
+        root,
+        feature_artifact,
+        runtime_feature_names=json.loads(feature_artifact.read_text())["feature_names"],
+        ordered_tasks=["SYN_HI", "SYN_LO"],
+        feature_task_order=["SYN_HI", "SYN_LO"],
+    )
+    assert observation["status"] == "PASS"
+    assert observation["mutable_runtime_binding"] == "NON_BLOCKING_AUDIT_ONLY"
+
+
+def test_frozen_action_and_observation_mutations_are_blocking(tmp_path: Path):
+    root = _copy_sources(tmp_path)
+    before = build_source_manifest(root)
+
+    action_path = root / "formal_toolchain/semantics/frozen_c_amc_sem_action_runtime.py"
+    action_path.write_text(
+        action_path.read_text(encoding="utf-8").replace("math.ceil(raw_inc)", "math.floor(raw_inc)", 1),
+        encoding="utf-8",
+    )
+    action_manifest = build_source_manifest(root)
+    assert action_manifest["semantic_hash"] != before["semantic_hash"]
+    assert bind_action_runtime(root)["status"] in {"FAIL", "UNRESOLVED"}
+
+    root = _copy_sources(tmp_path / "observation")
+    before_observation = build_source_manifest(root)
+    observation_path = root / "formal_toolchain/semantics/frozen_c_amc_sem_observation.py"
+    observation_path.write_text(
+        observation_path.read_text(encoding="utf-8").replace('"risk",', '"risk_mutated",', 1),
+        encoding="utf-8",
+    )
+    after_observation = build_source_manifest(root)
+    assert after_observation["semantic_hash"] != before_observation["semantic_hash"]
+    fixture = ROOT / "tests/formal/fixtures/synthetic_p0/feature_names.json"
+    result = bind_observation_runtime(
+        root,
+        fixture,
+        runtime_feature_names=json.loads(fixture.read_text())["feature_names"],
+        ordered_tasks=["SYN_HI", "SYN_LO"],
+        feature_task_order=["SYN_HI", "SYN_LO"],
+    )
+    assert result["status"] == "UNRESOLVED"
+    assert result["failure"]["code"] == "FEATURE_NAMES_BYTE_MISMATCH"
+
 def test_policy_and_fixed_point_mutations_remain_blocking(tmp_path: Path):
     root = _copy_sources(tmp_path)
     policy_path = root / "amc_py/viper/tree_policy.py"

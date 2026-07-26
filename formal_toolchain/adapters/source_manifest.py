@@ -23,11 +23,8 @@ from formal_toolchain.semantics.frozen_runtime_contract import (
 # previous list, these are stable proof semantics / policy interfaces rather
 # than the shared event runtime.
 TARGET_FILES = frozen_contract_files() + (
-    "amc_py/rl/actions.py",
-    "amc_py/rl/safety.py",
-    "amc_py/rl/observation.py",
-    "amc_py/rl/feature_state.py",
-    "amc_py/rl/feature_config.py",
+    # The mutable RL environment/actions/observation stack is audited below,
+    # but is not part of the blocking C-AMC-sem/P0 semantic hash.
     "amc_py/viper/fixed_point.py",
     "amc_py/viper/integer_tree.py",
     "amc_py/viper/tree_policy.py",

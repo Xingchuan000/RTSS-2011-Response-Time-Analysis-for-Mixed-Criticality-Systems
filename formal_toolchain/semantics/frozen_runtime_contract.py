@@ -19,7 +19,9 @@ from formal_toolchain.core.hashing import sha256_file, sha256_object
 FROZEN_EVENT_RUNTIME = "formal_toolchain/semantics/frozen_c_amc_sem_event_runtime.py"
 FROZEN_EVENT_MODELS = "formal_toolchain/semantics/frozen_c_amc_sem_event_models.py"
 FROZEN_RUNTIME_WRAPPER = "formal_toolchain/semantics/frozen_c_amc_sem_runtime_wrapper.py"
-CONTRACT_VERSION = "c_amc_sem_p0_frozen_runtime_v1"
+FROZEN_ACTION_RUNTIME = "formal_toolchain/semantics/frozen_c_amc_sem_action_runtime.py"
+FROZEN_OBSERVATION_RUNTIME = "formal_toolchain/semantics/frozen_c_amc_sem_observation.py"
+CONTRACT_VERSION = "c_amc_sem_p0_frozen_runtime_v2"
 
 
 def frozen_event_runtime_path(source_root: str | Path) -> Path:
@@ -34,8 +36,22 @@ def frozen_runtime_wrapper_path(source_root: str | Path) -> Path:
     return Path(source_root) / FROZEN_RUNTIME_WRAPPER
 
 
+def frozen_action_runtime_path(source_root: str | Path) -> Path:
+    return Path(source_root) / FROZEN_ACTION_RUNTIME
+
+
+def frozen_observation_runtime_path(source_root: str | Path) -> Path:
+    return Path(source_root) / FROZEN_OBSERVATION_RUNTIME
+
+
 def frozen_contract_files() -> tuple[str, ...]:
-    return (FROZEN_EVENT_RUNTIME, FROZEN_EVENT_MODELS, FROZEN_RUNTIME_WRAPPER)
+    return (
+        FROZEN_EVENT_RUNTIME,
+        FROZEN_EVENT_MODELS,
+        FROZEN_RUNTIME_WRAPPER,
+        FROZEN_ACTION_RUNTIME,
+        FROZEN_OBSERVATION_RUNTIME,
+    )
 
 
 def frozen_contract_manifest(source_root: str | Path) -> dict[str, object]:
@@ -46,7 +62,7 @@ def frozen_contract_manifest(source_root: str | Path) -> dict[str, object]:
         for relative in frozen_contract_files()
     ]
     return {
-        "schema_version": "frozen_runtime_contract_manifest_v1",
+        "schema_version": "frozen_runtime_contract_manifest_v2",
         "contract_version": CONTRACT_VERSION,
         "files": records,
         "semantic_hash": sha256_object({
@@ -60,7 +76,15 @@ def is_mutable_runtime_path(relative: str) -> bool:
     normalized = str(relative).replace("\\", "/")
     return (
         normalized == "amc_py/event_runtime.py"
+        or normalized == "amc_py/event_models.py"
         or normalized == "amc_py/runtime_models.py"
+        or normalized == "amc_py/runtime_scenarios.py"
+        or normalized == "amc_py/rl/env.py"
+        or normalized == "amc_py/rl/actions.py"
+        or normalized == "amc_py/rl/safety.py"
+        or normalized == "amc_py/rl/observation.py"
+        or normalized == "amc_py/rl/feature_state.py"
+        or normalized == "amc_py/rl/feature_config.py"
         or normalized.startswith("amc_py/qamc/")
         or normalized.startswith("tests/test_qamc")
     )
