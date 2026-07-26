@@ -49,13 +49,28 @@ def _route_state(kwargs: Mapping[str, Any]):
 
 
 def _unwrap_proof_payload(value: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Unwrap route/artifact envelopes to the theorem receipt payload."""
+    """Remove verifier/certificate envelopes without eating semantic payloads.
+
+    Some fresh obligations are wrapped twice (route artifact -> recomputed
+    obligation certificate -> theorem payload).  Other payloads, notably the
+    RTA receipt, legitimately contain their own ``witness`` member.  Therefore
+    descend only while the current mapping has envelope markers, rather than
+    blindly following every key named ``witness``.
+    """
     current: Any = value or {}
-    for _ in range(3):
+    for _ in range(6):
         if not isinstance(current, Mapping):
             return {}
         nested = current.get("witness")
-        if not isinstance(nested, Mapping):
+        is_envelope = any(
+            marker in current
+            for marker in (
+                "obligation_status",
+                "artifact_schema_version",
+                "checker_id",
+            )
+        )
+        if not is_envelope or not isinstance(nested, Mapping):
             break
         current = nested
     return dict(current) if isinstance(current, Mapping) else {}
@@ -420,7 +435,7 @@ def check_full_reference_recurring_input_oracle(**kwargs: Any) -> dict[str, Any]
     if state is None or state.full_reference_taskset is None:
         return _finish("UNRESOLVED", "FULL_REFERENCE_TASKSET_MISSING")
 
-    conformance = predecessors["REFERENCE_MODEL_CONFORMANCE"].get("witness", {})
+    conformance = _unwrap_proof_payload(predecessors["REFERENCE_MODEL_CONFORMANCE"])
     rows = {
         row.get("condition_id"): row
         for row in conformance.get("condition_results", [])
@@ -472,7 +487,7 @@ def check_protected_input_stream_projection(**kwargs: Any) -> dict[str, Any]:
                     if state and state.prepared_route else None)
     if construction is None:
         return _finish("UNRESOLVED", "PROTECTED_PREFIX_CONSTRUCTION_MISSING")
-    source = predecessors["FULL_REFERENCE_RECURRING_INPUT_ORACLE"].get("witness", {})
+    source = _unwrap_proof_payload(predecessors["FULL_REFERENCE_RECURRING_INPUT_ORACLE"])
     prefix_fp = construction.prefix_taskset.to_dict()["fingerprint"]
     from formal_toolchain.reference.protected_priority_prefix.projected_oracle_theorem import (
         build_symbolic_projection_theorem,
@@ -517,12 +532,12 @@ def check_protected_input_demand_receptiveness(**kwargs: Any) -> dict[str, Any]:
     state = _route_state(kwargs)
     if state is None or state.analysis_taskset is None:
         return _finish("UNRESOLVED", "PROTECTED_PREFIX_TASKSET_MISSING")
-    projection = predecessors["PROTECTED_INPUT_STREAM_PROJECTION"].get("witness", {})
+    projection = _unwrap_proof_payload(predecessors["PROTECTED_INPUT_STREAM_PROJECTION"])
     prefix_fp = state.analysis_taskset.to_dict()["fingerprint"]
     from formal_toolchain.reference.protected_priority_prefix.projected_oracle_theorem import (
         build_symbolic_demand_receptiveness_theorem,
     )
-    saturation = predecessors["PROTECTED_PREFIX_LO_SATURATION"].get("witness", {})
+    saturation = _unwrap_proof_payload(predecessors["PROTECTED_PREFIX_LO_SATURATION"])
     receipt = build_symbolic_demand_receptiveness_theorem(
         full_taskset=state.full_reference_taskset,
         prefix_taskset=state.analysis_taskset,
@@ -642,7 +657,7 @@ def check_prefix_canonical_successor_total(**kwargs: Any) -> dict[str, Any]:
     )
     # The theorem consumes the symbolic projected-oracle contract/fingerprint.
     # It must not require an in-memory oracle object hidden in a predecessor.
-    projection = predecessors["PROTECTED_INPUT_STREAM_PROJECTION"].get("witness", {})
+    projection = _unwrap_proof_payload(predecessors["PROTECTED_INPUT_STREAM_PROJECTION"])
     successor_def = define_next_closed_boundary(state.analysis_taskset, projection)
     total = prove_canonical_successor_total(
         state.analysis_taskset, successor_def,
@@ -1240,7 +1255,7 @@ def check_prefix_model_conformance(**kwargs: Any) -> dict[str, Any]:
 
     full = state.full_reference_taskset
     prefix = state.analysis_taskset
-    runtime_certificate = predecessors["PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE"].get("witness", {})
+    runtime_certificate = _unwrap_proof_payload(predecessors["PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE"])
     prefix_extension_receipt = predecessors["PROTECTED_PREFIX_REFERENCE_PREFIX_EXTENSION"]
     result = derive_prefix_model_conformance(
         full_taskset=full,
@@ -1275,13 +1290,22 @@ def check_mathematical_conformance(**kwargs: Any) -> dict[str, Any]:
     expected_fp = state.analysis_taskset.to_dict()["fingerprint"]
 
     conformance_receipt = predecessors["PROTECTED_PREFIX_REFERENCE_MODEL_CONFORMANCE"]
-    conformance = conformance_receipt.get("witness", {})
+    conformance = _unwrap_proof_payload(conformance_receipt)
+    # derive_prefix_model_conformance returns a semantic result object whose
+    # own witness is the theorem receipt.  This is not a generic artifact
+    # envelope, so unwrap it explicitly at this call site.
+    if (
+        "prefix_taskset_fingerprint" not in conformance
+        and conformance.get("status") == "PASS"
+        and isinstance(conformance.get("witness"), Mapping)
+    ):
+        conformance = dict(conformance["witness"])
     conformance_fp = conformance.get("prefix_taskset_fingerprint") if isinstance(conformance, Mapping) else None
     if conformance_receipt.get("obligation_status") != "PASS":
         return _finish("UNRESOLVED", "PP7_A1_MODEL_CONFORMANCE_UNRESOLVED")
 
     rta_receipt = predecessors["PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"]
-    rta_state = rta_receipt.get("witness", {})
+    rta_state = _unwrap_proof_payload(rta_receipt)
     rta_replay = rta_state.get("replay", {}) if isinstance(rta_state, Mapping) else {}
     rta_witness = rta_replay.get("witness", {}) if isinstance(rta_replay, Mapping) else {}
     rta_soundness = rta_state.get("soundness_receipt", {}) if isinstance(rta_state, Mapping) else {}

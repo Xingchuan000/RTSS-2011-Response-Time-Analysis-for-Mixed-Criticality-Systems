@@ -192,6 +192,18 @@ def _remove_job_overrides(prefix: str, bounds: P0ModelBounds) -> dict[str, str]:
     return result
 
 
+def _selected_job_projection(prefix: str, bounds: P0ModelBounds, field: str) -> str:
+    value = "0"
+    for slot in reversed(range(bounds.job_slots)):
+        base = f"{prefix}_job_{slot}_"
+        selected = (
+            f"(and (= {base}present 1) (= {base}ready 1) "
+            f"(= {base}key selected_job_key))"
+        )
+        value = f"(ite {selected} {base}{field} {value})"
+    return value
+
+
 def _dispatch_job_overrides(prefix: str, bounds: P0ModelBounds) -> dict[str, str]:
     result: dict[str, str] = {}
     for slot in range(bounds.job_slots):
@@ -269,10 +281,23 @@ def render_reference_p0_delta(
                  queue_token_epoch="(+ r_queue_token_epoch 1)")
         c.update({f"job_{slot}_running": "0" for slot in range(bounds.job_slots)})
     elif case_id == "PREEMPTION_DISPATCH":
-        c.update(running="1", running_job_key="selected_job_key", affected_job_key="selected_job_key",
-                 affected_job_running="1",
-                 queue_token_epoch="(+ r_queue_token_epoch 1)",
-                 queue_event_count="(+ r_queue_event_count 2)")
+        c.update(
+            running="1",
+            running_job_key="selected_job_key",
+            affected_job_key="selected_job_key",
+            affected_job_active="1",
+            affected_job_ready="1",
+            affected_job_running="1",
+            queue_token_epoch="(+ r_queue_token_epoch 1)",
+            queue_event_count="(+ r_queue_event_count 2)",
+        )
+        for field in (
+            "priority", "release", "deadline", "category", "budget",
+            "demand", "service", "hi_complete", "hi_miss",
+        ):
+            c[f"affected_job_{field}"] = _selected_job_projection(
+                "r", bounds, field
+            )
         c.update(_dispatch_job_overrides("r", bounds))
     elif case_id == "CONTROLLER_SELECTED_ACTION":
         c.update(future_budget="release_budget", affected_task_budget="release_budget")
@@ -284,12 +309,25 @@ def render_reference_p0_delta(
         raise ValueError(f"REFERENCE_P0_UNKNOWN_CASE_ID:{case_id}")
     body = _all_post("r", bounds, c)
     if case_id in {"PRIMARY_LO_RELEASE", "DEGRADED_LO_RELEASE", "HI_RELEASE"}:
-        return (
-            "(and "
-            "(> expected_demand 0) "
-            "(<= expected_demand release_budget) "
-            + body[5:]
-        )
+        # ``release_budget`` is a concrete runtime snapshot, not the fixed
+        # reference WCET upper bound.  Do not impose expected_demand <= budget:
+        # primary LO may need B+1 service ticks and abnormal HI may exceed its
+        # LO budget.  N2 nevertheless requires the *same release-fixed demand*
+        # on both sides, so bind the case-specific runtime mapping exactly.
+        if case_id == "PRIMARY_LO_RELEASE":
+            demand = (
+                "(= expected_demand "
+                "(ite (<= actual_cost (+ release_budget 1)) "
+                "actual_cost (+ release_budget 1)))"
+            )
+        elif case_id == "DEGRADED_LO_RELEASE":
+            demand = (
+                "(= expected_demand "
+                "(ite (<= actual_cost degraded_cost) actual_cost degraded_cost))"
+            )
+        else:
+            demand = "(= expected_demand actual_cost)"
+        return "(and (> expected_demand 0) " + demand + " " + body[5:]
     return body
 
 

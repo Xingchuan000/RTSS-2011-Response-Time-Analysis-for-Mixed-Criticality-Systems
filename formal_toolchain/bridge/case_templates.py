@@ -155,6 +155,18 @@ def _remove_job_overrides(prefix: str, bounds: P0ModelBounds) -> dict[str, str]:
     return result
 
 
+def _selected_job_projection(prefix: str, bounds: P0ModelBounds, field: str) -> str:
+    value = "0"
+    for slot in reversed(range(bounds.job_slots)):
+        base = f"{prefix}_job_{slot}_"
+        selected = (
+            f"(and (= {base}present 1) (= {base}ready 1) "
+            f"(= {base}key selected_job_key))"
+        )
+        value = f"(ite {selected} {base}{field} {value})"
+    return value
+
+
 def _dispatch_job_overrides(prefix: str, bounds: P0ModelBounds) -> dict[str, str]:
     result: dict[str, str] = {}
     for slot in range(bounds.job_slots):
@@ -288,7 +300,19 @@ def compile_bound_path_effect(row: Mapping[str, Any], *, bounds: P0ModelBounds |
         o["ready"] = "(- c_ready 1)"
         o.update(affected_job_active="0", affected_job_ready="0")
     if "running_clear" in effects: o.update(running="0", affected_job_running="0")
-    if "running_update" in effects: o.update(running="1", affected_job_key="selected_job_key", affected_job_running="1")
+    if "running_update" in effects:
+        o.update(
+            running="1", affected_job_key="selected_job_key",
+            affected_job_active="1", affected_job_ready="1",
+            affected_job_running="1",
+        )
+        for field in (
+            "priority", "release", "deadline", "category", "budget",
+            "demand", "service", "hi_complete", "hi_miss",
+        ):
+            o[f"affected_job_{field}"] = _selected_job_projection(
+                "c", bounds, field
+            )
     if "hi_complete" in effects: o.update(hi_complete="1", affected_job_hi_complete="1")
     if "hi_miss_flag" in effects: o.update(miss="1", affected_job_hi_miss="1")
     if "future_budget_update" in effects: o.update(future_budget="release_budget", affected_task_budget="release_budget")
@@ -345,7 +369,7 @@ def compile_case_template(case_id: str, *, bounds: P0ModelBounds | None = None) 
     extra: list[str] = []
     if case_id in {"PRIMARY_LO_RELEASE", "DEGRADED_LO_RELEASE", "HI_RELEASE"}:
         extra += ["(= event_job_key release_job_key)", "(= c_event_job_key release_job_key)",
-                  "(= release_time event_time)", "(= event_time c_time)", "(>= actual_cost 0)",
+                  "(= release_time event_time)", "(= event_time c_time)", "(> actual_cost 0)",
                   "(>= release_budget 0)", "(> next_release_time release_time)",
                   "(= next_deadline_time release_deadline)"]
         extra += ["(or " + " ".join(f"(= release_slot {slot})" for slot in range(bounds.job_slots)) + ")"]
@@ -354,6 +378,11 @@ def compile_case_template(case_id: str, *, bounds: P0ModelBounds | None = None) 
         extra += ["(or " + " ".join(f"(and (= release_slot {slot}) (= c_job_{slot}_present 0))"
                                       for slot in range(bounds.job_slots)) + ")"]
         extra += ["(= release_mode c_mode)"]
+        if case_id == "DEGRADED_LO_RELEASE":
+            # Runtime clamps the degraded execution budget to at least one tick.
+            # Bind that source-level positivity here; otherwise expected_demand
+            # may be zero even though admissible demands are strictly positive.
+            extra += ["(> degraded_cost 0)"]
     if case_id == "ONE_SERVICE_TICK":
         extra += ["(> elapsed 0)", "(<= elapsed c_remaining)", "(> c_affected_job_running 0)",
                   "(= c_running_job_key c_affected_job_key)", "(= event_time (+ c_time elapsed))"]
@@ -383,7 +412,7 @@ def compile_case_template(case_id: str, *, bounds: P0ModelBounds | None = None) 
     if case_id == "PREEMPTION_DISPATCH":
         extra += ["(= highest_priority_selected 1)", "(= selected_job_present 0)",
                   "(or (= force 1) (not (= selected_job_key c_running_job_key)))",
-                  "(= selected_job_key c_affected_job_key)", "(> c_ready 0)"]
+                  "(> c_ready 0)"]
         extra += ["(or " + " ".join(
             f"(and (= c_job_{slot}_ready 1) (= c_job_{slot}_key selected_job_key))"
             for slot in range(bounds.job_slots)) + ")"]
@@ -391,7 +420,13 @@ def compile_case_template(case_id: str, *, bounds: P0ModelBounds | None = None) 
         extra += ["(= c_mode 1)", "(= active_empty 1)", "(= ready_empty 1)", "(= c_running 0)"]
     if case_id in {"DEADLINE_OBSERVATION_NO_MISS", "DEADLINE_OBSERVATION_FIRST_HI_MISS"}:
         extra += ["(= event_job_key c_affected_job_key)", "(= event_time c_deadline)",
-                  "(= event_deadline c_deadline)", "(= token_valid 1)"]
+                  "(= event_deadline c_deadline)", "(= token_valid 1)",
+                  "(or " + " ".join(
+                      f"(and (= affected_job_slot {slot}) "
+                      f"(= c_job_{slot}_present 1) "
+                      f"(= c_job_{slot}_key event_job_key))"
+                      for slot in range(bounds.job_slots)
+                  ) + ")"]
     if case_id == "CONTROLLER_SELECTED_ACTION":
         extra += ["(>= update_arity 1)", "(= update_target_key affected_task_key)",
                   "(or " + " ".join(f"(= update_target_slot {slot})" for slot in range(bounds.task_slots)) + ")",

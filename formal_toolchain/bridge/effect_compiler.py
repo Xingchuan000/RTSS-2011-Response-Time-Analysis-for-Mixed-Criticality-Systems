@@ -58,6 +58,25 @@ def build_phase_k_static_effect_bindings(runtime_config: Any | None) -> dict[str
     }
 
 
+def _selected_job_projection(prefix: str, bounds: P0ModelBounds, field: str) -> str:
+    """Project one field from the ready job selected by ``selected_job_key``.
+
+    PREEMPTION_DISPATCH can follow completion/removal, so the selected job is
+    generally *not* the job affected by the preceding primitive.  The finite
+    ghost projection must therefore be refreshed from the selected ready slot
+    rather than framed from the removed job.
+    """
+    value = "0"
+    for slot in reversed(range(bounds.job_slots)):
+        base = f"{prefix}_job_{slot}_"
+        selected = (
+            f"(and (= {base}present 1) (= {base}ready 1) "
+            f"(= {base}key selected_job_key))"
+        )
+        value = f"(ite {selected} {base}{field} {value})"
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class CompiledConcreteEffect:
     equations: tuple[str, ...]
@@ -87,7 +106,14 @@ def compile_reschedule_family_effect(*, case_id: str, branch_binding,
     consumed = tuple(str(item["ast_hash"]) for item in effect_ir)
     overridden = {"running", "running_job_key", "affected_job_running"}
     if case_id == "PREEMPTION_DISPATCH":
-        overridden.add("affected_job_key")
+        overridden.update({
+            "affected_job_key", "affected_job_active", "affected_job_ready",
+            "affected_job_priority", "affected_job_release",
+            "affected_job_deadline", "affected_job_category",
+            "affected_job_budget", "affected_job_demand",
+            "affected_job_service", "affected_job_hi_complete",
+            "affected_job_hi_miss",
+        })
     if case_id in {"RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH"}:
         overridden.add("queue_token_epoch")
     if case_id == "PREEMPTION_DISPATCH":
@@ -116,9 +142,19 @@ def compile_reschedule_family_effect(*, case_id: str, branch_binding,
         equations.extend(("(= c_running_post 1)",
                           "(= c_running_job_key_post selected_job_key)",
                           "(= c_affected_job_key_post selected_job_key)",
+                          "(= c_affected_job_active_post 1)",
+                          "(= c_affected_job_ready_post 1)",
                           "(= c_affected_job_running_post 1)",
                           "(= c_queue_token_epoch_post (+ c_queue_token_epoch 1))",
                           "(= c_queue_event_count_post (+ c_queue_event_count 2))"))
+        for field in (
+            "priority", "release", "deadline", "category", "budget",
+            "demand", "service", "hi_complete", "hi_miss",
+        ):
+            equations.append(
+                f"(= c_affected_job_{field}_post "
+                f"{_selected_job_projection('c', bounds, field)})"
+            )
         for slot in range(bounds.job_slots):
             selected = f"(and (= c_job_{slot}_present 1) (= c_job_{slot}_key selected_job_key))"
             equations.append(f"(= c_job_{slot}_running_post (ite {selected} 1 0))")
@@ -418,6 +454,16 @@ def compile_effect_ir(effect_ir: list[Mapping[str, Any]], *, bounds: P0ModelBoun
             equations.append(f"(= c_job_{slot}_running_post (ite {selected} 1 0))")
     if "deadline_misses.append" in joined:
         equations.extend(["(= c_miss_post 1)", "(= c_affected_job_hi_miss_post 1)"])
+        # The runtime stores misses in a ledger rather than mutating the Job
+        # object.  The finite P0 slot projection represents ledger membership
+        # with ``job_k_hi_miss``; update exactly the slot selected by the
+        # deadline event so the concrete projection matches the reference
+        # observe-only deadline transition.
+        for slot in range(bounds.job_slots):
+            equations.append(
+                f"(= c_job_{slot}_hi_miss_post "
+                f"(ite (= affected_job_slot {slot}) 1 c_job_{slot}_hi_miss))"
+            )
     if "apply_updates" in joined:
         equations.extend(["(= c_future_budget_post (ite (> update_arity 0) release_budget c_future_budget))",
                           "(= c_affected_task_budget_post (ite (> update_arity 0) release_budget c_affected_task_budget))"])

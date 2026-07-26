@@ -484,13 +484,18 @@ def _build_phase_k_objects(*, inputs: Any, fresh_certificates: Mapping[str, Mapp
         src_root, source_hash=str(inputs.source_manifest.get("semantic_hash", "")),
         path_map=case_map)
     if branch_map.get("status") != "PASS":
-        return {}, {"route": "UNRESOLVED", "code": "PHASE_K_BRANCH_MAP_UNRESOLVED"}
+        return {}, {
+            "route": "UNRESOLVED",
+            "code": "PHASE_K_BRANCH_MAP_UNRESOLVED",
+            "failure_detail": dict(branch_map),
+        }
     upstream_names = (
         "SCHEDULER_MODEL", "MODE_SEMANTICS_CONFORMANCE", "DEMAND_ORACLE_BATCH_CONTRACT",
         "HI_EXECUTION_CONTRACT", "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION",
         "DEADLINE_OBSERVATION", "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE",
         "CONTROLLER_POSTCLOSURE", "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION",
         "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
+        "EFFECTIVE_EVENT_FRONTIER_RELATION",
     )
     upstream = {name: fresh_certificates[name] for name in upstream_names
                 if fresh_certificates.get(name, {}).get("obligation_status") == "PASS"}
@@ -508,6 +513,7 @@ def _build_phase_k_objects(*, inputs: Any, fresh_certificates: Mapping[str, Mapp
         "DEADLINE_OBSERVATION", "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE",
         "CONTROLLER_POSTCLOSURE", "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION",
         "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
+        "EFFECTIVE_EVENT_FRONTIER_RELATION",
     )
     missing_upstream = [name for name in required_upstream if name not in fresh_certificates]
     if missing_upstream:
@@ -523,10 +529,16 @@ def _build_phase_k_objects(*, inputs: Any, fresh_certificates: Mapping[str, Mapp
         closure_completion_certificate=None, runtime_config=inputs.target.runtime_config,
     )
     if bridge.get("status") != "PASS":
-        return {}, {"route": "UNRESOLVED", "code": str(bridge.get("failure", "PHASE_K_UNRESOLVED"))}
+        return {}, {
+            "route": "UNRESOLVED",
+            "code": str(bridge.get("failure", "PHASE_K_UNRESOLVED")),
+            "failure_detail": bridge.get("failure_detail"),
+            "phase_k_bridge": bridge,
+        }
     return {
         "CLOSED_PREFIX_REFINEMENT": bridge["closed_prefix"],
         "REFERENCE_PREFIX_EXTENSION": bridge["reference_extension"],
+        "HI_BAD_CLOSED_PREFIX_REFLECTION": bridge["bad_prefix_reflection"],
     }, None
 
 
@@ -604,7 +616,11 @@ def _fresh_bridge_proofs(*, inputs: Any, fresh_certificates: Mapping[str, Mappin
         src_root, source_hash=str(inputs.source_manifest.get("semantic_hash", "")),
         path_map=case_map)
     if branch_map.get("status") != "PASS":
-        return {}, {"route": "UNRESOLVED", "code": "PHASE_K_BRANCH_MAP_UNRESOLVED"}
+        return {}, {
+            "route": "UNRESOLVED",
+            "code": "PHASE_K_BRANCH_MAP_UNRESOLVED",
+            "failure_detail": dict(branch_map),
+        }
     reference_taskset = fresh_reference.to_dict()
     concrete_base, reference_base = build_preclosed_runtime_states(inputs.target, reference_taskset)
     model_bounds = derive_p0_model_bounds(reference_taskset)
@@ -614,6 +630,7 @@ def _fresh_bridge_proofs(*, inputs: Any, fresh_certificates: Mapping[str, Mappin
         "DEADLINE_OBSERVATION", "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE",
         "CONTROLLER_POSTCLOSURE", "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION",
         "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
+        "EFFECTIVE_EVENT_FRONTIER_RELATION",
     )
     missing_upstream = [name for name in required_upstream if name not in fresh_certificates]
     if missing_upstream:
@@ -630,10 +647,16 @@ def _fresh_bridge_proofs(*, inputs: Any, fresh_certificates: Mapping[str, Mappin
         closure_completion_certificate=None, runtime_config=inputs.target.runtime_config,
     )
     if bridge.get("status") != "PASS":
-        return {}, {"route": "UNRESOLVED", "code": str(bridge.get("failure", "PHASE_K_UNRESOLVED"))}
+        return {}, {
+            "route": "UNRESOLVED",
+            "code": str(bridge.get("failure", "PHASE_K_UNRESOLVED")),
+            "failure_detail": bridge.get("failure_detail"),
+            "phase_k_bridge": bridge,
+        }
     return {
         "CLOSED_PREFIX_REFINEMENT": bridge["closed_prefix"],
         "REFERENCE_PREFIX_EXTENSION": bridge["reference_extension"],
+        "HI_BAD_CLOSED_PREFIX_REFLECTION": bridge["bad_prefix_reflection"],
     }, None
 
 

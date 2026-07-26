@@ -11,6 +11,9 @@ from typing import Any, Mapping, Sequence
 
 from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.core.z3_resources import new_context, new_solver
+from formal_toolchain.reference.protected_priority_prefix.pp0_checker import (
+    _solve_code_bound_smt2,
+)
 
 
 ARRIVAL_BATCH_ALTERNATIVES = (
@@ -43,9 +46,35 @@ def prove_reschedule_partition() -> dict[str, object]:
             for left, right in ((keep, idle), (keep, dispatch), (idle, dispatch)))
         status = "PASS" if exhaustive and exclusive else "FAIL"
     except ImportError:
-        return {"status": "UNRESOLVED", "failure": "Z3_REQUIRED",
-                "cases": list(RESCHEDULE_ALTERNATIVES), "exhaustive": False,
-                "pairwise_exclusive": False}
+        declarations = "\n".join((
+            "(declare-const selected_eq_previous Bool)",
+            "(declare-const force Bool)",
+            "(declare-const selected_is_none Bool)",
+        ))
+        keep = "(and selected_eq_previous (not force))"
+        idle = f"(and (not {keep}) selected_is_none)"
+        dispatch = f"(and (not {keep}) (not selected_is_none))"
+
+        def unsat(assertion: str) -> bool:
+            result, _ = _solve_code_bound_smt2(
+                declarations + f"\n(assert {assertion})\n(check-sat)\n"
+            )
+            return result == "UNSAT"
+
+        exhaustive = unsat(f"(not (or {keep} {idle} {dispatch}))")
+        exclusive = all(
+            unsat(f"(and {left} {right})")
+            for left, right in ((keep, idle), (keep, dispatch), (idle, dispatch))
+        )
+        status = "PASS" if exhaustive and exclusive else "UNRESOLVED"
+        return {
+            "status": status,
+            "failure": None if status == "PASS" else "NATIVE_Z3_RESCHEDULE_PARTITION_FAILED",
+            "solver_backend": "native_z3_smt2",
+            "cases": list(RESCHEDULE_ALTERNATIVES),
+            "exhaustive": exhaustive,
+            "pairwise_exclusive": exclusive,
+        }
     return {"status": status, "cases": list(RESCHEDULE_ALTERNATIVES),
             "exhaustive": exhaustive, "pairwise_exclusive": exclusive}
 
@@ -76,7 +105,34 @@ def prove_handler_reschedule_unreachability() -> dict[str, object]:
         return {"status": "PASS" if all(value == "UNSAT" for value in result.values()) else "FAIL",
                 "proofs": result}
     except ImportError:
-        return {"status": "UNRESOLVED", "failure": "Z3_REQUIRED"}
+        declarations = "\n".join((
+            "(declare-const handler_previous_none Bool)",
+            "(declare-const handler_selected_none Bool)",
+            "(declare-const handler_selected_eq_previous Bool)",
+            "(declare-const handler_force Bool)",
+        ))
+        keep = "(and handler_selected_eq_previous (not handler_force))"
+        idle = f"(and (not {keep}) handler_selected_none)"
+        checks = {
+            "completion_to_idle": (
+                "(and handler_previous_none handler_selected_none "
+                f"handler_selected_eq_previous (not handler_force) {idle})"
+            ),
+            "controller_force_keep": f"(and handler_force {keep})",
+        }
+        result = {}
+        for name, formula in checks.items():
+            solver_result, _ = _solve_code_bound_smt2(
+                declarations + f"\n(assert {formula})\n(check-sat)\n"
+            )
+            result[name] = solver_result
+        passed = all(value == "UNSAT" for value in result.values())
+        return {
+            "status": "PASS" if passed else "UNRESOLVED",
+            "failure": None if passed else "NATIVE_Z3_HANDLER_UNREACHABILITY_FAILED",
+            "solver_backend": "native_z3_smt2",
+            "proofs": result,
+        }
 
 
 
@@ -125,12 +181,36 @@ def prove_arrival_reschedule_partition(
     try:
         import z3
     except ImportError:
+        declarations = "\n".join((
+            "(declare-const arrival_selected_eq_previous Bool)",
+            "(declare-const arrival_selected_is_none Bool)",
+        ))
+        selected_nonempty = "(not arrival_selected_is_none)"
+        keep = f"(and {selected_nonempty} arrival_selected_eq_previous)"
+        dispatch = f"(and {selected_nonempty} (not arrival_selected_eq_previous))"
+        idle = "arrival_selected_is_none"
+
+        def unsat(*assertions: str) -> bool:
+            body = "\n".join(f"(assert {item})" for item in assertions)
+            result, _ = _solve_code_bound_smt2(
+                declarations + "\n" + body + "\n(check-sat)\n"
+            )
+            return result == "UNSAT"
+
+        idle_unreachable = unsat(selected_nonempty, idle)
+        exhaustive = unsat(selected_nonempty, f"(not (or {keep} {dispatch}))")
+        exclusive = unsat(keep, dispatch)
+        passed = idle_unreachable and exhaustive and exclusive
         return {
-            "status": "UNRESOLVED",
-            "failure": "Z3_REQUIRED",
-            "idle_unreachable": False,
-            "keep_dispatch_exhaustive": False,
-            "keep_dispatch_exclusive": False,
+            "status": "PASS" if passed else "UNRESOLVED",
+            "failure": None if passed else "ARRIVAL_RESCHEDULE_PARTITION_FAILED",
+            "solver_backend": "native_z3_smt2",
+            "idle_unreachable": idle_unreachable,
+            "keep_dispatch_exhaustive": exhaustive,
+            "keep_dispatch_exclusive": exclusive,
+            "reachable_cases": ["RESCHEDULE_KEEP_SAME", "PREEMPTION_DISPATCH"],
+            "unreachable_cases": ["RESCHEDULE_TO_IDLE"],
+            "basis": "NONEMPTY_FINITE_RELEASE_FOLD_PLUS_HIGHEST_PRIORITY_SELECTION",
         }
 
     context = new_context(z3)
@@ -549,6 +629,20 @@ def build_arrival_batch_decomposition_certificate(*, source_root: str | Path, br
         and len(reschedule_calls) == 1
     )
     fold_payload = asdict(fold) if fold else None
+    component_case_statuses = {}
+    for row in transition_case_certificates:
+        inputs = row.get("inputs") if isinstance(row, Mapping) else None
+        case_id = str((inputs or {}).get("case_id", row.get("case_id", "")))
+        if case_id not in RELEASE_ELEMENT_CASES:
+            continue
+        witness = row.get("witness") if isinstance(row, Mapping) else None
+        payload = witness if isinstance(witness, Mapping) else row
+        component_case_statuses[case_id] = {
+            "obligation_status": row.get("obligation_status", payload.get("z3_proof_result")),
+            "z3_proof_result": payload.get("z3_proof_result"),
+            "parameterized_contract_status": payload.get("parameterized_contract_status"),
+            "parameterized_contract_failure": payload.get("parameterized_contract_failure"),
+        }
     result = {
         "status": "PASS" if passed else "UNRESOLVED",
         "schema_version": "arrival_batch_release_decomposition_v1",
@@ -561,6 +655,7 @@ def build_arrival_batch_decomposition_certificate(*, source_root: str | Path, br
         "release_keys_unique": unique.get("status") == "PASS",
         "every_element_creates_fresh_job": every_element_creates_fresh_job,
         "component_case_ids": list(RELEASE_ELEMENT_CASES),
+        "component_case_statuses": component_case_statuses,
         "fold_theorem": (
             "FINITE_SEQUENCE_INDUCTION_OVER_"
             "FRESH_RELEASE_MAP_EXTENSIONS"
@@ -575,6 +670,10 @@ def build_arrival_batch_decomposition_certificate(*, source_root: str | Path, br
         "handler_ir": asdict(ir),
         "final_reschedule_once": len(reschedule_calls) == 1,
         "context_hash": context_hash,
+        "failure": None if passed else (
+            fold.failure if fold is not None and fold.failure
+            else "ARRIVAL_BATCH_DECOMPOSITION_NOT_PROVED"
+        ),
     }
     result["artifact_hash"] = sha256_object(result)
     return result
@@ -633,10 +732,21 @@ def _prepare_sequence_declarations(*, formulas: Sequence[str], declarations: str
 
 
 def _run_sequence_z3_query(*, declarations: str, assertion: str) -> tuple[str, str | None, str]:
+    prepared = _prepare_sequence_declarations(
+        formulas=(assertion,),
+        declarations=declarations,
+    )
     try:
         import z3
     except ImportError:
-        return "NOT_AVAILABLE", "SEQUENCE_Z3_NOT_AVAILABLE", declarations
+        result, error = _solve_code_bound_smt2(
+            prepared + "\n(assert " + assertion + ")\n(check-sat)\n"
+        )
+        if result in {"SAT", "UNSAT"}:
+            return result, None, prepared
+        if result == "UNKNOWN":
+            return "UNKNOWN", error or "SEQUENCE_SOLVER_UNKNOWN", prepared
+        return "PARSE_FAILED", error or "SEQUENCE_SMT_PARSE_FAILED", prepared
 
     prepared = _prepare_sequence_declarations(
         formulas=(assertion,),
@@ -1309,6 +1419,7 @@ def build_handler_decomposition_certificate(
                              "child_events": []},
               "failures": failures, "compositions": compositions,
               "reschedule_partition": reschedule_partition,
+              "arrival_reschedule_partition": arrival_reschedule_partition,
               "unreachable_reschedule_branches": unreachable_reschedule,
               "all_alternatives_pass": all_alternatives_pass,
               "all_fixed_sequences_proved": all_fixed_sequences_proved,

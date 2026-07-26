@@ -95,11 +95,17 @@ def test_protected_prefix_parameterized_chain_reaches_selected_reference_hi_safe
     verified["REFERENCE_MODEL_CONFORMANCE"] = {
         "obligation_status": "PASS",
         "artifact_hash": "c" * 64,
+        # Fresh verification wraps the recomputed certificate inside the
+        # route artifact envelope.  Keep the nested shape here so checkers
+        # cannot accidentally read only the outer ``witness`` dictionary.
         "witness": {
-            "condition_results": [
-                {"condition_id": condition, "passed": True}
-                for condition in model_conditions
-            ]
+            "artifact_schema_version": "obligation_certificate_v1",
+            "witness": {
+                "condition_results": [
+                    {"condition_id": condition, "passed": True}
+                    for condition in model_conditions
+                ]
+            },
         },
     }
     verified["ZERO_RELATIVE_START"] = {

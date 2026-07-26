@@ -77,7 +77,13 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
             transition_case_certificates=primitive_certificates,
             context_hash=bridge_context_hash)
         if arrival_decomposition.get("status") != "PASS":
-            return {"status": "UNRESOLVED", "failure": "ARRIVAL_BATCH_DECOMPOSITION_REQUIRED", "transition_cases": compiled, "arrival_decomposition": arrival_decomposition}
+            return {
+                "status": "UNRESOLVED",
+                "failure": "ARRIVAL_BATCH_DECOMPOSITION_REQUIRED",
+                "failure_detail": arrival_decomposition.get("failure"),
+                "transition_cases": compiled,
+                "arrival_decomposition": arrival_decomposition,
+            }
         batch_decomposition_certificates = {path["path_id"]: dict(arrival_decomposition)
                                              for path in branch_map.get("paths", [])
                                              if path.get("case_id") in {"ARRIVAL_BATCH_NO_SWITCH", "ARRIVAL_BATCH_SWITCH_S0"}}
@@ -135,19 +141,47 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
         return {"status": "UNRESOLVED", "failure": "HANDLER_DECOMPOSITION_MATH_FIXED_REQUIRED", "transition_cases": compiled, "decomposition": decomposition}
     if decomposition.get("backend_receipt_status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "HANDLER_COMPOSITION_BACKEND_FAILED", "transition_cases": compiled, "decomposition": decomposition}
-    if (not isinstance(upstream_certificates, Mapping)
-            or any(upstream_certificates.get(name, {}).get("obligation_status") != "PASS"
-                   for name in ("SCHEDULER_MODEL", "MODE_SEMANTICS_CONFORMANCE",
-                                "DEMAND_ORACLE_BATCH_CONTRACT", "HI_EXECUTION_CONTRACT",
-                                "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION", "DEADLINE_OBSERVATION",
-                                "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE", "CONTROLLER_POSTCLOSURE",
-                                "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION", "CERTIFIED_ENVELOPE",
-                                "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY"))
-            or not isinstance(release_mapping_certificate, Mapping)
-            or release_mapping_certificate.get("obligation_id") != "RELEASE_FIXED_REMOVAL_MAPPING"
-            or release_mapping_certificate.get("obligation_status") != "PASS"):
-        return {"status": "UNRESOLVED", "failure": "REGISTRY_UPSTREAM_CLOSURE_REQUIRED",
-                "transition_cases": compiled}
+    required_registry_upstream = (
+        "SCHEDULER_MODEL", "MODE_SEMANTICS_CONFORMANCE",
+        "DEMAND_ORACLE_BATCH_CONTRACT", "HI_EXECUTION_CONTRACT",
+        "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION", "DEADLINE_OBSERVATION",
+        "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE", "CONTROLLER_POSTCLOSURE",
+        "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION", "CERTIFIED_ENVELOPE",
+        "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
+        "EFFECTIVE_EVENT_FRONTIER_RELATION",
+    )
+    bad_registry_upstream = []
+    if not isinstance(upstream_certificates, Mapping):
+        bad_registry_upstream = list(required_registry_upstream)
+    else:
+        bad_registry_upstream = [
+            name for name in required_registry_upstream
+            if upstream_certificates.get(name, {}).get("obligation_status") != "PASS"
+        ]
+    release_mapping_ok = (
+        isinstance(release_mapping_certificate, Mapping)
+        and release_mapping_certificate.get("obligation_id")
+            == "RELEASE_FIXED_REMOVAL_MAPPING"
+        and release_mapping_certificate.get("obligation_status") == "PASS"
+    )
+    if bad_registry_upstream or not release_mapping_ok:
+        return {
+            "status": "UNRESOLVED",
+            "failure": "REGISTRY_UPSTREAM_CLOSURE_REQUIRED",
+            "failure_detail": {
+                "bad_upstream_obligations": bad_registry_upstream,
+                "release_mapping_present": isinstance(release_mapping_certificate, Mapping),
+                "release_mapping_obligation_id": (
+                    release_mapping_certificate.get("obligation_id")
+                    if isinstance(release_mapping_certificate, Mapping) else None
+                ),
+                "release_mapping_status": (
+                    release_mapping_certificate.get("obligation_status")
+                    if isinstance(release_mapping_certificate, Mapping) else None
+                ),
+            },
+            "transition_cases": compiled,
+        }
     if concrete_base is None or reference_base is None:
         return {"status": "UNRESOLVED", "failure": "PRECLOSED_BASE_STATE_REQUIRED",
                 "transition_cases": compiled}
@@ -206,10 +240,17 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
     if closed.get("obligation_status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "CLOSED_PREFIX_INCOMPLETE", "transition_cases": compiled,
                 "prerequisites": prereqs, "closed_prefix": closed}
+    # REFERENCE_PREFIX_EXTENSION consumes the registry obligations named by
+    # its theorem interface.  ``prereqs["positive_time"]`` is the local
+    # POSITIVE_TIME_SERVICE closure lemma, not the TIME_PROGRESS predecessor;
+    # substituting it gives a valid-looking PASS object with the wrong
+    # obligation id/context and makes N5 extension fail only after closed-prefix
+    # refinement has already succeeded.
     extension = build_parameterized_prefix_extension_certificate(
-        reference_taskset=reference_taskset, reference_taskset_certificate=reference_taskset_certificate,
-        time_progress_certificate=prereqs["positive_time"],
-        event_order_certificate=event_order,
+        reference_taskset=reference_taskset,
+        reference_taskset_certificate=reference_taskset_certificate,
+        time_progress_certificate=upstream_certificates["TIME_PROGRESS"],
+        event_order_certificate=upstream_certificates["EFFECTIVE_EVENT_ORDER"],
         contexts=contexts,
         context_hash=bridge_context_hash,
         theorem_statement=reference_prefix_theorem,
@@ -225,7 +266,9 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
         "RELEASE_FIXED_REMOVAL_MAPPING": release_mapping_certificate,
         "DEADLINE_OBSERVATION": deadline,
         "HI_NONTRUNCATION": nontruncation,
-        "EFFECTIVE_EVENT_FRONTIER_RELATION": prereqs["event_projection"],
+        "EFFECTIVE_EVENT_FRONTIER_RELATION": upstream_certificates[
+            "EFFECTIVE_EVENT_FRONTIER_RELATION"
+        ],
         "EARLY_STOP_CONFIGURATION_GATE": build_early_stop_configuration_gate(
             runtime_config=runtime_config, context_hash=bridge_context_hash,
             closure_completion_certificate=closure_completion_certificate,

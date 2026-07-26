@@ -75,6 +75,7 @@ class TransitionCaseProof:
     evidence_hashes: tuple[str, ...] = ()
     batch_decomposition_receipt_hash: str = ""
     parameterized_contract_failure: str = ""
+    declarations: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -108,6 +109,18 @@ ALLOWED_MODIFIED_COMPONENTS = {
     "RESCHEDULE_TO_IDLE": {"running_key", "effective_event_frontier"},
     "PREEMPTION_DISPATCH": {"running_key", "effective_event_frontier"}, "IDLE_RECOVERY": {"mode"},
     "CONTROLLER_SELECTED_ACTION": {"future_budget_ghost", "running_key", "effective_event_frontier"},
+    # Both paths are source-level over-approximations.  CONTROLLER_NO_ACTION
+    # contains the common apply_updates call, but its template fixes
+    # update_arity=0 and the SMT proof establishes a future-budget frame.
+    # JUMP_TO_NEXT_EVENT may pop and immediately push the same boundary event;
+    # its queue equations and SMT proof establish frontier correspondence.
+    "CONTROLLER_NO_ACTION": {"future_budget_ghost"},
+    "JUMP_TO_NEXT_EVENT": {"time", "effective_event_frontier"},
+    # Boot may enqueue externally supplied budget-update events.  The queue
+    # projection is still checked by the bound queue equations and the SMT
+    # relation proof; this entry only prevents the static footprint checker
+    # from rejecting that legitimate frontier write before those checks run.
+    "BOOT_TO_PRECLOSED_0": {"effective_event_frontier"},
 }
 
 
@@ -207,6 +220,7 @@ def prove_smt2_case(*, case_id: str, source_branch_id: str,
         "projected_reference_delta": projected_reference_delta,
         "relation_preservation_formula": preservation,
         "bound_source_hash": bound_source_hash, "source_branch_id": source_branch_id,
+        "declarations": declarations,
         "concrete_delta_hash": sha256_object(concrete_delta),
         "projected_reference_delta_hash": sha256_object(projected_reference_delta),
         "state_relation_schema_hash": p0_state_relation_schema_hash(bounds),
@@ -214,10 +228,80 @@ def prove_smt2_case(*, case_id: str, source_branch_id: str,
     }
     try:
         import z3
-    except ImportError as exc:
-        unresolved = dict(base)
-        unresolved["relation_preservation_formula"] = f"{preservation}\n; error={exc}"
-        return TransitionCaseProof(z3_proof_result="UNRESOLVED", verified_by_checker=True, **unresolved)
+    except ImportError:
+        # Keep Phase K machine-checkable on hosts that provide the system Z3
+        # shared library but not the z3py wheel.  The fallback submits the same
+        # quantified SMT-LIB2 obligations to a fresh native Z3 solver; it never
+        # replaces universal solving with finite testing.
+        from formal_toolchain.reference.protected_priority_prefix.pp0_checker import (
+            _solve_code_bound_smt2,
+        )
+
+        feasibility_query = (
+            declarations
+            + f"\n(assert {precondition})\n(assert {concrete_delta})\n(check-sat)\n"
+        )
+        feasible_result, _ = _solve_code_bound_smt2(feasibility_query)
+        concrete_feasibility = (
+            "SAT" if feasible_result == "SAT"
+            else "UNSAT" if feasible_result == "UNSAT"
+            else "UNRESOLVED"
+        )
+        post_vars = " ".join(
+            f"(r_{field}_post Int)" for field in p0_smt_relation_fields(bounds)
+        )
+
+        def native_counterexample(body: str) -> str:
+            query = (
+                declarations
+                + f"\n(assert {precondition})\n"
+                + f"(assert {concrete_delta})\n"
+                + f"(assert (not (exists ({post_vars}) {body})))\n"
+                + "(check-sat)\n"
+            )
+            result, _ = _solve_code_bound_smt2(query)
+            return result
+
+        totality_result = native_counterexample(projected_reference_delta)
+        preservation_result = native_counterexample(
+            f"(and {projected_reference_delta} {preservation})"
+        )
+        reference_totality = (
+            "PASS" if totality_result == "UNSAT"
+            else "FAIL" if totality_result == "SAT"
+            else "UNRESOLVED"
+        )
+        relation_preservation = (
+            "PASS" if preservation_result == "UNSAT"
+            else "FAIL" if preservation_result == "SAT"
+            else "UNRESOLVED"
+        )
+        proof_result = (
+            "PASS"
+            if (
+                concrete_feasibility == "SAT"
+                and reference_totality == "PASS"
+                and relation_preservation == "PASS"
+            )
+            else "UNRESOLVED"
+            if (
+                "UNRESOLVED" in {
+                    concrete_feasibility,
+                    reference_totality,
+                    relation_preservation,
+                }
+                or concrete_feasibility == "UNSAT"
+            )
+            else "FAIL"
+        )
+        return TransitionCaseProof(
+            z3_proof_result=proof_result,
+            verified_by_checker=True,
+            concrete_feasibility=concrete_feasibility,
+            reference_totality=reference_totality,
+            relation_preservation=relation_preservation,
+            **base,
+        )
     try:
         # Each transition case owns a dedicated Z3 context.  The previous
         # default-context implementation retained native AST allocations for

@@ -20,6 +20,8 @@ from formal_toolchain.bridge.state_relation import (
     relation_holds,
 )
 from formal_toolchain.bridge.transition_cases import prove_smt2_case
+from formal_toolchain.bridge.effect_compiler import compile_effect_ir
+from formal_toolchain.bridge.model_bounds import P0ModelBounds
 from formal_toolchain.bridge.case_templates import compile_bound_path_effect, compile_case_template
 from formal_toolchain.bridge.transition_cases import TransitionCaseProof, check_handler_coverage
 from formal_toolchain.bridge.job_mapping import (
@@ -282,6 +284,63 @@ def test_transition_proof_never_uses_unverified_pass_string():
     assert proof.z3_proof_result != "FAIL"
 
 
+def test_release_reference_contract_separates_runtime_budget_from_demand_bound():
+    # Primary LO may consume B+1 discrete ticks, and an abnormal HI job may
+    # legitimately exceed its LO-mode release budget.  Both releases must
+    # still have a total reference successor; N1 supplies the fixed reference
+    # WCET domination rather than this local runtime-budget field.
+    for case_id, actual_cost, release_budget in (
+        ("PRIMARY_LO_RELEASE", 3, 2),
+        ("HI_RELEASE", 5, 2),
+    ):
+        template = compile_case_template(case_id)
+        effects = (
+            ["build_job", "release_fixed_budget", "active_add", "ready_add"]
+            if case_id == "HI_RELEASE"
+            else ["build_job", "release_fixed_budget", "active_add", "ready_add"]
+        )
+        concrete_delta = compile_bound_path_effect({
+            "case_id": case_id,
+            "effects": effects,
+        })
+        proof = prove_smt2_case(
+            case_id=case_id,
+            source_branch_id=f"regression/{case_id.lower()}",
+            declarations=template.declarations,
+            precondition=(
+                f"(and {template.precondition} "
+                f"(= actual_cost {actual_cost}) "
+                f"(= release_budget {release_budget}))"
+            ),
+            preservation=template.preservation,
+            concrete_delta=concrete_delta,
+            projected_reference_delta=template.reference_delta,
+            bound_source_hash="a" * 64,
+        )
+        assert proof.concrete_feasibility == "SAT"
+        assert proof.reference_totality == "PASS"
+        assert proof.relation_preservation == "PASS"
+        assert proof.z3_proof_result == "PASS"
+
+
+def test_deadline_miss_effect_updates_selected_job_slot_ledger_projection():
+    bounds = P0ModelBounds(task_slots=2, job_slots=3, queue_slots=4, max_preemptions_per_job=1)
+    effect = compile_effect_ir(
+        [{
+            "ast_hash": "a" * 64,
+            "kind": "CALL",
+            "source": "self.deadline_misses.append(job.key)",
+        }],
+        bounds=bounds,
+    )
+    equations = set(effect.equations)
+    for slot in range(bounds.job_slots):
+        assert (
+            f"(= c_job_{slot}_hi_miss_post "
+            f"(ite (= affected_job_slot {slot}) 1 c_job_{slot}_hi_miss))"
+        ) in equations
+
+
 def test_transition_checker_rejects_vacuous_reference_successor():
     template = compile_case_template("HI_RELEASE")
     # Reproduce the old bug: concrete used the LO B+1 clamp while reference
@@ -325,11 +384,21 @@ def test_verifier_invokes_fresh_phase_k_generation(tmp_path: Path, monkeypatch: 
     compile_request(Path(imported["request"]), compile_out)
 
     inputs = load_verifier_inputs(Path(imported["request"]), source_root=PROJECT_ROOT)
-    candidate_common = json.loads((compile_out / "artifacts" / "COMMON_TRANSITION_PRESERVATION.json").read_text(encoding="utf-8"))
-    candidate_deployed = json.loads((compile_out / "artifacts" / "DEPLOYED_POLICY_PRESERVATION.json").read_text(encoding="utf-8"))
+
+    def artifact(name: str):
+        # Candidate artifact filenames are canonical lowercase.  Windows is
+        # case-insensitive, but the regression suite also runs on Linux.
+        return json.loads(
+            (compile_out / "artifacts" / f"{name.lower()}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+    candidate_common = artifact("COMMON_TRANSITION_PRESERVATION")
+    candidate_deployed = artifact("DEPLOYED_POLICY_PRESERVATION")
     envelope_state = independently_verify_envelope(
         candidate_envelope=candidate_evidence(
-            json.loads((compile_out / "artifacts" / "CANDIDATE_ENVELOPE.json").read_text(encoding="utf-8"))
+            artifact("CANDIDATE_ENVELOPE")
         ) or {},
         common_preservation=candidate_evidence(candidate_common) or {},
         deployed_preservation=candidate_evidence(candidate_deployed) or {},
@@ -346,7 +415,7 @@ def test_verifier_invokes_fresh_phase_k_generation(tmp_path: Path, monkeypatch: 
             "lower": {str(task.name): 0 for task in inputs.target.ordered_tasks},
         }
     fresh_reference = _fresh_reference_taskset(inputs, certified_envelope)
-    candidate_release_mapping = json.loads((compile_out / "artifacts" / "RELEASE_FIXED_REMOVAL_MAPPING.json").read_text(encoding="utf-8"))
+    candidate_release_mapping = artifact("RELEASE_FIXED_REMOVAL_MAPPING")
     recurring = {"status": "UNRESOLVED"}
     corollary = {"status": "UNRESOLVED"}
     if not is_synthetic_envelope and fresh_reference is not None:
@@ -354,22 +423,32 @@ def test_verifier_invokes_fresh_phase_k_generation(tmp_path: Path, monkeypatch: 
         recurring = build_recurring_hi_instances(fresh_reference, rta_certificate=rta)
         corollary = protected_hi_safety_corollary(recurring)
     fresh_certificates = {
-        "SCHEDULER_MODEL": json.loads((compile_out / "artifacts" / "SCHEDULER_MODEL.json").read_text(encoding="utf-8")),
-        "MODE_SEMANTICS_CONFORMANCE": json.loads((compile_out / "artifacts" / "MODE_SEMANTICS_CONFORMANCE.json").read_text(encoding="utf-8")),
-        "DEMAND_ORACLE_BATCH_CONTRACT": json.loads((compile_out / "artifacts" / "DEMAND_ORACLE_BATCH_CONTRACT.json").read_text(encoding="utf-8")),
-        "HI_EXECUTION_CONTRACT": json.loads((compile_out / "artifacts" / "HI_EXECUTION_CONTRACT.json").read_text(encoding="utf-8")),
-        "REMOVAL_COMPLETENESS": json.loads((compile_out / "artifacts" / "REMOVAL_COMPLETENESS.json").read_text(encoding="utf-8")),
-        "HI_NONTRUNCATION": json.loads((compile_out / "artifacts" / "HI_NONTRUNCATION.json").read_text(encoding="utf-8")),
-        "DEADLINE_OBSERVATION": json.loads((compile_out / "artifacts" / "DEADLINE_OBSERVATION.json").read_text(encoding="utf-8")),
-        "EFFECTIVE_EVENT_ORDER": json.loads((compile_out / "artifacts" / "EFFECTIVE_EVENT_ORDER.json").read_text(encoding="utf-8")),
-        "BATCH_CLOSURE": json.loads((compile_out / "artifacts" / "BATCH_CLOSURE.json").read_text(encoding="utf-8")),
-        "CONTROLLER_POSTCLOSURE": json.loads((compile_out / "artifacts" / "CONTROLLER_POSTCLOSURE.json").read_text(encoding="utf-8")),
-        "TIME_PROGRESS": json.loads((compile_out / "artifacts" / "TIME_PROGRESS.json").read_text(encoding="utf-8")),
-        "WINDOW_MODE_NORMALIZATION": json.loads((compile_out / "artifacts" / "WINDOW_MODE_NORMALIZATION.json").read_text(encoding="utf-8")),
+        "SCHEDULER_MODEL": artifact("SCHEDULER_MODEL"),
+        "MODE_SEMANTICS_CONFORMANCE": artifact("MODE_SEMANTICS_CONFORMANCE"),
+        "DEMAND_ORACLE_BATCH_CONTRACT": artifact("DEMAND_ORACLE_BATCH_CONTRACT"),
+        "HI_EXECUTION_CONTRACT": artifact("HI_EXECUTION_CONTRACT"),
+        "REMOVAL_COMPLETENESS": artifact("REMOVAL_COMPLETENESS"),
+        "HI_NONTRUNCATION": artifact("HI_NONTRUNCATION"),
+        "DEADLINE_OBSERVATION": artifact("DEADLINE_OBSERVATION"),
+        "EFFECTIVE_EVENT_ORDER": artifact("EFFECTIVE_EVENT_ORDER"),
+        "BATCH_CLOSURE": artifact("BATCH_CLOSURE"),
+        "CONTROLLER_POSTCLOSURE": artifact("CONTROLLER_POSTCLOSURE"),
+        "TIME_PROGRESS": artifact("TIME_PROGRESS"),
+        "WINDOW_MODE_NORMALIZATION": artifact("WINDOW_MODE_NORMALIZATION"),
         "CERTIFIED_ENVELOPE": {"obligation_id": "CERTIFIED_ENVELOPE", "obligation_status": "PASS"},
         "PROTECTED_HI_SAFETY_COROLLARY": corollary,
         "RELEASE_FIXED_REMOVAL_MAPPING": candidate_release_mapping,
         "REFERENCE_TASKSET": {"obligation_id": "REFERENCE_TASKSET", "obligation_status": "PASS", "artifact_hash": "0" * 64},
+        "REFERENCE_TRANSITION_SYSTEM_IDENTITY": {
+            "obligation_id": "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
+            "obligation_status": "PASS",
+            "artifact_hash": "1" * 64,
+        },
+        "EFFECTIVE_EVENT_FRONTIER_RELATION": {
+            "obligation_id": "EFFECTIVE_EVENT_FRONTIER_RELATION",
+            "obligation_status": "PASS",
+            "artifact_hash": "2" * 64,
+        },
     }
 
     calls = {"count": 0}

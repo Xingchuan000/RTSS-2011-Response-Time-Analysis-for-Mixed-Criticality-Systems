@@ -34,7 +34,6 @@ def test_arrival_idle_is_not_an_executable_composition():
 
 
 def test_nonempty_release_fold_excludes_idle():
-    pytest.importorskip("z3")
     result = prove_arrival_reschedule_partition(_valid_batch_certificate())
     assert result["status"] == "PASS"
     assert result["idle_unreachable"] is True
@@ -43,7 +42,6 @@ def test_nonempty_release_fold_excludes_idle():
 
 
 def test_missing_nonempty_fold_cannot_authorize_partition():
-    pytest.importorskip("z3")
     cert = _valid_batch_certificate()
     cert["batch_nonempty"] = False
     result = prove_arrival_reschedule_partition(cert)

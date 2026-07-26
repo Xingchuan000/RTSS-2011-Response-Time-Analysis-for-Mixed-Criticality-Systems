@@ -41,6 +41,14 @@ def _solve_with_z3_ctypes(smt2: str) -> tuple[str, str | None]:
         config = lib.Z3_mk_config()
         context = lib.Z3_mk_context_rc(config)
         lib.Z3_del_config(config)
+        # Z3's default C error handler terminates the process on malformed
+        # SMT-LIB2.  Install a no-op callback so parse errors are reported via
+        # Z3_get_error_code and remain fail-closed as UNRESOLVED instead of
+        # aborting the verifier process.
+        error_handler_type = ctypes.CFUNCTYPE(None, void_p, ctypes.c_uint)
+        lib.Z3_set_error_handler.argtypes = [void_p, error_handler_type]
+        error_handler = error_handler_type(lambda _ctx, _code: None)
+        lib.Z3_set_error_handler(context, error_handler)
         solver = lib.Z3_mk_solver(context)
         lib.Z3_solver_inc_ref(context, solver)
         try:
