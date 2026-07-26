@@ -45,6 +45,7 @@ $RewardMode = "interval_qos_v2_single_recovery_full_C5_overinc016_abs005"
 $CAmcSemXf = 0.5
 $ValidateEvery = 10
 $CheckpointEvery = 10
+$LearningRateSchedule = "0:5e-5,450:2.5e-5,900:1.25e-5"
 
 if ($Pilot) {
   $TasksetSeeds = $PilotTasksetSeeds
@@ -57,6 +58,7 @@ if ($Pilot) {
   $HoutH5EndTime = 100000
   $ValidateEvery = 1
   $CheckpointEvery = 1
+  $LearningRateSchedule = "0:5e-5"
 }
 
 if ($Episodes -lt 1) {
@@ -290,7 +292,7 @@ function Invoke-TrainOneRun {
     "--double-dqn",
     "--hidden-layers", "128,128",
     "--learning-rate", "5e-5",
-    "--learning-rate-schedule", "0:5e-5,450:2.5e-5,900:1.25e-5",
+    "--learning-rate-schedule", $LearningRateSchedule,
     "--batch-size", "64",
     "--replay-capacity", "10000",
     "--min-replay-size", "500",
