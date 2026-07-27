@@ -26,7 +26,18 @@ def _verify_file_hash(path_value: object, expected: object, error: str) -> Path:
 def load_and_validate_frozen_reference(path: str | Path) -> dict[str, Any]:
     """Fail closed if a frozen v3 reference or any bounded artifact changed."""
 
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    return _load_and_validate_frozen_reference(Path(path).resolve(), seen=set())
+
+
+def _load_and_validate_frozen_reference(
+    path: Path,
+    *,
+    seen: set[Path],
+) -> dict[str, Any]:
+    if path in seen:
+        raise ValueError("QAMC_REFERENCE_DERIVATION_CYCLE")
+    seen = {*seen, path}
+    payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("schema_version") != "qamc_reference_experiment_config_v3":
         raise ValueError("QAMC_REFERENCE_CONFIG_NOT_FROZEN_V3")
     claimed = payload.get("fingerprint")
@@ -82,6 +93,33 @@ def load_and_validate_frozen_reference(path: str | Path) -> dict[str, Any]:
             raise ValueError(
                 f"QAMC_REFERENCE_BOUND_ARTIFACT_HASH_MISMATCH:{optional_name}"
             )
+
+    source_payload = json.loads(source.read_text(encoding="utf-8"))
+    derivation = source_payload.get("reference_variant_derivation")
+    if derivation is not None:
+        if not isinstance(derivation, dict) or derivation.get(
+            "schema_version"
+        ) != "qamc_observation_reference_derivation_v1":
+            raise ValueError("QAMC_REFERENCE_DERIVATION_SCHEMA_INVALID")
+        base_path = Path(
+            str(derivation.get("base_frozen_reference_path"))
+        ).resolve()
+        if base_path == path:
+            raise ValueError("QAMC_REFERENCE_DERIVATION_CYCLE")
+        base = _load_and_validate_frozen_reference(base_path, seen=seen)
+        if base["fingerprint"] != derivation.get(
+            "base_frozen_reference_fingerprint"
+        ):
+            raise ValueError("QAMC_REFERENCE_DERIVATION_BASE_MISMATCH")
+        base_effective = base["effective_reference_config"]
+        derived_effective = payload["effective_reference_config"]
+        changed = {
+            key
+            for key in set(base_effective) | set(derived_effective)
+            if derived_effective.get(key) != base_effective.get(key)
+        }
+        if changed != {"observation_mode", "observation_dim"}:
+            raise ValueError("QAMC_REFERENCE_DERIVATION_ILLEGAL_OVERRIDE")
     return payload
 
 
@@ -113,6 +151,8 @@ def validate_qamc_model_artifact(
     expected_profile_fingerprint: str,
     expected_action_dim: int,
     expected_observation_dim: int,
+    expected_observation_mode: str,
+    expected_observation_schema_fingerprint: str,
     expected_action_space_fingerprint: str,
     expected_semantic_version: str,
     expected_demand_mapping_version: str,
@@ -138,6 +178,10 @@ def validate_qamc_model_artifact(
         "profile_fingerprint": expected_profile_fingerprint,
         "action_dim": expected_action_dim,
         "observation_dim": expected_observation_dim,
+        "observation_mode": expected_observation_mode,
+        "observation_schema_fingerprint": (
+            expected_observation_schema_fingerprint
+        ),
         "action_space_fingerprint": expected_action_space_fingerprint,
         "semantic_version": expected_semantic_version,
         "demand_mapping_version": expected_demand_mapping_version,

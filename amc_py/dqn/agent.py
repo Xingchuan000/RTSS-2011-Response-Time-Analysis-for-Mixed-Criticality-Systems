@@ -11,6 +11,10 @@ import torch
 from torch import nn
 from torch.optim import Adam
 
+from amc_py.rl.observation_schema import (
+    observation_schema_fingerprint as compute_observation_schema_fingerprint,
+)
+
 from amc_py.dqn.config import DqnConfig
 from amc_py.dqn.network import ActionAwareQNetwork, DqnNetwork
 from amc_py.dqn.replay import ReplayBuffer
@@ -89,6 +93,9 @@ class DqnBudgetAgent:
         action_features: tuple[tuple[float, ...], ...] | None = None,
         action_feature_names: tuple[str, ...] | None = None,
         action_feature_dim: int | None = None,
+        observation_mode: str | None = None,
+        observation_feature_names: tuple[str, ...] | None = None,
+        observation_schema_fingerprint: str | None = None,
     ):
         """初始化网络、优化器和经验回放池。"""
 
@@ -97,6 +104,14 @@ class DqnBudgetAgent:
         if action_dim <= 0:
             raise ValueError("action_dim 必须为正整数")
         self.observation_dim = observation_dim
+        self.observation_mode = observation_mode
+        self.observation_feature_names = tuple(observation_feature_names or ())
+        self.observation_schema_fingerprint = observation_schema_fingerprint
+        if (
+            self.observation_feature_names
+            and len(self.observation_feature_names) != self.observation_dim
+        ):
+            raise ValueError("OBSERVATION_SCHEMA_DIMENSION_MISMATCH")
         self.action_dim = action_dim
         self.config = config
         self.hidden_layers = hidden_layers if hidden_layers is not None else config.hidden_layers
@@ -978,6 +993,9 @@ class DqnBudgetAgent:
                 "optimizer_state_dict": self.optimizer.state_dict(),
                 "config": asdict(self.config),
                 "observation_dim": self.observation_dim,
+                "observation_mode": self.observation_mode,
+                "observation_feature_names": self.observation_feature_names,
+                "observation_schema_fingerprint": self.observation_schema_fingerprint,
                 "action_dim": self.action_dim,
                 "hidden_layers": self.hidden_layers,
                 "noop_action_id": self.noop_action_id,
@@ -1064,6 +1082,24 @@ class DqnBudgetAgent:
                 else None
             ),
             action_feature_dim=int(checkpoint.get("action_feature_dim", 0) or 0),
+            observation_mode=(
+                str(checkpoint["observation_mode"])
+                if checkpoint.get("observation_mode") is not None
+                else None
+            ),
+            observation_feature_names=(
+                tuple(
+                    str(name)
+                    for name in checkpoint["observation_feature_names"]
+                )
+                if checkpoint.get("observation_feature_names") is not None
+                else None
+            ),
+            observation_schema_fingerprint=(
+                str(checkpoint["observation_schema_fingerprint"])
+                if checkpoint.get("observation_schema_fingerprint") is not None
+                else None
+            ),
         )
         agent.policy_network.load_state_dict(checkpoint["policy_network_state_dict"])
         agent.target_network.load_state_dict(checkpoint["target_network_state_dict"])
@@ -1101,3 +1137,25 @@ class DqnBudgetAgent:
         agent.best_elite_samples_used_total = int(checkpoint.get("best_elite_samples_used_total", 0))
         agent.normal_samples_used_total = int(checkpoint.get("normal_samples_used_total", 0))
         return agent
+
+
+def validate_observation_binding(
+    agent: DqnBudgetAgent,
+    *,
+    expected_mode: str,
+    expected_feature_names: tuple[str, ...],
+    require_schema_binding: bool,
+) -> None:
+    expected_fingerprint = compute_observation_schema_fingerprint(
+        observation_mode=expected_mode,
+        feature_names=expected_feature_names,
+    )
+    if agent.observation_dim != len(expected_feature_names):
+        raise ValueError("MODEL_OBSERVATION_DIMENSION_MISMATCH")
+    if require_schema_binding:
+        if agent.observation_mode != expected_mode:
+            raise ValueError("MODEL_OBSERVATION_MODE_MISMATCH")
+        if agent.observation_feature_names != expected_feature_names:
+            raise ValueError("MODEL_OBSERVATION_FEATURE_ORDER_MISMATCH")
+        if agent.observation_schema_fingerprint != expected_fingerprint:
+            raise ValueError("MODEL_OBSERVATION_SCHEMA_FINGERPRINT_MISMATCH")

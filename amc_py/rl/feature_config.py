@@ -27,6 +27,8 @@ OBSERVATION_MODE_V11_NO_PRIORITY_9D = "v11_no_priority_9d"
 OBSERVATION_MODE_V11_NO_RISK_NO_UTIL_8D = "v11_no_risk_no_util_8d"
 OBSERVATION_MODE_V11_LITE_6D = "v11_lite_6d"
 OBSERVATION_MODE_V12_FULL_14D = "v12_full_14d"
+OBSERVATION_MODE_V14_QAMC_QUALITY_11D = "v14_qamc_quality_11d"
+OBSERVATION_MODE_V14_QAMC_FULL_12D = "v14_qamc_full_12d"
 
 # v13 RH-specific observation mode：每任务 17 维 + 全局 16 维
 OBSERVATION_MODE_V13_RH_17D = "v13_rh_17d"
@@ -53,6 +55,9 @@ V11_NO_RISK_NO_UTIL_GLOBAL_FEATURE_DIM = V11_GLOBAL_FEATURE_DIM
 V11_LITE_GLOBAL_FEATURE_DIM = V11_GLOBAL_FEATURE_DIM
 V12_PER_TASK_FEATURE_DIM = 14
 V12_GLOBAL_FEATURE_DIM = 8
+V14_QAMC_QUALITY_PER_TASK_FEATURE_DIM = 11
+V14_QAMC_FULL_PER_TASK_FEATURE_DIM = 12
+V14_QAMC_GLOBAL_FEATURE_DIM = V11_GLOBAL_FEATURE_DIM
 
 # v13_rh_17d：每任务 17 维（v12 的 14 维 + 3 维 RH-risk per-task hint）+ 全局 16 维（v12 的 8 维 + 8 维 RH-risk global）
 V13_RH_17D_PER_TASK_FEATURE_DIM = 17
@@ -186,6 +191,17 @@ V12_PER_TASK_FEATURE_NAMES: tuple[str, ...] = (
 # v12 全局维度定义沿用 v11 的 8 维。
 V12_GLOBAL_FEATURE_NAMES: tuple[str, ...] = V11_GLOBAL_FEATURE_NAMES
 
+V14_QAMC_QUALITY_PER_TASK_FEATURE_NAMES: tuple[str, ...] = (
+    *V11_PER_TASK_FEATURE_NAMES,
+    "qamc_target_quality_normalized",
+)
+V14_QAMC_FULL_PER_TASK_FEATURE_NAMES: tuple[str, ...] = (
+    *V11_PER_TASK_FEATURE_NAMES,
+    "qamc_target_quality_normalized",
+    "qamc_target_demand_ratio",
+)
+V14_QAMC_GLOBAL_FEATURE_NAMES: tuple[str, ...] = V11_GLOBAL_FEATURE_NAMES
+
 # v13 每任务 17 维特征名称（前 14 维复用 v12，后 3 维为 RH-risk per-task hint）。
 V13_RH_17D_PER_TASK_FEATURE_NAMES: tuple[str, ...] = (
     "budget_norm",
@@ -245,7 +261,95 @@ def supports_task_structured_features(mode: str) -> bool:
         OBSERVATION_MODE_V11_LITE_6D,
         OBSERVATION_MODE_V12_FULL_14D,
         OBSERVATION_MODE_V13_RH_17D,
+        OBSERVATION_MODE_V14_QAMC_QUALITY_11D,
+        OBSERVATION_MODE_V14_QAMC_FULL_12D,
     }
+
+
+PUBLIC_OBSERVATION_MODES: tuple[str, ...] = (
+    OBSERVATION_MODE_V10_BASIC,
+    OBSERVATION_MODE_V11_FULL_10D,
+    OBSERVATION_MODE_V11_NO_RISK_9D,
+    OBSERVATION_MODE_V11_NO_UTIL_9D,
+    OBSERVATION_MODE_V11_NO_MAX_9D,
+    OBSERVATION_MODE_V11_NO_PRIORITY_9D,
+    OBSERVATION_MODE_V11_NO_RISK_NO_UTIL_8D,
+    OBSERVATION_MODE_V11_LITE_6D,
+    OBSERVATION_MODE_V12_FULL_14D,
+    OBSERVATION_MODE_V13_RH_17D,
+    OBSERVATION_MODE_V14_QAMC_QUALITY_11D,
+    OBSERVATION_MODE_V14_QAMC_FULL_12D,
+)
+
+QAMC_OBSERVATION_MODES = frozenset(
+    {
+        OBSERVATION_MODE_V14_QAMC_QUALITY_11D,
+        OBSERVATION_MODE_V14_QAMC_FULL_12D,
+    }
+)
+
+
+def is_qamc_observation_mode(mode: str) -> bool:
+    return mode in QAMC_OBSERVATION_MODES
+
+
+def observation_feature_groups(
+    mode: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    mapping = {
+        OBSERVATION_MODE_V10_BASIC: (
+            ("budget_norm", "recent_cost_norm"),
+            (),
+        ),
+        OBSERVATION_MODE_V11_FULL_10D: (
+            V11_PER_TASK_FEATURE_NAMES,
+            V11_GLOBAL_FEATURE_NAMES,
+        ),
+        OBSERVATION_MODE_V11_NO_RISK_9D: (
+            V11_NO_RISK_PER_TASK_FEATURE_NAMES,
+            V11_NO_RISK_GLOBAL_FEATURE_NAMES,
+        ),
+        OBSERVATION_MODE_V11_NO_UTIL_9D: (
+            V11_NO_UTIL_PER_TASK_FEATURE_NAMES,
+            V11_NO_UTIL_GLOBAL_FEATURE_NAMES,
+        ),
+        OBSERVATION_MODE_V11_NO_MAX_9D: (
+            V11_NO_MAX_PER_TASK_FEATURE_NAMES,
+            V11_NO_MAX_GLOBAL_FEATURE_NAMES,
+        ),
+        OBSERVATION_MODE_V11_NO_PRIORITY_9D: (
+            V11_NO_PRIORITY_PER_TASK_FEATURE_NAMES,
+            V11_NO_PRIORITY_GLOBAL_FEATURE_NAMES,
+        ),
+        OBSERVATION_MODE_V11_NO_RISK_NO_UTIL_8D: (
+            V11_NO_RISK_NO_UTIL_PER_TASK_FEATURE_NAMES,
+            V11_NO_RISK_NO_UTIL_GLOBAL_FEATURE_NAMES,
+        ),
+        OBSERVATION_MODE_V11_LITE_6D: (
+            V11_LITE_PER_TASK_FEATURE_NAMES,
+            V11_LITE_GLOBAL_FEATURE_NAMES,
+        ),
+        OBSERVATION_MODE_V12_FULL_14D: (
+            V12_PER_TASK_FEATURE_NAMES,
+            V12_GLOBAL_FEATURE_NAMES,
+        ),
+        OBSERVATION_MODE_V13_RH_17D: (
+            V13_RH_17D_PER_TASK_FEATURE_NAMES,
+            V13_RH_17D_GLOBAL_FEATURE_NAMES,
+        ),
+        OBSERVATION_MODE_V14_QAMC_QUALITY_11D: (
+            V14_QAMC_QUALITY_PER_TASK_FEATURE_NAMES,
+            V14_QAMC_GLOBAL_FEATURE_NAMES,
+        ),
+        OBSERVATION_MODE_V14_QAMC_FULL_12D: (
+            V14_QAMC_FULL_PER_TASK_FEATURE_NAMES,
+            V14_QAMC_GLOBAL_FEATURE_NAMES,
+        ),
+    }
+    try:
+        return mapping[mode]
+    except KeyError as exc:
+        raise ValueError(f"unsupported observation_mode: {mode}") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,6 +428,10 @@ class FeatureConfig:
             return V11_LITE_PER_TASK_FEATURE_DIM * task_count + V11_LITE_GLOBAL_FEATURE_DIM
         if self.observation_mode == OBSERVATION_MODE_V12_FULL_14D:
             return V12_PER_TASK_FEATURE_DIM * task_count + V12_GLOBAL_FEATURE_DIM
+        if self.observation_mode == OBSERVATION_MODE_V14_QAMC_QUALITY_11D:
+            return V14_QAMC_QUALITY_PER_TASK_FEATURE_DIM * task_count + V14_QAMC_GLOBAL_FEATURE_DIM
+        if self.observation_mode == OBSERVATION_MODE_V14_QAMC_FULL_12D:
+            return V14_QAMC_FULL_PER_TASK_FEATURE_DIM * task_count + V14_QAMC_GLOBAL_FEATURE_DIM
         if self.observation_mode == OBSERVATION_MODE_V13_RH_17D:
             return V13_RH_17D_PER_TASK_FEATURE_DIM * task_count + V13_RH_17D_GLOBAL_FEATURE_DIM
         raise ValueError(f"不支持的 observation_mode: {self.observation_mode}")

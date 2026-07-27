@@ -10,68 +10,7 @@ from collections.abc import Sequence
 
 from amc_py.models import Task
 from amc_py.rl.actions import BudgetAction
-from amc_py.rl.feature_config import (
-    OBSERVATION_MODE_V10_BASIC,
-    OBSERVATION_MODE_V11_FULL_10D,
-    OBSERVATION_MODE_V11_LITE_6D,
-    OBSERVATION_MODE_V11_NO_MAX_9D,
-    OBSERVATION_MODE_V11_NO_PRIORITY_9D,
-    OBSERVATION_MODE_V11_NO_RISK_9D,
-    OBSERVATION_MODE_V11_NO_RISK_NO_UTIL_8D,
-    OBSERVATION_MODE_V11_NO_UTIL_9D,
-    OBSERVATION_MODE_V12_FULL_14D,
-    OBSERVATION_MODE_V13_RH_17D,
-    FeatureConfig,
-    V11_GLOBAL_FEATURE_NAMES,
-    V11_LITE_GLOBAL_FEATURE_NAMES,
-    V11_LITE_PER_TASK_FEATURE_NAMES,
-    V11_NO_MAX_GLOBAL_FEATURE_NAMES,
-    V11_NO_MAX_PER_TASK_FEATURE_NAMES,
-    V11_NO_PRIORITY_GLOBAL_FEATURE_NAMES,
-    V11_NO_PRIORITY_PER_TASK_FEATURE_NAMES,
-    V11_NO_RISK_GLOBAL_FEATURE_NAMES,
-    V11_NO_RISK_NO_UTIL_GLOBAL_FEATURE_NAMES,
-    V11_NO_RISK_NO_UTIL_PER_TASK_FEATURE_NAMES,
-    V11_NO_RISK_PER_TASK_FEATURE_NAMES,
-    V11_NO_UTIL_GLOBAL_FEATURE_NAMES,
-    V11_NO_UTIL_PER_TASK_FEATURE_NAMES,
-    V11_PER_TASK_FEATURE_NAMES,
-    V12_GLOBAL_FEATURE_NAMES,
-    V12_PER_TASK_FEATURE_NAMES,
-    V13_RH_17D_GLOBAL_FEATURE_NAMES,
-    V13_RH_17D_PER_TASK_FEATURE_NAMES,
-)
-
-
-def _feature_name_groups(feature_config: FeatureConfig) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """按 observation_mode 返回“每任务特征名 + 全局特征名”。
-
-    这里显式列出所有计划要求支持的模式，目的是保证新增模式时如果忘记补映射，
-    会直接在这里报错，而不是悄悄输出错误名称。
-    """
-
-    mode = feature_config.observation_mode
-    if mode == OBSERVATION_MODE_V10_BASIC:
-        return ("budget_norm", "recent_cost_norm"), ()
-    if mode == OBSERVATION_MODE_V11_FULL_10D:
-        return V11_PER_TASK_FEATURE_NAMES, V11_GLOBAL_FEATURE_NAMES
-    if mode == OBSERVATION_MODE_V11_NO_RISK_9D:
-        return V11_NO_RISK_PER_TASK_FEATURE_NAMES, V11_NO_RISK_GLOBAL_FEATURE_NAMES
-    if mode == OBSERVATION_MODE_V11_NO_UTIL_9D:
-        return V11_NO_UTIL_PER_TASK_FEATURE_NAMES, V11_NO_UTIL_GLOBAL_FEATURE_NAMES
-    if mode == OBSERVATION_MODE_V11_NO_MAX_9D:
-        return V11_NO_MAX_PER_TASK_FEATURE_NAMES, V11_NO_MAX_GLOBAL_FEATURE_NAMES
-    if mode == OBSERVATION_MODE_V11_NO_PRIORITY_9D:
-        return V11_NO_PRIORITY_PER_TASK_FEATURE_NAMES, V11_NO_PRIORITY_GLOBAL_FEATURE_NAMES
-    if mode == OBSERVATION_MODE_V11_NO_RISK_NO_UTIL_8D:
-        return V11_NO_RISK_NO_UTIL_PER_TASK_FEATURE_NAMES, V11_NO_RISK_NO_UTIL_GLOBAL_FEATURE_NAMES
-    if mode == OBSERVATION_MODE_V11_LITE_6D:
-        return V11_LITE_PER_TASK_FEATURE_NAMES, V11_LITE_GLOBAL_FEATURE_NAMES
-    if mode == OBSERVATION_MODE_V12_FULL_14D:
-        return V12_PER_TASK_FEATURE_NAMES, V12_GLOBAL_FEATURE_NAMES
-    if mode == OBSERVATION_MODE_V13_RH_17D:
-        return V13_RH_17D_PER_TASK_FEATURE_NAMES, V13_RH_17D_GLOBAL_FEATURE_NAMES
-    raise ValueError(f"不支持的 observation_mode: {mode}")
+from amc_py.rl.feature_config import FeatureConfig, observation_feature_groups
 
 
 def build_observation_feature_names(
@@ -86,10 +25,22 @@ def build_observation_feature_names(
     - 顺序必须与 `build_observation(...)` 实际输出一致，否则树规则会错位。
     """
 
-    per_task_names, global_names = _feature_name_groups(feature_config)
+    return build_observation_feature_names_from_task_names(
+        [task.name for task in ordered_tasks],
+        feature_config,
+    )
+
+
+def build_observation_feature_names_from_task_names(
+    task_names: Sequence[str],
+    feature_config: FeatureConfig,
+) -> tuple[str, ...]:
+    per_task_names, global_names = observation_feature_groups(
+        feature_config.observation_mode
+    )
     names: list[str] = []
-    for task_index, task in enumerate(ordered_tasks):
-        prefix = f"T{task_index:02d}.{task.name}"
+    for task_index, task_name in enumerate(task_names):
+        prefix = f"T{task_index:02d}.{task_name}"
         for feature_name in per_task_names:
             names.append(f"{prefix}.{feature_name}")
     for feature_name in global_names:

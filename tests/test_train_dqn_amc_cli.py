@@ -444,6 +444,15 @@ def test_train_cli_rejects_invalid_validation_workers(tmp_path: Path) -> None:
     assert result.returncode != 0
 
 
+def test_train_parser_exposes_o2_observation_mode() -> None:
+    from scripts.train_dqn_amc import build_parser
+
+    args = build_parser().parse_args(
+        ["--observation-mode", "v14_qamc_full_12d"]
+    )
+    assert args.observation_mode == "v14_qamc_full_12d"
+
+
 def test_train_cli_constraint_guided_pair_smoke(tmp_path: Path) -> None:
     """训练 CLI 应支持 constraint_guided_pair 并写入对应配置。"""
 

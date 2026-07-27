@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from amc_py.budget_runtime import BudgetState
@@ -18,6 +18,8 @@ from amc_py.rl.feature_config import (
     OBSERVATION_MODE_V11_NO_UTIL_9D,
     OBSERVATION_MODE_V12_FULL_14D,
     OBSERVATION_MODE_V13_RH_17D,
+    OBSERVATION_MODE_V14_QAMC_QUALITY_11D,
+    OBSERVATION_MODE_V14_QAMC_FULL_12D,
     FeatureConfig,
     V11_LITE_PER_TASK_FEATURE_NAMES,
     V11_NO_MAX_PER_TASK_FEATURE_NAMES,
@@ -26,7 +28,10 @@ from amc_py.rl.feature_config import (
     V11_NO_RISK_PER_TASK_FEATURE_NAMES,
     V11_NO_UTIL_PER_TASK_FEATURE_NAMES,
     V11_PER_TASK_FEATURE_NAMES,
+    V11_GLOBAL_FEATURE_DIM,
+    V11_PER_TASK_FEATURE_DIM,
 )
+from amc_py.qamc.observation_state import QAmcTaskObservationState
 from amc_py.rl.feature_state import RuntimeFeatureState
 from amc_py.rl.monitor import RuntimeMonitor
 from amc_py.rl.types import AgentObservation
@@ -41,6 +46,7 @@ class TaskNormalizationBound:
 
 
 NormalizationBounds = dict[str, TaskNormalizationBound]
+QAmcObservationContext = Mapping[str, QAmcTaskObservationState]
 
 
 def build_default_normalization_bounds(tasks: Sequence[Task]) -> NormalizationBounds:
@@ -146,6 +152,85 @@ def build_v11_full_10d_observation(
         feature_config=feature_config,
         safety_margin_min=safety_margin_min,
         per_task_feature_names=V11_PER_TASK_FEATURE_NAMES,
+    )
+
+
+def _extend_v11_with_qamc_features(
+    *,
+    base_observation: AgentObservation,
+    ordered_tasks: Sequence[Task],
+    qamc_observation_context: QAmcObservationContext,
+    include_demand_ratio: bool,
+) -> AgentObservation:
+    task_count = len(ordered_tasks)
+    expected_base_dim = (
+        V11_PER_TASK_FEATURE_DIM * task_count + V11_GLOBAL_FEATURE_DIM
+    )
+    if len(base_observation.state_vector) != expected_base_dim:
+        raise ValueError("QAMC_BASE_V11_DIMENSION_MISMATCH")
+
+    base_task_values = base_observation.state_vector[
+        : V11_PER_TASK_FEATURE_DIM * task_count
+    ]
+    base_global_values = base_observation.state_vector[
+        V11_PER_TASK_FEATURE_DIM * task_count :
+    ]
+    extended: list[float] = []
+    for task_index, task in enumerate(ordered_tasks):
+        start = task_index * V11_PER_TASK_FEATURE_DIM
+        stop = start + V11_PER_TASK_FEATURE_DIM
+        extended.extend(base_task_values[start:stop])
+        try:
+            state = qamc_observation_context[task.name]
+        except KeyError as exc:
+            raise ValueError(
+                f"QAMC_OBSERVATION_CONTEXT_MISSING:{task.name}"
+            ) from exc
+        extended.append(float(state.target_quality_normalized))
+        if include_demand_ratio:
+            extended.append(float(state.target_demand_ratio))
+    extended.extend(base_global_values)
+
+    return AgentObservation(
+        time=base_observation.time,
+        state_vector=tuple(extended),
+        raw_budgets=dict(base_observation.raw_budgets),
+        raw_recent_costs=dict(base_observation.raw_recent_costs),
+    )
+
+
+def build_v14_qamc_observation(
+    *,
+    time: int,
+    ordered_tasks: Sequence[Task],
+    budget_state: BudgetState,
+    monitor: RuntimeMonitor,
+    bounds: NormalizationBounds | None,
+    feature_state: RuntimeFeatureState,
+    feature_config: FeatureConfig,
+    safety_margin_min: float,
+    qamc_observation_context: QAmcObservationContext | None,
+    include_demand_ratio: bool,
+) -> AgentObservation:
+    """Append current q-AMC target features to an exact v11 observation."""
+
+    if qamc_observation_context is None:
+        raise ValueError("QAMC_OBSERVATION_RUNTIME_CONTEXT_REQUIRED")
+    base = build_v11_full_10d_observation(
+        time=time,
+        ordered_tasks=ordered_tasks,
+        budget_state=budget_state,
+        monitor=monitor,
+        bounds=bounds,
+        feature_state=feature_state,
+        feature_config=feature_config,
+        safety_margin_min=safety_margin_min,
+    )
+    return _extend_v11_with_qamc_features(
+        base_observation=base,
+        ordered_tasks=ordered_tasks,
+        qamc_observation_context=qamc_observation_context,
+        include_demand_ratio=include_demand_ratio,
     )
 
 
@@ -773,6 +858,7 @@ def build_observation(
     initial_budgets: dict[str, int] | None = None,
     safe_inc_possible_by_task: dict[str, bool] | None = None,
     rh_risk_context: dict[str, float] | None = None,
+    qamc_observation_context: QAmcObservationContext | None = None,
 ) -> AgentObservation:
     """统一观测构造入口：按 observation_mode 分发到 v10 或 v11 实现。
 
@@ -894,6 +980,24 @@ def build_observation(
             safety_margin_min=safety_margin_min,
             initial_budgets=initial_budgets,
             safe_inc_possible_by_task=safe_inc_possible_by_task,
+        )
+    if feature_config.observation_mode == OBSERVATION_MODE_V14_QAMC_QUALITY_11D:
+        if feature_state is None:
+            raise ValueError("v14_qamc_quality_11d requires feature_state")
+        return build_v14_qamc_observation(
+            time=time, ordered_tasks=ordered_tasks, budget_state=budget_state, monitor=monitor,
+            bounds=bounds, feature_state=feature_state, feature_config=feature_config,
+            safety_margin_min=safety_margin_min, qamc_observation_context=qamc_observation_context,
+            include_demand_ratio=False,
+        )
+    if feature_config.observation_mode == OBSERVATION_MODE_V14_QAMC_FULL_12D:
+        if feature_state is None:
+            raise ValueError("v14_qamc_full_12d requires feature_state")
+        return build_v14_qamc_observation(
+            time=time, ordered_tasks=ordered_tasks, budget_state=budget_state, monitor=monitor,
+            bounds=bounds, feature_state=feature_state, feature_config=feature_config,
+            safety_margin_min=safety_margin_min, qamc_observation_context=qamc_observation_context,
+            include_demand_ratio=True,
         )
     if feature_config.observation_mode == OBSERVATION_MODE_V13_RH_17D:
         if feature_state is None:

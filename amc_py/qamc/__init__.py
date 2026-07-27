@@ -20,6 +20,10 @@ from .runtime_controller import (
 )
 from .metrics_support import QAmcMetrics, compute_qamc_metrics, qamc_metrics_to_row
 from .heuristic import QAmcBudgetPressureHeuristic
+from .observation_state import (
+    QAmcTaskObservationState,
+    build_qamc_task_observation_state,
+)
 from .reference_config import (
     assert_reference_matches_values,
     load_and_validate_frozen_reference,
@@ -35,9 +39,11 @@ __all__ = [
     "QAmcQualitySnapshot",
     "QAmcRuntimeController",
     "QAmcTaskProfile",
+    "QAmcTaskObservationState",
     "QAmcMetrics",
     "QAmcBudgetPressureHeuristic",
     "build_qamc_profile_bundle",
+    "build_qamc_task_observation_state",
     "load_profile_bundle",
     "map_full_cost_to_quality_cost",
     "partition_design_budget",

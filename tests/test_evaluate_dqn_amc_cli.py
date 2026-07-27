@@ -957,6 +957,20 @@ def test_evaluate_parser_supports_tree_audit_args() -> None:
     assert args.tree_audit_top_k_actions == 10
 
 
+def test_evaluate_parser_exposes_o2_observation_mode() -> None:
+    from scripts.evaluate_dqn_amc import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "--model",
+            "dummy.pt",
+            "--observation-mode",
+            "v14_qamc_full_12d",
+        ]
+    )
+    assert args.observation_mode == "v14_qamc_full_12d"
+
+
 def test_evaluate_parser_rejects_invalid_tree_audit_state_mode() -> None:
     """不支持的 --tree-audit-state-mode 应被 argparse 拒绝。"""
 

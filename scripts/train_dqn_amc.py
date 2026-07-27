@@ -63,7 +63,14 @@ from amc_py.rl.actions import (
     compute_action_space_fingerprint,
     describe_budget_action,
 )
-from amc_py.rl.feature_config import FeatureConfig
+from amc_py.rl.feature_config import (
+    OBSERVATION_MODE_V14_QAMC_FULL_12D,
+    OBSERVATION_MODE_V14_QAMC_QUALITY_11D,
+    PUBLIC_OBSERVATION_MODES,
+    FeatureConfig,
+    is_qamc_observation_mode,
+)
+from amc_py.rl.observation_schema import observation_schema_fingerprint
 from amc_py.rl.reward_config import (
     available_reward_modes,
     load_reward_mode_config,
@@ -87,7 +94,10 @@ from amc_py.qamc.metrics_support import (
 from amc_py.qamc.models import QAmcProfileBundle
 from amc_py.qamc.profiles import load_profile_bundle_from_manifest
 from amc_py.qamc.profile_spec import load_profile_spec
-from amc_py.qamc.rl_contract import validate_qamc_rl_semantics
+from amc_py.qamc.rl_contract import (
+    validate_observation_runtime_pair,
+    validate_qamc_rl_semantics,
+)
 from amc_py.qamc.selector_contract import (
     selector_is_compatible,
     validate_selector_row,
@@ -2951,18 +2961,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mask-detail-mode", choices=["minimal", "full"], default="minimal")
     parser.add_argument(
         "--observation-mode",
-        choices=[
-            "v10_basic",
-            "v11_full_10d",
-            "v11_no_risk_9d",
-            "v11_no_util_9d",
-            "v11_no_max_9d",
-            "v11_no_priority_9d",
-            "v11_no_risk_no_util_8d",
-            "v11_lite_6d",
-            "v12_full_14d",
-            "v13_rh_17d",
-        ],
+        choices=PUBLIC_OBSERVATION_MODES,
         default="v10_basic",
     )
     parser.add_argument("--ema-alpha", type=float, default=0.2)
@@ -2984,6 +2983,10 @@ def main() -> None:
         # 兼容旧参数名：内部统一走 constraint_guided_transfer 语义。
         args.action_space = "constraint_guided_transfer"
     dqn_runtime_semantics = RuntimeSemantics(args.dqn_runtime_semantics)
+    validate_observation_runtime_pair(
+        observation_mode=args.observation_mode,
+        semantics=dqn_runtime_semantics,
+    )
     validation_baseline_semantics = (
         RuntimeSemantics(args.validation_baseline_semantics)
         if args.validation_baseline_semantics is not None
@@ -3250,6 +3253,13 @@ def main() -> None:
         c_amc_sem_xf=args.c_amc_sem_xf,
     )
     initial_obs = initial_env.reset(seed=initial_seed)
+    observation_feature_names = initial_env.get_observation_feature_names()
+    if len(observation_feature_names) != len(initial_obs.state_vector):
+        raise ValueError("OBSERVATION_FEATURE_NAME_DIMENSION_MISMATCH")
+    observation_schema_hash = observation_schema_fingerprint(
+        observation_mode=args.observation_mode,
+        feature_names=observation_feature_names,
+    )
     if dqn_runtime_semantics is RuntimeSemantics.Q_AMC:
         reference_effective = frozen_reference["effective_reference_config"]
         reference_action_size = reference_effective.get("action_dim")
@@ -3283,6 +3293,9 @@ def main() -> None:
         double_dqn=args.double_dqn,
         action_features=action_features,
         action_feature_names=action_feature_names,
+        observation_mode=args.observation_mode,
+        observation_feature_names=observation_feature_names,
+        observation_schema_fingerprint=observation_schema_hash,
     )
     effective_reference = _build_effective_reference_config(
         args=args,
@@ -3305,6 +3318,21 @@ def main() -> None:
     else:
         output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "feature_names.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "observation_feature_schema_v1",
+                "observation_mode": args.observation_mode,
+                "observation_dim": len(observation_feature_names),
+                "feature_names": list(observation_feature_names),
+                "fingerprint": observation_schema_hash,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     checkpoint_dir = output_dir / "checkpoints"
     if args.checkpoint > 0:
@@ -5504,7 +5532,20 @@ def main() -> None:
                 "dqn_controls_budget_threshold": True,
                 "quality_change_applies_to_future_release_only": True,
                 "budget_rebase_on_quality_change": False,
-                "quality_visible_to_agent": False,
+                "quality_visible_to_agent": is_qamc_observation_mode(
+                    args.observation_mode
+                ),
+                "quality_observation_mode": (
+                    "current_target_quality_and_design_demand_ratio"
+                    if args.observation_mode
+                    == OBSERVATION_MODE_V14_QAMC_FULL_12D
+                    else "current_target_quality"
+                    if args.observation_mode
+                    == OBSERVATION_MODE_V14_QAMC_QUALITY_11D
+                    else "none"
+                ),
+                "quality_observation_is_future_free": True,
+                "quality_observation_applies_to_next_release": True,
                 "problem_class": "POMDP",
                 "strict_budget_plus_one_overrun": True,
                 "formal_safety_claim": False,
@@ -5528,6 +5569,9 @@ def main() -> None:
                 ],
                 "action_dim": initial_env.action_count,
                 "observation_dim": agent.observation_dim,
+                "observation_mode": args.observation_mode,
+                "observation_schema_fingerprint": observation_schema_hash,
+                "observation_feature_count": len(observation_feature_names),
                 "action_space_fingerprint": compute_action_space_fingerprint(
                     initial_env.actions
                 ),

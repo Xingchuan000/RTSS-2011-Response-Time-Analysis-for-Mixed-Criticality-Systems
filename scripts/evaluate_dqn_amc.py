@@ -22,6 +22,7 @@ import torch
 
 from amc_py.dqn import (
     DqnBudgetAgent,
+    validate_observation_binding,
     build_automotive_experiment_config,
     build_mc_fairgen_experiment_config,
     build_env_from_experiment_config,
@@ -48,7 +49,12 @@ from amc_py.rl.actions import (
     compute_action_space_fingerprint,
 )
 from amc_py.rl.agents import HeuristicBudgetAgent, NoOpBudgetAgent, RandomBudgetAgent
-from amc_py.rl.feature_config import FeatureConfig
+from amc_py.rl.feature_config import (
+    PUBLIC_OBSERVATION_MODES,
+    FeatureConfig,
+    is_qamc_observation_mode,
+)
+from amc_py.rl.observation_schema import observation_schema_fingerprint
 from amc_py.rl.reward_config import available_reward_modes
 from amc_py.rl.runtime_wrapper import (
     AgentRuntimeConfig,
@@ -69,7 +75,10 @@ from amc_py.qamc.reference_config import (
 )
 from amc_py.qamc.profile_spec import load_profile_spec
 from amc_py.qamc.heuristic import QAmcBudgetPressureHeuristic
-from amc_py.qamc.rl_contract import validate_qamc_rl_semantics
+from amc_py.qamc.rl_contract import (
+    validate_observation_runtime_pair,
+    validate_qamc_rl_semantics,
+)
 
 
 QAMC_METHOD_ALIASES = {
@@ -866,6 +875,14 @@ def _evaluate_dqn_once(
         )
 
     obs = env.reset(seed=seed)
+    validate_observation_binding(
+        agent,
+        expected_mode=feature_config.observation_mode,
+        expected_feature_names=env.get_observation_feature_names(),
+        require_schema_binding=is_qamc_observation_mode(
+            feature_config.observation_mode
+        ),
+    )
     if getattr(agent, "q_network_type", "mlp") == "action_aware":
         action_features = env.get_action_feature_matrix(agent.action_feature_mode)
         action_feature_names = env.get_action_feature_names(agent.action_feature_mode)
@@ -3387,18 +3404,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mask-detail-mode", choices=["minimal", "full"], default="minimal")
     parser.add_argument(
         "--observation-mode",
-        choices=[
-            "v10_basic",
-            "v11_full_10d",
-            "v11_no_risk_9d",
-            "v11_no_util_9d",
-            "v11_no_max_9d",
-            "v11_no_priority_9d",
-            "v11_no_risk_no_util_8d",
-            "v11_lite_6d",
-            "v12_full_14d",
-            "v13_rh_17d",
-        ],
+        choices=PUBLIC_OBSERVATION_MODES,
         default="v10_basic",
     )
     parser.add_argument("--ema-alpha", type=float, default=0.2)
@@ -3443,6 +3449,10 @@ def main() -> None:
         include_safety_margin=args.include_safety_margin,
     )
     dqn_runtime_semantics = RuntimeSemantics(args.dqn_runtime_semantics)
+    validate_observation_runtime_pair(
+        observation_mode=args.observation_mode,
+        semantics=dqn_runtime_semantics,
+    )
     if args.workload == "small":
         experiment_config = (
             build_small_nominal_experiment_config()
@@ -3595,6 +3605,11 @@ def main() -> None:
                 ),
             )
             binding_observation = binding_env.reset(seed=binding_seed)
+            binding_feature_names = binding_env.get_observation_feature_names()
+            binding_schema_fingerprint = observation_schema_fingerprint(
+                observation_mode=args.observation_mode,
+                feature_names=binding_feature_names,
+            )
             validate_qamc_model_artifact(
                 args.model,
                 frozen_reference=frozen_reference,
@@ -3606,6 +3621,10 @@ def main() -> None:
                 expected_profile_fingerprint=binding_profile.fingerprint,
                 expected_action_dim=binding_env.action_count,
                 expected_observation_dim=len(binding_observation.state_vector),
+                expected_observation_mode=args.observation_mode,
+                expected_observation_schema_fingerprint=(
+                    binding_schema_fingerprint
+                ),
                 expected_action_space_fingerprint=compute_action_space_fingerprint(
                     binding_env.actions
                 ),

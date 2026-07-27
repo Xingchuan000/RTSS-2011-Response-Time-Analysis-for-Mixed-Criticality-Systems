@@ -31,11 +31,19 @@ from amc_py.rl.feature_config import (
     OBSERVATION_MODE_V12_FULL_14D,
     OBSERVATION_MODE_V13_RH_17D,
     FeatureConfig,
+    is_qamc_observation_mode,
     supports_task_structured_features,
 )
 from amc_py.rl.feature_state import RuntimeFeatureState
 from amc_py.rl.monitor import RuntimeMonitor
-from amc_py.rl.observation import NormalizationBounds, build_observation
+from amc_py.rl.observation import (
+    NormalizationBounds,
+    build_observation,
+)
+from amc_py.qamc.observation_state import (
+    QAmcTaskObservationState,
+    build_qamc_task_observation_state,
+)
 from amc_py.rl.reward_config import RewardModeConfig, evaluate_reward_expression, load_reward_mode_config
 from amc_py.rl.safety import (
     RuntimeBudgetSafetyChecker,
@@ -281,6 +289,11 @@ class AmcBudgetEnv:
 
     def __post_init__(self) -> None:
         """初始化固定动作空间。"""
+        if is_qamc_observation_mode(self.feature_config.observation_mode):
+            if self.runtime_config.semantics is not RuntimeSemantics.Q_AMC:
+                raise ValueError("QAMC_OBSERVATION_REQUIRES_QAMC_RUNTIME")
+            if self.qamc_profile_bundle is None:
+                raise ValueError("QAMC_OBSERVATION_REQUIRES_PROFILE_BUNDLE")
         if self.budget_floor_ratio < 0.0 or self.budget_floor_ratio > 1.0:
             raise ValueError("budget_floor_ratio must be in [0, 1]")
         if self.deploy_cap_mask_ratio <= 1.0:
@@ -1982,6 +1995,21 @@ class AmcBudgetEnv:
 
         return self.qamc_profile_bundle
 
+    def _qamc_observation_context(
+        self,
+    ) -> dict[str, QAmcTaskObservationState] | None:
+        """Snapshot q-AMC state for q-AMC-specific observation modes only."""
+        if not is_qamc_observation_mode(self.feature_config.observation_mode):
+            return None
+        controller = self._engine.qamc_controller if self._engine is not None else None
+        if controller is None or self.qamc_profile_bundle is None:
+            raise ValueError("QAMC_OBSERVATION_RUNTIME_CONTEXT_REQUIRED")
+        return build_qamc_task_observation_state(
+            ordered_tasks=self.ordered_tasks,
+            profile_bundle=self.qamc_profile_bundle,
+            current_level_by_task=controller.snapshot().level_by_task,
+        )
+
     @property
     def runtime_result(self) -> SimulationResult:
         """Return the current runtime snapshot without mutating the engine."""
@@ -2807,6 +2835,7 @@ class AmcBudgetEnv:
             initial_budgets=self._initial_budgets,
             safe_inc_possible_by_task=safe_inc_possible_by_task,
             rh_risk_context=self._last_rh_risk_context,
+            qamc_observation_context=self._qamc_observation_context(),
         )
         self._last_observation = observation
         return observation
@@ -3745,6 +3774,7 @@ class AmcBudgetEnv:
             initial_budgets=self._initial_budgets,
             safe_inc_possible_by_task=safe_inc_possible_by_task,
             rh_risk_context=self._last_rh_risk_context,
+            qamc_observation_context=self._qamc_observation_context(),
         )
         self._last_observation = observation
         info = {

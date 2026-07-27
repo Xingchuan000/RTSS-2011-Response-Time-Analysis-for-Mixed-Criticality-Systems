@@ -1,6 +1,6 @@
 """DQN 模块导出。"""
 
-from .agent import DqnBudgetAgent, NoopQDiagnostics
+from .agent import DqnBudgetAgent, NoopQDiagnostics, validate_observation_binding
 from .config import DqnConfig
 from .experiment import (
     ExperimentBundle,
@@ -26,6 +26,7 @@ __all__ = [
     "DqnBudgetAgent",
     "DqnConfig",
     "NoopQDiagnostics",
+    "validate_observation_binding",
     "ExperimentBundle",
     "ExperimentConfig",
     "Rtss11TasksetBundle",

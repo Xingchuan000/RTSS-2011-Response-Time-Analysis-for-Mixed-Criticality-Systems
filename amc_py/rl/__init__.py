@@ -10,6 +10,8 @@ from .feature_config import (
     OBSERVATION_MODE_V11_NO_RISK_NO_UTIL_8D,
     OBSERVATION_MODE_V11_NO_UTIL_9D,
     OBSERVATION_MODE_V12_FULL_14D,
+    OBSERVATION_MODE_V14_QAMC_QUALITY_11D,
+    OBSERVATION_MODE_V14_QAMC_FULL_12D,
     FeatureConfig,
     supports_task_structured_features,
 )
@@ -30,5 +32,7 @@ __all__ = [
     "OBSERVATION_MODE_V11_NO_RISK_NO_UTIL_8D",
     "OBSERVATION_MODE_V11_LITE_6D",
     "OBSERVATION_MODE_V12_FULL_14D",
+    "OBSERVATION_MODE_V14_QAMC_QUALITY_11D",
+    "OBSERVATION_MODE_V14_QAMC_FULL_12D",
     "supports_task_structured_features",
 ]
