@@ -36,6 +36,7 @@ from amc_py.rl.feature_config import (
 )
 from amc_py.rl.feature_state import RuntimeFeatureState
 from amc_py.rl.monitor import RuntimeMonitor
+from amc_py.rl.lo_service_reward import LoServiceRewardTracker
 from amc_py.rl.observation import (
     NormalizationBounds,
     build_observation,
@@ -254,6 +255,9 @@ class AmcBudgetEnv:
     _prev_lo_release_dropped_in_degraded_mode: int = field(init=False, default=0, repr=False)
     _prev_lo_active_dropped_on_mode_switch: int = field(init=False, default=0, repr=False)
     _prev_deadline_misses: int = field(init=False, default=0, repr=False)
+    _prev_lo_deadline_misses: int = field(init=False, default=0, repr=False)
+    _prev_hi_deadline_misses: int = field(init=False, default=0, repr=False)
+    _lo_service_reward_tracker: LoServiceRewardTracker = field(init=False, repr=False)
     _last_budget_action_direction: str | None = field(init=False, default=None, repr=False)
     _last_budget_action_task: str | None = field(init=False, default=None, repr=False)
     _episode_increase_count_by_task: dict[str, int] = field(init=False, repr=False)
@@ -2764,6 +2768,8 @@ class AmcBudgetEnv:
         )
         # 先处理 time=0 的边界事件，再返回首次观测，避免 agent 早于首批 release 决策。
         self._engine.run_until(0, include_boundary=True)
+        self._lo_service_reward_tracker = LoServiceRewardTracker()
+        self._lo_service_reward_tracker.prime(self._engine.finish())
         # reset 后把“本轮 episode 的初始预算快照”固定下来。
         # 后续每一步 budget_change_norm 都以该快照作归一化分母来源。
         self._initial_budgets = dict(self._engine.runtime_budgets.budgets)
@@ -2788,6 +2794,8 @@ class AmcBudgetEnv:
         self._prev_lo_release_dropped_in_degraded_mode = 0
         self._prev_lo_active_dropped_on_mode_switch = 0
         self._prev_deadline_misses = 0
+        self._prev_lo_deadline_misses = 0
+        self._prev_hi_deadline_misses = 0
         self._reset_episode_task_counters()
         # v11 特征缓存在每个 episode reset 后重置，避免跨 episode 污染。
         self._feature_state = RuntimeFeatureState(
@@ -3127,6 +3135,10 @@ class AmcBudgetEnv:
         self._done = done
 
         runtime_result = self._engine.finish()
+        lo_service_delta = self._lo_service_reward_tracker.consume(
+            runtime_result,
+            terminal=done,
+        )
         mode_changes = runtime_result.mode_change_count()
         lo_cancellations = runtime_result.lo_job_cancellation_count()
         # reason-level LO loss 拆分必须在 step 内即时读取 runtime result，
@@ -3140,6 +3152,17 @@ class AmcBudgetEnv:
             "lo_active_dropped_on_mode_switch"
         ]
         deadline_misses = len(runtime_result.deadline_misses)
+        task_criticality = {task.name: task.criticality for task in self.ordered_tasks}
+        lo_deadline_misses = sum(
+            1
+            for miss in runtime_result.deadline_misses
+            if task_criticality.get(miss.task) is Criticality.LO
+        )
+        hi_deadline_misses = sum(
+            1
+            for miss in runtime_result.deadline_misses
+            if task_criticality.get(miss.task) is not Criticality.LO
+        )
         delta_job_start = self._monitor.job_start_count - self._prev_job_start_count
         delta_lo_overrun = self._monitor.lo_overrun_count - self._prev_lo_overrun_count
         delta_hi_overrun = self._monitor.hi_overrun_count - self._prev_hi_overrun_count
@@ -3153,6 +3176,8 @@ class AmcBudgetEnv:
             lo_active_dropped_on_mode_switch - self._prev_lo_active_dropped_on_mode_switch
         )
         delta_deadline_misses = deadline_misses - self._prev_deadline_misses
+        delta_lo_deadline_misses = lo_deadline_misses - self._prev_lo_deadline_misses
+        delta_hi_deadline_misses = hi_deadline_misses - self._prev_hi_deadline_misses
         # interval_time 表示“本次 step 覆盖了多长模拟时间”。
         # 这里严格按文档采用 max(1.0, current_time - action_time)：
         # 1) 分母不会为 0；
@@ -3181,6 +3206,8 @@ class AmcBudgetEnv:
         lo_active_drop_rate = float(delta_lo_active_dropped_on_mode_switch) / delta_total_jobs
         # deadline miss rate：interval 内 deadline miss 次数 / interval 内 job_start 次数。
         deadline_miss_rate = float(delta_deadline_misses) / delta_total_jobs
+        lo_deadline_miss_rate = float(delta_lo_deadline_misses) / delta_total_jobs
+        hi_deadline_miss_rate = float(delta_hi_deadline_misses) / delta_total_jobs
         # invalid_action：动作经过安全检查且未被接受时记为 1.0，否则记为 0.0。
         # 这样可以把“动作被拒绝”作为一个可在奖励公式里直接惩罚的显式信号。
         invalid_action = 1.0 if action_was_checked and not accepted else 0.0
@@ -3264,6 +3291,20 @@ class AmcBudgetEnv:
         # 注意：这些分量是诊断口径，最终总 reward 仍以 step_reward_formula 的表达式求值为准。
         budget_after = dict(self._engine.runtime_budgets.budgets)
         reward_parameters = self._reward_mode_config.reward_parameters
+        lo_quality_reward_weight = float(
+            reward_parameters.get("lo_quality_reward_weight", 0.0)
+        )
+        lo_equiv_jne_penalty = float(
+            reward_parameters.get("lo_equiv_jne_penalty", 0.0)
+        )
+        step_reward_lo_quality_service = (
+            lo_quality_reward_weight
+            * lo_service_delta.service_quality_per_finalized_job
+        )
+        step_reward_lo_equiv_jne = (
+            -lo_equiv_jne_penalty
+            * lo_service_delta.equiv_jne_per_finalized_job
+        )
         # job_start_weight 对应公式中的正向 job 启动奖励系数。
         job_start_weight = float(reward_parameters.get("job_start_weight", 0.0))
         # 以下 penalty 系数与 interval 公式中的各惩罚项一一对应。
@@ -3663,6 +3704,8 @@ class AmcBudgetEnv:
                 delta_lo_active_dropped_on_mode_switch
             ),
             "delta_deadline_misses": float(delta_deadline_misses),
+            "delta_lo_deadline_misses": float(delta_lo_deadline_misses),
+            "delta_hi_deadline_misses": float(delta_hi_deadline_misses),
             "interval_time": float(interval_time),
             "delta_total_jobs": float(delta_total_jobs),
             "lo_overrun_rate": float(lo_overrun_rate),
@@ -3674,6 +3717,29 @@ class AmcBudgetEnv:
             "lo_release_drop_rate": float(lo_release_drop_rate),
             "lo_active_drop_rate": float(lo_active_drop_rate),
             "deadline_miss_rate": float(deadline_miss_rate),
+            "lo_deadline_miss_rate": float(lo_deadline_miss_rate),
+            "hi_deadline_miss_rate": float(hi_deadline_miss_rate),
+            "delta_lo_released_jobs": float(lo_service_delta.released_jobs),
+            "delta_lo_finalized_jobs": float(lo_service_delta.finalized_jobs),
+            "delta_lo_service_quality_sum": float(lo_service_delta.service_quality_sum),
+            "delta_lo_equiv_jne": float(lo_service_delta.equiv_jne),
+            "delta_lo_zero_service_jobs": float(lo_service_delta.zero_service_jobs),
+            "delta_lo_partial_service_jobs": float(lo_service_delta.partial_service_jobs),
+            "lo_service_quality_per_finalized_job": float(
+                lo_service_delta.service_quality_per_finalized_job
+            ),
+            "lo_equiv_jne_per_finalized_job": float(
+                lo_service_delta.equiv_jne_per_finalized_job
+            ),
+            "cumulative_lo_service_quality_sum": float(
+                self._lo_service_reward_tracker.cumulative_service_quality_sum
+            ),
+            "cumulative_lo_equiv_jne": float(
+                self._lo_service_reward_tracker.cumulative_equiv_jne
+            ),
+            "cumulative_lo_finalized_jobs": float(
+                self._lo_service_reward_tracker.cumulative_finalized_jobs
+            ),
             "lo_budget_cancellation_penalty": float(lo_budget_cancellation_penalty),
             "lo_active_drop_penalty": float(lo_active_drop_penalty),
             "lo_release_drop_penalty": float(lo_release_drop_penalty),
@@ -3710,6 +3776,8 @@ class AmcBudgetEnv:
         self._prev_lo_release_dropped_in_degraded_mode = lo_release_dropped_in_degraded_mode
         self._prev_lo_active_dropped_on_mode_switch = lo_active_dropped_on_mode_switch
         self._prev_deadline_misses = deadline_misses
+        self._prev_lo_deadline_misses = lo_deadline_misses
+        self._prev_hi_deadline_misses = hi_deadline_misses
         self._update_feature_state(
             delta_job_start=delta_job_start,
             delta_mode_changes=delta_mode_changes,
@@ -3846,6 +3914,16 @@ class AmcBudgetEnv:
             "lo_release_dropped_in_degraded_mode": lo_release_dropped_in_degraded_mode,
             "lo_active_dropped_on_mode_switch": lo_active_dropped_on_mode_switch,
             "deadline_misses": deadline_misses,
+            "lo_deadline_misses": lo_deadline_misses,
+            "hi_deadline_misses": hi_deadline_misses,
+            "released_lo_jobs": self._lo_service_reward_tracker.cumulative_released_jobs,
+            "lo_quality_qos": (
+                self._lo_service_reward_tracker.cumulative_service_quality_sum
+                / float(self._lo_service_reward_tracker.cumulative_released_jobs)
+                if self._lo_service_reward_tracker.cumulative_released_jobs > 0
+                else 1.0
+            ),
+            "lo_equiv_jne": self._lo_service_reward_tracker.cumulative_equiv_jne,
             "interval_time": float(interval_time),
             "delta_total_jobs": float(delta_total_jobs),
             "delta_job_start": float(delta_job_start),
@@ -3861,6 +3939,8 @@ class AmcBudgetEnv:
                 delta_lo_active_dropped_on_mode_switch
             ),
             "delta_deadline_misses": float(delta_deadline_misses),
+            "delta_lo_deadline_misses": float(delta_lo_deadline_misses),
+            "delta_hi_deadline_misses": float(delta_hi_deadline_misses),
             "lo_overrun_rate": float(lo_overrun_rate),
             "hi_overrun_rate": float(hi_overrun_rate),
             "mode_change_rate": float(mode_change_rate),
@@ -3870,6 +3950,29 @@ class AmcBudgetEnv:
             "lo_release_drop_rate": float(lo_release_drop_rate),
             "lo_active_drop_rate": float(lo_active_drop_rate),
             "deadline_miss_rate": float(deadline_miss_rate),
+            "lo_deadline_miss_rate": float(lo_deadline_miss_rate),
+            "hi_deadline_miss_rate": float(hi_deadline_miss_rate),
+            "delta_lo_released_jobs": float(lo_service_delta.released_jobs),
+            "delta_lo_finalized_jobs": float(lo_service_delta.finalized_jobs),
+            "delta_lo_service_quality_sum": float(lo_service_delta.service_quality_sum),
+            "delta_lo_equiv_jne": float(lo_service_delta.equiv_jne),
+            "delta_lo_zero_service_jobs": float(lo_service_delta.zero_service_jobs),
+            "delta_lo_partial_service_jobs": float(lo_service_delta.partial_service_jobs),
+            "lo_service_quality_per_finalized_job": float(
+                lo_service_delta.service_quality_per_finalized_job
+            ),
+            "lo_equiv_jne_per_finalized_job": float(
+                lo_service_delta.equiv_jne_per_finalized_job
+            ),
+            "cumulative_lo_service_quality_sum": float(
+                self._lo_service_reward_tracker.cumulative_service_quality_sum
+            ),
+            "cumulative_lo_equiv_jne": float(
+                self._lo_service_reward_tracker.cumulative_equiv_jne
+            ),
+            "cumulative_lo_finalized_jobs": float(
+                self._lo_service_reward_tracker.cumulative_finalized_jobs
+            ),
             "lo_budget_cancellation_penalty": float(lo_budget_cancellation_penalty),
             "lo_active_drop_penalty": float(lo_active_drop_penalty),
             "lo_release_drop_penalty": float(lo_release_drop_penalty),
@@ -3947,6 +4050,8 @@ class AmcBudgetEnv:
             "step_reward_lo_release_drop": float(step_reward_lo_release_drop),
             "step_reward_lo_reason_split": float(step_reward_lo_reason_split),
             "step_reward_deadline_miss": step_reward_deadline_miss,
+            "step_reward_lo_quality_service": step_reward_lo_quality_service,
+            "step_reward_lo_equiv_jne": step_reward_lo_equiv_jne,
             # invalid_action 惩罚单独记录，便于分析“动作被拒绝”对 reward 的影响权重。
             "step_reward_invalid_action": step_reward_invalid_action,
             "observation_mode": self.feature_config.observation_mode,

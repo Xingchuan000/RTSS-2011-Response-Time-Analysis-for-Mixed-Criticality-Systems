@@ -50,12 +50,14 @@ from amc_py.metrics import (
 from amc_py.model_selection import (
     is_conservative_qos_valid,
     is_qos_best_valid,
+    is_lo_quality_qos_best_valid,
     is_qos_recovery_stable_valid,
     is_qos_stable_valid,
     is_zero_service_qos_valid,
     recovery_action_stats,
     qos_sort_key,
     qos_recovery_stable_sort_key,
+    lo_quality_qos_best_sort_key,
     zero_service_qos_sort_key,
 )
 from amc_py.models import Criticality, Task
@@ -177,6 +179,17 @@ STEP_LOG_FIELDNAMES = [
     "lo_active_dropped_on_mode_switch",
     "lo_release_dropped_in_degraded_mode",
     "deadline_misses",
+    "delta_lo_released_jobs",
+    "delta_lo_finalized_jobs",
+    "delta_lo_service_quality_sum",
+    "delta_lo_equiv_jne",
+    "delta_lo_zero_service_jobs",
+    "delta_lo_partial_service_jobs",
+    "lo_service_quality_per_finalized_job",
+    "lo_equiv_jne_per_finalized_job",
+    "cumulative_lo_service_quality_sum",
+    "cumulative_lo_equiv_jne",
+    "cumulative_lo_finalized_jobs",
     "step_reward_total",
     "step_reward_job_start",
     "step_reward_lo_overrun",
@@ -189,6 +202,8 @@ STEP_LOG_FIELDNAMES = [
     "step_reward_lo_release_drop",
     "step_reward_lo_reason_split",
     "step_reward_deadline_miss",
+    "step_reward_lo_quality_service",
+    "step_reward_lo_equiv_jne",
     "step_reward_invalid_action",
     "paper_reward",
     "noop_reward_bonus",
@@ -203,6 +218,8 @@ STEP_LOG_FIELDNAMES = [
     "lo_active_drop_rate",
     "lo_release_drop_rate",
     "deadline_miss_rate",
+    "hi_deadline_miss_rate",
+    "lo_deadline_miss_rate",
     "invalid_action",
     "budget_change_norm",
     "budget_change_penalty_value",
@@ -355,6 +372,7 @@ def _qos_validation_metadata_row(
         "is_conservative_qos_valid": is_conservative_qos_valid(row),
         "is_qos_stable_valid": is_qos_stable_valid(row, delta=qos_stable_mode_delta),
         "is_qos_best_valid": is_qos_best_valid(row),
+        "is_lo_quality_qos_best_valid": is_lo_quality_qos_best_valid(row),
     }
     stats = recovery_action_stats(row)
     metadata.update(
@@ -2263,6 +2281,8 @@ def _is_better_validation_row(
 ) -> bool:
     """判断候选验证结果是否优于当前 best。"""
 
+    if save_best_by == "lo_quality_qos_best" and not is_lo_quality_qos_best_valid(candidate_row):
+        return False
     if save_best_by in {"lo_cancellations", "mode_changes", "reward", "relative_score", "pareto_relative_score"}:
         if int(candidate_row["deadline_misses_sum"]) != 0:
             return False
@@ -2306,6 +2326,12 @@ def _is_better_validation_row(
         if best_row is None or not is_qos_best_valid(best_row):
             return True
         return qos_sort_key(candidate_row) < qos_sort_key(best_row)
+    if save_best_by == "lo_quality_qos_best":
+        if not is_lo_quality_qos_best_valid(candidate_row):
+            return False
+        if best_row is None or not is_lo_quality_qos_best_valid(best_row):
+            return True
+        return lo_quality_qos_best_sort_key(candidate_row) < lo_quality_qos_best_sort_key(best_row)
     if save_best_by == "qos_recovery_stable":
         candidate_valid = is_qos_recovery_stable_valid(
             candidate_row,
@@ -2835,6 +2861,7 @@ def build_parser() -> argparse.ArgumentParser:
             "qos_stable",
             "conservative_qos",
             "qos_best",
+            "lo_quality_qos_best",
             "qos_recovery_stable",
             "zero_service_qos",
         ],
@@ -3364,13 +3391,22 @@ def main() -> None:
     action_hist_rows: list[dict[str, int]] = []
     validation_rows: list[dict[str, int | float | None]] = []
     best_validation_row: dict[str, int | float | None] | None = None
-    model_best_path = output_dir / "model_best.pt"
-    best_model_metadata_path = output_dir / "best_model_metadata.json"
+    model_best_path = output_dir / (
+        "model_best_lo_quality_qos_best.pt"
+        if args.save_best_by == "lo_quality_qos_best"
+        else "model_best.pt"
+    )
+    best_model_metadata_path = output_dir / (
+        "best_model_metadata_lo_quality_qos_best.json"
+        if args.save_best_by == "lo_quality_qos_best"
+        else "best_model_metadata.json"
+    )
     best_model_saved = False
     best_rows_by_type: dict[str, dict[str, int | float | None] | None] = {
         "conservative_qos": None,
         "qos_stable": None,
         "qos_best": None,
+        "lo_quality_qos_best": None,
         "qos_recovery_stable": None,
         "zero_service_qos": None,
     }
@@ -3486,6 +3522,11 @@ def main() -> None:
         reward_lo_release_drop_sum = 0.0
         reward_lo_reason_split_sum = 0.0
         reward_deadline_miss_sum = 0.0
+        reward_lo_quality_service_sum = 0.0
+        reward_lo_equiv_jne_sum = 0.0
+        interval_lo_service_quality_sum = 0.0
+        interval_lo_equiv_jne_sum = 0.0
+        interval_lo_finalized_jobs_sum = 0.0
         reward_paper_sum = 0.0
         reward_noop_bonus_sum = 0.0
         reward_budget_change_penalty_sum = 0.0
@@ -3524,6 +3565,9 @@ def main() -> None:
             "mode_changes": 0,
             "lo_cancellations": 0,
             "deadline_misses": 0,
+            "lo_quality_qos": 0.0,
+            "lo_equiv_jne": 0.0,
+            "released_lo_jobs": 0,
         }
 
         while not done:
@@ -3649,6 +3693,19 @@ def main() -> None:
             reward_lo_release_drop_sum += float(result.info.get("step_reward_lo_release_drop", 0.0))
             reward_lo_reason_split_sum += float(result.info.get("step_reward_lo_reason_split", 0.0))
             reward_deadline_miss_sum += float(result.info.get("step_reward_deadline_miss", 0.0))
+            reward_lo_quality_service_sum += float(
+                result.info.get("step_reward_lo_quality_service", 0.0)
+            )
+            reward_lo_equiv_jne_sum += float(
+                result.info.get("step_reward_lo_equiv_jne", 0.0)
+            )
+            interval_lo_service_quality_sum += float(
+                result.info.get("delta_lo_service_quality_sum", 0.0)
+            )
+            interval_lo_equiv_jne_sum += float(result.info.get("delta_lo_equiv_jne", 0.0))
+            interval_lo_finalized_jobs_sum += float(
+                result.info.get("delta_lo_finalized_jobs", 0.0)
+            )
             reward_paper_sum += float(result.info.get("paper_reward", 0.0))
             reward_noop_bonus_sum += float(result.info.get("noop_reward_bonus", 0.0))
             reward_budget_change_penalty_sum += float(result.info.get("budget_change_penalty_value", 0.0))
@@ -3743,6 +3800,37 @@ def main() -> None:
                             result.info.get("lo_release_dropped_in_degraded_mode", 0)
                         ),
                         "deadline_misses": int(result.info.get("deadline_misses", 0)),
+                        "delta_lo_released_jobs": float(
+                            result.info.get("delta_lo_released_jobs", 0.0)
+                        ),
+                        "delta_lo_finalized_jobs": float(
+                            result.info.get("delta_lo_finalized_jobs", 0.0)
+                        ),
+                        "delta_lo_service_quality_sum": float(
+                            result.info.get("delta_lo_service_quality_sum", 0.0)
+                        ),
+                        "delta_lo_equiv_jne": float(result.info.get("delta_lo_equiv_jne", 0.0)),
+                        "delta_lo_zero_service_jobs": float(
+                            result.info.get("delta_lo_zero_service_jobs", 0.0)
+                        ),
+                        "delta_lo_partial_service_jobs": float(
+                            result.info.get("delta_lo_partial_service_jobs", 0.0)
+                        ),
+                        "lo_service_quality_per_finalized_job": float(
+                            result.info.get("lo_service_quality_per_finalized_job", 0.0)
+                        ),
+                        "lo_equiv_jne_per_finalized_job": float(
+                            result.info.get("lo_equiv_jne_per_finalized_job", 0.0)
+                        ),
+                        "cumulative_lo_service_quality_sum": float(
+                            result.info.get("cumulative_lo_service_quality_sum", 0.0)
+                        ),
+                        "cumulative_lo_equiv_jne": float(
+                            result.info.get("cumulative_lo_equiv_jne", 0.0)
+                        ),
+                        "cumulative_lo_finalized_jobs": float(
+                            result.info.get("cumulative_lo_finalized_jobs", 0.0)
+                        ),
                         "step_reward_total": float(result.info.get("step_reward_total", 0.0)),
                         "step_reward_job_start": float(result.info.get("step_reward_job_start", 0.0)),
                         "step_reward_lo_overrun": float(result.info.get("step_reward_lo_overrun", 0.0)),
@@ -3766,6 +3854,12 @@ def main() -> None:
                             result.info.get("step_reward_lo_reason_split", 0.0)
                         ),
                         "step_reward_deadline_miss": float(result.info.get("step_reward_deadline_miss", 0.0)),
+                        "step_reward_lo_quality_service": float(
+                            result.info.get("step_reward_lo_quality_service", 0.0)
+                        ),
+                        "step_reward_lo_equiv_jne": float(
+                            result.info.get("step_reward_lo_equiv_jne", 0.0)
+                        ),
                         "step_reward_invalid_action": float(result.info.get("step_reward_invalid_action", 0.0)),
                         "paper_reward": float(result.info.get("paper_reward", 0.0)),
                         "noop_reward_bonus": float(result.info.get("noop_reward_bonus", 0.0)),
@@ -3789,6 +3883,12 @@ def main() -> None:
                         "lo_active_drop_rate": float(result.info.get("lo_active_drop_rate", 0.0)),
                         "lo_release_drop_rate": float(result.info.get("lo_release_drop_rate", 0.0)),
                         "deadline_miss_rate": float(result.info.get("deadline_miss_rate", 0.0)),
+                        "hi_deadline_miss_rate": float(
+                            result.info.get("hi_deadline_miss_rate", 0.0)
+                        ),
+                        "lo_deadline_miss_rate": float(
+                            result.info.get("lo_deadline_miss_rate", 0.0)
+                        ),
                         "invalid_action": float(result.info.get("invalid_action", 0.0)),
                         "budget_change_norm": float(result.info.get("budget_change_norm", 0.0)),
                         "budget_change_penalty_value": float(result.info.get("budget_change_penalty_value", 0.0)),
@@ -3927,6 +4027,39 @@ def main() -> None:
         runtime_result = (
             env._engine.finish() if env._engine is not None else SimulationResult()
         )
+        # 使用最终 SimulationResult 独立重算指标，再与所有 interval delta 的
+        # 累加值比较。禁止用 tracker 派生的 qos 再反推 tracker 累计量，
+        # 否则守恒检查会退化成 S - (S/N)*N == 0 的循环自证。
+        lo_quality_metrics = compute_lo_quality_weighted_metrics(runtime_result)
+        released_lo_jobs = sum(
+            1
+            for job in runtime_result.jobs
+            if job.task.criticality is Criticality.LO
+        )
+        lo_quality_conservation_error = (
+            float(interval_lo_service_quality_sum)
+            - float(lo_quality_metrics.lo_total_service_sum)
+        )
+        lo_equiv_jne_conservation_error = (
+            float(interval_lo_equiv_jne_sum)
+            - float(lo_quality_metrics.lo_equiv_jne)
+        )
+        lo_finalized_jobs_conservation_error = (
+            float(interval_lo_finalized_jobs_sum)
+            - float(released_lo_jobs)
+        )
+        if (
+            not math.isclose(lo_quality_conservation_error, 0.0, abs_tol=1e-9)
+            or not math.isclose(lo_equiv_jne_conservation_error, 0.0, abs_tol=1e-9)
+            or not math.isclose(lo_finalized_jobs_conservation_error, 0.0, abs_tol=1e-9)
+        ):
+            raise RuntimeError(
+                "LO service/JNE conservation check failed: "
+                f"service_error={lo_quality_conservation_error}, "
+                f"equiv_jne_error={lo_equiv_jne_conservation_error}, "
+                f"finalized_error={lo_finalized_jobs_conservation_error}, "
+                f"episode={episode}"
+            )
         episode_runtime_metrics = (
             _runtime_metrics_row(
                 result=runtime_result,
@@ -4086,6 +4219,14 @@ def main() -> None:
                     last_info.get("lo_release_dropped_in_degraded_mode", 0)
                 ),
                 "deadline_misses": int(last_info.get("deadline_misses", 0)),
+                "lo_deadline_misses": int(last_info.get("lo_deadline_misses", 0)),
+                "hi_deadline_misses": int(last_info.get("hi_deadline_misses", 0)),
+                "lo_quality_qos": float(last_info.get("lo_quality_qos", 0.0)),
+                "lo_equiv_jne": float(last_info.get("lo_equiv_jne", 0.0)),
+                "released_lo_jobs": int(last_info.get("released_lo_jobs", 0)),
+                "lo_quality_conservation_error": lo_quality_conservation_error,
+                "lo_equiv_jne_conservation_error": lo_equiv_jne_conservation_error,
+                "lo_finalized_jobs_conservation_error": lo_finalized_jobs_conservation_error,
                 "job_starts": int(env._monitor.job_start_count),
                 "lo_overruns": int(env._monitor.lo_overrun_count),
                 "hi_overruns": int(env._monitor.hi_overrun_count),
@@ -4100,6 +4241,11 @@ def main() -> None:
                 "reward_lo_release_drop_sum": reward_lo_release_drop_sum,
                 "reward_lo_reason_split_sum": reward_lo_reason_split_sum,
                 "reward_deadline_miss_sum": reward_deadline_miss_sum,
+                "reward_lo_quality_service_sum": reward_lo_quality_service_sum,
+                "reward_lo_equiv_jne_sum": reward_lo_equiv_jne_sum,
+                "interval_lo_service_quality_sum": interval_lo_service_quality_sum,
+                "interval_lo_equiv_jne_sum": interval_lo_equiv_jne_sum,
+                "interval_lo_finalized_jobs_sum": interval_lo_finalized_jobs_sum,
                 "reward_paper_sum": reward_paper_sum,
                 "reward_noop_bonus_sum": reward_noop_bonus_sum,
                 "reward_budget_change_penalty_sum": reward_budget_change_penalty_sum,
@@ -4649,6 +4795,7 @@ def main() -> None:
                     "conservative_qos",
                     "qos_stable",
                     "qos_best",
+                    "lo_quality_qos_best",
                     "qos_recovery_stable",
                     "zero_service_qos",
                 ):
@@ -4757,6 +4904,12 @@ def main() -> None:
             "lo_active_dropped_on_mode_switch",
             "lo_release_dropped_in_degraded_mode",
             "deadline_misses",
+            "lo_deadline_misses",
+            "hi_deadline_misses",
+            "released_lo_jobs",
+            "lo_quality_conservation_error",
+            "lo_equiv_jne_conservation_error",
+            "lo_finalized_jobs_conservation_error",
             "job_starts",
             "lo_overruns",
             "hi_overruns",
@@ -4771,6 +4924,11 @@ def main() -> None:
             "reward_lo_release_drop_sum",
             "reward_lo_reason_split_sum",
             "reward_deadline_miss_sum",
+            "reward_lo_quality_service_sum",
+            "reward_lo_equiv_jne_sum",
+            "interval_lo_service_quality_sum",
+            "interval_lo_equiv_jne_sum",
+            "interval_lo_finalized_jobs_sum",
             "reward_paper_sum",
             "reward_noop_bonus_sum",
             "reward_budget_change_penalty_sum",
@@ -5303,6 +5461,7 @@ def main() -> None:
                 "conservative_qos",
                 "qos_stable",
                 "qos_best",
+                "lo_quality_qos_best",
                 "qos_recovery_stable",
                 "zero_service_qos",
             ):

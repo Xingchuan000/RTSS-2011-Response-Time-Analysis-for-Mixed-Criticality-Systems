@@ -281,6 +281,34 @@ def _lo_deadline_miss_keys(result: SimulationResult) -> set[tuple[str, int]]:
     }
 
 
+def lo_job_service_quality(
+    job: Job,
+    *,
+    lo_deadline_miss_keys: set[tuple[str, int]],
+    terminal: bool,
+) -> float | None:
+    """返回已终结 LO job 的服务质量；未终结时返回 ``None``。
+
+    该判定是质量加权最终指标与 interval reward tracker 的共享口径。
+    """
+
+    key = (job.task.name, job.release_index)
+    if job.completion_time is not None:
+        if (
+            job.completion_time <= job.absolute_deadline
+            and not job.dropped
+            and key not in lo_deadline_miss_keys
+        ):
+            return max(0.0, min(1.0, float(job.service_quality_if_completed)))
+        return 0.0
+
+    if job.dropped or key in lo_deadline_miss_keys:
+        return 0.0
+    if terminal:
+        return 0.0
+    return None
+
+
 def _loss_reason_by_job_key(result: SimulationResult) -> dict[tuple[str, int], str]:
     """按 job 键汇总 LO loss / cancellation 的原因。"""
 
@@ -305,15 +333,6 @@ def compute_lo_quality_weighted_metrics(result: SimulationResult) -> LoQualityWe
     lo_miss_keys = _lo_deadline_miss_keys(result)
     loss_reason_by_key = _loss_reason_by_job_key(result)
 
-    def completed_on_time(job: Job) -> bool:
-        key = (job.task.name, job.release_index)
-        return (
-            job.completion_time is not None
-            and job.completion_time <= job.absolute_deadline
-            and not job.dropped
-            and key not in lo_miss_keys
-        )
-
     lo_equiv_jne = 0.0
     lo_full_quality_completed = 0
     lo_degraded_released = 0
@@ -334,12 +353,22 @@ def compute_lo_quality_weighted_metrics(result: SimulationResult) -> LoQualityWe
 
     for job in lo_jobs:
         key = (job.task.name, job.release_index)
-        is_completed_on_time = completed_on_time(job)
+        service = lo_job_service_quality(
+            job,
+            lo_deadline_miss_keys=lo_miss_keys,
+            terminal=True,
+        )
+        is_completed_on_time = (
+            service is not None
+            and job.completion_time is not None
+            and job.completion_time <= job.absolute_deadline
+            and not job.dropped
+            and key not in lo_miss_keys
+        )
         if is_completed_on_time:
-            service = max(0.0, min(1.0, float(job.service_quality_if_completed)))
             completed_lo_jobs += 1
-        else:
-            service = 0.0
+        # terminal=True guarantees a concrete value for every released LO job.
+        assert service is not None
 
         lo_equiv_jne += 1.0 - service
         lo_total_service_sum += service

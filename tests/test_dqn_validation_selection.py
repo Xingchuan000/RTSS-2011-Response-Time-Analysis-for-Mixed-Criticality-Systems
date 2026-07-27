@@ -5,10 +5,12 @@ from __future__ import annotations
 from amc_py.model_selection import (
     is_conservative_qos_valid,
     is_qos_best_valid,
+    is_lo_quality_qos_best_valid,
     is_qos_recovery_stable_valid,
     is_qos_stable_valid,
     is_zero_service_qos_valid,
     qos_recovery_stable_sort_key,
+    lo_quality_qos_best_sort_key,
     recovery_action_stats,
     zero_service_qos_sort_key,
 )
@@ -329,6 +331,31 @@ def test_qos_recovery_stable_rules_and_sort_key_match_plan() -> None:
         save_best_by="qos_recovery_stable",
         qos_stable_mode_delta=0.05,
     ) is False
+
+
+def test_lo_quality_qos_best_prefers_quality_over_binary_loss() -> None:
+    row_a = {
+        "episode": 10,
+        "hi_deadline_misses_sum": 0,
+        "lo_quality_qos_mean": 0.75,
+        "mode_changes_mean": 2.0,
+        "mean_abs_budget_change_mean": 1.0,
+    }
+    row_b = {
+        "episode": 11,
+        "hi_deadline_misses_sum": 0,
+        "lo_quality_qos_mean": 0.50,
+        "mode_changes_mean": 2.0,
+        "mean_abs_budget_change_mean": 1.0,
+    }
+
+    assert is_lo_quality_qos_best_valid(row_a) is True
+    assert lo_quality_qos_best_sort_key(row_a) < lo_quality_qos_best_sort_key(row_b)
+    assert _is_better_validation_row(
+        candidate_row=row_a,
+        best_row=row_b,
+        save_best_by="lo_quality_qos_best",
+    ) is True
 
 
 def test_zero_service_qos_prefers_lower_zero_service_then_active_drop() -> None:

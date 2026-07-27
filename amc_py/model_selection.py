@@ -43,6 +43,25 @@ def is_qos_best_valid(row: Mapping[str, object]) -> bool:
     return is_hi_safe(row)
 
 
+def is_lo_quality_qos_best_valid(row: Mapping[str, object]) -> bool:
+    """LO quality QoS 选模：只要求满足 HI safety 硬约束。"""
+
+    return is_hi_safe(row)
+
+
+def lo_quality_qos_best_sort_key(
+    row: Mapping[str, object],
+) -> tuple[float, float, float, int]:
+    """按跨 AMC-family 的 LO quality QoS 主指标选择 checkpoint。"""
+
+    return (
+        -float(row["lo_quality_qos_mean"]),
+        float(row["mode_changes_mean"]),
+        _float_or_default(row.get("mean_abs_budget_change_mean"), 0.0),
+        int(float(row["episode"])),
+    )
+
+
 def is_zero_service_qos_valid(
     row: Mapping[str, object],
     *,
@@ -225,6 +244,8 @@ def filter_by_best_type(
         return [row for row in rows if is_qos_stable_valid(row, delta)]
     if best_type == "qos_best":
         return [row for row in rows if is_qos_best_valid(row)]
+    if best_type == "lo_quality_qos_best":
+        return [row for row in rows if is_lo_quality_qos_best_valid(row)]
     if best_type == "qos_recovery_stable":
         return [row for row in rows if is_qos_recovery_stable_valid(row, mode_delta=delta)]
     if best_type == "zero_service_qos":
@@ -247,6 +268,8 @@ def best_row_for_type(
         return min(candidates, key=lambda row: float(row["lo_cancellations_mean"]))
     if best_type == "qos_recovery_stable":
         return min(candidates, key=qos_recovery_stable_sort_key)
+    if best_type == "lo_quality_qos_best":
+        return min(candidates, key=lo_quality_qos_best_sort_key)
     if best_type == "zero_service_qos":
         return min(candidates, key=zero_service_qos_sort_key)
     return min(candidates, key=qos_sort_key)
