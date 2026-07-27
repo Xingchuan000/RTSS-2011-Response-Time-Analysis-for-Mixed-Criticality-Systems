@@ -1,0 +1,627 @@
+{
+  "extends": "ppp_minimal_campaign.json",
+  "schema_version": "ppp_nonvacuity_campaign_v1",
+  "enabled": false,
+  "campaign_id": "ppp_nonvacuity_full_v1",
+  "proof_route": "protected_prefix",
+  "output_root": "../../outputs/nonvacuity",
+  "source_root": "../..",
+  "preserve_workspaces": true,
+  "run_baselines": true,
+  "run_semantic_recompile": true,
+  "run_integrity_reuse": true,
+  "run_hout": true,
+  "fail_on_not_activated": true,
+  "mutations": [
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "A2_s397_tail_dangerous_top1_masked",
+      "mutation_class": "DANGEROUS_TOP1",
+      "base_seed": 397,
+      "seed_dir": "../../s397",
+      "tree_variant": "best_balanced",
+      "mutator": {
+        "kind": "dangerous_top1",
+        "parameters": {"leaf_candidates": [], "dangerous_actions": []}
+      },
+      "activation": {
+        "mode": "symbolic_or_hout",
+        "activation_kind": "b1",
+        "require_baseline_reject": true,
+        "require_post_invariant_violation": true
+      },
+      "expected": {"result_status": "DEPLOYED_TREE_PROVED"},
+      "metadata": {
+        "required_input_unavailable": "s397",
+        "required_scenarios": [101555, 101593],
+        "requires_real_leaf_audit": true
+      }
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "B5_s397_tail_same_tree_mask_bypass",
+      "mutation_class": "MASK_BYPASS",
+      "base_seed": 397,
+      "seed_dir": "../../s397",
+      "tree_variant": "best_balanced",
+      "paired_with": "A2_s397_tail_dangerous_top1_masked",
+      "mutator": {
+        "kind": "source_overlay",
+        "parameters": {
+          "semantic_group": "raw_top1_and_unchecked_apply",
+          "patches": [
+            {
+              "target_file": "amc_py/viper/tree_policy.py",
+              "target_symbol": "IntegerTreeBudgetPolicy.select_action_id",
+              "before_snippet": "selection_semantics = str(self.metadata.get(\"nonvacuity_selection_semantics\", \"ranked_first_valid\"))",
+              "after_snippet": "selection_semantics = \"raw_top1\""
+            },
+            {
+              "target_file": "amc_py/rl/env.py",
+              "target_symbol": "AmcBudgetEnv",
+              "before_snippet": "step_guard_semantics: Literal[\"checked\", \"unchecked_apply\", \"unchecked_if_invalid\"] = \"checked\"",
+              "after_snippet": "step_guard_semantics: Literal[\"checked\", \"unchecked_apply\", \"unchecked_if_invalid\"] = \"unchecked_apply\""
+            },
+            {
+              "target_file": "formal_toolchain/adapters/s185_target.py",
+              "target_symbol": "build_target",
+              "before_snippet": "policy_selection_semantics=settings.selection_semantics,\n        step_guard_semantics=settings.step_guard_semantics,",
+              "after_snippet": "policy_selection_semantics=\"raw_top1\",\n        step_guard_semantics=\"unchecked_apply\","
+            }
+          ]
+        }
+      },
+      "activation": {
+        "mode": "symbolic_or_hout",
+        "activation_kind": "b1",
+        "require_baseline_reject": true,
+        "require_selected_after_mutation": true,
+        "require_post_invariant_violation": true
+      },
+      "expected": {
+        "result_status": "POLICY_CONTRACT_VIOLATION",
+        "first_failing_obligations": ["DEPLOYED_POLICY_PRESERVATION"]
+      },
+      "metadata": {
+        "required_input_unavailable": "s397",
+        "required_scenarios": [101555, 101593],
+        "requires_same_A2_witness": true
+      }
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "B2_no_first_valid",
+      "mutation_class": "NO_FIRST_VALID",
+      "base_seed": 185,
+      "seed_dir": "../../s185",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "source_overlay",
+        "parameters": {
+          "semantic_group": "top1_or_noop",
+          "patches": [
+            {
+              "target_file": "amc_py/viper/tree_policy.py",
+              "target_symbol": "IntegerTreeBudgetPolicy.select_action_id",
+              "before_snippet": "selection_semantics = str(self.metadata.get(\"nonvacuity_selection_semantics\", \"ranked_first_valid\"))",
+              "after_snippet": "selection_semantics = \"top1_or_noop\""
+            },
+            {
+              "target_file": "formal_toolchain/adapters/s185_target.py",
+              "target_symbol": "build_target",
+              "before_snippet": "policy_selection_semantics=settings.selection_semantics,",
+              "after_snippet": "policy_selection_semantics=\"top1_or_noop\","
+            }
+          ]
+        }
+      },
+      "activation": {
+        "mode": "hout",
+        "require_baseline_reject": true
+      },
+      "expected": {
+        "result_status": "DEPLOYED_TREE_PROVED",
+        "performance_degradation_metrics": ["noop", "qos", "retention"]
+      },
+      "metadata": {"requires_paired_hout_command": true}
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "B3_all_invalid_force_top1",
+      "mutation_class": "ALL_INVALID_FORCE_TOP1",
+      "base_seed": 185,
+      "seed_dir": "../../s185",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "source_overlay",
+        "parameters": {
+          "semantic_group": "first_valid_else_top1_and_unchecked_if_invalid",
+          "patches": [
+            {
+              "target_file": "amc_py/viper/tree_policy.py",
+              "target_symbol": "IntegerTreeBudgetPolicy.select_action_id",
+              "before_snippet": "selection_semantics = str(self.metadata.get(\"nonvacuity_selection_semantics\", \"ranked_first_valid\"))",
+              "after_snippet": "selection_semantics = \"first_valid_else_top1\""
+            },
+            {
+              "target_file": "amc_py/rl/env.py",
+              "target_symbol": "AmcBudgetEnv",
+              "before_snippet": "step_guard_semantics: Literal[\"checked\", \"unchecked_apply\", \"unchecked_if_invalid\"] = \"checked\"",
+              "after_snippet": "step_guard_semantics: Literal[\"checked\", \"unchecked_apply\", \"unchecked_if_invalid\"] = \"unchecked_if_invalid\""
+            },
+            {
+              "target_file": "formal_toolchain/adapters/s185_target.py",
+              "target_symbol": "build_target",
+              "before_snippet": "policy_selection_semantics=settings.selection_semantics,\n        step_guard_semantics=settings.step_guard_semantics,",
+              "after_snippet": "policy_selection_semantics=\"first_valid_else_top1\",\n        step_guard_semantics=\"unchecked_if_invalid\","
+            }
+          ]
+        }
+      },
+      "activation": {
+        "mode": "symbolic_or_hout",
+        "activation_kind": "b3",
+        "require_all_invalid": true
+      },
+      "expected": {
+        "result_status": "POLICY_CONTRACT_VIOLATION",
+        "first_failing_obligations": ["DEPLOYED_POLICY_PRESERVATION"]
+      },
+      "metadata": {"requires_all_invalid_witness": true}
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "B4_high_frequency_guard_ablation",
+      "mutation_class": "GUARD_ABLATION",
+      "base_seed": 185,
+      "seed_dir": "../../s185",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "source_overlay",
+        "parameters": {
+          "target_file": "amc_py/rl/env.py",
+          "target_symbol": "AmcBudgetEnv._budget_candidate_reject_reason"
+        }
+      },
+      "activation": {
+        "mode": "symbolic_or_hout",
+        "activation_kind": "b4",
+        "require_baseline_reject": true,
+        "require_selected_after_mutation": true
+      },
+      "expected": {
+        "result_status": "POLICY_CONTRACT_VIOLATION",
+        "first_failing_obligations": ["DEPLOYED_POLICY_PRESERVATION"]
+      },
+      "metadata": {
+        "requires_reject_reason_selection": true,
+        "requires_source_snippet_binding": true
+      }
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "C1_inc_only_2_to_5",
+      "mutation_class": "ACTION_SEMANTICS",
+      "base_seed": 185,
+      "seed_dir": "../../s185",
+      "tree_variant": "best_overall",
+      "reuse_source_bundle": "../../outputs/formal_baselines/s185_best_overall",
+      "mutator": {
+        "kind": "action_step",
+        "parameters": {
+          "direction": "inc_only",
+          "before_ratio": 0.02,
+          "after_ratio": 0.05
+        },
+        "integrity_parameters": {
+          "tamper_kind": "replace_from",
+          "target_file": "request/inputs/tree_artifact/action_definitions.json",
+          "source_file": "{mutated_seed}/best_overall/action_definitions.json"
+        }
+      },
+      "activation": {"mode": "hout"},
+      "expected": {
+        "first_failing_obligations": ["DEPLOYED_POLICY_PRESERVATION"],
+        "integrity_result_status": "PROOF_BUNDLE_INVALID"
+      },
+      "metadata": {
+        "requires_baseline_bundle": true
+      }
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "C2_round_nearest",
+      "mutation_class": "ACTION_SEMANTICS",
+      "base_seed": 185,
+      "seed_dir": "../../s185",
+      "tree_variant": "best_overall",
+      "reuse_source_bundle": "../../outputs/formal_baselines/s185_best_overall",
+      "mutator": {
+        "kind": "source_overlay",
+        "parameters": {
+          "semantic_group": "round_nearest",
+          "patches": [
+            {
+              "target_file": "amc_py/rl/env.py",
+              "target_symbol": "AmcBudgetEnv",
+              "before_snippet": "budget_rounding_mode: Literal[\"ceil_floor\", \"nearest\"] = \"ceil_floor\"",
+              "after_snippet": "budget_rounding_mode: Literal[\"ceil_floor\", \"nearest\"] = \"nearest\""
+            },
+            {
+              "target_file": "formal_toolchain/adapters/s185_target.py",
+              "target_symbol": "build_target",
+              "before_snippet": "budget_rounding_mode=settings.rounding_mode,",
+              "after_snippet": "budget_rounding_mode=\"nearest\","
+            }
+          ]
+        },
+        "integrity_parameters": {
+          "tamper_kind": "source_file",
+          "target_file": "formal_toolchain/adapters/s185_target.py",
+          "before_snippet": "budget_rounding_mode=settings.rounding_mode,",
+          "after_snippet": "budget_rounding_mode=\"nearest\","
+        }
+      },
+      "activation": {"mode": "hout"},
+      "expected": {
+        "integrity_result_status": "PROOF_BUNDLE_INVALID"
+      },
+      "metadata": {
+        "requires_baseline_bundle": true
+      }
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "C3_active_release_budget",
+      "mutation_class": "RUNTIME_SOURCE",
+      "base_seed": 185,
+      "seed_dir": "../../s185",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "source_overlay",
+        "parameters": {
+          "semantic_group": "active_release_budget_rewrite",
+          "patches": [
+            {
+              "target_file": "amc_py/event_runtime.py",
+              "target_symbol": "_apply_retroactive_release_budget_mutation",
+              "before_snippet": "if cfg.nonvacuity_profile != \"c3_retroactive_release_budget\":\n        return []",
+              "after_snippet": "if False:\n        return []"
+            },
+            {
+              "target_file": "formal_toolchain/semantics/frozen_c_amc_sem_event_runtime.py",
+              "target_symbol": "_apply_retroactive_release_budget_mutation",
+              "before_snippet": "if cfg.nonvacuity_profile != \"c3_retroactive_release_budget\":\n        return []",
+              "after_snippet": "if False:\n        return []"
+            }
+          ]
+        }
+      },
+      "activation": {"mode": "hout"},
+      "expected": {
+        "result_status": "MODEL_CONFORMANCE_FAILED",
+        "first_failing_obligations": ["ACTIVE_RELEASE_BUDGET_INVARIANT"],
+        "allowed_upstream_obligations": ["SOURCE_TREE_INTEGRITY"],
+        "allow_strict_upstream_failure": true
+      },
+      "metadata": {"mutation_blind": true}
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "D1_dynamic_envelope_gradient",
+      "mutation_class": "ENVELOPE",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "envelope",
+        "parameters": {
+          "target_file": "formal_inputs/code_taskset_canonical.json",
+          "delta": 1
+        }
+      },
+      "activation": {"mode": "hout"},
+      "expected": {
+        "result_status": "REFERENCE_CERTIFICATE_FAILED",
+        "first_failing_obligations": ["RTA_HI_BOUND"]
+      },
+      "metadata": {
+        "requires_all_20_bundles": true,
+        "dynamic_minimum_slack_selection": true,
+        "bundle_roots": ["outputs/formal_baselines"]
+      }
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "E1_deadline_cleanup_remove",
+      "mutation_class": "RUNTIME_SOURCE",
+      "seed_dir": "../../s185",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "source_overlay",
+        "parameters": {
+          "semantic_group": "deadline_cleanup_remove",
+          "patches": [
+            {
+              "target_file": "amc_py/event_runtime.py",
+              "target_symbol": "EventRuntimeEngine._process_event",
+              "before_snippet": "if self.config.nonvacuity_deadline_cleanup_remove:",
+              "after_snippet": "if True:"
+            },
+            {
+              "target_file": "formal_toolchain/semantics/frozen_c_amc_sem_event_runtime.py",
+              "target_symbol": "EventRuntimeEngine._process_event",
+              "before_snippet": "if self.config.nonvacuity_deadline_cleanup_remove:",
+              "after_snippet": "if True:"
+            }
+          ]
+        }
+      },
+      "activation": {"mode": "hout"},
+      "expected": {
+        "result_status": "MODEL_CONFORMANCE_FAILED",
+        "first_failing_obligations": ["DEADLINE_OBSERVATION"],
+        "allowed_upstream_obligations": ["SOURCE_TREE_INTEGRITY"],
+        "allow_strict_upstream_failure": true
+      },
+      "metadata": {"mutation_blind": true}
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "E2_hi_budget_truncation",
+      "mutation_class": "RUNTIME_SOURCE",
+      "seed_dir": "../../s185",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "source_overlay",
+        "parameters": {
+          "semantic_group": "hi_budget_cap_truncate",
+          "patches": [
+            {
+              "target_file": "amc_py/event_runtime.py",
+              "target_symbol": "EventRuntimeEngine._process_event",
+              "before_snippet": "self.config.nonvacuity_hi_budget_cap_truncate\n                and job.task.criticality is Criticality.HI",
+              "after_snippet": "job.task.criticality is Criticality.HI"
+            },
+            {
+              "target_file": "formal_toolchain/semantics/frozen_c_amc_sem_event_runtime.py",
+              "target_symbol": "EventRuntimeEngine._process_event",
+              "before_snippet": "self.config.nonvacuity_hi_budget_cap_truncate\n                and job.task.criticality is Criticality.HI",
+              "after_snippet": "job.task.criticality is Criticality.HI"
+            }
+          ]
+        }
+      },
+      "activation": {"mode": "hout"},
+      "expected": {
+        "result_status": "MODEL_CONFORMANCE_FAILED",
+        "first_failing_obligations": ["HI_NONTRUNCATION"],
+        "allowed_upstream_obligations": ["SOURCE_TREE_INTEGRITY"],
+        "allow_strict_upstream_failure": true
+      },
+      "metadata": {"mutation_blind": true}
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "E3_same_timestamp_event_order",
+      "mutation_class": "RUNTIME_SOURCE",
+      "seed_dir": "../../s185",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "source_overlay",
+        "parameters": {
+          "semantic_group": "arrival_before_deadline",
+          "patches": [
+            {
+              "target_file": "amc_py/event_models.py",
+              "target_symbol": "EventQueue.__init__",
+              "before_snippet": "if arrival_before_deadline:",
+              "after_snippet": "if True:"
+            },
+            {
+              "target_file": "formal_toolchain/semantics/frozen_c_amc_sem_event_models.py",
+              "target_symbol": "EventQueue.__init__",
+              "before_snippet": "if arrival_before_deadline:",
+              "after_snippet": "if True:"
+            }
+          ]
+        }
+      },
+      "activation": {"mode": "hout"},
+      "expected": {
+        "result_status": "MODEL_CONFORMANCE_FAILED",
+        "first_failing_obligations": ["EVENT_ORDER"],
+        "allowed_upstream_obligations": ["SOURCE_TREE_INTEGRITY"],
+        "allow_strict_upstream_failure": true
+      },
+      "metadata": {"mutation_blind": true}
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "E4_nonzero_controller_overhead",
+      "mutation_class": "ACTION_SEMANTICS",
+      "seed_dir": "../../s185",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "source_overlay",
+        "parameters": {
+          "target_file": "formal_toolchain/adapters/s185_target.py",
+          "target_symbol": "build_target",
+          "before_snippet": "\"processor_overhead\": (\n            int(settings.controller_overhead_ticks)\n            if settings.enabled else int(effective_runtime_args.get(\"processor_overhead\", 0))\n        ),",
+          "after_snippet": "\"processor_overhead\": 1,"
+        }
+      },
+      "activation": {"mode": "hout"},
+      "expected": {
+        "result_status": "MODEL_CONFORMANCE_FAILED",
+        "first_failing_obligations": ["CONTROLLER_INVISIBILITY"]
+      },
+      "metadata": {"mutation_blind": true}
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "E5_nonquiescent_recovery",
+      "mutation_class": "RUNTIME_SOURCE",
+      "seed_dir": "../../s185",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "source_overlay",
+        "parameters": {
+          "semantic_group": "nonquiescent_recovery",
+          "patches": [
+            {
+              "target_file": "amc_py/event_runtime.py",
+              "target_symbol": "_maybe_recover_to_lo",
+              "before_snippet": "elif cfg.nonvacuity_recover_without_quiescence and state.mode is SystemMode.HI:",
+              "after_snippet": "elif state.mode is SystemMode.HI:"
+            },
+            {
+              "target_file": "formal_toolchain/semantics/frozen_c_amc_sem_event_runtime.py",
+              "target_symbol": "_maybe_recover_to_lo",
+              "before_snippet": "elif cfg.nonvacuity_recover_without_quiescence and state.mode is SystemMode.HI:",
+              "after_snippet": "elif state.mode is SystemMode.HI:"
+            }
+          ]
+        }
+      },
+      "activation": {"mode": "hout"},
+      "expected": {
+        "result_status": "MODEL_CONFORMANCE_FAILED",
+        "first_failing_obligations": ["MODE_SEMANTICS"],
+        "allowed_upstream_obligations": ["SOURCE_TREE_INTEGRITY"],
+        "allow_strict_upstream_failure": true
+      },
+      "metadata": {"mutation_blind": true}
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "E6_unstable_demand_reads",
+      "mutation_class": "RUNTIME_SOURCE",
+      "seed_dir": "../../s185",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "source_overlay",
+        "parameters": {
+          "semantic_group": "unstable_demand_reads",
+          "patches": [
+            {
+              "target_file": "formal_toolchain/adapters/s185_target.py",
+              "target_symbol": "FormalScenarioContract.actual_cost_for",
+              "before_snippet": "if bool(getattr(self.nonvacuity_settings, \"unstable_demand_reads\", False)):",
+              "after_snippet": "if True:"
+            },
+            {
+              "target_file": "formal_toolchain/adapters/s185_target.py",
+              "target_symbol": "FormalScenarioContract.export_formal_contract",
+              "before_snippet": "unstable = bool(getattr(settings, \"unstable_demand_reads\", False))",
+              "after_snippet": "unstable = True"
+            }
+          ]
+        }
+      },
+      "activation": {"mode": "hout"},
+      "expected": {
+        "result_status": "MODEL_CONFORMANCE_FAILED",
+        "first_failing_obligations": ["DEMAND_ORACLE"],
+        "allowed_upstream_obligations": ["SOURCE_TREE_INTEGRITY"],
+        "allow_strict_upstream_failure": true
+      },
+      "metadata": {"mutation_blind": true}
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "F4_task_priority_old_bundle",
+      "mutation_class": "BUNDLE_INTEGRITY",
+      "reuse_source_bundle": "../../outputs/formal_baselines/s185_best_overall",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "bundle_tamper",
+        "parameters": {
+          "tamper_kind": "json_pointer",
+          "target_file": "request/inputs/formal_inputs/priority_order.json",
+          "json_pointer": "/priority_order/0",
+          "value": "TAMPERED"
+        }
+      },
+      "expected": {"integrity_result_status": "PROOF_BUNDLE_INVALID"},
+      "metadata": {"requires_baseline_bundle": true}
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "F5_rta_witness_old_bundle",
+      "mutation_class": "BUNDLE_INTEGRITY",
+      "reuse_source_bundle": "../../outputs/formal_baselines/s185_best_overall",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "bundle_tamper",
+        "parameters": {
+          "tamper_kind": "json_pointer",
+          "target_file": "candidate/reference_certificate.json",
+          "json_pointer": "/witness/value",
+          "value": 0
+        }
+      },
+      "expected": {"integrity_result_status": "PROOF_BUNDLE_INVALID"},
+      "metadata": {
+        "requires_baseline_bundle": true,
+        "requires_actual_witness_pointer": true
+      }
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "F6_delete_obligation_artifact",
+      "mutation_class": "BUNDLE_INTEGRITY",
+      "reuse_source_bundle": "../../outputs/formal_baselines/s185_best_overall",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "bundle_tamper",
+        "parameters": {
+          "tamper_kind": "delete_artifact",
+          "target_file": "candidate/REQUIRES_ACTUAL_OBLIGATION_ARTIFACT.json"
+        }
+      },
+      "expected": {"integrity_result_status": "PROOF_BUNDLE_INVALID"},
+      "metadata": {
+        "requires_baseline_bundle": true,
+        "requires_actual_obligation_path": true
+      }
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "F7_source_tree_old_outer_root",
+      "mutation_class": "BUNDLE_INTEGRITY",
+      "reuse_source_bundle": "../../outputs/formal_baselines/s185_best_overall",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "bundle_tamper",
+        "parameters": {
+          "tamper_kind": "source_file",
+          "target_file": "amc_py/viper/tree_policy.py",
+          "before_snippet": "selection_semantics = str(self.metadata.get(\"nonvacuity_selection_semantics\", \"ranked_first_valid\"))",
+          "after_snippet": "selection_semantics = \"raw_top1\""
+        }
+      },
+      "expected": {"integrity_result_status": "PROOF_BUNDLE_INVALID"},
+      "metadata": {
+        "requires_baseline_bundle": true
+      }
+    }
+  ]
+}

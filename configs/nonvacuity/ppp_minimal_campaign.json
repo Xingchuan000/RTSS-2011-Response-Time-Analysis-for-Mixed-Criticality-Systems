@@ -1,0 +1,200 @@
+{
+  "schema_version": "ppp_nonvacuity_campaign_v1",
+  "enabled": false,
+  "campaign_id": "ppp_nonvacuity_minimal_v1",
+  "proof_route": "protected_prefix",
+  "output_root": "../../outputs/nonvacuity",
+  "source_root": "../..",
+  "preserve_workspaces": true,
+  "run_baselines": true,
+  "run_semantic_recompile": true,
+  "run_integrity_reuse": true,
+  "run_hout": true,
+  "fail_on_not_activated": true,
+  "mutations": [
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "P0_s185_compact_base",
+      "mutation_class": "BASELINE",
+      "base_seed": 185,
+      "seed_dir": "../../s185",
+      "tree_variant": "best_overall",
+      "mutator": {"kind": "baseline", "parameters": {}},
+      "expected": {"result_status": "DEPLOYED_TREE_PROVED"}
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "P1_s1264_compact_base",
+      "mutation_class": "BASELINE",
+      "base_seed": 1264,
+      "seed_dir": "../../s1264",
+      "tree_variant": "best_overall",
+      "mutator": {"kind": "baseline", "parameters": {}},
+      "expected": {"result_status": "DEPLOYED_TREE_PROVED"},
+      "metadata": {"required_input_unavailable": "s1264"}
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "P2_s1264_balanced_base",
+      "mutation_class": "BASELINE",
+      "base_seed": 1264,
+      "seed_dir": "../../s1264",
+      "tree_variant": "best_balanced",
+      "mutator": {"kind": "baseline", "parameters": {}},
+      "expected": {"result_status": "DEPLOYED_TREE_PROVED"},
+      "metadata": {"required_input_unavailable": "s1264"}
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "P3_s397_balanced_base",
+      "mutation_class": "BASELINE",
+      "base_seed": 397,
+      "seed_dir": "../../s397",
+      "tree_variant": "best_balanced",
+      "mutator": {"kind": "baseline", "parameters": {}},
+      "expected": {"result_status": "DEPLOYED_TREE_PROVED"},
+      "metadata": {"required_input_unavailable": "s397"}
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "A1_s185_dangerous_top1_masked",
+      "mutation_class": "DANGEROUS_TOP1",
+      "base_seed": 185,
+      "seed_dir": "../../s185",
+      "tree_variant": "best_overall",
+      "single_semantic_change": true,
+      "mutator": {
+        "kind": "dangerous_top1",
+        "parameters": {
+          "leaf_candidates": [],
+          "dangerous_actions": []
+        }
+      },
+      "activation": {
+        "mode": "symbolic_or_hout",
+        "activation_kind": "b1",
+        "require_baseline_reject": true,
+        "require_post_invariant_violation": true
+      },
+      "expected": {"result_status": "DEPLOYED_TREE_PROVED"},
+      "metadata": {
+        "requires_real_leaf_audit": true,
+        "requires_real_activation_witness": true
+      }
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "B1_s185_same_tree_mask_bypass",
+      "mutation_class": "MASK_BYPASS",
+      "base_seed": 185,
+      "seed_dir": "../../s185",
+      "tree_variant": "best_overall",
+      "paired_with": "A1_s185_dangerous_top1_masked",
+      "single_semantic_change": true,
+      "mutator": {
+        "kind": "source_overlay",
+        "parameters": {
+          "semantic_group": "raw_top1_and_unchecked_apply",
+          "patches": [
+            {
+              "target_file": "amc_py/viper/tree_policy.py",
+              "target_symbol": "IntegerTreeBudgetPolicy.select_action_id",
+              "before_snippet": "selection_semantics = str(self.metadata.get(\"nonvacuity_selection_semantics\", \"ranked_first_valid\"))",
+              "after_snippet": "selection_semantics = \"raw_top1\""
+            },
+            {
+              "target_file": "amc_py/rl/env.py",
+              "target_symbol": "AmcBudgetEnv",
+              "before_snippet": "step_guard_semantics: Literal[\"checked\", \"unchecked_apply\", \"unchecked_if_invalid\"] = \"checked\"",
+              "after_snippet": "step_guard_semantics: Literal[\"checked\", \"unchecked_apply\", \"unchecked_if_invalid\"] = \"unchecked_apply\""
+            },
+            {
+              "target_file": "formal_toolchain/adapters/s185_target.py",
+              "target_symbol": "build_target",
+              "before_snippet": "policy_selection_semantics=settings.selection_semantics,\n        step_guard_semantics=settings.step_guard_semantics,",
+              "after_snippet": "policy_selection_semantics=\"raw_top1\",\n        step_guard_semantics=\"unchecked_apply\","
+            }
+          ]
+        }
+      },
+      "activation": {
+        "mode": "symbolic_or_hout",
+        "activation_kind": "b1",
+        "require_baseline_reject": true,
+        "require_selected_after_mutation": true,
+        "require_post_invariant_violation": true
+      },
+      "expected": {
+        "result_status": "POLICY_CONTRACT_VIOLATION",
+        "first_failing_obligations": ["DEPLOYED_POLICY_PRESERVATION"]
+      },
+      "metadata": {
+        "requires_same_A1_witness": true
+      }
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "F1_tree_threshold_old_bundle",
+      "mutation_class": "BUNDLE_INTEGRITY",
+      "reuse_source_bundle": "../../outputs/formal_baselines/s185_best_overall",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "bundle_tamper",
+        "parameters": {
+          "tamper_kind": "json_pointer",
+          "target_file": "request/inputs/tree_artifact/integer_tree.json",
+          "json_pointer": "/nodes/0/threshold_int",
+          "value": 0
+        }
+      },
+      "expected": {"integrity_result_status": "PROOF_BUNDLE_INVALID"},
+      "metadata": {"requires_baseline_bundle": true}
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "F2_cross_seed_old_bundle",
+      "mutation_class": "BUNDLE_INTEGRITY",
+      "reuse_source_bundle": "../../outputs/formal_baselines/s185_best_overall",
+      "tree_variant": "best_overall",
+      "mutator": {
+        "kind": "bundle_tamper",
+        "parameters": {
+          "tamper_kind": "replace_from",
+          "target_file": "request/inputs/formal_target_manifest.json",
+          "source_file": "s1264/formal_target_manifest.json"
+        }
+      },
+      "expected": {"integrity_result_status": "PROOF_BUNDLE_INVALID"},
+      "metadata": {
+        "requires_baseline_bundle": true,
+        "required_input_unavailable": "s1264"
+      }
+    },
+    {
+      "schema_version": "nonvacuity_mutation_v1",
+      "enabled": false,
+      "mutation_id": "F3_cross_variant_old_bundle",
+      "mutation_class": "BUNDLE_INTEGRITY",
+      "reuse_source_bundle": "../../outputs/formal_baselines/s185_best_overall",
+      "tree_variant": "best_balanced",
+      "mutator": {
+        "kind": "bundle_tamper",
+        "parameters": {
+          "tamper_kind": "replace_from",
+          "target_file": "request/inputs/tree_artifact/integer_tree.json",
+          "source_file": "s185/best_balanced/integer_tree.json"
+        }
+      },
+      "expected": {"integrity_result_status": "PROOF_BUNDLE_INVALID"},
+      "metadata": {"requires_baseline_bundle": true}
+    }
+  ]
+}

@@ -35,9 +35,10 @@ amc-formal-inspect = "formal_toolchain.cli.inspect_target:main"
 amc-formal-compile = "formal_toolchain.cli.compile_seed:main"
 amc-formal-verify = "formal_toolchain.cli.verify_bundle:main"
 amc-formal-report = "formal_toolchain.cli.render_report:main"
+amc-nonvacuity-lab = "nonvacuity_lab.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["amc_py*", "formal_toolchain*"]
+include = ["amc_py*", "formal_toolchain*", "nonvacuity_lab*"]
 
 [tool.setuptools.package-data]
 formal_toolchain = ["specs/**/*.json", "theory/**/*.json"]
@@ -46,4 +47,5 @@ formal_toolchain = ["specs/**/*.json", "theory/**/*.json"]
 testpaths = ["tests"]
 markers = [
     "slow: 端到端或耗时较长的测试",
+    "real_seed: 需要真实 seed/proof artifact 的实验验收",
 ]
