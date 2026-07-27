@@ -126,3 +126,86 @@ def test_reference_variant_rejects_changed_base_fingerprint(
         match="QAMC_REFERENCE_CONFIG_FINGERPRINT_MISMATCH",
     ):
         load_and_validate_frozen_reference(frozen_variant)
+
+
+def test_learning_reference_variant_binds_reward_and_selector(tmp_path: Path) -> None:
+    base = _base_frozen(tmp_path)
+    project = tmp_path / "project"
+    reward_dir = project / "configs" / "reward_modes"
+    reward_dir.mkdir(parents=True)
+    reward = reward_dir / "interval_lo_equiv_jne_v2_job_weighted.json"
+    reward.write_text(
+        json.dumps(
+            {
+                "event_weights": {
+                    "job_start": 0.0,
+                    "lo_overrun": 0.0,
+                    "hi_overrun": 0.0,
+                },
+                "step_reward_formula": "-delta_lo_equiv_jne",
+            }
+        ),
+        encoding="utf-8",
+    )
+    variant = tmp_path / "learning_variant"
+    derive_reference_variant(
+        base_frozen_path=base,
+        output_dir=variant,
+        observation_mode="v14_qamc_full_12d",
+        reward_mode="interval_lo_equiv_jne_v2_job_weighted",
+        save_best_by="lo_quality_qos_best",
+        project_root=project,
+    )
+    frozen_variant = tmp_path / "learning_variant.frozen.json"
+    freeze_reference_config(variant, frozen_variant)
+    validated = load_and_validate_frozen_reference(frozen_variant)
+    effective = validated["effective_reference_config"]
+    assert effective["observation_mode"] == "v14_qamc_full_12d"
+    assert effective["observation_dim"] == 152
+    assert effective["reward_mode"] == "interval_lo_equiv_jne_v2_job_weighted"
+    assert effective["reward_config_path"] == str(reward.resolve())
+    assert effective["reward_config_sha256"] == hashlib.sha256(
+        reward.read_bytes()
+    ).hexdigest()
+    assert effective["save_best_by"] == "lo_quality_qos_best"
+
+
+def test_learning_reference_rejects_undeclared_override(tmp_path: Path) -> None:
+    base = _base_frozen(tmp_path)
+    project = tmp_path / "project"
+    reward_dir = project / "configs" / "reward_modes"
+    reward_dir.mkdir(parents=True)
+    reward = reward_dir / "new_reward.json"
+    reward.write_text(
+        json.dumps(
+            {
+                "event_weights": {
+                    "job_start": 0.0,
+                    "lo_overrun": 0.0,
+                    "hi_overrun": 0.0,
+                },
+                "step_reward_formula": "-delta_lo_equiv_jne",
+            }
+        ),
+        encoding="utf-8",
+    )
+    variant = tmp_path / "learning_variant"
+    derive_reference_variant(
+        base_frozen_path=base,
+        output_dir=variant,
+        observation_mode="v14_qamc_full_12d",
+        reward_mode="new_reward",
+        save_best_by="lo_quality_qos_best",
+        project_root=project,
+    )
+    config_path = variant / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["effective_reference_config"]["budget_floor_ratio"] = 0.8
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    frozen_variant = tmp_path / "learning_variant.frozen.json"
+    freeze_reference_config(variant, frozen_variant)
+    with pytest.raises(
+        ValueError,
+        match="QAMC_REFERENCE_DERIVATION_ILLEGAL_OVERRIDE",
+    ):
+        load_and_validate_frozen_reference(frozen_variant)

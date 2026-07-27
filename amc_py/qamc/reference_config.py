@@ -97,9 +97,13 @@ def _load_and_validate_frozen_reference(
     source_payload = json.loads(source.read_text(encoding="utf-8"))
     derivation = source_payload.get("reference_variant_derivation")
     if derivation is not None:
-        if not isinstance(derivation, dict) or derivation.get(
-            "schema_version"
-        ) != "qamc_observation_reference_derivation_v1":
+        if not isinstance(derivation, dict):
+            raise ValueError("QAMC_REFERENCE_DERIVATION_SCHEMA_INVALID")
+        derivation_schema = derivation.get("schema_version")
+        if derivation_schema not in {
+            "qamc_observation_reference_derivation_v1",
+            "qamc_learning_reference_derivation_v1",
+        }:
             raise ValueError("QAMC_REFERENCE_DERIVATION_SCHEMA_INVALID")
         base_path = Path(
             str(derivation.get("base_frozen_reference_path"))
@@ -118,8 +122,37 @@ def _load_and_validate_frozen_reference(
             for key in set(base_effective) | set(derived_effective)
             if derived_effective.get(key) != base_effective.get(key)
         }
-        if changed != {"observation_mode", "observation_dim"}:
-            raise ValueError("QAMC_REFERENCE_DERIVATION_ILLEGAL_OVERRIDE")
+        if derivation_schema == "qamc_observation_reference_derivation_v1":
+            if changed != {"observation_mode", "observation_dim"}:
+                raise ValueError("QAMC_REFERENCE_DERIVATION_ILLEGAL_OVERRIDE")
+        else:
+            declared = derivation.get("allowed_overrides")
+            if not isinstance(declared, list) or not all(
+                isinstance(field, str) for field in declared
+            ):
+                raise ValueError("QAMC_REFERENCE_DERIVATION_OVERRIDES_INVALID")
+            declared_fields = set(declared)
+            allowed_fields = {
+                "observation_mode",
+                "observation_dim",
+                "reward_mode",
+                "reward_config_path",
+                "reward_config_sha256",
+                "save_best_by",
+            }
+            if (
+                not declared_fields
+                or not declared_fields.issubset(allowed_fields)
+                or changed != declared_fields
+            ):
+                raise ValueError("QAMC_REFERENCE_DERIVATION_ILLEGAL_OVERRIDE")
+            reward_fields = {
+                "reward_mode",
+                "reward_config_path",
+                "reward_config_sha256",
+            }
+            if changed & reward_fields and not reward_fields.issubset(changed):
+                raise ValueError("QAMC_REFERENCE_REWARD_OVERRIDE_INCOMPLETE")
     return payload
 
 

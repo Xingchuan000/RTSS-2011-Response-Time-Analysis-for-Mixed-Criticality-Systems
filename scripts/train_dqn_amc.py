@@ -3151,6 +3151,7 @@ def main() -> None:
                 "observation_mode": args.observation_mode,
                 "reward_mode": args.reward_mode,
                 "agent_period": args.agent_period,
+                "save_best_by": args.save_best_by,
                 "check_safety": True,
             },
         )

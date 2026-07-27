@@ -15,6 +15,26 @@ class SelectorContract:
 
 
 SELECTOR_CONTRACTS = {
+    "lo_quality_qos_best": SelectorContract(
+        required_fields=frozenset(
+            {
+                "hi_deadline_misses_sum",
+                "lo_quality_qos_mean",
+                "mode_changes_mean",
+                "mean_abs_budget_change_mean",
+            }
+        ),
+        allowed_semantics=frozenset(
+            {
+                RuntimeSemantics.AMC,
+                RuntimeSemantics.AMC_PLUS,
+                RuntimeSemantics.AMC_RA,
+                RuntimeSemantics.AMC_RH,
+                RuntimeSemantics.C_AMC_SEM,
+                RuntimeSemantics.Q_AMC,
+            }
+        ),
+    ),
     "qos_recovery_stable": SelectorContract(
         required_fields=frozenset(
             {
