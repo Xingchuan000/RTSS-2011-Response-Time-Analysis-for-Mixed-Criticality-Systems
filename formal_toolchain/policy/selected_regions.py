@@ -35,35 +35,9 @@ def selected_action_regions_v2(
     valid_reasons: dict[int, Sequence[str]] | None = None,
     *, selection_semantics: str = "ranked_first_valid",
 ) -> dict[str, Any]:
-    if selection_semantics == "raw_top1":
-        regions = [{"leaf_id": leaf_id, "rank_position": 0, "action_id": int(rankings[leaf_id][0]),
-                    "leaf_guard": list(guards[leaf_id]),
-                    "predicate": {"leaf_guard": list(guards[leaf_id]),
-                                  "raw_top1": int(rankings[leaf_id][0])},
-                    "implicit_noop_predicate": False}
-                   for leaf_id in sorted(guards)]
-    elif selection_semantics == "top1_or_noop":
-        regions = []
-        for leaf_id in sorted(guards):
-            top1 = int(rankings[leaf_id][0])
-            regions.extend([
-                {"leaf_id": leaf_id, "rank_position": 0, "action_id": top1,
-                 "leaf_guard": list(guards[leaf_id]),
-                 "predicate": {"leaf_guard": list(guards[leaf_id]), "top1_valid": top1},
-                 "implicit_noop_predicate": False},
-                {"leaf_id": leaf_id, "rank_position": 1, "action_id": None,
-                 "leaf_guard": list(guards[leaf_id]),
-                 "predicate": {"leaf_guard": list(guards[leaf_id]), "top1_invalid": top1},
-                 "implicit_noop_predicate": True},
-            ])
-    else:
-        regions = selected_action_regions(guards, rankings, valid_reasons)
-        if selection_semantics == "first_valid_else_top1":
-            for row in regions:
-                if row.get("implicit_noop_predicate") is True:
-                    row["action_id"] = int(rankings[int(row["leaf_id"])][0])
-                    row["implicit_noop_predicate"] = False
-                    row["forced_top1_on_all_invalid"] = True
+    if selection_semantics != "ranked_first_valid":
+        raise ValueError("UNSUPPORTED_POLICY_SELECTION_SEMANTICS")
+    regions = selected_action_regions(guards, rankings, valid_reasons)
     return {
         "status": "PASS",
         "schema_version": "selected_action_regions_v2",

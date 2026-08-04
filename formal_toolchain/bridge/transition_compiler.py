@@ -17,11 +17,7 @@ from .transition_cases import TransitionCaseProof, prove_smt2_case, derive_param
 from formal_toolchain.core.artifact import obligation_certificate
 
 
-_PHASE_K_STATIC_GUARD_DEFAULTS: dict[str, bool] = {
-    "nonvacuity_deadline_cleanup_remove": False,
-    "nonvacuity_hi_budget_cap_truncate": False,
-    "nonvacuity_recover_without_quiescence": False,
-}
+_PHASE_K_STATIC_GUARD_DEFAULTS: dict[str, bool] = {}
 
 
 def build_phase_k_static_guard_bindings(runtime_config: Any | None) -> dict[str, bool]:
@@ -64,17 +60,6 @@ def _guard_formula(source: str, *, static_guard_bindings: Mapping[str, bool] | N
     """
     bindings = dict(_PHASE_K_STATIC_GUARD_DEFAULTS if static_guard_bindings is None
                     else static_guard_bindings)
-    if source == "self.config.nonvacuity_deadline_cleanup_remove":
-        return _static_bool_formula(bindings, "nonvacuity_deadline_cleanup_remove")
-    if source == ("self.config.nonvacuity_hi_budget_cap_truncate and "
-                  "job.task.criticality is Criticality.HI"):
-        enabled = _static_bool_formula(bindings, "nonvacuity_hi_budget_cap_truncate")
-        return f"(and {enabled} (= task_criticality 1))"
-    if source == ("cfg.nonvacuity_recover_without_quiescence and "
-                  "state.mode is SystemMode.HI"):
-        enabled = _static_bool_formula(bindings, "nonvacuity_recover_without_quiescence")
-        return f"(and {enabled} (= c_mode 1))"
-
     exact = {
         "not ordered_tasks": "(= ordered_tasks_empty 1)",
         "len(task_names) != len(set(task_names))": "(= task_names_duplicate 1)",

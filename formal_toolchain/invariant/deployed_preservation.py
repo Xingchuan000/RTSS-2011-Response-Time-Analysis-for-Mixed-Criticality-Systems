@@ -50,7 +50,7 @@ def check_deployed_policy_preservation(
     if action_transition_certificate.get("status") != "PASS":
         return dict(action_transition_certificate)
     disabled_guard_set = {str(value) for value in disabled_guards}
-    unsafe_selection = selection_semantics in {"raw_top1", "first_valid_else_top1"}
+    unsafe_selection = selection_semantics != "ranked_first_valid"
     guard_ablation = bool(disabled_guard_set)
     if unsafe_selection or guard_ablation:
         transitions = {int(row["action_id"]): row for row in action_transition_certificate.get("actions", [])}
@@ -98,7 +98,7 @@ def check_deployed_policy_preservation(
             "candidate_action_ids": candidate_action_ids,
             "disabled_guards": sorted(disabled_guard_set),
             "guard_ablation_redundant_for_current_envelope": guard_ablation,
-            "implicit_noop_checked": selection_semantics == "top1_or_noop",
+            "implicit_noop_checked": selection_semantics == "ranked_first_valid",
         }
     if mask_contract.get("shared_with_step") is not True:
         return {

@@ -48,4 +48,7 @@ testpaths = ["tests"]
 markers = [
     "slow: 端到端或耗时较长的测试",
     "real_seed: 需要真实 seed/proof artifact 的实验验收",
+    "integration: synthetic cross-module integration tests",
+    "requires_z3: requires a working Z3 installation",
+    "paper_acceptance: required before producing paper tables",
 ]

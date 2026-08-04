@@ -17,7 +17,12 @@ def normalize_hout_event(event: Mapping[str, Any]) -> dict[str, Any]:
         )
     )
     selected = _first(event, "selected_action_id", "tree_selected_action_id")
+    rejected_action = _first(event, "rejected_action_id", "candidate_action_id")
+    if rejected_action is None and raw_invalid:
+        rejected_action = raw_action
     return {
+        "seed": _first(event, "seed", "taskset_seed"),
+        "tree_variant": _first(event, "tree_variant", "variant"),
         "scenario_id": _first(event, "scenario_id", "scenario", default=0),
         "timestamp": _first(event, "timestamp", "time", "step", default=0),
         "leaf_id": _first(event, "leaf_id", "tree_leaf_id"),
@@ -31,6 +36,7 @@ def normalize_hout_event(event: Mapping[str, Any]) -> dict[str, Any]:
         "implicit_noop": bool(_first(event, "implicit_noop", default=False)),
         "all_invalid": bool(_first(event, "all_invalid", default=False)),
         "reject_reason": _first(event, "reject_reason", "tree_reject_reason"),
+        "rejected_action_id": rejected_action,
         "target_task": _first(event, "target_task"),
         "budget_before": _first(event, "budget_before"),
         "budget_after": _first(event, "budget_after"),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import platform
+from dataclasses import replace
 from pathlib import Path
 import sys
 from typing import Any
@@ -21,6 +22,7 @@ from ..schema import (
     ExperimentStatus,
     MutationClass,
     MutationManifest,
+    ExpectedResult,
     experiment_envelope,
 )
 from ..workspace import (
@@ -28,10 +30,28 @@ from ..workspace import (
     verify_original_inputs_unchanged,
     write_input_snapshot,
 )
+from ..canonical import file_hash, tree_hash
+from ..receipts.pair_receipt import PairReceipt, consume_pair_receipt, write_pair_receipt
+from ..receipts.mutation_receipt import build_mutation_receipt, write_mutation_receipt
 from .baseline import run_baseline
 from .integrity_reuse import run_integrity_reuse
 from .paired_hout import run_paired_hout
 from .semantic_recompile import run_semantic_recompile
+from .run_plan import RunKind, build_run_plan
+from .envelope_gradient import run_envelope_gradient_experiment
+
+
+def can_execute_mutation(config: dict, mutation: dict, *, cli_enable: bool) -> tuple[bool, str]:
+    """The v2 three-gate check; it has no filesystem side effects."""
+    if config.get("config_kind") != "RESOLVED":
+        return False, "CONFIG_NOT_RESOLVED"
+    if not bool(config.get("enabled", False)):
+        return False, "CAMPAIGN_DISABLED"
+    if not cli_enable:
+        return False, "CLI_ENABLE_MISSING"
+    if not bool(mutation.get("enabled", False)):
+        return False, "MUTATION_DISABLED"
+    return True, "ENABLED"
 
 
 def run_campaign(
@@ -58,6 +78,7 @@ def run_campaign(
     campaign_dir.mkdir(parents=True, exist_ok=True)
     results = []
     paired_hashes: dict[str, str] = {}
+    paired_receipts: dict[str, Path] = {}
     paired_seed_dirs: dict[str, Path] = {}
     for manifest in config.mutations:
         if not manifest.enabled:
@@ -71,7 +92,7 @@ def run_campaign(
             continue
         effective_manifest = manifest
         if (
-            manifest.mutation_class is MutationClass.ENVELOPE
+            manifest.mutation_class in {MutationClass.ENVELOPE, MutationClass.ENVELOPE_GRADIENT}
             and manifest.metadata.get("dynamic_minimum_slack_selection")
         ):
             try:
@@ -89,6 +110,32 @@ def run_campaign(
                     )
                 )
                 continue
+        plan = build_run_plan({
+            "mutation_id": effective_manifest.mutation_id,
+            "mutation_class": effective_manifest.mutation_class.value,
+            "also_run_old_bundle": effective_manifest.reuse_source_bundle is not None,
+            "hout_profile_id": effective_manifest.metadata.get("hout_profile_id"),
+            "pair_with": effective_manifest.paired_with,
+        })
+        if plan.run_kind is RunKind.ENVELOPE_GRADIENT:
+            try:
+                result = _run_envelope_gradient_campaign(
+                    effective_manifest,
+                    campaign_id=config.campaign_id,
+                    output_root=config.output_root,
+                    source_root=config.source_root,
+                    enabled_by_cli=enabled_by_cli,
+                    timeout_seconds=timeout_seconds,
+                )
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                result = experiment_envelope(
+                    campaign_id=config.campaign_id,
+                    mutation_id=effective_manifest.mutation_id,
+                    status=ExperimentStatus.SETUP_INVALID.value,
+                    reason=str(exc),
+                )
+            results.append(result)
+            continue
         if manifest.paired_with:
             paired_seed = paired_seed_dirs.get(manifest.paired_with)
             if paired_seed is None:
@@ -100,9 +147,7 @@ def run_campaign(
                 )
                 results.append(result)
                 continue
-            from dataclasses import replace
-
-            effective_manifest = replace(manifest, seed_dir=paired_seed)
+            effective_manifest = replace(effective_manifest, seed_dir=paired_seed)
         result = run_one(
             effective_manifest,
             campaign_id=config.campaign_id,
@@ -115,6 +160,7 @@ def run_campaign(
             run_hout=config.run_hout,
             timeout_seconds=timeout_seconds,
             paired_hashes=paired_hashes,
+            paired_receipts=paired_receipts,
         )
         results.append(result)
         mutation = result.get("semantic_recompile", {}).get("mutation_result", {})
@@ -127,6 +173,12 @@ def run_campaign(
                 / manifest.mutation_id
                 / "semantic_recompile"
                 / "mutated_seed"
+            )
+            _write_pair_receipt_if_possible(
+                result=result,
+                manifest=manifest,
+                campaign_dir=campaign_dir,
+                paired_receipts=paired_receipts,
             )
     summary = _campaign_summary(
         results,
@@ -160,6 +212,7 @@ def run_one(
     run_hout: bool = True,
     timeout_seconds: int | None = None,
     paired_hashes: dict[str, str] | None = None,
+    paired_receipts: dict[str, Path] | None = None,
 ) -> dict[str, Any]:
     if not manifest.enabled or not enabled_by_cli:
         return experiment_envelope(
@@ -200,6 +253,19 @@ def run_one(
         )
         if expected_tree_hash is None or actual_tree_hash != expected_tree_hash:
             pair_error = "paired mutation 未使用 A1 的同一 after-tree hash"
+        receipt_path = (paired_receipts or {}).get(manifest.paired_with)
+        if receipt_path is not None:
+            try:
+                consume_pair_receipt(
+                    receipt_path,
+                    expected_producer=manifest.paired_with,
+                    seed=int(manifest.base_seed or 0),
+                    variant=manifest.tree_variant,
+                    copied_tree_path=workspace.mutated_seed / manifest.tree_variant / "integer_tree.json",
+                    copied_seed_dir=workspace.mutated_seed,
+                )
+            except ValueError as exc:
+                pair_error = str(exc)
     write_resolved_manifest(workspace.root / "manifest_resolved.json", manifest)
     environment = {
         "python": sys.version,
@@ -307,7 +373,7 @@ def run_one(
         setup_valid = False
         expectation = {
             "schema_version": "expectation_check_v1",
-            "status": ExperimentStatus.SETUP_INVALID.value,
+            "status": (ExperimentStatus.PAIR_CONTRACT_FAILED.value if pair_error else ExperimentStatus.SETUP_INVALID.value),
             "reason": str(exc),
         }
     input_integrity = verify_original_inputs_unchanged(
@@ -351,6 +417,19 @@ def run_one(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    mutation_result_payload = (semantic or integrity or {}).get("mutation_result", {})
+    mutation_receipt = build_mutation_receipt(
+        mutation_id=manifest.mutation_id,
+        mutation_class=manifest.mutation_class.value,
+        mutation_result=mutation_result_payload,
+        diff_path=workspace.diff_output if workspace.diff_output.is_file() else None,
+        coherence_path=workspace.coherence_output if workspace.coherence_output.is_file() else None,
+        activation_path=workspace.activation_output / "activation_result.json" if (workspace.activation_output / "activation_result.json").is_file() else None,
+        formal_result_path=(workspace.semantic_output / "proof_result.json") if (workspace.semantic_output / "proof_result.json").is_file() else (workspace.integrity_output / "proof_summary.json" if (workspace.integrity_output / "proof_summary.json").is_file() else None),
+        hout_result_path=workspace.hout_output / "paired_hout_result.json" if (workspace.hout_output / "paired_hout_result.json").is_file() else None,
+        metadata={"experiment_status": expectation["status"]},
+    )
+    write_mutation_receipt(workspace.root / "mutation_receipt.json", mutation_receipt)
     write_experiment_report(workspace.report_output / "report.md", result)
     return result
 
@@ -401,9 +480,222 @@ def _run_activation(
     return payload
 
 
+
+def _run_envelope_gradient_campaign(
+    manifest: MutationManifest,
+    *,
+    campaign_id: str,
+    output_root: Path,
+    source_root: Path,
+    enabled_by_cli: bool,
+    timeout_seconds: int | None,
+) -> dict[str, Any]:
+    """Run D1 as a sequence of independent ordinary proof invocations.
+
+    Delta zero is an unmodified baseline.  Every positive delta gets its own
+    isolated workspace and ordinary protected-prefix proof request.  No proof
+    bundle is reused across coordinates.
+    """
+    if manifest.seed_dir is None or not manifest.seed_dir.is_dir():
+        raise ValueError(f"D1 seed_dir 不存在: {manifest.seed_dir}")
+    parameters = dict(manifest.mutator.get("parameters", {}))
+    if not parameters.get("target_file") or not parameters.get("json_pointer"):
+        raise ValueError("D1 需要解析后的 target_file 和 json_pointer")
+    initial_step = int(manifest.metadata.get("initial_step", 1))
+    maximum_delta = int(manifest.metadata.get("maximum_delta", 1024))
+    run_records: dict[int, dict[str, Any]] = {}
+
+    def evaluate_delta(delta: int) -> dict[str, Any]:
+        mutation_id = f"{manifest.mutation_id}__delta_{delta:04d}"
+        if delta == 0:
+            delta_manifest = replace(
+                manifest,
+                mutation_id=mutation_id,
+                mutation_class=MutationClass.BASELINE,
+                mutator={},
+                activation={},
+                expected=ExpectedResult(
+                    allowed_result_statuses=("DEPLOYED_TREE_PROVED",),
+                    require_proved=True,
+                    require_activation=False,
+                ),
+                reuse_source_bundle=None,
+                metadata={**dict(manifest.metadata), "gradient_parent": manifest.mutation_id, "delta": 0},
+            )
+            result = run_one(
+                delta_manifest,
+                campaign_id=campaign_id,
+                output_root=output_root,
+                source_root=source_root,
+                enabled_by_cli=enabled_by_cli,
+                run_baseline_first=True,
+                run_semantic=False,
+                run_integrity=False,
+                run_hout=False,
+                timeout_seconds=timeout_seconds,
+            )
+            proof = dict((result.get("baseline") or {}).get("proof_result") or {})
+        else:
+            delta_parameters = {**parameters, "delta": delta}
+            delta_manifest = replace(
+                manifest,
+                mutation_id=mutation_id,
+                mutation_class=MutationClass.ENVELOPE,
+                mutator={"kind": "envelope", "parameters": delta_parameters},
+                activation={"mode": "none"},
+                expected=ExpectedResult(
+                    allowed_result_statuses=(
+                        "DEPLOYED_TREE_PROVED",
+                        *tuple(manifest.expected.canonical_statuses),
+                    ),
+                    allowed_first_failing_obligations=manifest.expected.allowed_first_failing_obligations,
+                    allowed_failure_routes=manifest.expected.allowed_failure_routes,
+                    allowed_upstream_obligations=manifest.expected.allowed_upstream_obligations,
+                    allow_strict_upstream_failure=manifest.expected.allow_strict_upstream_failure,
+                    require_activation=False,
+                ),
+                reuse_source_bundle=None,
+                metadata={**dict(manifest.metadata), "gradient_parent": manifest.mutation_id, "delta": delta},
+            )
+            result = run_one(
+                delta_manifest,
+                campaign_id=campaign_id,
+                output_root=output_root,
+                source_root=source_root,
+                enabled_by_cli=enabled_by_cli,
+                run_baseline_first=False,
+                run_semantic=True,
+                run_integrity=False,
+                run_hout=False,
+                timeout_seconds=timeout_seconds,
+            )
+            proof = dict((result.get("semantic_recompile") or {}).get("proof_result") or {})
+        row = {
+            "result_status": proof.get("result_status"),
+            "violated_obligation_id": proof.get("violated_obligation_id"),
+            "failure_route": proof.get("failure_route"),
+            "witness": _find_nested_value(proof, ("witness", "counterexample", "first_failing_witness")),
+            "slack": _find_numeric_slack(proof),
+            "experiment_status": result.get("status"),
+            "result_file": str(output_root / campaign_id / mutation_id / "experiment_result.json"),
+        }
+        run_records[delta] = {"experiment": result, "proof": proof, "row": row}
+        return row
+
+    gradient = run_envelope_gradient_experiment(
+        None,
+        {
+            "evaluate_delta": evaluate_delta,
+            "initial_step": initial_step,
+            "maximum_delta": maximum_delta,
+        },
+    )
+    status = str(gradient.get("experiment_status"))
+    if status == ExperimentStatus.GRADIENT_EXPECTED_FAILURE_FOUND.value:
+        delta_star = int(gradient["delta_star"])
+        failing = run_records[delta_star]["proof"]
+        allowed_statuses = set(manifest.expected.canonical_statuses)
+        allowed_obligations = set(manifest.expected.allowed_first_failing_obligations)
+        actual_status = failing.get("result_status")
+        actual_obligation = failing.get("violated_obligation_id")
+        if allowed_statuses and actual_status not in allowed_statuses:
+            status = ExperimentStatus.WRONG_FAILURE_LAYER.value
+            gradient["classification_reason"] = (
+                f"delta* status {actual_status!r} not in {sorted(allowed_statuses)}"
+            )
+        elif allowed_obligations and actual_obligation not in allowed_obligations:
+            status = ExperimentStatus.WRONG_FAILURE_LAYER.value
+            gradient["classification_reason"] = (
+                f"delta* obligation {actual_obligation!r} not in {sorted(allowed_obligations)}"
+            )
+    campaign_dir = output_root / campaign_id / manifest.mutation_id
+    campaign_dir.mkdir(parents=True, exist_ok=True)
+    gradient_path = campaign_dir / "gradient_result.json"
+    gradient_path.write_text(json.dumps(gradient, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    result = experiment_envelope(
+        campaign_id=campaign_id,
+        mutation_id=manifest.mutation_id,
+        mutation_class=manifest.mutation_class.value,
+        status=status,
+        gradient=gradient,
+        dynamic_selection=manifest.metadata.get("dynamic_selection"),
+    )
+    (campaign_dir / "experiment_result.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    write_experiment_report(campaign_dir / "report.md", result)
+    return result
+
+
+def _find_nested_value(value: Any, keys: tuple[str, ...]) -> Any:
+    if isinstance(value, dict):
+        for key in keys:
+            if key in value:
+                return value[key]
+        for child in value.values():
+            found = _find_nested_value(child, keys)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_nested_value(child, keys)
+            if found is not None:
+                return found
+    return None
+
+
+def _find_numeric_slack(value: Any) -> int | float | None:
+    candidates: list[int | float] = []
+
+    def visit(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, child in node.items():
+                lowered = str(key).lower()
+                if "slack" in lowered and isinstance(child, (int, float)) and not isinstance(child, bool):
+                    candidates.append(child)
+                else:
+                    visit(child)
+        elif isinstance(node, list):
+            for child in node:
+                visit(child)
+
+    visit(value)
+    return min(candidates) if candidates else None
+
 def _tree_semantic_hash(path: Path) -> str:
     raw = json.loads(path.read_text(encoding="utf-8"))
     return canonical_json_hash(raw)
+
+
+def _write_pair_receipt_if_possible(*, result, manifest, campaign_dir, paired_receipts):
+    semantic = result.get("semantic_recompile", {})
+    mutation = semantic.get("mutation_result", {})
+    details = mutation.get("details", {})
+    if details.get("leaf_id") is None or details.get("action_id") is None:
+        return
+    mutation_root = campaign_dir / manifest.mutation_id / "semantic_recompile"
+    tree_path = mutation_root / "mutated_seed" / manifest.tree_variant / "integer_tree.json"
+    seed_dir = mutation_root / "mutated_seed"
+    witness = mutation_root.parent / "activation" / "activation_result.json"
+    if not tree_path.is_file() or not seed_dir.is_dir() or not witness.is_file():
+        return
+    receipt = PairReceipt(
+        schema_version="nonvacuity_pair_receipt_v1",
+        producer_mutation_id=manifest.mutation_id,
+        seed=int(manifest.base_seed or 0),
+        tree_variant=manifest.tree_variant,
+        leaf_id=int(details["leaf_id"]),
+        action_id=int(details["action_id"]),
+        base_tree_sha256=str(mutation.get("before_hash", "")),
+        mutated_tree_sha256=str(mutation.get("after_hash", "")),
+        mutated_tree_file_sha256=file_hash(tree_path),
+        activation_witness_sha256=file_hash(witness),
+        mutated_seed_snapshot_sha256=tree_hash(seed_dir),
+    )
+    path = campaign_dir / manifest.mutation_id / "pair_receipt.json"
+    write_pair_receipt(path, receipt)
+    paired_receipts[manifest.mutation_id] = path
 
 
 def _resolve_dynamic_envelope_manifest(
@@ -482,6 +774,7 @@ def _campaign_summary(
         in {
             ExperimentStatus.FAIL_EXPECTED.value,
             ExperimentStatus.INTEGRITY_REJECTION_EXPECTED.value,
+            ExperimentStatus.GRADIENT_EXPECTED_FAILURE_FOUND.value,
         }
     ]
     invalid_statuses = {
@@ -494,6 +787,9 @@ def _campaign_summary(
         ExperimentStatus.UNEXPECTED_PASS.value,
         ExperimentStatus.WRONG_FAILURE_LAYER.value,
         ExperimentStatus.INTEGRITY_REJECTION_MISSING.value,
+        ExperimentStatus.GRADIENT_BASELINE_FAILED.value,
+        ExperimentStatus.GRADIENT_BOUND_NOT_FOUND.value,
+        ExperimentStatus.GRADIENT_NON_MONOTONIC.value,
     }
     if any(item.get("status") in invalid_statuses for item in results):
         status = "COMPLETED_WITH_INVALID_RESULTS"

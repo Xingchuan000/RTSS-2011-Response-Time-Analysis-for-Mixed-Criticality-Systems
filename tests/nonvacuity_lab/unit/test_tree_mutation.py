@@ -4,6 +4,7 @@ import json
 import shutil
 from pathlib import Path
 
+from amc_py.viper.schema import INTEGER_TREE_SCHEMA_VERSION
 from formal_toolchain.adapters.tree_artifact import inspect_tree_artifact
 from nonvacuity_lab.mutators.base import MutationContext
 from nonvacuity_lab.mutators.tree_ranking import DangerousTop1Mutation
@@ -12,9 +13,14 @@ from nonvacuity_lab.mutators.tree_ranking import DangerousTop1Mutation
 def test_tree_ranking_mutation_changes_one_leaf_and_updates_manifest(tmp_path: Path):
     root = Path(__file__).resolve().parents[3]
     seed = tmp_path / "seed"
-    shutil.copytree(root / "s185" / "best_overall", seed / "best_overall")
+    shutil.copytree(
+        root / "tests" / "formal" / "fixtures" / "synthetic_p0" / "best_overall",
+        seed / "best_overall",
+    )
     tree_path = seed / "best_overall" / "integer_tree.json"
     before = json.loads(tree_path.read_text(encoding="utf-8"))
+    before["schema_version"] = INTEGER_TREE_SCHEMA_VERSION
+    tree_path.write_text(json.dumps(before, separators=(",", ":")) + "\n", encoding="utf-8")
     target_leaf = before["leaves"][0]
     original_ranking = list(target_leaf["action_ranking"])
     action_id = original_ranking[-1]
@@ -41,7 +47,7 @@ def test_tree_ranking_mutation_changes_one_leaf_and_updates_manifest(tmp_path: P
     assert after["leaves"][1:] == before["leaves"][1:]
     inspect_tree_artifact(
         seed / "best_overall",
-        expected_state_dim=128,
-        expected_action_dim=24,
-        expected_seed=185,
+        expected_state_dim=38,
+        expected_action_dim=6,
+        expected_seed=None,
     )

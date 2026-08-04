@@ -211,11 +211,6 @@ def _maybe_recover_to_lo(
     if state.mode is SystemMode.HI and not state.active_jobs and state.running_job is None:
         state.mode = SystemMode.LO
         result.mode_recoveries.append(ModeRecoveryEvent(recovery_time=now, reason="idle"))
-    elif cfg.nonvacuity_recover_without_quiescence and state.mode is SystemMode.HI:
-        state.mode = SystemMode.LO
-        result.mode_recoveries.append(
-            ModeRecoveryEvent(recovery_time=now, reason="nonvacuity_without_quiescence")
-        )
 
 
 def _maybe_recover_rh_to_lo(state: _RuntimeState, result: SimulationResult, now: int) -> None:
@@ -474,28 +469,6 @@ def _reschedule(
     _schedule_running_job_events(state, queue, runtime_budgets, now, cfg)
 
 
-def _apply_retroactive_release_budget_mutation(
-    *,
-    state: _RuntimeState,
-    updates: Mapping[str, int],
-    cfg: RuntimeConfig,
-) -> list[tuple[str, int, int]]:
-    """Experiment-only C3 write to already released job snapshots.
-
-    The helper is called unconditionally so the production handler CFG remains
-    stable.  With the default profile it is a no-op.
-    """
-
-    if cfg.nonvacuity_profile != "c3_retroactive_release_budget":
-        return []
-    changed: list[tuple[str, int, int]] = []
-    for job in state.active_jobs:
-        if job.task.name in updates and not job.finished():
-            job.runtime_budget_at_release = int(updates[job.task.name])
-            changed.append((job.task.name, job.release_index, job.runtime_budget_at_release))
-    return changed
-
-
 @dataclass(slots=True)
 class EventRuntimeEngine:
     """可分段推进的事件驱动 runtime 引擎。"""
@@ -528,9 +501,7 @@ class EventRuntimeEngine:
             if _is_response_based_semantics(self.config.semantics)
             else {}
         )
-        self.queue = EventQueue(
-            arrival_before_deadline=bool(self.config.nonvacuity_arrival_before_deadline)
-        )
+        self.queue = EventQueue()
         self.result = SimulationResult()
         self.state = _RuntimeState(
             current_time=0,
@@ -746,9 +717,6 @@ class EventRuntimeEngine:
         self._advance_time(self.state.current_time)
         update_payload = dict(updates)
         self.budget_state.apply_updates(update_payload)
-        _apply_retroactive_release_budget_mutation(
-            state=self.state, updates=update_payload, cfg=self.config
-        )
         self.result.budget_update_events.append(
             BudgetUpdateEvent(time=self.state.current_time, updates=update_payload)
         )
@@ -1034,9 +1002,6 @@ class EventRuntimeEngine:
         if event.event_type is EventType.BUDGET_UPDATE:
             update_payload = dict(event.payload.get("updates", {}))
             self.budget_state.apply_updates(update_payload)
-            _apply_retroactive_release_budget_mutation(
-                state=self.state, updates=update_payload, cfg=self.config
-            )
             self.result.budget_update_events.append(
                 BudgetUpdateEvent(time=event.time, updates=dict(update_payload))
             )
@@ -1084,22 +1049,6 @@ class EventRuntimeEngine:
                         executed_at_miss=job.executed_time,
                     )
                 )
-                if self.config.nonvacuity_deadline_cleanup_remove:
-                    job.dropped = True
-                    job.drop_time = event.time
-                    if job in self.state.active_jobs:
-                        self.state.active_jobs.remove(job)
-                    _invalidate_job_events(self.state, job)
-                    if self.state.running_job is job:
-                        self.state.running_job = None
-                        self.state.run_started_at = None
-                    self._append_debug_event(
-                        "nonvacuity_deadline_cleanup_remove",
-                        task=job.task.name,
-                        release_index=job.release_index,
-                    )
-                    _maybe_recover_to_lo(self.state, self.result, event.time, self.config)
-                    self._reschedule(event.time, force=True)
                 if self.config.stop_at_first_miss:
                     return False
             return True
@@ -1195,26 +1144,6 @@ class EventRuntimeEngine:
 
             job = self.jobs_by_key.get(key)
             if job is None or self.state.running_job is not job:
-                return True
-
-            if (
-                self.config.nonvacuity_hi_budget_cap_truncate
-                and job.task.criticality is Criticality.HI
-            ):
-                job.dropped = True
-                job.drop_time = event.time
-                if job in self.state.active_jobs:
-                    self.state.active_jobs.remove(job)
-                _invalidate_job_events(self.state, job)
-                self.state.running_job = None
-                self.state.run_started_at = None
-                self._append_debug_event(
-                    "nonvacuity_hi_budget_cap_truncate",
-                    task=job.task.name,
-                    release_index=job.release_index,
-                    executed_time=job.executed_time,
-                )
-                self._reschedule(event.time, force=True)
                 return True
 
             if _is_response_based_semantics(self.config.semantics) and job.task.criticality is Criticality.HI:

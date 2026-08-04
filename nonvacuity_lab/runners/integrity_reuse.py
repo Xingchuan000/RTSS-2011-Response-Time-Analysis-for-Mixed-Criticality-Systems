@@ -65,9 +65,9 @@ def run_integrity_reuse(
     verify_source = source_overlay or source_root
     environment = {}
     if source_overlay is not None:
-        environment["PYTHONPATH"] = os.pathsep.join(
-            [str(source_overlay), str(Path(source_root).resolve())]
-        )
+        # Integrity verification must execute one coherent source tree; a
+        # clean-tree fallback could silently mix patched and unpatched code.
+        environment["PYTHONPATH"] = str(source_overlay)
     receipt = run_command(
         ordinary_verify_command(
             request=tampered / "request" / request_source.name,

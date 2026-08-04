@@ -12,6 +12,9 @@ from .preflight import audit_campaign
 from .reporting.markdown_report import write_campaign_report
 from .runners.campaign import run_campaign, run_one
 from .schema import ExperimentStatus, experiment_envelope
+from .doctor.runner import run_doctor
+from .config_resolver import resolve_campaign, seal_config
+from .v2_runner import run_v2_campaign
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -24,12 +27,18 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--config", required=True, type=Path)
     run_parser.add_argument("--enable", action="store_true")
     run_parser.add_argument("--timeout-seconds", type=int)
+    run_parser.add_argument("--doctor-receipt", type=Path)
 
     preflight_parser = subparsers.add_parser(
         "preflight", help="只读检查 campaign 能力和输入，不创建工作区"
     )
     preflight_parser.add_argument("--config", required=True, type=Path)
     preflight_parser.add_argument("--out", type=Path)
+    preflight_parser.add_argument(
+        "--all-mutations",
+        action="store_true",
+        help="检查默认关闭的全部 mutation，用于开发准入审计",
+    )
 
     one_parser = subparsers.add_parser("run-one", help="运行单个 mutation")
     one_parser.add_argument("--manifest", required=True, type=Path)
@@ -47,11 +56,26 @@ def main(argv: list[str] | None = None) -> int:
     report_parser = subparsers.add_parser("report", help="重新生成 campaign 报告")
     report_parser.add_argument("--campaign-dir", required=True, type=Path)
 
+    doctor_parser = subparsers.add_parser("doctor", help="只读检查 resolved campaign 的论文级运行条件")
+    doctor_parser.add_argument("--config", required=True, type=Path)
+    doctor_parser.add_argument("--output", required=True, type=Path)
+
+    resolve_parser = subparsers.add_parser("resolve", help="将 template 解析为默认关闭的 resolved campaign")
+    resolve_parser.add_argument("--template", required=True, type=Path)
+    resolve_parser.add_argument("--audit-root", required=True, type=Path)
+    resolve_parser.add_argument("--source-root", required=True, type=Path)
+    resolve_parser.add_argument("--output", required=True, type=Path)
+    seal_parser = subparsers.add_parser("seal-config", help="重新计算 resolved campaign hash")
+    seal_parser.add_argument("--config", required=True, type=Path)
+
     args = parser.parse_args(argv)
     try:
         if args.command == "preflight":
             config = load_campaign(args.config)
-            result = audit_campaign(config)
+            result = audit_campaign(
+                config,
+                include_disabled=args.all_mutations,
+            )
             if args.out:
                 args.out.parent.mkdir(parents=True, exist_ok=True)
                 args.out.write_text(
@@ -59,12 +83,17 @@ def main(argv: list[str] | None = None) -> int:
                     encoding="utf-8",
                 )
         elif args.command == "run":
-            config = load_campaign(args.config)
-            result = run_campaign(
-                config,
-                enabled_by_cli=args.enable,
-                timeout_seconds=args.timeout_seconds,
-            )
+            raw_config = json.loads(args.config.read_text(encoding="utf-8"))
+            if raw_config.get("schema_version") == "nonvacuity_campaign_v2":
+                result = run_v2_campaign(
+                    args.config,
+                    cli_enable=args.enable,
+                    doctor_receipt=args.doctor_receipt,
+                    timeout_seconds=args.timeout_seconds,
+                )
+            else:
+                config = load_campaign(args.config)
+                result = run_campaign(config, enabled_by_cli=args.enable, timeout_seconds=args.timeout_seconds)
         elif args.command == "run-one":
             manifest = load_mutation(args.manifest)
             result = run_one(
@@ -93,6 +122,13 @@ def main(argv: list[str] | None = None) -> int:
                     status=activation.status.value,
                     activation=activation.to_dict(),
                 )
+        elif args.command == "doctor":
+            receipt = run_doctor(args.config, args.output)
+            result = receipt.to_dict()
+        elif args.command == "resolve":
+            result = resolve_campaign(args.template, args.audit_root, args.source_root, args.output)
+        elif args.command == "seal-config":
+            result = seal_config(args.config)
         else:
             campaign_dir = args.campaign_dir.resolve()
             result_path = campaign_dir / "campaign_result.json"
@@ -124,6 +160,7 @@ def _exit_code(status: str) -> int:
         ExperimentStatus.FAIL_EXPECTED.value,
         ExperimentStatus.INTEGRITY_REJECTION_EXPECTED.value,
         "PASS",
+        "DISABLED",
     }:
         return 0
     if status == ExperimentStatus.NOT_ACTIVATED.value:

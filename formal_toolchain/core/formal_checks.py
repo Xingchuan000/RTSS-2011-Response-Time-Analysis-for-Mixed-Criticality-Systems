@@ -371,17 +371,6 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
         else {"status": "UNRESOLVED", "route": "UNRESOLVED",
               "failure": {"code": "CANDIDATE_ENVELOPE_NOT_PASS"}}
     )
-    if str(getattr(target.runtime_config, "nonvacuity_profile", "off")) == "c3_retroactive_release_budget":
-        common = {
-            "status": "FAIL",
-            "route": "POLICY_CONTRACT_VIOLATION",
-            "failure": {
-                "code": "ACTIVE_RELEASE_BUDGET_RETROACTIVELY_MUTATED",
-                "obligation_id": "ACTIVE_RELEASE_BUDGET_INVARIANT",
-            },
-            "active_release_budget_immutable": False,
-            "controller_budget_write": True,
-        }
     rankings = {
         int(leaf.node_id): tuple(int(action_id) for action_id in leaf.action_ranking)
         for leaf in tree.leaves

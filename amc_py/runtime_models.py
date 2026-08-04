@@ -87,14 +87,6 @@ class RuntimeConfig:
     record_dropped_lo_releases: bool = False
     c_amc_sem_lo_degradation_ratio: float = 0.5
     c_amc_sem_primary_on_switch_time: bool = False
-    # Non-vacuity runtime mutations. All defaults preserve the production/P0 semantics.
-    nonvacuity_profile: str = "off"
-    nonvacuity_deadline_cleanup_remove: bool = False
-    nonvacuity_hi_budget_cap_truncate: bool = False
-    nonvacuity_arrival_before_deadline: bool = False
-    nonvacuity_controller_overhead_ticks: int = 0
-    nonvacuity_recover_without_quiescence: bool = False
-    nonvacuity_unstable_demand_reads: bool = False
     qamc_mode_recovery_policy: str = "idle"
     qamc_quality_recovery_policy: str = "persistent_no_restore"
     qamc_demand_mapping_version: str = "wcet_capped_component_split_v1"
@@ -111,8 +103,6 @@ class RuntimeConfig:
             raise ValueError("c_amc_sem_lo_degradation_ratio must be in (0, 1]")
         if not isinstance(self.c_amc_sem_primary_on_switch_time, bool):
             raise TypeError("c_amc_sem_primary_on_switch_time must be bool")
-        if self.nonvacuity_controller_overhead_ticks < 0:
-            raise ValueError("nonvacuity_controller_overhead_ticks 必须为非负整数")
         if self.semantics is RuntimeSemantics.Q_AMC:
             if self.qamc_mode_recovery_policy != "idle":
                 raise ValueError("QAMC_UNSUPPORTED_MODE_RECOVERY_POLICY")
@@ -120,20 +110,6 @@ class RuntimeConfig:
                 raise ValueError("QAMC_UNSUPPORTED_QUALITY_RECOVERY_POLICY")
             if self.qamc_demand_mapping_version != "wcet_capped_component_split_v1":
                 raise ValueError("QAMC_UNSUPPORTED_DEMAND_MAPPING_VERSION")
-            if self.nonvacuity_profile != "off":
-                raise ValueError("QAMC_NONVACUITY_PROFILE_MUST_BE_OFF")
-            if self.nonvacuity_unstable_demand_reads:
-                raise ValueError("QAMC_NONVACUITY_UNSTABLE_DEMAND_READS_FORBIDDEN")
-            if self.nonvacuity_deadline_cleanup_remove:
-                raise ValueError("QAMC_NONVACUITY_DEADLINE_CLEANUP_FORBIDDEN")
-            if self.nonvacuity_hi_budget_cap_truncate:
-                raise ValueError("QAMC_NONVACUITY_HI_CAP_FORBIDDEN")
-            if self.nonvacuity_controller_overhead_ticks:
-                raise ValueError("QAMC_NONVACUITY_CONTROLLER_OVERHEAD_FORBIDDEN")
-            if self.nonvacuity_arrival_before_deadline:
-                raise ValueError("QAMC_NONVACUITY_ARRIVAL_BEFORE_DEADLINE_FORBIDDEN")
-            if self.nonvacuity_recover_without_quiescence:
-                raise ValueError("QAMC_NONVACUITY_RECOVER_WITHOUT_QUIESCENCE_FORBIDDEN")
 
 
 @dataclass(slots=True)

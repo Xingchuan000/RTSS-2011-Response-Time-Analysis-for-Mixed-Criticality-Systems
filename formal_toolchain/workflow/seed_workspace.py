@@ -11,6 +11,7 @@ from formal_toolchain.core.hashing import sha256_file
 
 from formal_toolchain.adapters.seed_directory import ALLOWED_VARIANTS
 from formal_toolchain.core.errors import UnresolvedInputError
+from formal_toolchain.core.request_schema import validate_clean_proof_request
 
 
 def normalize_target_manifest(data: dict[str, Any]) -> dict[str, Any]:
@@ -57,8 +58,6 @@ def _copy_tree_files(source: Path, destination: Path) -> None:
 def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
                           *, code_root: Path, target_recipe: Path | None = None,
                           overwrite: bool = False,
-                          nonvacuity_profile: str = "off",
-                          nonvacuity_params: dict[str, Any] | None = None,
                           refresh_phase_k_map: bool = False,
                           proof_route: str = "protected_prefix") -> dict[str, Any]:
     """创建 canonical workspace，并输出机器无关的 proof request。"""
@@ -172,8 +171,6 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
     if metadata_seed is not None and int(metadata_seed) != int(declared_seed):
         raise ValueError("TARGET_SEED_IDENTITY_MISMATCH")
     recipe_kwargs = dict(recipe.get("kwargs", {}))
-    recipe_kwargs["nonvacuity_profile"] = str(nonvacuity_profile or "off")
-    recipe_kwargs["nonvacuity_params"] = dict(nonvacuity_params or {})
 
     # The copied formal_inputs are historical inputs from the seed export.  A
     # non-vacuity profile (and even the unified source revision with profile
@@ -233,9 +230,8 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
             "mutable_runtime_policy": "NON_BLOCKING_AUDIT_ONLY",
         },
         "optional_claims": [],
-        "nonvacuity_profile": str(nonvacuity_profile or "off"),
-        "nonvacuity_params": dict(nonvacuity_params or {}),
     }
+    validate_clean_proof_request(request)
     (output_dir / "request" / "proof_request.json").write_text(
         json.dumps(request, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     inventory = {name: sha256_file(copied_tree / name) for name in REQUIRED_FILES if name != "artifact_manifest.json"}
@@ -248,8 +244,6 @@ def freeze_seed_workspace(seed_dir: Path, tree_variant: str, output_dir: Path,
                   "target_id": target_manifest.get("target_id"), "target_kind": target_manifest.get("target_kind"),
                   "tree_variant": tree_variant, "source_root": "code_root",
                   "external_seed_paths_read": [], "hout_used": False,
-                  "nonvacuity_profile": str(nonvacuity_profile or "off"),
-                  "nonvacuity_params": dict(nonvacuity_params or {}),
                   "phase_k_map_refreshed": phase_k_map_refreshed,
                   "formal_semantics_binding_mode": "FROZEN_FORMAL_SEMANTICS",
                   "formal_semantics_contract_version": CONTRACT_VERSION,

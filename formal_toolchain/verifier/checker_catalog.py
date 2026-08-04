@@ -259,17 +259,6 @@ def _fresh_structural_envelope_pipeline(
         candidate,
         transitions=transitions,
     )
-    if str(getattr(target.runtime_config, "nonvacuity_profile", "off")) == "c3_retroactive_release_budget":
-        common = {
-            "status": "FAIL",
-            "route": "POLICY_CONTRACT_VIOLATION",
-            "failure": {
-                "code": "ACTIVE_RELEASE_BUDGET_RETROACTIVELY_MUTATED",
-                "obligation_id": "ACTIVE_RELEASE_BUDGET_INVARIANT",
-            },
-            "active_release_budget_immutable": False,
-            "controller_budget_write": True,
-        }
 
     rankings = {
         int(leaf.node_id): tuple(int(a) for a in leaf.action_ranking)

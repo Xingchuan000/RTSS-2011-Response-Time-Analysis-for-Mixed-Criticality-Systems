@@ -1,0 +1,10 @@
+{
+  "schema_version": "nonvacuity_campaign_v2",
+  "config_kind": "TEMPLATE",
+  "campaign_id": "ppp_nonvacuity_minimal_v2",
+  "proof_route": "protected_prefix",
+  "enabled": false,
+  "paper_mode": false,
+  "source_binding": {"clean_source_root": ".", "clean_source_root_sha256": ""},
+  "mutations": []
+}

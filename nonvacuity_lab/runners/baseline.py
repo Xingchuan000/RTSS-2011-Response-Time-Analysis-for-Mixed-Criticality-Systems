@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ..subprocess_runner import ordinary_prove_command, run_command
+from ..validation.proof_request_clean import assert_experiment_blind_request, IsolationError
 
 
 def run_baseline(
@@ -55,16 +56,11 @@ def _verify_request_is_blind(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {"status": "FAIL", "reason": "proof request missing"}
     raw = json.loads(path.read_text(encoding="utf-8"))
-    forbidden = [
-        key
-        for key in raw
-        if key in {"mutation_id", "expected", "expected_failure", "activation_status"}
-    ]
-    profile_off = raw.get("nonvacuity_profile", "off") == "off"
-    params_empty = not raw.get("nonvacuity_params")
+    try:
+        assert_experiment_blind_request(raw)
+    except IsolationError as exc:
+        return {"status": "FAIL", "forbidden_fields": [str(exc)]}
     return {
-        "status": "PASS" if not forbidden and profile_off and params_empty else "FAIL",
-        "forbidden_fields": forbidden,
-        "nonvacuity_profile": raw.get("nonvacuity_profile", "off"),
-        "nonvacuity_params_empty": params_empty,
+        "status": "PASS",
+        "forbidden_fields": [],
     }

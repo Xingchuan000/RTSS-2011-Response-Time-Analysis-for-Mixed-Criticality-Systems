@@ -13,8 +13,9 @@ from .analysis.proof_source_classification import (
     classify_proof_source,
     is_blocking_source,
 )
-from .canonical import python_symbol_hash
+from .canonical import file_hash, python_symbol_hash
 from .schema import CampaignConfig, MutationClass, MutationManifest
+from .mutators.python_binding import bind_symbol
 
 
 @dataclass(frozen=True)
@@ -33,15 +34,26 @@ class PreflightIssue:
         }
 
 
-def audit_campaign(config: CampaignConfig) -> dict[str, Any]:
-    """Resolve all enabled mutations without creating an experiment workspace."""
+def audit_campaign(
+    config: CampaignConfig,
+    *,
+    include_disabled: bool = False,
+) -> dict[str, Any]:
+    """Resolve campaign mutations without creating an experiment workspace.
+
+    Normal execution audits only enabled mutations.  Readiness reviews can set
+    ``include_disabled`` to inspect the default-off campaign before enabling it.
+    """
 
     issues: list[PreflightIssue] = []
     if not config.source_root.is_dir():
         issues.append(
             PreflightIssue(None, "SOURCE_ROOT_MISSING", f"source_root 不存在: {config.source_root}")
         )
-    enabled = [item for item in config.mutations if item.enabled]
+    enabled = [
+        item for item in config.mutations
+        if include_disabled or item.enabled
+    ]
     ids = {item.mutation_id for item in config.mutations}
     seen: set[str] = set()
     resolved: list[dict[str, Any]] = []
@@ -80,7 +92,9 @@ def audit_campaign(config: CampaignConfig) -> dict[str, Any]:
         "schema_version": "nonvacuity_preflight_v1",
         "status": "PASS" if not issues else "CAMPAIGN_PREFLIGHT_FAILED",
         "campaign_id": config.campaign_id,
-        "enabled_mutation_count": len(enabled),
+        "audited_mutation_count": len(enabled),
+        "enabled_mutation_count": sum(item.enabled for item in config.mutations),
+        "include_disabled": include_disabled,
         "capabilities": {
             "jsonschema": find_spec("jsonschema") is not None,
             "z3": find_spec("z3") is not None,
@@ -126,7 +140,7 @@ def _audit_mutation(
             )
     elif (
         not (
-            manifest.mutation_class is MutationClass.ENVELOPE
+            manifest.mutation_class in {MutationClass.ENVELOPE, MutationClass.ENVELOPE_GRADIENT}
             and manifest.metadata.get("dynamic_minimum_slack_selection")
         )
         and (manifest.seed_dir is None or not manifest.seed_dir.is_dir())
@@ -154,15 +168,24 @@ def _audit_mutation(
     if semantic and not kind:
         issues.append(PreflightIssue(mid, "MUTATOR_KIND_MISSING", "语义 mutation 缺少 kind"))
     if kind in {"dangerous_top1", "tree_ranking"}:
+        explicit = parameters.get("leaf_id") is not None and parameters.get("action_id") is not None
         resolver = parameters.get("resolver")
-        if not parameters.get("leaf_candidates") and not resolver:
+        if not explicit and not parameters.get("leaf_candidates") and not resolver:
             issues.append(
-                PreflightIssue(mid, "LEAF_TARGET_UNRESOLVED", "leaf_candidates 为空且未声明 resolver")
+                PreflightIssue(mid, "LEAF_TARGET_UNRESOLVED", "缺少 leaf_id 或 leaf_candidates/resolver")
             )
-        if not parameters.get("dangerous_actions") and not resolver:
+        if not explicit and not parameters.get("dangerous_actions") and not resolver:
             issues.append(
-                PreflightIssue(mid, "ACTION_TARGET_UNRESOLVED", "dangerous_actions 为空且未声明 resolver")
+                PreflightIssue(mid, "ACTION_TARGET_UNRESOLVED", "缺少 action_id 或 dangerous_actions/resolver")
             )
+        if explicit and manifest.seed_dir is not None:
+            tree_path = manifest.seed_dir / manifest.tree_variant / "integer_tree.json"
+            if not tree_path.is_file():
+                issues.append(PreflightIssue(mid, "TREE_ARTIFACT_MISSING", str(tree_path), "seed_dir"))
+            elif parameters.get("expected_tree_hash") and file_hash(tree_path) != str(parameters["expected_tree_hash"]):
+                issues.append(
+                    PreflightIssue(mid, "TREE_HASH_MISMATCH", "resolver 绑定的 tree hash 与当前输入不一致", "mutator.parameters.expected_tree_hash")
+                )
     if kind in {"python_symbol", "source_overlay"}:
         patches = parameters.get("patches")
         patch_list = patches if isinstance(patches, list) else [parameters]
@@ -194,6 +217,25 @@ def _audit_mutation(
                         "目标会在 freeze 阶段重建，不能作为语义 mutation 源头",
                     )
                 )
+    if kind == "coherent_source_patch":
+        semantic_change_id = parameters.get("semantic_change_id")
+        if not isinstance(semantic_change_id, str) or not semantic_change_id:
+            issues.append(PreflightIssue(mid, "SEMANTIC_CHANGE_ID_MISSING", "coherent patch 必须声明 semantic_change_id"))
+        patches = parameters.get("patches")
+        if not isinstance(patches, list) or not patches:
+            issues.append(PreflightIssue(mid, "EMPTY_PATCHES", "patches 必须为非空 array"))
+        else:
+            roles: set[str] = set()
+            for index, patch in enumerate(patches):
+                if not isinstance(patch, Mapping):
+                    issues.append(PreflightIssue(mid, "PATCH_INVALID", "patch 必须为 object"))
+                    continue
+                role = str(patch.get("role", "")); roles.add(role)
+                if role in {"VERIFIER_CHECKER", "AGGREGATOR", "EXPECTED_RESULT_CLASSIFIER"}:
+                    issues.append(PreflightIssue(mid, "FORBIDDEN_PATCH_ROLE", f"禁止 patch role: {role}"))
+                issues.extend(_audit_coherent_source_patch(mid, source_root, patch, index))
+            if "DEPLOYED_IMPLEMENTATION" not in roles:
+                issues.append(PreflightIssue(mid, "DEPLOYED_IMPLEMENTATION_PATCH_MISSING", "coherent semantic mutation 必须修改部署实现副本"))
     if kind in {"json_patch", "action_config", "action_step"}:
         targets = [parameters.get("target_file")]
         targets.extend(
@@ -211,6 +253,32 @@ def _audit_mutation(
                         "target_file",
                     )
                 )
+    if kind == "envelope":
+        dynamic = bool(manifest.metadata.get("dynamic_minimum_slack_selection"))
+        required_fields = ("delta",) if dynamic else ("target_file", "json_pointer", "delta")
+        for field in required_fields:
+            if parameters.get(field) in (None, ""):
+                issues.append(PreflightIssue(mid, "ENVELOPE_TARGET_UNRESOLVED", f"envelope 缺少 {field}", f"mutator.parameters.{field}"))
+        if dynamic:
+            roots = manifest.metadata.get("bundle_roots")
+            if not isinstance(roots, (list, tuple)) or not roots:
+                issues.append(PreflightIssue(mid, "D1_BUNDLE_ROOTS_MISSING", "D1 动态选择需要非空 bundle_roots", "metadata.bundle_roots"))
+            else:
+                for index, root in enumerate(roots):
+                    path = Path(str(root))
+                    if not path.is_absolute():
+                        path = source_root / path
+                    if not path.is_dir():
+                        issues.append(PreflightIssue(mid, "D1_BUNDLE_ROOT_MISSING", str(path), f"metadata.bundle_roots[{index}]"))
+    if kind == "bundle_tamper" and manifest.reuse_source_bundle is not None:
+        target = parameters.get("target_file")
+        if not isinstance(target, str) or not target:
+            issues.append(PreflightIssue(mid, "BUNDLE_TARGET_MISSING", "bundle tamper 缺少 target_file", "mutator.parameters.target_file"))
+        else:
+            target_path = manifest.reuse_source_bundle / target
+            tamper_kind = str(parameters.get("tamper_kind", ""))
+            if tamper_kind != "replace_from" and not target_path.exists():
+                issues.append(PreflightIssue(mid, "BUNDLE_TARGET_NOT_FOUND", str(target_path), "mutator.parameters.target_file"))
     mode = str(manifest.activation.get("mode", "")).lower()
     if semantic and "symbolic" in mode and find_spec("z3") is None:
         issues.append(PreflightIssue(mid, "Z3_UNAVAILABLE", "symbolic activation 需要 z3"))
@@ -282,6 +350,30 @@ def _audit_source_patch(
     except (OSError, SyntaxError, ValueError, TypeError) as exc:
         issues.append(PreflightIssue(mutation_id, "SOURCE_BINDING_INVALID", str(exc), prefix))
     return issues
+
+
+def _audit_coherent_source_patch(mutation_id: str, source_root: Path, patch: Mapping[str, Any], index: int) -> list[PreflightIssue]:
+    prefix = f"mutator.parameters.patches[{index}]"
+    required = ("role", "target_file", "target_symbol", "before_ast_hash", "before_snippet", "after_snippet")
+    missing = [key for key in required if not isinstance(patch.get(key), str) or not patch.get(key)]
+    if missing:
+        return [PreflightIssue(mutation_id, "COHERENT_PATCH_FIELDS_MISSING", f"缺少字段: {missing}", prefix)]
+    relative = Path(str(patch["target_file"]))
+    normalized = relative.as_posix()
+    if relative.is_absolute() or ".." in relative.parts or normalized.startswith("formal_toolchain/verifier/"):
+        return [PreflightIssue(mutation_id, "VERIFIER_PATCH_FORBIDDEN", normalized, prefix)]
+    path = source_root / relative
+    if not path.is_file():
+        return [PreflightIssue(mutation_id, "TARGET_FILE_MISSING", str(path), prefix)]
+    try:
+        bound = bind_symbol(path.read_text(encoding="utf-8"), str(patch["target_symbol"]))
+        if bound.ast_hash != str(patch["before_ast_hash"]):
+            return [PreflightIssue(mutation_id, "BEFORE_AST_HASH_MISMATCH", f"expected={patch['before_ast_hash']} actual={bound.ast_hash}", prefix)]
+        if bound.source.count(str(patch["before_snippet"])) != int(patch.get("occurrence", 1)):
+            return [PreflightIssue(mutation_id, "SOURCE_SNIPPET_MISMATCH", "snippet 未在绑定 symbol 中唯一命中", prefix)]
+    except (OSError, SyntaxError, ValueError, TypeError) as exc:
+        return [PreflightIssue(mutation_id, "SOURCE_BINDING_INVALID", str(exc), prefix)]
+    return []
 
 
 def _find_placeholders(value: Any, pointer: str = "") -> Iterable[tuple[str, Any]]:

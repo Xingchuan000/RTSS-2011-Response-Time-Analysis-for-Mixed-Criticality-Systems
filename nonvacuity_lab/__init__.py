@@ -7,14 +7,18 @@ direction is forbidden and covered by regression tests.
 from .schema import (
     ActivationStatus,
     ArtifactClass,
+    ConfigKind,
     ExperimentStatus,
+    ExpectedResult,
     MutationClass,
 )
 
 __all__ = [
     "ActivationStatus",
     "ArtifactClass",
+    "ConfigKind",
     "ExperimentStatus",
+    "ExpectedResult",
     "MutationClass",
 ]
 

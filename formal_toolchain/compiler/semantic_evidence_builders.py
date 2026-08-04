@@ -201,10 +201,6 @@ def build_removal_completeness_evidence(**kwargs: Any) -> CandidateEvidence:
 
 
 def build_hi_nontruncation_evidence(*, target: Any, source_root: Path, contexts: Mapping[str, Mapping[str, Any]], **_: Any) -> CandidateEvidence:
-    if bool(getattr(target.runtime_config, "nonvacuity_hi_budget_cap_truncate", False)):
-        result = {"status": "FAIL", "route": "MODEL_CONFORMANCE_FAILED",
-                  "failure": {"code": "HI_BUDGET_CAP_TRUNCATES_JOB"}}
-        return _candidate("HI_NONTRUNCATION", result, contexts=contexts, source_root=source_root)
     from formal_toolchain.binding.removal_binding import bind_removal_runtime
     binding = bind_removal_runtime(Path(source_root))
     contract = binding.get("p0_contract", {})
@@ -250,11 +246,7 @@ def build_hi_execution_contract_evidence(*, evidence: Mapping[str, Any], context
 
 
 def build_deadline_observation_evidence(*, target: Any, evidence: Mapping[str, Any], contexts: Mapping[str, Mapping[str, Any]], source_root: Path, **_: Any) -> CandidateEvidence:
-    if bool(getattr(target.runtime_config, "nonvacuity_deadline_cleanup_remove", False)):
-        result = {"status": "FAIL", "route": "MODEL_CONFORMANCE_FAILED",
-                  "failure": {"code": "DEADLINE_CLEANUP_REMOVES_JOB"}}
-    else:
-        result = check_deadline_observation(_runtime_bundle(evidence))
+    result = check_deadline_observation(_runtime_bundle(evidence))
     return _candidate("DEADLINE_OBSERVATION", result, contexts=contexts, source_root=source_root)
 
 
@@ -271,11 +263,7 @@ def build_batch_closure_evidence(*, evidence: Mapping[str, Any], contexts: Mappi
 
 
 def build_deadline_boundary_order_evidence(*, target: Any, evidence: Mapping[str, Any], contexts: Mapping[str, Mapping[str, Any]], source_root: Path, **_: Any) -> CandidateEvidence:
-    if bool(getattr(target.runtime_config, "nonvacuity_arrival_before_deadline", False)):
-        result = {"status": "FAIL", "route": "MODEL_CONFORMANCE_FAILED",
-                  "failure": {"code": "ARRIVAL_PRECEDES_DEADLINE_OBSERVATION"}}
-    else:
-        result = check_deadline_boundary_order(_runtime_bundle(evidence))
+    result = check_deadline_boundary_order(_runtime_bundle(evidence))
     return _candidate("DEADLINE_BOUNDARY_ORDER", result, contexts=contexts, source_root=source_root)
 
 

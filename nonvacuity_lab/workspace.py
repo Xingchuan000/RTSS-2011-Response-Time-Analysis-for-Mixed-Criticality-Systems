@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from .canonical import tree_hash
+from .canonical import file_hash, tree_hash
 
 
 @dataclass(frozen=True)
@@ -17,11 +17,14 @@ class ExperimentWorkspace:
     base_snapshot: Path
     mutated_seed: Path
     source_overlay: Path
+    source_snapshot: Path
     semantic_output: Path
     integrity_output: Path
     hout_output: Path
     activation_output: Path
     diff_output: Path
+    coherence_output: Path
+    command_output: Path
     comparison_output: Path
     report_output: Path
 
@@ -44,11 +47,14 @@ class ExperimentWorkspace:
             base_snapshot=root / "base",
             mutated_seed=root / "semantic_recompile" / "mutated_seed",
             source_overlay=root / "semantic_recompile" / "source_overlay",
+            source_snapshot=root / "semantic_recompile" / "source_snapshot.json",
             semantic_output=root / "semantic_recompile" / "proof",
             integrity_output=root / "integrity_reuse" / "verify",
             hout_output=root / "hout",
             activation_output=root / "activation",
             diff_output=root / "semantic_recompile" / "mutation_diff.json",
+            coherence_output=root / "semantic_recompile" / "coherence_receipt.json",
+            command_output=root / "commands",
             comparison_output=root / "comparison",
             report_output=root / "report",
         )
@@ -58,8 +64,19 @@ class ExperimentWorkspace:
             paths.activation_output,
             paths.comparison_output,
             paths.report_output,
+            paths.command_output,
         ):
             path.mkdir(parents=True)
+        marker = {
+            "schema_version": "nonvacuity_workspace_marker_v1",
+            "artifact_class": "NONVACUITY_EXPERIMENT_ONLY",
+            "deployment_certificate_eligible": False,
+            "campaign_id": campaign_id,
+            "mutation_id": mutation_id,
+        }
+        (root / "DO_NOT_USE_AS_DEPLOYMENT_CERTIFICATE.json").write_text(
+            json.dumps(marker, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
         hashes = {"source_before": tree_hash(source_root)}
         if seed_dir is not None:
             hashes["seed_before"] = tree_hash(seed_dir)
@@ -79,6 +96,7 @@ class ExperimentWorkspace:
         if overlay.exists():
             raise FileExistsError(f"source overlay 已存在: {overlay}")
         overlay.mkdir(parents=True)
+        snapshot: dict[str, str] = {}
         for package in ("amc_py", "formal_toolchain"):
             source = Path(source_root) / package
             if not source.is_dir() or source.is_symlink():
@@ -92,6 +110,26 @@ class ExperimentWorkspace:
                 symlinks=False,
                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
             )
+            for path in (overlay / package).rglob("*.py"):
+                snapshot[path.relative_to(overlay).as_posix()] = file_hash(path)
+        for relative in ("requirements.txt", "pyproject.toml"):
+            source = Path(source_root) / relative
+            if source.is_file():
+                shutil.copy2(source, overlay / relative)
+        replay_script = Path(source_root) / "scripts" / "run_nonvacuity_hout.py"
+        if replay_script.is_file():
+            (overlay / "scripts").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(replay_script, overlay / "scripts" / replay_script.name)
+        config_source = Path(source_root) / "configs"
+        if config_source.is_dir():
+            shutil.copytree(
+                config_source, overlay / "configs",
+                ignore=shutil.ignore_patterns("nonvacuity", "__pycache__", "*.pyc"),
+            )
+        write_input_snapshot(self.source_snapshot, {
+            "schema_version": "nonvacuity_source_snapshot_v1",
+            "files": sorted(snapshot),
+        })
         return overlay
 
 
@@ -112,6 +150,18 @@ def verify_original_inputs_unchanged(
 def write_input_snapshot(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def write_command_receipt(path: Path, *, argv: list[str], cwd: Path,
+                          env: dict[str, str], returncode: int) -> None:
+    allowed = {key: env.get(key) for key in (
+        "PYTHONPATH", "PYTHONHASHSEED", "OMP_NUM_THREADS", "MKL_NUM_THREADS"
+    ) if key in env}
+    write_input_snapshot(path, {
+        "schema_version": "nonvacuity_command_receipt_v1",
+        "argv": argv, "cwd": str(cwd), "environment": allowed,
+        "returncode": returncode,
+    })
 
 
 def _copytree_readonly_input(source: Path, destination: Path) -> None:

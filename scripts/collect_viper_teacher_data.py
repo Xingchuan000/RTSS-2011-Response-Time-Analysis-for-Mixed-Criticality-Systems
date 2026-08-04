@@ -93,7 +93,6 @@ def _configure_qamc_experiment(args: argparse.Namespace, experiment_config):
         action_space=args.action_space,
         check_safety=True,
         step_guard_semantics="checked",
-        nonvacuity_disabled_guards=(),
         budget_rounding_mode="ceil_floor",
         min_budget_delta=1,
     )

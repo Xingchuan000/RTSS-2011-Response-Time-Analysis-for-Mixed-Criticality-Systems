@@ -51,11 +51,7 @@ def build_phase_k_static_effect_bindings(runtime_config: Any | None) -> dict[str
     profile the policy/invariant layer is required to reject the system before
     the closed-prefix bridge is attempted; Phase K fails closed if invoked.
     """
-    profile = str(_runtime_config_value(runtime_config, "nonvacuity_profile", "off"))
-    return {
-        "retroactive_release_budget_mutation":
-            profile == "c3_retroactive_release_budget",
-    }
+    return {"retroactive_release_budget_mutation": False}
 
 
 def _selected_job_projection(prefix: str, bounds: P0ModelBounds, field: str) -> str:
@@ -345,23 +341,6 @@ def compile_effect_ir(effect_ir: list[Mapping[str, Any]], *, bounds: P0ModelBoun
         elif "_invalidate_job_events" in source or "_schedule_running_job_events" in source:
             compiled = []
             token_epoch_delta += 1
-        elif "_apply_retroactive_release_budget_mutation" in source:
-            enabled = bindings.get("retroactive_release_budget_mutation")
-            if not isinstance(enabled, bool):
-                raise ValueError(
-                    "PHASE_K_STATIC_EFFECT_BINDING_REQUIRED:"
-                    "retroactive_release_budget_mutation"
-                )
-            if enabled:
-                # C3 deliberately changes already-released job snapshots.  The
-                # ACTIVE_RELEASE_BUDGET_INVARIANT checker must reject this
-                # profile before Phase K.  Never silently model it as identity.
-                raise ValueError(
-                    "NONVACUITY_C3_RETROACTIVE_EFFECT_REQUIRES_"
-                    "POLICY_CONTRACT_REJECTION"
-                )
-            compiled = []
-            statically_elided.append(ast_hash)
         elif "budget_state.apply_updates" in source or "runtime_budgets.apply_updates" in source:
             compiled = ["(= c_affected_task_budget_post (ite (> update_arity 0) release_budget c_affected_task_budget))"]
         elif "deadline_misses.append" in source:
@@ -516,7 +495,7 @@ def compile_effect_ir(effect_ir: list[Mapping[str, Any]], *, bounds: P0ModelBoun
             "state.mode =", "state.running_job =", "_invalidate_job_events",
             "_schedule_running_job_events", "budget_state.apply_updates",
             "runtime_budgets.apply_updates", "deadline_misses.append",
-            "_apply_retroactive_release_budget_mutation"))
+            "retroactive_release_budget_mutation"))
     ]
     for ast_hash in statically_elided:
         if ast_hash not in non_state_candidates:

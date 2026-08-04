@@ -73,3 +73,28 @@ def search_delta_star(
         "slack_nonincreasing": nonincreasing,
         "runs": [cache[key] for key in sorted(cache)],
     }
+
+
+def run_envelope_gradient_experiment(ctx, mutation: Mapping[str, Any]) -> dict[str, Any]:
+    """Run D1 through a caller-supplied fresh-proof evaluator.
+
+    The lab never reuses a fixed proof result here: ``evaluate_delta`` is
+    required to build/run a fresh ordinary proof for every delta.
+    """
+    evaluator = mutation.get("evaluate_delta")
+    if not callable(evaluator):
+        raise ValueError("D1 requires a callable fresh-proof evaluate_delta")
+    result = search_delta_star(
+        evaluator,
+        initial_step=int(mutation.get("initial_step", 1)),
+        maximum_delta=int(mutation.get("maximum_delta", 1024)),
+    )
+    if result["status"] == "BASELINE_REGRESSION":
+        result["experiment_status"] = "GRADIENT_BASELINE_FAILED"
+    elif result["status"] == "NO_FAILURE_WITHIN_BOUND":
+        result["experiment_status"] = "GRADIENT_BOUND_NOT_FOUND"
+    elif not result.get("slack_nonincreasing", True):
+        result["experiment_status"] = "GRADIENT_NON_MONOTONIC"
+    else:
+        result["experiment_status"] = "GRADIENT_EXPECTED_FAILURE_FOUND"
+    return result

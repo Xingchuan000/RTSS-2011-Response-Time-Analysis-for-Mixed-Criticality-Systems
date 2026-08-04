@@ -12,7 +12,6 @@ def _validate(**overrides: object) -> None:
         "action_space": "single",
         "check_safety": True,
         "step_guard_semantics": "checked",
-        "nonvacuity_disabled_guards": (),
         "budget_rounding_mode": "ceil_floor",
         "min_budget_delta": 1,
     }
@@ -29,7 +28,6 @@ def test_qamc_certified_contract_passes() -> None:
     [
         ({"check_safety": False}, "QAMC_REQUIRES_CHECK_SAFETY"),
         ({"step_guard_semantics": "unchecked_apply"}, "UNCHECKED_STEP_GUARD"),
-        ({"nonvacuity_disabled_guards": ("budget_floor",)}, "GUARD_DISABLE"),
         ({"action_space": "pair"}, "ACTION_SPACE_NOT_CERTIFIED"),
         ({"budget_rounding_mode": "nearest"}, "BUDGET_ROUNDING"),
         ({"min_budget_delta": 2}, "MIN_BUDGET_DELTA"),

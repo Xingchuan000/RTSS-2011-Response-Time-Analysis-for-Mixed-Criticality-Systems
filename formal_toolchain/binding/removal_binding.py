@@ -22,14 +22,7 @@ def bind_removal_runtime(source_root: Path) -> dict[str, object]:
                           if isinstance(node, ast.If) and "DEADLINE_CHECK" in ast.unparse(node.test)]
     deadline_statements = [ast.unparse(node) for parent in deadline_nodes for node in ast.walk(parent)
                            if isinstance(node, (ast.Call, ast.Assign, ast.AnnAssign, ast.AugAssign))]
-    deadline_mutation_guarded = bool(deadline_nodes) and all(
-        "nonvacuity_deadline_cleanup_remove" in ast.unparse(node)
-        for node in deadline_nodes
-        if any(
-            token in ast.unparse(node)
-            for token in (".remove(", "active_jobs", "running_job")
-        )
-    )
+    deadline_mutation_guarded = False
     deadline_observe_only = bool(deadline_nodes) and (
         not any(
             ".remove(" in item or "active_jobs" in item or "running_job" in item

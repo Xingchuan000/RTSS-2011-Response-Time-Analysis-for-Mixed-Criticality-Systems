@@ -12,12 +12,13 @@ from ..mutators import (
     EnvelopeMutation,
     JsonPatchMutation,
     MultiPythonSymbolMutation,
+    CoherentSourcePatchMutation,
     PythonSymbolMutation,
 )
 from ..mutators.base import MutationContext
 from ..schema import MutationManifest
 from ..subprocess_runner import ordinary_prove_command, run_command
-from ..workspace import ExperimentWorkspace
+from ..workspace import ExperimentWorkspace, write_command_receipt, write_input_snapshot
 from .baseline import _read_proof_result, _verify_request_is_blind
 
 
@@ -34,7 +35,7 @@ def run_semantic_recompile(
     parameters = dict(manifest.mutator.get("parameters", {}))
     parameters.setdefault("tree_variant", manifest.tree_variant)
     source_overlay: Path | None = None
-    if kind in {"python_symbol", "source_overlay"}:
+    if kind in {"python_symbol", "source_overlay", "coherent_source_patch"}:
         source_overlay = workspace.create_source_overlay(source_root)
         if isinstance(parameters.get("patches"), list):
             parameters.setdefault(
@@ -61,6 +62,11 @@ def run_semantic_recompile(
         json.dumps(mutation_result.to_dict(), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    if mutation_result.details:
+        write_input_snapshot(workspace.coherence_output, {
+            "schema_version": "nonvacuity_coherence_receipt_v1",
+            **dict(mutation_result.details),
+        })
     if single_change.status != "PASS":
         return {
             "schema_version": "semantic_recompile_run_v1",
@@ -70,24 +76,41 @@ def run_semantic_recompile(
             "proof_result": None,
         }
     proof_source = source_overlay or source_root
+    argv = ordinary_prove_command(
+        seed_dir=workspace.mutated_seed,
+        tree_variant=manifest.tree_variant,
+        source_root=proof_source,
+        output_dir=workspace.semantic_output,
+    )
+    forbidden_args = [
+        item for item in argv
+        if item.startswith("--nonvacuity")
+        or item.startswith("--mutation")
+        or item.startswith("--expected")
+    ]
+    if forbidden_args:
+        raise ValueError(f"PROOF_COMMAND_NOT_MUTATION_BLIND:{forbidden_args}")
     environment = {}
     if source_overlay is not None:
-        environment["PYTHONPATH"] = os.pathsep.join(
-            [str(source_overlay), str(Path(source_root).resolve())]
-        )
+        # Do not retain the original checkout as an import fallback.  The
+        # proof process must execute the copied overlay exclusively; otherwise
+        # an omitted mirrored file could silently resolve from the clean tree.
+        environment["PYTHONPATH"] = str(source_overlay)
     receipt = run_command(
-        ordinary_prove_command(
-            seed_dir=workspace.mutated_seed,
-            tree_variant=manifest.tree_variant,
-            source_root=proof_source,
-            output_dir=workspace.semantic_output,
-        ),
+        argv,
         cwd=proof_source,
         log_dir=workspace.semantic_output.parent / "logs",
         env=environment,
         timeout_seconds=timeout_seconds,
     )
     proof_result = _read_proof_result(workspace.semantic_output)
+    write_command_receipt(
+        workspace.command_output / "semantic_recompile.json",
+        argv=argv,
+        cwd=proof_source,
+        env={str(key): str(value) for key, value in environment.items()},
+        returncode=int(receipt.get("returncode", -1)),
+    )
     request_guard = _verify_request_is_blind(
         workspace.semantic_output / "request" / "proof_request.json"
     )
@@ -119,4 +142,6 @@ def _mutator_for_kind(kind: str, parameters: dict[str, Any]):
             if isinstance(parameters.get("patches"), list)
             else PythonSymbolMutation()
         )
+    if kind == "coherent_source_patch":
+        return CoherentSourcePatchMutation()
     raise ValueError(f"不支持的 semantic mutator kind: {kind}")

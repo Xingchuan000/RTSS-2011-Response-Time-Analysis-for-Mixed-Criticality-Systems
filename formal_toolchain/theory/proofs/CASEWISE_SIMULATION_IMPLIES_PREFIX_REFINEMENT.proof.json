@@ -15,7 +15,7 @@
     "formal_toolchain/bridge/prefix_refinement.py": "8c2f983d161a734a1bca8015e9b2436e2b7d63f25c6bbf402c1a6c9917dd62d7",
     "formal_toolchain/bridge/state_relation.py": "1df1edcebb0fa1bf0e8a55b1ff4132f0114997a3e16283aa03a63a892763c4f2",
     "formal_toolchain/bridge/transition_cases.py": "78ceaabfe5472bc6e3d4c332b063e5736c2fd3775eeb2f56098a35cb0055f4a1",
-    "formal_toolchain/bridge/transition_compiler.py": "10771077450e985cacfd7d39f5289817ae9b073cc39ae94c3072d38b51d43d97"
+    "formal_toolchain/bridge/transition_compiler.py": "6d5b46fb57954768761fb7f83bce380a48fbadecccbdb867e99029b7f06226d3"
   },
   "theorem_assumption_hash": "2b17968ceee1451b3f65ce70d9b1ab804c9040eb0bda26a05ffb8e62def2fd46",
   "theorem_id": "CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT",

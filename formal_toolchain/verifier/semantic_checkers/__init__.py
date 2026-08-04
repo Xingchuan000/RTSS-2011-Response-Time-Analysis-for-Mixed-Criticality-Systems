@@ -199,10 +199,6 @@ def verify_removal_completeness(**kwargs):
 def verify_hi_nontruncation(**kwargs):
     raw, error = _raw_inputs(kwargs, "HI_NONTRUNCATION")
     if error: return error
-    if bool(getattr(raw.target.runtime_config, "nonvacuity_hi_budget_cap_truncate", False)):
-        result = {"status": "FAIL", "route": "MODEL_CONFORMANCE_FAILED",
-                  "failure": {"code": "HI_BUDGET_CAP_TRUNCATES_JOB"}}
-        return _finish("HI_NONTRUNCATION", result, expected_context_hash=kwargs.get("expected_context_hash"), candidate_evidence=kwargs.get("candidate_evidence"))
     from formal_toolchain.binding.removal_binding import bind_removal_runtime
     binding = bind_removal_runtime(Path(raw.source_root)); contract = binding.get("p0_contract", {})
     ok = binding.get("status") == "PASS" and contract.get("hi_nontruncation") is True
@@ -214,11 +210,7 @@ def verify_hi_nontruncation(**kwargs):
 def verify_deadline_observation(**kwargs):
     raw, error = _raw_inputs(kwargs, "DEADLINE_OBSERVATION")
     if error: return error
-    if bool(getattr(raw.target.runtime_config, "nonvacuity_deadline_cleanup_remove", False)):
-        result = {"status": "FAIL", "route": "MODEL_CONFORMANCE_FAILED",
-                  "failure": {"code": "DEADLINE_CLEANUP_REMOVES_JOB"}}
-    else:
-        result = check_deadline_observation(_p0_runtime(raw))
+    result = check_deadline_observation(_p0_runtime(raw))
     return _finish("DEADLINE_OBSERVATION", result, expected_context_hash=kwargs.get("expected_context_hash"), candidate_evidence=kwargs.get("candidate_evidence"))
 
 
@@ -266,11 +258,7 @@ def verify_batch_closure(**kwargs):
 def verify_deadline_boundary_order(**kwargs):
     raw, error = _raw_inputs(kwargs, "DEADLINE_BOUNDARY_ORDER")
     if error: return error
-    if bool(getattr(raw.target.runtime_config, "nonvacuity_arrival_before_deadline", False)):
-        result = {"status": "FAIL", "route": "MODEL_CONFORMANCE_FAILED",
-                  "failure": {"code": "ARRIVAL_PRECEDES_DEADLINE_OBSERVATION"}}
-    else:
-        result = check_deadline_boundary_order(_p0_runtime(raw))
+    result = check_deadline_boundary_order(_p0_runtime(raw))
     return _finish("DEADLINE_BOUNDARY_ORDER", result, expected_context_hash=kwargs.get("expected_context_hash"), candidate_evidence=kwargs.get("candidate_evidence"))
 
 

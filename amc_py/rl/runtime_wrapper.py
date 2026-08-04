@@ -133,7 +133,6 @@ class AgentRuntimeConfig:
     budget_update_source: str = "UNSPECIFIED"
     action_space: str = "single"
     step_guard_semantics: str = "checked"
-    nonvacuity_disabled_guards: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -472,7 +471,6 @@ def simulate_ordered_taskset_with_agent(
         action_space=agent_config.action_space,
         check_safety=agent_config.check_safety,
         step_guard_semantics=agent_config.step_guard_semantics,
-        nonvacuity_disabled_guards=agent_config.nonvacuity_disabled_guards,
         budget_rounding_mode=agent_config.budget_rounding_mode,
         min_budget_delta=agent_config.min_budget_delta,
     )

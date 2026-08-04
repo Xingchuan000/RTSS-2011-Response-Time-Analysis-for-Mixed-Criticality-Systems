@@ -30,8 +30,8 @@ def scan_rta_slack(bundle_roots: Iterable[Path]) -> list[dict[str, Any]]:
                     {
                         "bundle_root": str(root),
                         "artifact": str(path),
-                        "seed": _infer_seed(root, candidate),
-                        "variant": _infer_variant(root, candidate),
+                        "seed": _infer_seed(path, candidate),
+                        "variant": _infer_variant(path, candidate),
                     }
                 )
                 rows.append(adapted)
@@ -118,8 +118,10 @@ def _infer_seed(root: Path, value: Mapping[str, Any]) -> int:
     if raw is not None:
         return int(raw)
     for part in root.parts:
-        if part.startswith("s") and part[1:].isdigit():
-            return int(part[1:])
+        if part.startswith("s"):
+            digits = "".join(ch for ch in part[1:] if ch.isdigit())
+            if digits:
+                return int(digits)
     return -1
 
 
@@ -127,11 +129,8 @@ def _infer_variant(root: Path, value: Mapping[str, Any]) -> str:
     raw = value.get("tree_variant", value.get("variant"))
     if raw:
         return str(raw)
-    return next(
-        (
-            part
-            for part in root.parts
-            if part in {"best_overall", "best_balanced", "best_performance", "compact", "balanced"}
-        ),
-        "unknown",
-    )
+    for part in root.parts:
+        for variant in ("best_overall", "best_balanced", "best_performance", "compact", "balanced"):
+            if variant in part:
+                return {"compact": "best_overall", "balanced": "best_balanced"}.get(variant, variant)
+    return "unknown"

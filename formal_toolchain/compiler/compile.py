@@ -17,6 +17,7 @@ from formal_toolchain.core.formal_checks import calculate_raw_evidence, proof_sa
 from formal_toolchain.core.hashing import sha256_object, sha256_proof_object
 from formal_toolchain.core.contexts import expected_context_for_obligation
 from formal_toolchain.core.registry import load_registry, build_claim_closure
+from formal_toolchain.core.request_schema import validate_clean_proof_request
 
 
 def _write(path: Path, value: Any) -> None:
@@ -28,7 +29,9 @@ def _compile_phase_k_candidate(*, computed: Mapping[str, Any], built: Mapping[st
                                request_path: Path) -> tuple[dict[str, Mapping[str, Any]], str | None]:
     """Phase K 由 fresh verifier 统一生成；compiler 只保留 fail-closed 诊断。"""
 
-    request = json.loads(Path(request_path).read_text(encoding="utf-8"))
+    request = validate_clean_proof_request(
+        json.loads(Path(request_path).read_text(encoding="utf-8"))
+    )
     workspace = Path(request_path).resolve().parent.parent
     formal_inputs = workspace / str(request.get("formal_inputs_dir", ""))
     case_map_path = formal_inputs / "phase_k_case_map.json"

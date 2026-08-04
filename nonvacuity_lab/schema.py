@@ -15,6 +15,11 @@ class ArtifactClass(StrEnum):
     NONVACUITY_EXPERIMENT_ONLY = "NONVACUITY_EXPERIMENT_ONLY"
 
 
+class ConfigKind(StrEnum):
+    TEMPLATE = "TEMPLATE"
+    RESOLVED = "RESOLVED"
+
+
 class ExperimentStatus(StrEnum):
     EXPERIMENT_DISABLED = "EXPERIMENT_DISABLED"
     CAMPAIGN_PREFLIGHT_FAILED = "CAMPAIGN_PREFLIGHT_FAILED"
@@ -31,6 +36,15 @@ class ExperimentStatus(StrEnum):
     WRONG_FAILURE_LAYER = "WRONG_FAILURE_LAYER"
     INTEGRITY_REJECTION_EXPECTED = "INTEGRITY_REJECTION_EXPECTED"
     INTEGRITY_REJECTION_MISSING = "INTEGRITY_REJECTION_MISSING"
+    PASS = "PASS"
+    EXPECTED_REJECTION = "EXPECTED_REJECTION"
+    ACCEPTED_SAFE_MUTATION = "ACCEPTED_SAFE_MUTATION"
+    MUTATION_COHERENCE_FAILED = "MUTATION_COHERENCE_FAILED"
+    PAIR_CONTRACT_FAILED = "PAIR_CONTRACT_FAILED"
+    GRADIENT_BASELINE_FAILED = "GRADIENT_BASELINE_FAILED"
+    GRADIENT_BOUND_NOT_FOUND = "GRADIENT_BOUND_NOT_FOUND"
+    GRADIENT_NON_MONOTONIC = "GRADIENT_NON_MONOTONIC"
+    GRADIENT_EXPECTED_FAILURE_FOUND = "GRADIENT_EXPECTED_FAILURE_FOUND"
 
 
 class ActivationStatus(StrEnum):
@@ -51,10 +65,70 @@ class MutationClass(StrEnum):
     RUNTIME_SOURCE = "RUNTIME_SOURCE"
     ENVELOPE = "ENVELOPE"
     BUNDLE_INTEGRITY = "BUNDLE_INTEGRITY"
+    ENVELOPE_GRADIENT = "ENVELOPE_GRADIENT"
+    ROUNDING_TO_NEAREST = "ROUNDING_TO_NEAREST"
+    RETROACTIVE_RELEASE_BUDGET = "RETROACTIVE_RELEASE_BUDGET"
+    MODEL_SEMANTICS_MUTATION = "MODEL_SEMANTICS_MUTATION"
+    SOURCE_BINDING_TAMPER = "SOURCE_BINDING_TAMPER"
+
+
+class PatchRole(StrEnum):
+    DEPLOYED_IMPLEMENTATION = "DEPLOYED_IMPLEMENTATION"
+    ADAPTER_BINDING = "ADAPTER_BINDING"
+    CONFIG_ARTIFACT = "CONFIG_ARTIFACT"
+    DEPLOYED_SELECTION = "DEPLOYED_SELECTION"
+    DEPLOYED_APPLY = "DEPLOYED_APPLY"
+    FROZEN_SELECTION = "FROZEN_SELECTION"
+    FROZEN_APPLY = "FROZEN_APPLY"
+    DEPLOYED_GUARD = "DEPLOYED_GUARD"
+    FROZEN_GUARD = "FROZEN_GUARD"
+    FORMAL_SEMANTIC_MIRROR = "FORMAL_SEMANTIC_MIRROR"
+
+
+FORBIDDEN_PATCH_ROLES = frozenset({
+    "VERIFIER_CHECKER", "AGGREGATOR", "EXPECTED_RESULT_CLASSIFIER",
+})
+
+
+@dataclass(frozen=True)
+class SourcePatchSpec:
+    role: PatchRole
+    target_file: str
+    target_symbol: str
+    before_ast_hash: str
+    before_snippet: str
+    after_snippet: str
+    occurrence: int = 1
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "SourcePatchSpec":
+        raw = dict(value)
+        role_raw = str(raw.get("role", ""))
+        if role_raw in FORBIDDEN_PATCH_ROLES:
+            raise ValueError(f"禁止 patch role: {role_raw}")
+        try:
+            role = PatchRole(role_raw)
+        except ValueError as exc:
+            raise ValueError(f"未知 patch role: {role_raw}") from exc
+        return cls(
+            role=role, target_file=str(raw["target_file"]),
+            target_symbol=str(raw["target_symbol"]),
+            before_ast_hash=str(raw["before_ast_hash"]),
+            before_snippet=str(raw["before_snippet"]),
+            after_snippet=str(raw["after_snippet"]),
+            occurrence=int(raw.get("occurrence", 1)),
+        )
 
 
 @dataclass(frozen=True)
 class ExpectedResult:
+    allowed_result_statuses: tuple[str, ...] = ()
+    allowed_first_failing_obligations: tuple[str, ...] = ()
+    allowed_failure_routes: tuple[str, ...] = ()
+    require_failure: bool = False
+    require_proved: bool = False
+    require_activation: bool = True
+    explanation: str = ""
     result_status: str | None = None
     first_failing_obligations: tuple[str, ...] = ()
     allowed_upstream_obligations: tuple[str, ...] = ()
@@ -65,14 +139,38 @@ class ExpectedResult:
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | None) -> "ExpectedResult":
         raw = dict(value or {})
+        allowed_statuses = _strings(raw.get("allowed_result_statuses", ()))
+        legacy_status = _optional_str(raw.get("result_status"))
+        if not allowed_statuses and legacy_status:
+            allowed_statuses = (legacy_status,)
+        allowed_obligations = _strings(raw.get("allowed_first_failing_obligations", ()))
+        if not allowed_obligations:
+            allowed_obligations = _strings(raw.get("first_failing_obligations", ()))
         return cls(
-            result_status=_optional_str(raw.get("result_status")),
-            first_failing_obligations=_strings(raw.get("first_failing_obligations", ())),
+            allowed_result_statuses=allowed_statuses,
+            allowed_first_failing_obligations=allowed_obligations,
+            allowed_failure_routes=_strings(raw.get("allowed_failure_routes", ())),
+            require_failure=bool(raw.get("require_failure", False)),
+            require_proved=bool(raw.get("require_proved", False)),
+            require_activation=bool(raw.get("require_activation", True)),
+            explanation=str(raw.get("explanation", "")),
+            result_status=legacy_status,
+            first_failing_obligations=allowed_obligations,
             allowed_upstream_obligations=_strings(raw.get("allowed_upstream_obligations", ())),
             allow_strict_upstream_failure=bool(raw.get("allow_strict_upstream_failure", False)),
             integrity_result_status=str(raw.get("integrity_result_status", "PROOF_BUNDLE_INVALID")),
             performance_degradation_metrics=_strings(raw.get("performance_degradation_metrics", ())),
         )
+
+    def validate(self) -> None:
+        if not self.allowed_result_statuses and not self.result_status:
+            raise ValueError("allowed_result_statuses must not be empty")
+        if self.require_failure and self.require_proved:
+            raise ValueError("require_failure and require_proved are mutually exclusive")
+
+    @property
+    def canonical_statuses(self) -> tuple[str, ...]:
+        return self.allowed_result_statuses or ((self.result_status,) if self.result_status else ())
 
 
 @dataclass(frozen=True)

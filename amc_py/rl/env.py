@@ -213,12 +213,8 @@ class AmcBudgetEnv:
     qamc_profile_bundle: QAmcProfileBundle | None = None
     budget_update_source: str = "DQN_ACTION"
     # Non-vacuity experiment semantics. Defaults preserve the certified deployment.
-    policy_selection_semantics: Literal[
-        "ranked_first_valid", "raw_top1", "top1_or_noop", "first_valid_else_top1"
-    ] = "ranked_first_valid"
-    step_guard_semantics: Literal["checked", "unchecked_apply", "unchecked_if_invalid"] = "checked"
-    nonvacuity_profile: str = "off"
-    nonvacuity_disabled_guards: tuple[str, ...] = ()
+    policy_selection_semantics: Literal["ranked_first_valid"] = "ranked_first_valid"
+    step_guard_semantics: Literal["checked"] = "checked"
     budget_rounding_mode: Literal["ceil_floor", "nearest"] = "ceil_floor"
     min_budget_delta: int = 1
     enable_deploy_cap_mask: bool = False
@@ -304,9 +300,9 @@ class AmcBudgetEnv:
             raise ValueError("deploy_cap_mask_ratio 必须大于 1.0")
         if self.deploy_cap_mask_criticality not in {"lo", "all"}:
             raise ValueError("deploy_cap_mask_criticality 必须是 'lo' 或 'all'")
-        if self.policy_selection_semantics not in {"ranked_first_valid", "raw_top1", "top1_or_noop", "first_valid_else_top1"}:
+        if self.policy_selection_semantics != "ranked_first_valid":
             raise ValueError("UNSUPPORTED_POLICY_SELECTION_SEMANTICS")
-        if self.step_guard_semantics not in {"checked", "unchecked_apply", "unchecked_if_invalid"}:
+        if self.step_guard_semantics != "checked":
             raise ValueError("UNSUPPORTED_STEP_GUARD_SEMANTICS")
         if self.budget_rounding_mode not in {"ceil_floor", "nearest"}:
             raise ValueError("UNSUPPORTED_BUDGET_ROUNDING_MODE")
@@ -325,7 +321,6 @@ class AmcBudgetEnv:
             action_space=self.action_space_name,
             check_safety=self.check_safety,
             step_guard_semantics=self.step_guard_semantics,
-            nonvacuity_disabled_guards=self.nonvacuity_disabled_guards,
             budget_rounding_mode=self.budget_rounding_mode,
             min_budget_delta=self.min_budget_delta,
         )
@@ -356,9 +351,6 @@ class AmcBudgetEnv:
         # 记录环境初始预算，用于阶段 2 的预算变化归一化惩罚。
         self._initial_budgets = {task.name: task.c_lo for task in self.ordered_tasks}
         self._last_observation = None
-
-    def _guard_disabled(self, guard_id: str) -> bool:
-        return str(guard_id) in set(self.nonvacuity_disabled_guards)
 
     def _apply_static_budget_action(self, *, action: BudgetAction, budget_state: BudgetState) -> dict[str, int]:
         return apply_budget_action_candidate(
@@ -718,7 +710,7 @@ class AmcBudgetEnv:
         """
 
         if (
-            not self._guard_disabled("hi_decrease")
+            True
             and action is not None
             and action_violates_hi_decrease_guard(
                 action=action,
@@ -728,7 +720,7 @@ class AmcBudgetEnv:
         ):
             return "decrease_hi_forbidden"
 
-        residual_guard_reason = None if self._guard_disabled("residual_guard") else self._residual_safety_guard_reject_reason(
+        residual_guard_reason = self._residual_safety_guard_reject_reason(
             action=action,
             budget_before=budget_before,
             candidate_budgets=candidate_budgets,
@@ -738,11 +730,11 @@ class AmcBudgetEnv:
         if residual_guard_reason is not None:
             return residual_guard_reason
 
-        floor_reject_reason = None if self._guard_disabled("budget_floor") else self._budget_floor_violation(updates=updates)
+        floor_reject_reason = self._budget_floor_violation(updates=updates)
         if floor_reject_reason is not None:
             return floor_reject_reason
 
-        if self.check_safety and not self._guard_disabled("safety_checker"):
+        if self.check_safety:
             report = self._ensure_checker().validate_candidate(candidate_budgets)
             if not report.accepted:
                 return report.reason
@@ -796,7 +788,7 @@ class AmcBudgetEnv:
         }
         if (
             not self.enable_residual_safety_fallback
-            and not (shared_guards & set(self.nonvacuity_disabled_guards))
+            and not shared_guards
         ):
             budget_state = self._engine.runtime_budgets.copy()
             budget_state.budgets = dict(before)
@@ -835,7 +827,7 @@ class AmcBudgetEnv:
                 reject_diagnostics=shared.diagnostics,
             )
 
-        cap_reason = None if self._guard_disabled("deploy_cap") else self._deploy_cap_increase_reject_reason(
+        cap_reason = self._deploy_cap_increase_reject_reason(
             increase_idx=action.increase_idx,
             budget_before=before,
         )
@@ -850,7 +842,7 @@ class AmcBudgetEnv:
             )
 
         if (
-            not self._guard_disabled("hi_decrease")
+            True
             and action_violates_hi_decrease_guard(
                 action=action,
                 ordered_tasks=self.ordered_tasks,
@@ -879,7 +871,7 @@ class AmcBudgetEnv:
             budget_state,
             updates,
         )
-        residual_guard_reason = None if self._guard_disabled("residual_guard") else self._residual_safety_guard_reject_reason(
+        residual_guard_reason = self._residual_safety_guard_reject_reason(
             action=action,
             budget_before=before,
             candidate_budgets=candidate_budgets,
@@ -904,7 +896,7 @@ class AmcBudgetEnv:
                 safety_checked=False,
             )
 
-        floor_reject_reason = None if self._guard_disabled("budget_floor") else self._budget_floor_violation(updates=updates)
+        floor_reject_reason = self._budget_floor_violation(updates=updates)
         if floor_reject_reason is not None:
             return BudgetCandidateEvaluation(
                 action_id=int(action.action_id),
@@ -915,7 +907,7 @@ class AmcBudgetEnv:
                 safety_checked=False,
             )
 
-        if self.check_safety and not self._guard_disabled("safety_checker"):
+        if self.check_safety:
             report = self._ensure_checker().validate_candidate(candidate_budgets)
             if not report.accepted:
                 return BudgetCandidateEvaluation(
@@ -934,7 +926,7 @@ class AmcBudgetEnv:
             reject_reason=None,
             candidate_budgets=dict(candidate_budgets),
             updates=dict(updates),
-            safety_checked=bool(self.check_safety and not self._guard_disabled("safety_checker")),
+            safety_checked=bool(self.check_safety),
         )
 
     def formal_valid_action_mask(self) -> tuple[bool, ...]:
@@ -3077,24 +3069,7 @@ class AmcBudgetEnv:
                     reject_reason = f"safe_mask_step_mismatch:{reject_reason}"
             else:
                 selected_invalid = self._selected_action_was_invalid(action_id)
-                if self.step_guard_semantics == "unchecked_apply" or (
-                    self.step_guard_semantics == "unchecked_if_invalid" and selected_invalid
-                ):
-                    # EXPERIMENT_ONLY_UNSAFE_MUTATION: apply the exact action primitive
-                    # without deploy mask, floor, or safety-candidate rejection.
-                    from amc_py.rl.actions import apply_budget_action_candidate
-                    updates = apply_budget_action_candidate(
-                        action=action,
-                        budget_state=self._engine.runtime_budgets,
-                        ordered_tasks=self.ordered_tasks,
-                    )
-                    candidate_budgets = dict(budget_before)
-                    candidate_budgets.update(updates)
-                    accepted = True
-                    reject_reason = None
-                    action_was_checked = False
-                    self._engine.apply_budget_updates(updates, source=self.budget_update_source)
-                else:
+                if self.step_guard_semantics == "checked":
                     evaluation = self.evaluate_budget_candidate(
                         action=action,
                         budget_before=budget_before,

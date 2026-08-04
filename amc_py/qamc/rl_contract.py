@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-
 from amc_py.runtime_models import RuntimeSemantics
 from amc_py.rl.feature_config import is_qamc_observation_mode
 
@@ -29,7 +27,6 @@ def validate_qamc_rl_semantics(
     action_space: str,
     check_safety: bool,
     step_guard_semantics: str,
-    nonvacuity_disabled_guards: Iterable[str],
     budget_rounding_mode: str,
     min_budget_delta: int,
 ) -> None:
@@ -39,8 +36,6 @@ def validate_qamc_rl_semantics(
         raise ValueError("QAMC_REQUIRES_CHECK_SAFETY")
     if step_guard_semantics != "checked":
         raise ValueError("QAMC_UNCHECKED_STEP_GUARD_FORBIDDEN")
-    if tuple(nonvacuity_disabled_guards):
-        raise ValueError("QAMC_NONVACUITY_GUARD_DISABLE_FORBIDDEN")
     if budget_rounding_mode != "ceil_floor":
         raise ValueError("QAMC_UNCERTIFIED_BUDGET_ROUNDING_MODE")
     if min_budget_delta != 1:

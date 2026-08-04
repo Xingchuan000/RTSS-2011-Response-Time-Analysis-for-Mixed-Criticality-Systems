@@ -72,11 +72,6 @@ def test_qamc_quality_change_applies_only_to_next_release() -> None:
     assert result.budget_update_events == []
 
 
-def test_qamc_rejects_nonvacuity_mutations() -> None:
-    with pytest.raises(ValueError, match="QAMC_NONVACUITY"):
-        RuntimeConfig(semantics=RuntimeSemantics.Q_AMC, nonvacuity_profile="c3_retroactive_release_budget")
-
-
 def test_qamc_metrics_report_real_time_at_rank_distribution() -> None:
     task = Task("L", 10, 10, 6, 6, Criticality.LO)
     bundle = _bundle(task)

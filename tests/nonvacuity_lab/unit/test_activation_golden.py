@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from nonvacuity_lab.activation.policy_witness import evaluate_policy_witness
 from nonvacuity_lab.activation.symbolic_activation import solve_symbolic_activation
 
@@ -40,6 +42,7 @@ def test_symbolic_b1_activation_uses_witness_not_profile_name():
 
 
 def test_z3_symbolic_b1_finds_guard_and_illegal_post_state():
+    pytest.importorskip("z3")
     activation = solve_symbolic_activation(
         mutation_id="B1_z3",
         rule={

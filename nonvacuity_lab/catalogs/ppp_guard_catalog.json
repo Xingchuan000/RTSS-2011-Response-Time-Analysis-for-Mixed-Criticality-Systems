@@ -1,0 +1,9 @@
+{
+  "schema_version": "ppp_guard_catalog_v1",
+  "guards": {
+    "decrease_hi_forbidden": {
+      "guard_id": "HI_DECREASE_GUARD",
+      "patches": [{"role": "DEPLOYED_IMPLEMENTATION", "target_file": "amc_py/rl/env.py", "target_symbol": "AmcBudgetEnv.evaluate_budget_candidate", "selector": "hi_decrease_guard"}]
+    }
+  }
+}

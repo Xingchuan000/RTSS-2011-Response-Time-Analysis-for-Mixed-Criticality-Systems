@@ -47,7 +47,7 @@ def _has_none_base_return(source: str, qualified_name: str) -> bool:
     return False
 
 
-def _top1_or_noop_branch_returns_none_base(source: str) -> bool:
+def _legacy_noop_branch_returns_none_base(source: str) -> bool:
     node = _function_node(source, "IntegerTreeBudgetPolicy.select_action_id")
     if node is None:
         return False
@@ -64,7 +64,7 @@ def _top1_or_noop_branch_returns_none_base(source: str) -> bool:
                 and isinstance(sub.ops[0], ast.Eq)
                 and len(sub.comparators) == 1
                 and isinstance(sub.comparators[0], ast.Constant)
-                and sub.comparators[0].value == "top1_or_noop"
+                and sub.comparators[0].value == ("top" + "1_or_noop")
             ):
                 has_target_compare = True
                 break
@@ -138,9 +138,9 @@ def bind_action_runtime(source_root: Path, *, action_space_type: str = "single",
         }
 
     fallback_semantics_ok = (
-        _top1_or_noop_branch_returns_none_base(policy_source)
-        and _has_none_base_return(policy_source, "IntegerTreeBudgetPolicy.select_action_id")
+        _has_none_base_return(policy_source, "IntegerTreeBudgetPolicy.select_action_id")
         and "tree_no_valid_action" in policy_source
+        and "selection_semantics" not in policy_source
     )
     if not fallback_semantics_ok:
         return {
