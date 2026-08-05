@@ -18,6 +18,7 @@ IGNORED_TREE_PARTS = frozenset(
         ".ruff_cache",
         "__pycache__",
         "build",
+        "experiment_data",
         "logs",
         "outputs",
     }
