@@ -8,6 +8,33 @@ from typing import Any
 from formal_toolchain.core.hashing import sha256_object, sha256_proof_object
 
 
+def build_candidate_envelope_view(
+    candidate: Mapping[str, Any],
+    common: Mapping[str, Any],
+    deployed: Mapping[str, Any],
+) -> dict[str, Any]:
+    """构造 compiler/verifier 共享的未认证 reference envelope view。
+
+    该对象只允许用于候选 reference/route 上下文的确定性重算；它明确携带
+    ``CANDIDATE_UNVERIFIED``，不能越过 Phase H 认证边界充当 certified envelope。
+    """
+
+    return {
+        "status": "CANDIDATE",
+        "schema_version": "candidate_envelope_view_v1",
+        "trust_level": "CANDIDATE_UNVERIFIED",
+        "not_a_certified_envelope": True,
+        "candidate_envelope_hash": sha256_proof_object(candidate),
+        "common_candidate_hash": sha256_proof_object(common),
+        "deployed_candidate_hash": sha256_proof_object(deployed),
+        "lower": dict(candidate.get("lower", {})),
+        "upper": dict(candidate.get("upper", {})),
+        "active_release_budget_upper": dict(
+            candidate.get("active_release_budget_upper", {})
+        ),
+    }
+
+
 def certify_envelope(candidate: Mapping[str, Any], common: Mapping[str, Any], deployed: Mapping[str, Any], *, context_hash: str | None = None,
                      verifier_attestation: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """保留兼容入口，但 compiler/test caller 不得直接认证。"""

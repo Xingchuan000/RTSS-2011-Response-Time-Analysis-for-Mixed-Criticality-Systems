@@ -198,7 +198,7 @@ def build_fresh_verifier_state(
     fresh_reference: Any | None,
 ) -> FreshVerifierState | None:
     """一次性构造所有 fresh verifier 状态对象。"""
-    if fresh_reference is None or envelope_state.certified_envelope is None:
+    if fresh_reference is None:
         return None
     route_strategy = resolve_route(inputs.proof_route)
     try:
@@ -834,9 +834,17 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
         invariant_context_hash=str(inputs.contexts["invariant_context"]["hash"]),
     )
     fresh_reference = None
-    if envelope_state.certified_envelope is not None:
+    # Route-dependent candidate contexts are compiled from an explicitly
+    # untrusted candidate-envelope view.  Rebuild that same view even when
+    # deployed preservation fails, so component-context integrity remains a
+    # structural check and does not hide the policy-contract failure.
+    route_reference_envelope = (
+        envelope_state.candidate_reference_envelope
+        or envelope_state.certified_envelope
+    )
+    if route_reference_envelope is not None:
         try:
-            fresh_reference = _fresh_reference_taskset(inputs, envelope_state.certified_envelope)
+            fresh_reference = _fresh_reference_taskset(inputs, route_reference_envelope)
         except (KeyError, TypeError, ValueError):
             fresh_reference = None
 

@@ -43,6 +43,7 @@ from formal_toolchain.core.contexts import (
 from formal_toolchain.core.registry import load_registry, registry_fingerprint
 from formal_toolchain.compiler.dag_runner import topological_order
 from formal_toolchain.invariant.candidate_envelope import synthesize_candidate_envelope
+from formal_toolchain.invariant.certified_envelope import build_candidate_envelope_view
 from formal_toolchain.invariant.common_preservation import check_common_transition_preservation
 from formal_toolchain.invariant.deployed_preservation import check_deployed_policy_preservation
 from formal_toolchain.policy.actions import build_action_transition_table
@@ -547,13 +548,7 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
                 "BRIDGE": unresolved_reference,
             })
             return result
-        certified = {"status": "CANDIDATE", "schema_version": "candidate_envelope_view_v1",
-                     "trust_level": "CANDIDATE_UNVERIFIED", "not_a_certified_envelope": True,
-                     "candidate_envelope_hash": sha256_proof_object(candidate),
-                     "common_candidate_hash": sha256_proof_object(common),
-                     "deployed_candidate_hash": sha256_proof_object(deployed),
-                     "lower": dict(candidate.get("lower", {})), "upper": dict(candidate.get("upper", {})),
-                     "active_release_budget_upper": dict(candidate.get("active_release_budget_upper", {}))}
+        certified = build_candidate_envelope_view(candidate, common, deployed)
         envelope_hash = sha256_object(certified)
         budget_by_task = {}
         for name, row in target.provenance["budget_by_task"].items():

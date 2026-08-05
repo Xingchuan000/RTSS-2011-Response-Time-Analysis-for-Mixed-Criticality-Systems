@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.conformance.time_domain import build_budget_domain
+from formal_toolchain.invariant.certified_envelope import build_candidate_envelope_view
 from formal_toolchain.invariant.safety_polytope import (
     derive_componentwise_upper,
     verify_production_rows,
@@ -20,6 +21,7 @@ class VerifiedEnvelopeResult:
     common_status: str
     deployed_status: str
     certified_envelope: dict[str, Any] | None
+    candidate_reference_envelope: dict[str, Any] | None
 
 
 def _task_names(raw_inputs: Any) -> list[str]:
@@ -87,6 +89,7 @@ def _expected_candidate_from_math(raw_inputs: Any, invariant_context_hash: str) 
     }
 
 
+
 def independently_verify_envelope(*, candidate_envelope: Mapping[str, Any], common_preservation: Mapping[str, Any],
                                   deployed_preservation: Mapping[str, Any], raw_inputs: Any,
                                   policy_regions: Any = None, common_transition_ir: Any = None,
@@ -95,10 +98,14 @@ def independently_verify_envelope(*, candidate_envelope: Mapping[str, Any], comm
     try:
         expected_candidate = _expected_candidate_from_math(raw_inputs, invariant_context_hash)
     except (KeyError, TypeError, ValueError):
-        return VerifiedEnvelopeResult("FAIL", "UNRESOLVED", "UNRESOLVED", None)
+        return VerifiedEnvelopeResult("FAIL", "UNRESOLVED", "UNRESOLVED", None, None)
 
     if sha256_object(dict(candidate_envelope)) != sha256_object(expected_candidate):
-        return VerifiedEnvelopeResult("FAIL", "UNRESOLVED", "UNRESOLVED", None)
+        return VerifiedEnvelopeResult("FAIL", "UNRESOLVED", "UNRESOLVED", None, None)
+
+    candidate_reference_envelope = build_candidate_envelope_view(
+        candidate_envelope, common_preservation, deployed_preservation
+    )
 
     if (
         common_preservation.get("status") != "PASS"
@@ -109,7 +116,7 @@ def independently_verify_envelope(*, candidate_envelope: Mapping[str, Any], comm
         or common_preservation.get("candidate_envelope_hash") != sha256_object(expected_candidate)
         or common_preservation.get("safety_polytope_hash") != expected_candidate.get("safety_polytope_hash")
     ):
-        return VerifiedEnvelopeResult("PASS", "FAIL", "UNRESOLVED", None)
+        return VerifiedEnvelopeResult("PASS", "FAIL", "UNRESOLVED", None, candidate_reference_envelope)
 
     deployed_fields = {
         "universal_state_quantification",
@@ -133,7 +140,7 @@ def independently_verify_envelope(*, candidate_envelope: Mapping[str, Any], comm
         or deployed_preservation.get("candidate_envelope_hash") != sha256_object(expected_candidate)
         or deployed_preservation.get("safety_polytope_hash") != expected_candidate.get("safety_polytope_hash")
     ):
-        return VerifiedEnvelopeResult("PASS", "PASS", "FAIL", None)
+        return VerifiedEnvelopeResult("PASS", "PASS", "FAIL", None, candidate_reference_envelope)
 
     preservation = {
         "obligation_status": "PASS",
@@ -163,4 +170,4 @@ def independently_verify_envelope(*, candidate_envelope: Mapping[str, Any], comm
         "verified_by": "fresh_verifier",
     }
     certified["artifact_hash"] = sha256_object(certified)
-    return VerifiedEnvelopeResult("PASS", "PASS", "PASS", certified)
+    return VerifiedEnvelopeResult("PASS", "PASS", "PASS", certified, candidate_reference_envelope)

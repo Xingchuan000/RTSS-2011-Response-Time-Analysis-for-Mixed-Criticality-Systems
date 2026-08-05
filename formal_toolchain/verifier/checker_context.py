@@ -7,7 +7,7 @@ from typing import Any, Mapping
 @dataclass(frozen=True, slots=True)
 class FreshVerifierState:
     inputs: Any
-    certified_envelope: Mapping[str, Any]
+    certified_envelope: Mapping[str, Any] | None
     fresh_reference_taskset: Any
     fresh_rta_production: Mapping[str, Any]
     fresh_rta_replay: Mapping[str, Any]
