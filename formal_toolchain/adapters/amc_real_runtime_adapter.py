@@ -30,7 +30,8 @@ class AMCRealRuntimeAdapter:
                  action_space: Sequence[Mapping[str, Any]] | None = None,
                  rounding_mode: str = "ceil_floor",
                  min_budget_delta: int = 1,
-                 selection_semantics: str = "ranked_first_valid") -> None:
+                 selection_semantics: str = "ranked_first_valid",
+                 disabled_guards: Sequence[str] = ()) -> None:
         self.environment = environment
         self.observation_extractor = observation_extractor
         self.action_space = tuple(action_space or tuple(getattr(environment, "_actions", ())))
@@ -40,7 +41,7 @@ class AMCRealRuntimeAdapter:
         }:
             raise ValueError("UNSUPPORTED_SELECTION_SEMANTICS")
         self.selection_semantics = str(selection_semantics)
-        self.disabled_guards = ()
+        self.disabled_guards = tuple(str(value) for value in disabled_guards)
         self.rounding_mode = str(rounding_mode)
         self.min_budget_delta = int(min_budget_delta)
         if self.rounding_mode not in {"ceil_floor", "nearest"}:
