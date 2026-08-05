@@ -190,3 +190,16 @@ def test_paper_acceptance_canonicalizes_real_mutation_ids(tmp_path: Path):
     assert findings["present:P0"]["passed"] is True
     assert findings["present:A1"]["passed"] is True
     assert findings["present:B1"]["passed"] is True
+
+
+def test_full_template_keeps_paper_d1_population_requirement():
+    template = json.loads(
+        Path("configs/nonvacuity/templates/ppp_full_campaign.template.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    d1 = next(
+        item for item in template["mutations"]
+        if item["mutation_id"].startswith("D1_")
+    )
+    assert d1["metadata"]["minimum_population_size"] == 20

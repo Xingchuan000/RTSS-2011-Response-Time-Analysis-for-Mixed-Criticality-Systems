@@ -54,7 +54,6 @@ def export_effective_config(runtime_config: Any, environment: Any = None) -> dic
                 if name in records or name in {"agent_period", "action_space", "observation_mode",
                                                 "mask_detail_mode", "budget_increase_ratio", "budget_decrease_ratio",
                                                 "budget_floor_ratio", "forbid_decreasing_hi_budgets",
-                                                "policy_selection_semantics", "step_guard_semantics",
                                                 "budget_rounding_mode", "min_budget_delta", "processor_overhead",
                                                 "enable_deploy_cap_mask", "deploy_cap_mask_ratio",
                                                 "deploy_cap_mask_criticality", "capture_trace", "capture_debug_events",

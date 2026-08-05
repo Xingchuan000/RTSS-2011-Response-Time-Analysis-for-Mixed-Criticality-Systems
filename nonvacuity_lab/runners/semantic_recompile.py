@@ -15,6 +15,7 @@ from ..mutators import (
     CoherentSourcePatchMutation,
     PythonSymbolMutation,
 )
+from ..mutators.retroactive_release_budget import RetroactiveReleaseBudgetMutation
 from ..mutators.base import MutationContext
 from ..schema import MutationManifest
 from ..subprocess_runner import ordinary_prove_command, run_command
@@ -35,7 +36,7 @@ def run_semantic_recompile(
     parameters = dict(manifest.mutator.get("parameters", {}))
     parameters.setdefault("tree_variant", manifest.tree_variant)
     source_overlay: Path | None = None
-    if kind in {"python_symbol", "source_overlay", "coherent_source_patch"}:
+    if kind in {"python_symbol", "source_overlay", "coherent_source_patch", "retroactive_release_budget"}:
         source_overlay = workspace.create_source_overlay(source_root)
         if isinstance(parameters.get("patches"), list):
             parameters.setdefault(
@@ -144,4 +145,6 @@ def _mutator_for_kind(kind: str, parameters: dict[str, Any]):
         )
     if kind == "coherent_source_patch":
         return CoherentSourcePatchMutation()
+    if kind == "retroactive_release_budget":
+        return RetroactiveReleaseBudgetMutation()
     raise ValueError(f"不支持的 semantic mutator kind: {kind}")

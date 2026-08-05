@@ -101,8 +101,6 @@ def build_target(
         include_explicit_noop=bool(effective_runtime_args.get("include_explicit_noop", False)),
         budget_floor_ratio=float(effective_runtime_args["budget_floor_ratio"]),
         forbid_decreasing_hi_budgets=bool(effective_runtime_args["forbid_decreasing_hi_budgets"]),
-        policy_selection_semantics="ranked_first_valid",
-        step_guard_semantics="checked",
         budget_rounding_mode="ceil_floor",
         min_budget_delta=1,
         mask_detail_mode=str(effective_runtime_args["mask_detail_mode"]),
@@ -151,8 +149,6 @@ def build_target(
         "observation_mode": str(environment.feature_config.observation_mode),
     }
     runtime_values.update({
-        "policy_selection_semantics": "ranked_first_valid",
-        "step_guard_semantics": "checked",
         "budget_rounding_mode": "ceil_floor",
         "min_budget_delta": 1,
     })
@@ -163,7 +159,7 @@ def build_target(
         "enable_deploy_cap_mask", "deploy_cap_mask_ratio", "deploy_cap_mask_criticality",
         "check_safety",
     )
-    visible_names = visible_names + ("policy_selection_semantics", "step_guard_semantics", "budget_rounding_mode", "min_budget_delta")
+    visible_names = visible_names + ("budget_rounding_mode", "min_budget_delta")
     visible = {name: getattr(environment, name) for name in visible_names}
     visible.update({
         "semantics": environment.runtime_config.semantics,
@@ -199,7 +195,6 @@ def build_target(
             environment,
             action_space=tuple(environment._actions),
             selection_semantics="ranked_first_valid",
-            step_guard_semantics="checked",
             disabled_guards=(),
             rounding_mode="ceil_floor",
             min_budget_delta=1,

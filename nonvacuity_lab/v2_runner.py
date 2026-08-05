@@ -15,6 +15,7 @@ def run_v2_campaign(
     cli_enable: bool,
     doctor_receipt: Path | None = None,
     timeout_seconds: int | None = None,
+    overwrite_existing: bool = False,
 ) -> dict:
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     validate_config_kind(config)
@@ -72,6 +73,7 @@ def run_v2_campaign(
         campaign,
         enabled_by_cli=True,
         timeout_seconds=timeout_seconds,
+        overwrite_existing=overwrite_existing,
     )
     result["v2_decisions"] = decisions
     return result
@@ -130,6 +132,11 @@ def _v2_mutation_to_v1(
         expected_v1["first_failing_obligations"] = list(allowed_obligations)
 
     metadata = dict(mutation.get("metadata", {}))
+    if target:
+        # Phase-6 activation consumes the exact resolved tree/leaf/action
+        # binding from metadata.  Keep one immutable copy instead of relying
+        # on mutator parameters, which have a different semantic purpose.
+        metadata["resolved_target"] = dict(target)
     profile_id = mutation.get("hout_profile_id") or metadata.get("hout_profile_id")
     if profile_id is not None:
         if not isinstance(config, dict):
@@ -143,6 +150,24 @@ def _v2_mutation_to_v1(
             {"profile_id": str(profile_id), **profile},
             base_dir=base_dir or Path.cwd(),
         )
+
+    activation_v1 = dict(mutation.get("activation", {}))
+    activation_mode = str(activation_v1.get("mode", "")).lower()
+    if "hout" in activation_mode:
+        if target.get("leaf_id") is not None:
+            activation_v1.setdefault("required_leaf_id", int(target["leaf_id"]))
+        if target.get("action_id") is not None:
+            activation_v1.setdefault("required_action_id", int(target["action_id"]))
+        original_class = str(mutation.get("mutation_class", ""))
+        if original_class == "DANGEROUS_TOP1":
+            activation_v1.setdefault("require_mutated_reject", True)
+        elif original_class == "MASK_BYPASS":
+            activation_v1.setdefault("require_baseline_reject", True)
+            activation_v1.setdefault("require_selected_after_mutation", True)
+        elif original_class == "ACTION_SEMANTICS":
+            activation_v1.setdefault("require_any_budget_difference", True)
+        elif original_class == "RETROACTIVE_RELEASE_BUDGET":
+            activation_v1.setdefault("require_active_release_budget_difference", True)
 
     seed_dir = mutation.get("seed_dir") or target.get("seed_dir")
     return {
@@ -159,7 +184,7 @@ def _v2_mutation_to_v1(
             "kind": mutator.get("kind", mutation_class.lower()),
             "parameters": parameters,
         },
-        "activation": dict(mutation.get("activation", {})),
+        "activation": activation_v1,
         "expected": expected_v1,
         "reuse_source_bundle": mutation.get("reuse_source_bundle"),
         "metadata": metadata,

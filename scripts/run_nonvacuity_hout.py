@@ -19,6 +19,7 @@ def parse_args():
     parser.add_argument("--tree", type=Path, required=True)
     parser.add_argument("--scenario-file", type=Path, required=True)
     parser.add_argument("--runtime-config", type=Path, required=True)
+    parser.add_argument("--taskset", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args()
 
@@ -38,6 +39,8 @@ def main() -> int:
             raise FileExistsError(f"refusing to overwrite HOUT output: {args.output_dir / name}")
     scenarios = json.loads(args.scenario_file.read_text(encoding="utf-8"))
     runtime_config = json.loads(args.runtime_config.read_text(encoding="utf-8"))
+    if args.taskset is not None:
+        runtime_config["taskset_path"] = str(args.taskset.resolve())
     factory = _load_factory(str(runtime_config["ordinary_hout_factory"]))
     runner = factory(seed_dir=args.seed_dir, tree_path=args.tree, runtime_config=runtime_config)
     summary, events = runner.run(scenarios=scenarios)

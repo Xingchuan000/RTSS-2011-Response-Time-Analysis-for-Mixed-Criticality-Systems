@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -187,7 +188,10 @@ def _format_command(raw: Any, context: Mapping[str, str]) -> list[str]:
         values.setdefault("output_dir", values["out"])
     if "output_dir" in values:
         values.setdefault("out", values["output_dir"])
-    return [str(item).format_map(values) for item in raw]
+    command = [str(item).format_map(values) for item in raw]
+    if command[0] in {"python", "python3", "py"}:
+        command[0] = sys.executable
+    return command
 
 
 def _normalize_profile_config(config: Mapping[str, Any]) -> dict[str, Any]:

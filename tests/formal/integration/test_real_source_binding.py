@@ -196,7 +196,11 @@ def test_frozen_action_and_observation_mutations_are_blocking(tmp_path: Path):
 
     action_path = root / "formal_toolchain/semantics/frozen_c_amc_sem_action_runtime.py"
     action_path.write_text(
-        action_path.read_text(encoding="utf-8").replace("math.ceil(raw_inc)", "math.floor(raw_inc)", 1),
+        action_path.read_text(encoding="utf-8").replace(
+            'return math.ceil(value) if direction == "increase" else math.floor(value)',
+            'return math.floor(value) if direction == "increase" else math.floor(value)',
+            1,
+        ),
         encoding="utf-8",
     )
     action_manifest = build_source_manifest(root)

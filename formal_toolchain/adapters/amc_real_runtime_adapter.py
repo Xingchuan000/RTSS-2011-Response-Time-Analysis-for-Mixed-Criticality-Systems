@@ -29,16 +29,21 @@ class AMCRealRuntimeAdapter:
     def __init__(self, environment: Any, *, observation_extractor: Any = None,
                  action_space: Sequence[Mapping[str, Any]] | None = None,
                  rounding_mode: str = "ceil_floor",
-                 min_budget_delta: int = 1) -> None:
+                 min_budget_delta: int = 1,
+                 selection_semantics: str = "ranked_first_valid") -> None:
         self.environment = environment
         self.observation_extractor = observation_extractor
         self.action_space = tuple(action_space or tuple(getattr(environment, "_actions", ())))
-        self.selection_semantics = "ranked_first_valid"
-        self.step_guard_semantics = "checked"
+        if selection_semantics not in {
+            "ranked_first_valid", "raw_top1", "top1_valid_else_noop",
+            "all_invalid_force_top1",
+        }:
+            raise ValueError("UNSUPPORTED_SELECTION_SEMANTICS")
+        self.selection_semantics = str(selection_semantics)
         self.disabled_guards = ()
         self.rounding_mode = str(rounding_mode)
         self.min_budget_delta = int(min_budget_delta)
-        if self.rounding_mode != "ceil_floor":
+        if self.rounding_mode not in {"ceil_floor", "nearest"}:
             raise ValueError("UNSUPPORTED_BUDGET_ROUNDING_MODE")
 
     def build_runtime_state_from_budget_vector(self, budget_by_task: Mapping[str, int]) -> dict[str, Any]:
@@ -156,7 +161,7 @@ class AMCRealRuntimeAdapter:
             "candidate_reject_helper": "AmcBudgetEnv._budget_candidate_reject_reason",
             "candidate_evaluator": "AmcBudgetEnv.evaluate_budget_candidate",
             "selection": self.selection_semantics,
-            "step_guard_semantics": self.step_guard_semantics,
+            "step_guard_semantics": "checked",
             "disabled_guards": list(self.disabled_guards),
             "rounding_mode": self.rounding_mode,
             "min_budget_delta": self.min_budget_delta,

@@ -1046,7 +1046,7 @@ def _build_effective_reference_config(
         min_budget_delta=int(initial_env.min_budget_delta),
         budget_floor_ratio=float(args.budget_floor_ratio),
         check_safety=bool(initial_env.check_safety),
-        step_guard_semantics=str(initial_env.step_guard_semantics),
+        step_guard_semantics="checked",
         observation_mode=str(args.observation_mode),
         reward_mode=str(args.reward_mode),
         reward_config_path=str(reward_path.resolve()),
@@ -3131,8 +3131,7 @@ def main() -> None:
             semantics=dqn_runtime_semantics,
             action_space=args.action_space,
             check_safety=True,
-            step_guard_semantics="checked",
-                budget_rounding_mode="ceil_floor",
+                    budget_rounding_mode="ceil_floor",
             min_budget_delta=1,
         )
         assert_reference_matches_values(

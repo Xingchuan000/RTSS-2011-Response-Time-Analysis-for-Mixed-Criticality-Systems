@@ -6,5 +6,33 @@
   "enabled": false,
   "paper_mode": false,
   "source_binding": {"clean_source_root": ".", "clean_source_root_sha256": ""},
-  "mutations": []
+  "output_roots": {"nonvacuity_lab": "outputs/nonvacuity"},
+  "hout_profiles": {
+    "s185_h5": {
+      "taskset_path": "inputs/s185/taskset.json",
+      "runtime_config_path": "inputs/s185/hout_runtime.json",
+      "scenario_seeds": [101550, 101551, 101552],
+      "required_scenarios": [],
+      "horizon": 50000000,
+      "controller_release_times": [0],
+      "worker_count": 1,
+      "random_seed": 185,
+      "base_command": ["python", "scripts/run_nonvacuity_hout.py", "--seed-dir", "{seed_dir}", "--tree", "{tree_path}", "--scenario-file", "{scenario_file}", "--runtime-config", "{runtime_config}", "--taskset", "{taskset}", "--output-dir", "{output_dir}"],
+      "mutated_command": ["python", "scripts/run_nonvacuity_hout.py", "--seed-dir", "{seed_dir}", "--tree", "{tree_path}", "--scenario-file", "{scenario_file}", "--runtime-config", "{runtime_config}", "--taskset", "{taskset}", "--output-dir", "{output_dir}"]
+    }
+  },
+  "mutations": [
+    {"mutation_id":"P0_s185_compact","mutation_class":"BASELINE","enabled":false,"seed":185,"tree_variant":"best_overall","mutator":{"kind":"baseline","parameters":{}},"expected":{"allowed_result_statuses":["DEPLOYED_TREE_PROVED"],"require_proved":true,"require_activation":false}},
+    {"mutation_id":"P1_s1264_compact","mutation_class":"BASELINE","enabled":false,"seed":1264,"tree_variant":"best_overall","mutator":{"kind":"baseline","parameters":{}},"expected":{"allowed_result_statuses":["DEPLOYED_TREE_PROVED"],"require_proved":true,"require_activation":false}},
+    {"mutation_id":"P2_s1264_balanced","mutation_class":"BASELINE","enabled":false,"seed":1264,"tree_variant":"best_balanced","mutator":{"kind":"baseline","parameters":{}},"expected":{"allowed_result_statuses":["DEPLOYED_TREE_PROVED"],"require_proved":true,"require_activation":false}},
+    {"mutation_id":"P3_s397_balanced","mutation_class":"BASELINE","enabled":false,"seed":397,"tree_variant":"best_balanced","mutator":{"kind":"baseline","parameters":{}},"expected":{"allowed_result_statuses":["DEPLOYED_TREE_PROVED"],"require_proved":true,"require_activation":false}},
+    {"mutation_id":"A1_s185_dangerous_top1_masked","mutation_class":"DANGEROUS_TOP1","enabled":false,"seed":185,"tree_variant":"best_overall","selector":{"seed":185,"tree_variant":"best_overall"},"mutator":{"kind":"dangerous_top1","parameters":{}},"activation":{"mode":"hout"},"hout_profile_id":"s185_h5","expected":{"allowed_result_statuses":["DEPLOYED_TREE_PROVED"],"require_activation":true}},
+    {"mutation_id":"B1_s185_same_tree_mask_bypass","mutation_class":"MASK_BYPASS","enabled":false,"seed":185,"tree_variant":"best_overall","pair_with":"A1_s185_dangerous_top1_masked","mutator":{"kind":"coherent_source_patch","parameters":{"semantic_change_id":"raw_top1_selection"}},"activation":{"mode":"hout"},"hout_profile_id":"s185_h5","expected":{"allowed_result_statuses":["DEPLOYED_TREE_PROVED","POLICY_CONTRACT_VIOLATION"],"allowed_first_failing_obligations":["DEPLOYED_POLICY_PRESERVATION"],"require_activation":true}},
+    {"mutation_id":"B2_s1264_no_first_valid","mutation_class":"NO_FIRST_VALID","enabled":false,"seed":1264,"tree_variant":"best_balanced","mutator":{"kind":"coherent_source_patch","parameters":{"semantic_change_id":"top1_valid_else_noop"}},"activation":{"mode":"symbolic_auto"},"expected":{"allowed_result_statuses":["DEPLOYED_TREE_PROVED","POLICY_CONTRACT_VIOLATION"],"require_activation":true}},
+    {"mutation_id":"B3_s1264_all_invalid_force_top1","mutation_class":"ALL_INVALID_FORCE_TOP1","enabled":false,"seed":1264,"tree_variant":"best_balanced","mutator":{"kind":"coherent_source_patch","parameters":{"semantic_change_id":"all_invalid_force_top1"}},"activation":{"mode":"symbolic_auto"},"expected":{"allowed_result_statuses":["DEPLOYED_TREE_PROVED","POLICY_CONTRACT_VIOLATION"],"require_activation":true}},
+    {"mutation_id":"B4_s1264_guard_ablation","mutation_class":"GUARD_ABLATION","enabled":false,"seed":1264,"tree_variant":"best_overall","mutator":{"kind":"coherent_source_patch","parameters":{"semantic_change_id":"guard_removal"}},"activation":{"mode":"symbolic_auto"},"expected":{"allowed_result_statuses":["DEPLOYED_TREE_PROVED","POLICY_CONTRACT_VIOLATION"],"require_activation":true}},
+    {"mutation_id":"F1_old_bundle_tree_tamper","mutation_class":"BUNDLE_TREE_TAMPER","enabled":false,"tree_variant":"best_overall","mutator":{"kind":"bundle_tamper","parameters":{"tamper_kind":"json_pointer"}},"activation":{"mode":"none"},"expected":{"allowed_result_statuses":["PROOF_BUNDLE_INVALID"],"require_activation":false}},
+    {"mutation_id":"F2_old_bundle_cross_seed","mutation_class":"BUNDLE_CROSS_SEED","enabled":false,"tree_variant":"best_overall","mutator":{"kind":"bundle_tamper","parameters":{"tamper_kind":"replace_from"}},"activation":{"mode":"none"},"expected":{"allowed_result_statuses":["PROOF_BUNDLE_INVALID"],"require_activation":false}},
+    {"mutation_id":"F3_old_bundle_cross_variant","mutation_class":"BUNDLE_CROSS_VARIANT","enabled":false,"tree_variant":"best_balanced","mutator":{"kind":"bundle_tamper","parameters":{"tamper_kind":"replace_from"}},"activation":{"mode":"none"},"expected":{"allowed_result_statuses":["PROOF_BUNDLE_INVALID"],"require_activation":false}}
+  ]
 }

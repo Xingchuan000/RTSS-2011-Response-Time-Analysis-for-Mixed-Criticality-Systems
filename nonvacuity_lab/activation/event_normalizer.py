@@ -25,6 +25,7 @@ def normalize_hout_event(event: Mapping[str, Any]) -> dict[str, Any]:
         "tree_variant": _first(event, "tree_variant", "variant"),
         "scenario_id": _first(event, "scenario_id", "scenario", default=0),
         "timestamp": _first(event, "timestamp", "time", "step", default=0),
+        "controller_decision_index": _first(event, "controller_decision_index", "tree_audit_step_index", default=0),
         "leaf_id": _first(event, "leaf_id", "tree_leaf_id"),
         "raw_top1_action_id": raw_action,
         "raw_top1_valid": bool(
@@ -40,6 +41,7 @@ def normalize_hout_event(event: Mapping[str, Any]) -> dict[str, Any]:
         "target_task": _first(event, "target_task"),
         "budget_before": _first(event, "budget_before"),
         "budget_after": _first(event, "budget_after"),
+        "active_release_budgets_after_update": _first(event, "active_release_budgets_after_update"),
         "demand_trace_fingerprint": _first(event, "demand_trace_fingerprint"),
         "selected_after_mutation": bool(
             _first(event, "selected_after_mutation", default=False)

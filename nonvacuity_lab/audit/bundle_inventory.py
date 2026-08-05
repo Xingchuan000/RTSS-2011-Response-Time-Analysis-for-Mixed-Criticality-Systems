@@ -39,12 +39,18 @@ def build_bundle_inventory(root: Path) -> list[dict[str, Any]]:
         except (OSError, ValueError):
             continue
         relative = path.relative_to(root).as_posix()
+        rows.append({"kind": "ARTIFACT", "artifact": relative, "file_sha256": _file_hash(path)})
         for pointer, value in _named_pointers(raw):
             if "witness" in pointer.rsplit("/", 1)[-1].lower():
                 rows.append({"kind": "WITNESS_POINTER", "artifact": relative, "json_pointer": pointer, "value_type": type(value).__name__})
         if "obligation" in relative.lower() or (isinstance(raw, dict) and raw.get("obligation_id")):
             rows.append({"kind": "OBLIGATION_ARTIFACT", "artifact": relative, "obligation_id": raw.get("obligation_id") if isinstance(raw, dict) else None})
     return rows
+
+
+def _file_hash(path: Path) -> str:
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def resolve_f5_witness_pointer(rows: list[dict[str, Any]]) -> dict[str, Any]:

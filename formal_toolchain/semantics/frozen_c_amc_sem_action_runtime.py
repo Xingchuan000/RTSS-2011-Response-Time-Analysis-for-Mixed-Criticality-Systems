@@ -14,6 +14,17 @@ import math
 FORMAL_ACTION_CONTRACT_VERSION = "c_amc_sem_p0_single24_action_v1"
 
 
+def round_budget_product(value: float, *, direction: str, mode: str) -> int:
+    """Frozen counterpart of the deployed integer budget rounding rule."""
+    if direction not in {"increase", "decrease"}:
+        raise ValueError(f"UNSUPPORTED_BUDGET_DIRECTION:{direction}")
+    if mode == "ceil_floor":
+        return math.ceil(value) if direction == "increase" else math.floor(value)
+    if mode == "nearest":
+        return int(round(value))
+    raise ValueError(f"UNSUPPORTED_ROUNDING_MODE:{mode}")
+
+
 def build_budget_action_space(
     ordered_task_names: list[str],
     *,
@@ -89,7 +100,7 @@ def apply_budget_action_candidate(
         inc_name = task_names[inc_idx]
         old_inc = budgets[inc_name]
         raw_inc = old_inc * (1.0 + float(action["increase_ratio"]))
-        inc_value = math.ceil(raw_inc) if rounding_mode == "ceil_floor" else int(round(raw_inc))
+        inc_value = round_budget_product(raw_inc, direction="increase", mode=rounding_mode)
         inc_value = max(inc_value, old_inc + int(min_budget_delta))
         upper_bound = task_c_hi[inc_idx] if task_criticalities[inc_idx] == "HI" else task_deadlines[inc_idx]
         updates[inc_name] = max(1, min(inc_value, upper_bound))
@@ -100,7 +111,7 @@ def apply_budget_action_candidate(
         dec_name = task_names[dec_idx]
         old_dec = budgets[dec_name]
         raw_dec = old_dec * (1.0 - float(action["decrease_ratio"]))
-        dec_value = math.floor(raw_dec) if rounding_mode == "ceil_floor" else int(round(raw_dec))
+        dec_value = round_budget_product(raw_dec, direction="decrease", mode=rounding_mode)
         dec_value = min(dec_value, old_dec - int(min_budget_delta))
         updates[dec_name] = max(1, dec_value)
     return updates

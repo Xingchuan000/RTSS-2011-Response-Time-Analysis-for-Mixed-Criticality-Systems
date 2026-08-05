@@ -3523,8 +3523,7 @@ def main() -> None:
             semantics=dqn_runtime_semantics,
             action_space=args.action_space,
             check_safety=True,
-            step_guard_semantics="checked",
-                budget_rounding_mode="ceil_floor",
+                    budget_rounding_mode="ceil_floor",
             min_budget_delta=1,
         )
         assert_reference_matches_values(

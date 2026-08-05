@@ -92,7 +92,6 @@ def _configure_qamc_experiment(args: argparse.Namespace, experiment_config):
         semantics=RuntimeSemantics.Q_AMC,
         action_space=args.action_space,
         check_safety=True,
-        step_guard_semantics="checked",
         budget_rounding_mode="ceil_floor",
         min_budget_delta=1,
     )

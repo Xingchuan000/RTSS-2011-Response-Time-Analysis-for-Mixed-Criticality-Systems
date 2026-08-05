@@ -49,10 +49,20 @@ def select_first_valid(ranking: Sequence[int], valid_mask: Sequence[bool], *, ac
 
 def select_by_semantics(ranking: Sequence[int], valid_mask: Sequence[bool], *, action_dim: int,
                         selection_semantics: str = "ranked_first_valid") -> int | None:
+    if len(valid_mask) != action_dim:
+        raise ValueError("mask length 必须等于 action_dim")
     if len(ranking) != action_dim or tuple(sorted(ranking)) != tuple(range(action_dim)):
         raise ValueError("ranking 不完整或含越界 action；这属于 artifact invalid")
+    raw_top1 = int(ranking[0])
     if selection_semantics == "ranked_first_valid":
         return select_first_valid(ranking, valid_mask, action_dim=action_dim)
+    if selection_semantics == "raw_top1":
+        return raw_top1
+    if selection_semantics == "top1_valid_else_noop":
+        return raw_top1 if bool(valid_mask[raw_top1]) else None
+    if selection_semantics == "all_invalid_force_top1":
+        first = select_first_valid(ranking, valid_mask, action_dim=action_dim)
+        return raw_top1 if first is None else first
     raise ValueError("UNSUPPORTED_POLICY_SELECTION_SEMANTICS")
 
 def build_mask_fallback_certificate(rankings: Sequence[Sequence[int]], masks: Sequence[Sequence[bool]], *, action_dim: int,
@@ -108,7 +118,10 @@ def build_parametric_mask_fallback_certificate(
         }
 
     selection_semantics = str(mask_contract.get("selection", "ranked_first_valid"))
-    if selection_semantics != "ranked_first_valid":
+    if selection_semantics not in {
+        "ranked_first_valid", "raw_top1", "top1_valid_else_noop",
+        "all_invalid_force_top1",
+    }:
         return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
                 "failure": {"code": "UNSUPPORTED_POLICY_SELECTION_SEMANTICS"}}
 
@@ -125,11 +138,29 @@ def build_parametric_mask_fallback_certificate(
             }
 
         regions = []
-        for position, action_id in enumerate(ranking):
-            regions.append({"rank_position": position, "selected_action": int(action_id),
-                            "predicate": {"selected_valid": int(action_id), "preceding_invalid": list(ranking[:position])}})
-        regions.append({"rank_position": len(ranking), "selected_action": None, "predicate": {"all_invalid": list(ranking)}})
-        coverage_rule = "first_true_or_none"
+        if selection_semantics == "ranked_first_valid":
+            for position, action_id in enumerate(ranking):
+                regions.append({"rank_position": position, "selected_action": int(action_id),
+                                "predicate": {"selected_valid": int(action_id), "preceding_invalid": list(ranking[:position])}})
+            regions.append({"rank_position": len(ranking), "selected_action": None, "predicate": {"all_invalid": list(ranking)}})
+            coverage_rule = "first_true_or_none"
+        elif selection_semantics == "raw_top1":
+            regions.append({"rank_position": 0, "selected_action": int(ranking[0]),
+                            "predicate": {"unconditional_raw_top1": int(ranking[0])}})
+            coverage_rule = "raw_top1_unconditional"
+        elif selection_semantics == "top1_valid_else_noop":
+            regions.append({"rank_position": 0, "selected_action": int(ranking[0]),
+                            "predicate": {"selected_valid": int(ranking[0])}})
+            regions.append({"rank_position": action_dim, "selected_action": None,
+                            "predicate": {"selected_invalid": int(ranking[0])}})
+            coverage_rule = "top1_valid_else_none"
+        else:
+            for position, action_id in enumerate(ranking):
+                regions.append({"rank_position": position, "selected_action": int(action_id),
+                                "predicate": {"selected_valid": int(action_id), "preceding_invalid": list(ranking[:position])}})
+            regions.append({"rank_position": 0, "selected_action": int(ranking[0]),
+                            "predicate": {"all_invalid_force_raw_top1": list(ranking)}})
+            coverage_rule = "first_true_else_raw_top1"
         leaves.append({"leaf_id": int(leaf_id), "ranking": list(ranking), "regions": regions,
                        "coverage_rule": coverage_rule, "pairwise_disjoint": True, "total": True})
 
@@ -139,7 +170,7 @@ def build_parametric_mask_fallback_certificate(
         "selection": selection_semantics,
         "action_dim": action_dim,
         "leaves": leaves,
-        "implicit_noop": True,
+        "implicit_noop": selection_semantics in {"ranked_first_valid", "top1_valid_else_noop"},
         "universal_over_runtime_masks": True,
         "mask_contract_hash": sha256_object(dict(mask_contract)),
     }

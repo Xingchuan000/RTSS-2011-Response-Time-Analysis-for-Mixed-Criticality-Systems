@@ -10,7 +10,7 @@ from .schema import DoctorCheck
 
 
 PLACEHOLDER_PATTERNS = ("TODO", "TBD", "<PATH>", "REPLACE_ME", "PLACEHOLDER", ".../")
-ALLOWED_COMMAND_PLACEHOLDERS = {"seed_dir", "tree_path", "scenario_file", "runtime_config", "output_dir"}
+ALLOWED_COMMAND_PLACEHOLDERS = {"seed_dir", "tree_path", "scenario_file", "runtime_config", "taskset", "output_dir"}
 
 
 def recursively_find_placeholders(value, path="$", findings=None):
@@ -100,6 +100,15 @@ def check_hout_profile(profile):
             factory = runtime.get("ordinary_hout_factory") if isinstance(runtime, dict) else None
             if not isinstance(factory, str) or ":" not in factory:
                 errors.append("runtime_config ordinary_hout_factory must be module:function")
+            else:
+                try:
+                    import importlib
+                    module_name, _, function_name = factory.partition(":")
+                    candidate = getattr(importlib.import_module(module_name), function_name)
+                    if not callable(candidate):
+                        errors.append("runtime_config ordinary_hout_factory is not callable")
+                except (ImportError, AttributeError, TypeError, ValueError) as exc:
+                    errors.append(f"runtime_config ordinary_hout_factory import failed: {exc}")
         except (OSError, ValueError, TypeError) as exc:
             errors.append(f"runtime_config invalid: {exc}")
     if set(profile.get("required_scenarios", ())) - set(scenarios if isinstance(scenarios, list) else ()):

@@ -29,6 +29,11 @@ def evaluate_hout_activation(
         for row in base_target
         if bool(row.get("raw_top1_invalid", row.get("baseline_reject", False)))
     ]
+    mutated_rejects = [
+        row
+        for row in mutated_target
+        if bool(row.get("raw_top1_invalid", False))
+    ]
     selected_after = [
         row
         for row in mutated_target
@@ -45,15 +50,25 @@ def evaluate_hout_activation(
         if bool(row.get("all_invalid", False))
     ]
     require_reject = bool(rule.get("require_baseline_reject", False))
+    require_mutated_reject = bool(rule.get("require_mutated_reject", False))
     require_selected = bool(rule.get("require_selected_after_mutation", False))
     require_all_invalid = bool(rule.get("require_all_invalid", False))
+    require_budget_difference = bool(rule.get("require_any_budget_difference", False))
+    require_release_difference = bool(rule.get("require_active_release_budget_difference", False))
+    paired_differences = _paired_differences(base_target, mutated_target)
     activated = bool(base_target or mutated_target)
     if require_reject:
         activated = activated and bool(baseline_rejects)
+    if require_mutated_reject:
+        activated = activated and bool(mutated_rejects)
     if require_selected:
         activated = activated and bool(selected_after)
     if require_all_invalid:
         activated = activated and bool(all_invalid)
+    if require_budget_difference:
+        activated = activated and paired_differences["budget_difference_count"] > 0
+    if require_release_difference:
+        activated = activated and paired_differences["active_release_budget_difference_count"] > 0
     first_intervention = min(
         (
             row.get("time", row.get("timestamp", row.get("step")))
@@ -74,11 +89,46 @@ def evaluate_hout_activation(
         all_invalid_count=len(all_invalid),
         details={
             "first_intervention_time": first_intervention,
-            "reject_reasons": _histogram(row.get("reject_reason") for row in baseline_rejects),
+            "reject_reasons": _histogram(row.get("reject_reason") for row in baseline_rejects + mutated_rejects),
+            "baseline_reject_count": len(baseline_rejects),
+            "mutated_reject_count": len(mutated_rejects),
+            **paired_differences,
             "base_event_count": len(base),
             "mutated_event_count": len(mutated),
         },
     )
+
+
+def _event_key(row: Mapping[str, Any]) -> tuple[int, int]:
+    return (
+        int(row.get("scenario_id", row.get("scenario_seed", 0)) or 0),
+        int(row.get("controller_decision_index", row.get("timestamp", 0)) or 0),
+    )
+
+
+def _paired_differences(base: list[dict[str, Any]], mutated: list[dict[str, Any]]) -> dict[str, int]:
+    base_by_key = {_event_key(row): row for row in base}
+    mutated_by_key = {_event_key(row): row for row in mutated}
+    budget_count = 0
+    release_count = 0
+    event_count = 0
+    for key in sorted(base_by_key.keys() & mutated_by_key.keys()):
+        left, right = base_by_key[key], mutated_by_key[key]
+        if left.get("budget_after") != right.get("budget_after"):
+            budget_count += 1
+        if left.get("active_release_budgets_after_update") != right.get("active_release_budgets_after_update"):
+            release_count += 1
+        if any(left.get(name) != right.get(name) for name in (
+            "selected_action_id", "selected_rank", "budget_after",
+            "active_release_budgets_after_update",
+        )):
+            event_count += 1
+    return {
+        "paired_event_count": len(base_by_key.keys() & mutated_by_key.keys()),
+        "budget_difference_count": budget_count,
+        "active_release_budget_difference_count": release_count,
+        "event_difference_count": event_count,
+    }
 
 
 def load_events(path: Path) -> list[dict[str, Any]]:

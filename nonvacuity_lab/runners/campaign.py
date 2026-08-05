@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import platform
 from dataclasses import replace
 from pathlib import Path
@@ -8,6 +9,7 @@ import sys
 from typing import Any
 
 from ..activation import evaluate_hout_activation, solve_symbolic_activation
+from ..activation.auto_symbolic import run_auto_symbolic_activation
 from ..activation.hout_activation import load_events
 from ..analysis.comparison import compare_proofs
 from ..analysis.expectations import classify_experiment
@@ -59,6 +61,7 @@ def run_campaign(
     *,
     enabled_by_cli: bool,
     timeout_seconds: int | None = None,
+    overwrite_existing: bool = False,
 ) -> dict[str, Any]:
     if not config.enabled or not enabled_by_cli:
         return experiment_envelope(
@@ -75,6 +78,8 @@ def run_campaign(
             mutation_results=[],
         )
     campaign_dir = config.output_root / config.campaign_id
+    if campaign_dir.exists() and overwrite_existing:
+        shutil.rmtree(campaign_dir)
     campaign_dir.mkdir(parents=True, exist_ok=True)
     results = []
     paired_hashes: dict[str, str] = {}
@@ -161,9 +166,15 @@ def run_campaign(
             timeout_seconds=timeout_seconds,
             paired_hashes=paired_hashes,
             paired_receipts=paired_receipts,
+            overwrite_existing=False,
         )
         results.append(result)
-        mutation = result.get("semantic_recompile", {}).get("mutation_result", {})
+        semantic = result.get("semantic_recompile")
+        mutation = (
+            semantic.get("mutation_result", {})
+            if isinstance(semantic, dict)
+            else {}
+        )
         after_hash = mutation.get("after_hash")
         if after_hash:
             paired_hashes[manifest.mutation_id] = str(after_hash)
@@ -213,6 +224,7 @@ def run_one(
     timeout_seconds: int | None = None,
     paired_hashes: dict[str, str] | None = None,
     paired_receipts: dict[str, Path] | None = None,
+    overwrite_existing: bool = False,
 ) -> dict[str, Any]:
     if not manifest.enabled or not enabled_by_cli:
         return experiment_envelope(
@@ -244,6 +256,7 @@ def run_one(
         mutation_id=manifest.mutation_id,
         seed_dir=manifest.seed_dir,
         source_root=source_root,
+        overwrite_existing=overwrite_existing,
     )
     pair_error = None
     if manifest.paired_with:
@@ -337,7 +350,7 @@ def run_one(
                 },
                 timeout_seconds=timeout_seconds,
             )
-        activation = _run_activation(manifest, workspace, hout)
+        activation = _run_activation(manifest, workspace, hout, source_root=source_root)
         if (
             run_integrity
             and (
@@ -438,11 +451,28 @@ def _run_activation(
     manifest: MutationManifest,
     workspace: ExperimentWorkspace,
     hout: dict[str, Any] | None,
+    *,
+    source_root: Path,
 ) -> dict[str, Any] | None:
     if manifest.mutation_class in {MutationClass.BASELINE, MutationClass.BUNDLE_INTEGRITY}:
         return None
     mode = str(manifest.activation.get("mode", "symbolic")).lower()
     results = []
+    if mode == "symbolic_auto":
+        result = run_auto_symbolic_activation(
+            mutation_id=manifest.mutation_id,
+            activation=dict(manifest.activation),
+            resolved_target=dict(manifest.metadata["resolved_target"]),
+            clean_source_root=source_root,
+            overlay_source_root=workspace.source_overlay,
+            output_dir=workspace.activation_output,
+        )
+        payload = result.to_dict()
+        (workspace.activation_output / "activation_result.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return payload
     if "symbolic" in mode:
         result = solve_symbolic_activation(
             mutation_id=manifest.mutation_id,
@@ -716,27 +746,50 @@ def _resolve_dynamic_envelope_manifest(
     seed = int(selected["seed"])
     if seed < 0:
         raise ValueError("D1 minimum-slack artifact 缺少 seed identity")
-    seed_dir = (source_root / f"s{seed}").resolve()
-    variants = {
+
+    seed_dirs = manifest.metadata.get("seed_dirs_by_seed", {})
+    seed_dir_raw = seed_dirs.get(str(seed)) if isinstance(seed_dirs, dict) else None
+    seed_dir = Path(str(seed_dir_raw)).resolve() if seed_dir_raw else (source_root / f"s{seed}").resolve()
+    if not seed_dir.is_dir():
+        raise ValueError(f"D1 resolved seed_dir 不存在: {seed_dir}")
+
+    variant_aliases = {
         "compact": "best_overall",
         "balanced": "best_balanced",
         "best_overall": "best_overall",
         "best_balanced": "best_balanced",
         "best_performance": "best_performance",
     }
-    variant = variants.get(str(selected.get("variant")))
-    if variant is None:
-        raise ValueError(f"D1 artifact variant 无法映射: {selected.get('variant')}")
+    variant = variant_aliases.get(str(selected.get("variant")))
+    if variant is None or not (seed_dir / variant).is_dir():
+        configured = manifest.metadata.get("tree_variants_by_seed", {})
+        candidates = configured.get(str(seed), ()) if isinstance(configured, dict) else ()
+        variant = next(
+            (variant_aliases.get(str(item), str(item)) for item in candidates
+             if (seed_dir / variant_aliases.get(str(item), str(item))).is_dir()),
+            variant,
+        )
+    if variant is None or not (seed_dir / variant).is_dir():
+        raise ValueError(f"D1 artifact variant 无法映射到 seed 输入: {selected.get('variant')}")
+
     parameters = dict(manifest.mutator.get("parameters", {}))
-    target_file = selected.get("envelope_target_file") or parameters.get("target_file")
-    pointer = selected.get("envelope_json_pointer")
-    if not target_file or not pointer:
-        raise ValueError("D1 limiting artifact 缺少 envelope target/pointer adapter 字段")
-    parameters["target_file"] = str(target_file)
-    parameters["json_pointer"] = str(pointer)
+    target_file, pointer = _resolve_d1_envelope_coordinate(
+        selected=selected,
+        parameters=parameters,
+        seed_dir=seed_dir,
+    )
+    parameters["target_file"] = target_file
+    parameters["json_pointer"] = pointer
+    dynamic_selection = {
+        **selected,
+        "resolved_seed_dir": str(seed_dir),
+        "resolved_tree_variant": variant,
+        "resolved_envelope_target_file": target_file,
+        "resolved_envelope_json_pointer": pointer,
+    }
     metadata = {
         **dict(manifest.metadata),
-        "dynamic_selection": selected,
+        "dynamic_selection": dynamic_selection,
     }
     return replace(
         manifest,
@@ -746,6 +799,153 @@ def _resolve_dynamic_envelope_manifest(
         mutator={**dict(manifest.mutator), "parameters": parameters},
         metadata=metadata,
     )
+
+
+def _resolve_d1_envelope_coordinate(
+    *,
+    selected: dict[str, Any],
+    parameters: dict[str, Any],
+    seed_dir: Path,
+) -> tuple[str, str]:
+    """Resolve a seed-relative integer envelope coordinate for D1.
+
+    Preferred proof artifacts can publish ``envelope_target_file`` and
+    ``envelope_json_pointer``.  For older bundles, a small research-oriented
+    adapter finds the limiting LO task's certified upper-bound field in the
+    copied seed inputs.  The verifier is still run fresh for every delta.
+    """
+
+    raw_file = selected.get("envelope_target_file") or parameters.get("target_file")
+    raw_pointer = selected.get("envelope_json_pointer") or parameters.get("json_pointer")
+    if raw_file and raw_pointer:
+        relative = _seed_relative_json_file(seed_dir, str(raw_file), str(raw_pointer))
+        return relative, str(raw_pointer)
+
+    limiting_task = _limiting_lo_task_name(selected)
+    key_priority = (
+        "action_hard_upper",
+        "certified_upper_bound",
+        "runtime_budget_upper",
+        "lo_budget_upper",
+        "budget_upper",
+        "upper_budget",
+        "max_budget",
+    )
+    candidates: list[tuple[int, str, str]] = []
+    for path in sorted(seed_dir.rglob("*.json")):
+        if any(part in {"proof_bundle", "verified", "candidate"} for part in path.parts):
+            continue
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for pointer, value, score in _iter_envelope_coordinates(
+            raw,
+            limiting_task=limiting_task,
+            key_priority=key_priority,
+        ):
+            if isinstance(value, int) and not isinstance(value, bool):
+                candidates.append((score, path.relative_to(seed_dir).as_posix(), pointer))
+    if not candidates:
+        raise ValueError(
+            "D1 limiting artifact 缺少 envelope target/pointer，且无法在 seed 输入中解析整数上界"
+        )
+    _, relative, pointer = max(candidates, key=lambda item: (item[0], -len(item[1]), item[1]))
+    return relative, pointer
+
+
+def _seed_relative_json_file(seed_dir: Path, raw_file: str, pointer: str) -> str:
+    candidate = Path(raw_file)
+    direct = candidate if candidate.is_absolute() else seed_dir / candidate
+    if direct.is_file() and seed_dir in direct.resolve().parents:
+        _require_integer_pointer(direct, pointer)
+        return direct.resolve().relative_to(seed_dir).as_posix()
+
+    # Proof bundles sometimes publish a candidate-relative or absolute source
+    # path.  Match it back to the copied seed input by suffix/basename.
+    suffix_parts = tuple(part for part in candidate.parts if part not in {"candidate", "request", "verified"})
+    matches = []
+    for path in seed_dir.rglob(candidate.name):
+        relative_parts = path.relative_to(seed_dir).parts
+        suffix_score = 0
+        for length in range(1, min(len(relative_parts), len(suffix_parts)) + 1):
+            if relative_parts[-length:] == suffix_parts[-length:]:
+                suffix_score = length
+        try:
+            _require_integer_pointer(path, pointer)
+        except (OSError, ValueError, KeyError, TypeError, IndexError):
+            continue
+        matches.append((suffix_score, path))
+    if not matches:
+        raise ValueError(f"D1 envelope target 无法映射到 seed 输入: {raw_file}:{pointer}")
+    _, path = max(matches, key=lambda item: (item[0], -len(item[1].parts)))
+    return path.resolve().relative_to(seed_dir).as_posix()
+
+
+def _require_integer_pointer(path: Path, pointer: str) -> int:
+    value: Any = json.loads(path.read_text(encoding="utf-8"))
+    if pointer in {"", "/"}:
+        current = value
+    else:
+        current = value
+        for raw_token in str(pointer).lstrip("/").split("/"):
+            token = raw_token.replace("~1", "/").replace("~0", "~")
+            current = current[int(token)] if isinstance(current, list) else current[token]
+    if not isinstance(current, int) or isinstance(current, bool):
+        raise ValueError(f"D1 envelope coordinate 不是整数: {path}:{pointer}")
+    return current
+
+
+def _limiting_lo_task_name(selected: dict[str, Any]) -> str | None:
+    raw = selected.get("limiting_lo_task")
+    if isinstance(raw, dict):
+        raw = raw.get("task_id", raw.get("task", raw.get("name")))
+    if raw not in (None, ""):
+        return str(raw)
+    components = selected.get("lo_interference_components", ())
+    if isinstance(components, list):
+        for item in components:
+            if isinstance(item, dict):
+                task = item.get("task_id", item.get("task", item.get("name")))
+                if task not in (None, ""):
+                    return str(task)
+    return None
+
+
+def _iter_envelope_coordinates(
+    value: Any,
+    *,
+    limiting_task: str | None,
+    key_priority: tuple[str, ...],
+    pointer: str = "",
+):
+    if isinstance(value, dict):
+        identity = value.get("name", value.get("task_id", value.get("task")))
+        criticality = str(value.get("criticality", value.get("level", ""))).upper()
+        task_match = limiting_task is not None and str(identity) == limiting_task
+        lo_fallback = limiting_task is None and criticality in {"LO", "LOW", "0", "FALSE"}
+        if task_match or lo_fallback:
+            for index, key in enumerate(key_priority):
+                if key in value:
+                    token = str(key).replace("~", "~0").replace("/", "~1")
+                    score = (1000 if task_match else 100) + len(key_priority) - index
+                    yield f"{pointer}/{token}", value[key], score
+        for key, child in value.items():
+            token = str(key).replace("~", "~0").replace("/", "~1")
+            yield from _iter_envelope_coordinates(
+                child,
+                limiting_task=limiting_task,
+                key_priority=key_priority,
+                pointer=f"{pointer}/{token}",
+            )
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from _iter_envelope_coordinates(
+                child,
+                limiting_task=limiting_task,
+                key_priority=key_priority,
+                pointer=f"{pointer}/{index}",
+            )
 
 
 def _campaign_summary(

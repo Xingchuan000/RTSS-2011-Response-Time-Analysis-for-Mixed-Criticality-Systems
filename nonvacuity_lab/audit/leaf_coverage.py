@@ -20,10 +20,17 @@ def aggregate_hout_events(paths: Iterable[Path]) -> dict[LeafKey, dict[str, Any]
     for path in paths:
         path = Path(path)
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            if path.suffix.lower() == ".jsonl":
+                events = [
+                    json.loads(line)
+                    for line in path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+            else:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                events = raw.get("events", raw) if isinstance(raw, dict) else raw
         except (OSError, ValueError):
             continue
-        events = raw.get("events", raw) if isinstance(raw, dict) else raw
         if not isinstance(events, list):
             continue
         path_seed = _infer_seed(path)
@@ -42,7 +49,7 @@ def aggregate_hout_events(paths: Iterable[Path]) -> dict[LeafKey, dict[str, Any]
             row["scenario_coverage"].add(str(normalized.get("scenario_id", 0)))
             row["raw_top1_invalid_count"] += int(bool(normalized.get("raw_top1_invalid")))
             selected_rank = normalized.get("selected_rank")
-            row["fallback_count"] += int(selected_rank is not None and int(selected_rank) > 1)
+            row["fallback_count"] += int(selected_rank is not None and int(selected_rank) > 0)
             row["all_invalid_count"] += int(bool(normalized.get("all_invalid")))
             row["noop_count"] += int(bool(normalized.get("implicit_noop")))
             if selected_rank is not None:
@@ -59,7 +66,8 @@ def aggregate_hout_events(paths: Iterable[Path]) -> dict[LeafKey, dict[str, Any]
 def audit_all_leaves(*, seed_root: Path, hout_root: Path, source_root: Path) -> list[dict[str, Any]]:
     del source_root  # Kept in the public signature for CLI compatibility.
     rows: list[dict[str, Any]] = []
-    hout_by_leaf = aggregate_hout_events(sorted(Path(hout_root).rglob("*.json")))
+    hout_paths = sorted(Path(hout_root).rglob("*.json")) + sorted(Path(hout_root).rglob("*.jsonl"))
+    hout_by_leaf = aggregate_hout_events(hout_paths)
     for tree_path in sorted(Path(seed_root).rglob("integer_tree.json")):
         tree = load_tree(tree_path)
         seed = _infer_seed(tree_path)

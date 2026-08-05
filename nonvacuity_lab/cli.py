@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .activation import solve_symbolic_activation
 from .manifest import load_campaign, load_mutation
-from .preflight import audit_campaign
+from .preflight import audit_campaign, audit_v2_campaign_path
 from .reporting.markdown_report import write_campaign_report
 from .runners.campaign import run_campaign, run_one
 from .schema import ExperimentStatus, experiment_envelope
@@ -28,6 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--enable", action="store_true")
     run_parser.add_argument("--timeout-seconds", type=int)
     run_parser.add_argument("--doctor-receipt", type=Path)
+    run_parser.add_argument("--overwrite", action="store_true", help="删除同 campaign 的旧实验输出后重跑")
 
     preflight_parser = subparsers.add_parser(
         "preflight", help="只读检查 campaign 能力和输入，不创建工作区"
@@ -47,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     one_parser.add_argument("--source-root", type=Path, default=Path.cwd())
     one_parser.add_argument("--enable", action="store_true")
     one_parser.add_argument("--timeout-seconds", type=int)
+    one_parser.add_argument("--overwrite", action="store_true", help="覆盖已有 mutation 工作区")
 
     activate_parser = subparsers.add_parser("activate", help="只做 symbolic activation")
     activate_parser.add_argument("--manifest", required=True, type=Path)
@@ -65,17 +67,27 @@ def main(argv: list[str] | None = None) -> int:
     resolve_parser.add_argument("--audit-root", required=True, type=Path)
     resolve_parser.add_argument("--source-root", required=True, type=Path)
     resolve_parser.add_argument("--output", required=True, type=Path)
+    resolve_parser.add_argument(
+        "--require-all-resolved", action="store_true",
+        help="任一 mutation 未解析时拒绝写出可供启用的 resolved campaign",
+    )
     seal_parser = subparsers.add_parser("seal-config", help="重新计算 resolved campaign hash")
     seal_parser.add_argument("--config", required=True, type=Path)
 
     args = parser.parse_args(argv)
     try:
         if args.command == "preflight":
-            config = load_campaign(args.config)
-            result = audit_campaign(
-                config,
-                include_disabled=args.all_mutations,
-            )
+            raw = json.loads(args.config.read_text(encoding="utf-8"))
+            if raw.get("schema_version") == "nonvacuity_campaign_v2":
+                result = audit_v2_campaign_path(
+                    args.config, include_disabled=args.all_mutations
+                )
+            else:
+                config = load_campaign(args.config)
+                result = audit_campaign(
+                    config,
+                    include_disabled=args.all_mutations,
+                )
             if args.out:
                 args.out.parent.mkdir(parents=True, exist_ok=True)
                 args.out.write_text(
@@ -90,10 +102,15 @@ def main(argv: list[str] | None = None) -> int:
                     cli_enable=args.enable,
                     doctor_receipt=args.doctor_receipt,
                     timeout_seconds=args.timeout_seconds,
+                    overwrite_existing=args.overwrite,
                 )
             else:
                 config = load_campaign(args.config)
-                result = run_campaign(config, enabled_by_cli=args.enable, timeout_seconds=args.timeout_seconds)
+                result = run_campaign(
+                    config, enabled_by_cli=args.enable,
+                    timeout_seconds=args.timeout_seconds,
+                    overwrite_existing=args.overwrite,
+                )
         elif args.command == "run-one":
             manifest = load_mutation(args.manifest)
             result = run_one(
@@ -103,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
                 source_root=args.source_root.resolve(),
                 enabled_by_cli=args.enable,
                 timeout_seconds=args.timeout_seconds,
+                overwrite_existing=args.overwrite,
             )
         elif args.command == "activate":
             manifest = load_mutation(args.manifest)
@@ -126,9 +144,24 @@ def main(argv: list[str] | None = None) -> int:
             receipt = run_doctor(args.config, args.output)
             result = receipt.to_dict()
         elif args.command == "resolve":
-            result = resolve_campaign(args.template, args.audit_root, args.source_root, args.output)
+            resolved = resolve_campaign(
+                args.template, args.audit_root, args.source_root, args.output,
+                require_all_resolved=args.require_all_resolved,
+            )
+            result = {
+                "status": "RESOLVED_CONFIG_WRITTEN",
+                "path": str(args.output.resolve()),
+                "campaign_id": resolved.get("campaign_id"),
+                "config_sha256": resolved.get("config_sha256"),
+            }
         elif args.command == "seal-config":
-            result = seal_config(args.config)
+            sealed = seal_config(args.config)
+            result = {
+                "status": "CONFIG_SEALED",
+                "path": str(args.config.resolve()),
+                "campaign_id": sealed.get("campaign_id"),
+                "config_sha256": sealed.get("config_sha256"),
+            }
         else:
             campaign_dir = args.campaign_dir.resolve()
             result_path = campaign_dir / "campaign_result.json"
@@ -155,6 +188,8 @@ def _exit_code(status: str) -> int:
     if status in {
         "COMPLETED",
         "REPORT_WRITTEN",
+        "RESOLVED_CONFIG_WRITTEN",
+        "CONFIG_SEALED",
         ExperimentStatus.EXPERIMENT_DISABLED.value,
         ExperimentStatus.PASS_EXPECTED.value,
         ExperimentStatus.FAIL_EXPECTED.value,
@@ -166,3 +201,7 @@ def _exit_code(status: str) -> int:
     if status == ExperimentStatus.NOT_ACTIVATED.value:
         return 3
     return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

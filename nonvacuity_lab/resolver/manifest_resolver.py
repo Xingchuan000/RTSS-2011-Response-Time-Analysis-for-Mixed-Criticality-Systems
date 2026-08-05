@@ -63,7 +63,7 @@ def resolve_campaign(
                 and kind in {"source_overlay", "coherent_source_patch"}
             ):
                 scoped = _scope_leaf_rows(leaf_rows, mutation)
-                target = resolve_guard_ablation(scoped, guard_catalog)
+                target = resolve_guard_ablation(scoped, guard_catalog, require_raw_top1=False)
                 parameters.update(target)
                 resolutions[mutation_id] = target
             elif kind == "envelope":
@@ -99,6 +99,14 @@ def resolve_campaign(
                     mutation,
                     Path(str(summary["proof_bundle_root"])),
                     kind="OBLIGATION_ARTIFACT",
+                )
+                parameters.update({"target_file": target["artifact"]})
+                resolutions[mutation_id] = target
+            elif mutation_id.startswith(("F1", "F2", "F3", "F4", "F7")):
+                target = _resolve_named_bundle_artifact(
+                    bundle_rows,
+                    Path(str(summary["proof_bundle_root"])),
+                    mutation_id[:2],
                 )
                 parameters.update({"target_file": target["artifact"]})
                 resolutions[mutation_id] = target
@@ -171,6 +179,31 @@ def _bundle_relative_target(
     except ValueError as exc:
         raise ValueError(f"BUNDLE_TARGET_OUTSIDE_REUSE_BUNDLE:{artifact_path}") from exc
     return {**dict(row), "artifact": relative.as_posix()}
+
+
+def _resolve_named_bundle_artifact(rows: list[dict[str, Any]], proof_root: Path, family: str) -> dict[str, Any]:
+    """Resolve F1-F4/F7 targets from scanned bundle files, never by guessing paths."""
+    patterns = {
+        "F1": ("integer_tree.json", "tree"),
+        "F2": ("formal_target_manifest.json", "manifest"),
+        "F3": ("integer_tree.json", "tree"),
+        "F4": ("priority", "priority"),
+        "F7": ("source", "binding", "manifest"),
+    }[family]
+    candidates = [
+        row for row in rows
+        if row.get("kind") == "ARTIFACT"
+        and any(token in str(row.get("artifact", "")).lower() for token in patterns)
+    ]
+    if not candidates:
+        raise ValueError(f"{family}_BUNDLE_TARGET_UNRESOLVED")
+    reuse = proof_root.resolve()
+    for row in sorted(candidates, key=lambda item: str(item["artifact"])):
+        path = (reuse / str(row["artifact"])).resolve()
+        if reuse not in path.parents or not path.is_file():
+            continue
+        return dict(row)
+    raise ValueError(f"{family}_BUNDLE_TARGET_NOT_FOUND")
 
 
 def _load_rows(path: Path) -> list[dict[str, Any]]:

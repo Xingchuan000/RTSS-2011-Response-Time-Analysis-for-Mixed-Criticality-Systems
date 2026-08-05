@@ -212,9 +212,6 @@ class AmcBudgetEnv:
     forbid_decreasing_hi_budgets: bool = False
     qamc_profile_bundle: QAmcProfileBundle | None = None
     budget_update_source: str = "DQN_ACTION"
-    # Non-vacuity experiment semantics. Defaults preserve the certified deployment.
-    policy_selection_semantics: Literal["ranked_first_valid"] = "ranked_first_valid"
-    step_guard_semantics: Literal["checked"] = "checked"
     budget_rounding_mode: Literal["ceil_floor", "nearest"] = "ceil_floor"
     min_budget_delta: int = 1
     enable_deploy_cap_mask: bool = False
@@ -300,10 +297,6 @@ class AmcBudgetEnv:
             raise ValueError("deploy_cap_mask_ratio 必须大于 1.0")
         if self.deploy_cap_mask_criticality not in {"lo", "all"}:
             raise ValueError("deploy_cap_mask_criticality 必须是 'lo' 或 'all'")
-        if self.policy_selection_semantics != "ranked_first_valid":
-            raise ValueError("UNSUPPORTED_POLICY_SELECTION_SEMANTICS")
-        if self.step_guard_semantics != "checked":
-            raise ValueError("UNSUPPORTED_STEP_GUARD_SEMANTICS")
         if self.budget_rounding_mode not in {"ceil_floor", "nearest"}:
             raise ValueError("UNSUPPORTED_BUDGET_ROUNDING_MODE")
         if self.min_budget_delta <= 0:
@@ -320,7 +313,7 @@ class AmcBudgetEnv:
             semantics=self.runtime_config.semantics,
             action_space=self.action_space_name,
             check_safety=self.check_safety,
-            step_guard_semantics=self.step_guard_semantics,
+            step_guard_semantics="checked",
             budget_rounding_mode=self.budget_rounding_mode,
             min_budget_delta=self.min_budget_delta,
         )
@@ -739,6 +732,65 @@ class AmcBudgetEnv:
             if not report.accepted:
                 return report.reason
         return None
+
+    def evaluate_budget_candidate_unchecked(
+        self,
+        *,
+        action: BudgetAction | None,
+        budget_before: dict[str, int] | None = None,
+    ) -> BudgetCandidateEvaluation:
+        """Replay the primitive action update without policy guards.
+
+        This entry point exists for isolated non-vacuity overlays.  The ordinary
+        deployment path keeps ``step_guard_semantics="checked"`` and never
+        calls it.  Only the static action forms used by the PPP proof route are
+        accepted; dynamic residual actions remain fail-closed.
+        """
+
+        if self._engine is None:
+            raise RuntimeError("环境尚未 reset")
+        before = dict(budget_before or self._engine.runtime_budgets.budgets)
+        if action is None or action.is_noop:
+            return BudgetCandidateEvaluation(
+                action_id=None if action is None else int(action.action_id),
+                accepted=True,
+                reject_reason=None,
+                candidate_budgets=dict(before),
+                updates={},
+                safety_checked=False,
+            )
+        if action.is_constraint_guided_pair or action.is_residual_ranked:
+            return BudgetCandidateEvaluation(
+                action_id=int(action.action_id),
+                accepted=False,
+                reject_reason="unchecked_dynamic_action_unsupported",
+                candidate_budgets=dict(before),
+                updates={},
+                safety_checked=False,
+            )
+        from amc_py.budget_runtime import BudgetState
+        from amc_py.rl.actions import apply_budget_action_candidate
+
+        updates = apply_budget_action_candidate(
+            action=action,
+            budget_state=BudgetState(
+                budgets=dict(before),
+                initial_budgets=dict(self._initial_budgets),
+            ),
+            ordered_tasks=self.ordered_tasks,
+            rounding_mode=self.budget_rounding_mode,
+            min_budget_delta=self.min_budget_delta,
+        )
+        candidate = dict(before)
+        candidate.update(updates)
+        return BudgetCandidateEvaluation(
+            action_id=int(action.action_id),
+            accepted=True,
+            reject_reason=None,
+            candidate_budgets=candidate,
+            updates=dict(updates),
+            safety_checked=False,
+        )
 
     def evaluate_budget_candidate(
         self,
@@ -3069,36 +3121,40 @@ class AmcBudgetEnv:
                     reject_reason = f"safe_mask_step_mismatch:{reject_reason}"
             else:
                 selected_invalid = self._selected_action_was_invalid(action_id)
-                if self.step_guard_semantics == "checked":
-                    evaluation = self.evaluate_budget_candidate(
-                        action=action,
-                        budget_before=budget_before,
-                        hi_pressure_threshold=float(
-                            self._reward_mode_config.reward_parameters.get("hi_mode_pressure_threshold", 0.8)
-                        ),
-                        lo_pressure_threshold=float(
-                            self._reward_mode_config.reward_parameters.get("lo_pressure_threshold", 0.8)
-                        ),
-                    )
-                    accepted = evaluation.accepted
-                    reject_reason = evaluation.reject_reason
-                    updates = dict(evaluation.updates)
-                    candidate_budgets = dict(evaluation.candidate_budgets)
-                    action_was_checked = evaluation.safety_checked
-                    reject_diagnostics = evaluation.reject_diagnostics
-                    if action_was_checked:
-                        self._safety_checked_actions += 1
-                    if action_was_checked and accepted:
-                        self._safety_accepted_actions += 1
-                    elif action_was_checked and not accepted:
-                        self._safety_rejected_actions += 1
-                    if accepted:
-                        self._engine.apply_budget_updates(updates, source=self.budget_update_source)
+                evaluation = self.evaluate_budget_candidate(
+                    action=action,
+                    budget_before=budget_before,
+                    hi_pressure_threshold=float(
+                        self._reward_mode_config.reward_parameters.get("hi_mode_pressure_threshold", 0.8)
+                    ),
+                    lo_pressure_threshold=float(
+                        self._reward_mode_config.reward_parameters.get("lo_pressure_threshold", 0.8)
+                    ),
+                )
+                accepted = evaluation.accepted
+                reject_reason = evaluation.reject_reason
+                updates = dict(evaluation.updates)
+                candidate_budgets = dict(evaluation.candidate_budgets)
+                action_was_checked = evaluation.safety_checked
+                reject_diagnostics = evaluation.reject_diagnostics
+                if action_was_checked:
+                    self._safety_checked_actions += 1
+                if action_was_checked and accepted:
+                    self._safety_accepted_actions += 1
+                elif action_was_checked and not accepted:
+                    self._safety_rejected_actions += 1
+                if accepted:
+                    self._engine.apply_budget_updates(updates, source=self.budget_update_source)
         else:
             if self._mask_log:
                 valid_action_count = int(self._mask_log[-1]["valid_action_count"])
                 masked_action_count = int(self._mask_log[-1]["masked_action_count"])
 
+        active_release_budgets_after_update = {
+            f"{job.task.name}#{job.release_index}": int(job.runtime_budget_at_release)
+            for job in self._engine.state.active_jobs
+            if not job.finished() and job.runtime_budget_at_release is not None
+        }
         target_time = min(self._engine.current_time + self.agent_period, self.runtime_config.end_time or 0)
         # step 返回的 next observation 必须包含目标决策时刻的普通事件处理结果。
         self._engine.run_until(target_time, include_boundary=True)
@@ -3840,6 +3896,7 @@ class AmcBudgetEnv:
             "budget_before": budget_before,
             "candidate_budgets": candidate_budgets,
             "budget_after": budget_after,
+            "active_release_budgets_after_update": active_release_budgets_after_update,
             "check_safety": self.check_safety,
             "safety_checked": action_was_checked,
             "valid_action_count": valid_action_count,

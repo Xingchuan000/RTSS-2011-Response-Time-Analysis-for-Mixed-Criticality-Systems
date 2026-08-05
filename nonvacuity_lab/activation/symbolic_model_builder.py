@@ -31,18 +31,87 @@ def _path(binding, name):
     return getattr(binding, name, None)
 
 
+def _optional_read(value, default):
+    return default if value in (None, "") else _read(value)
+
+
 def _load_budgets(binding):
     taskset = _read(_path(binding, "taskset_path") or _path(binding, "taskset"))
-    envelope = _read(_path(binding, "certified_envelope_path") or _path(binding, "certified_envelope"))
-    floors = _read(_path(binding, "budget_floor_path") or _path(binding, "budget_floors"))
+    envelope = _optional_read(
+        _path(binding, "certified_envelope_path") or _path(binding, "certified_envelope"), {}
+    )
+    floors = _optional_read(
+        _path(binding, "budget_floor_path") or _path(binding, "budget_floors"), {}
+    )
+    raw_tasks = taskset.get("tasks", taskset.get("ordered_tasks", []))
     result = []
-    for task in taskset.get("tasks", []):
-        task_id = str(task["task_id"])
-        reference = int(task["reference_budget"])
-        floor = int(floors[task_id] if isinstance(floors, dict) and task_id in floors else task.get("minimum_budget", 0))
-        upper = int(envelope[task_id] if isinstance(envelope, dict) and task_id in envelope else task.get("certified_upper_bound", reference))
-        result.append(SymbolicTaskBudget(task_id, str(task["criticality"]), IntDomain(f"budget__{task_id}", floor, upper), floor, upper, reference))
+    for task in raw_tasks:
+        task_id = str(task.get("task_id", task.get("name")))
+        reference = int(task.get("reference_budget", task.get("initial_runtime_budget", task.get("code_c_lo", 0))))
+        floor = int(
+            floors[task_id] if isinstance(floors, dict) and task_id in floors
+            else task.get("minimum_budget", task.get("budget_floor", reference))
+        )
+        upper = int(
+            envelope[task_id] if isinstance(envelope, dict) and task_id in envelope
+            else task.get("certified_upper_bound", task.get("action_hard_upper", task.get("code_c_hi", reference)))
+        )
+        result.append(SymbolicTaskBudget(
+            task_id, str(task["criticality"]), IntDomain(f"budget__{task_id}", floor, upper),
+            floor, upper, reference,
+        ))
+    if not result:
+        raise ValueError("taskset does not expose symbolic task budgets")
     return tuple(result)
+
+
+def _normalize_feature_schema(raw, tree, binding):
+    if isinstance(raw, dict) and isinstance(raw.get("features"), list):
+        return raw
+    names = []
+    if isinstance(raw, dict):
+        names = list(raw.get("feature_names", ()))
+    elif isinstance(raw, list):
+        names = list(raw)
+    if not names:
+        names = list(tree.get("feature_names", ()))
+    scale = int(_path(binding, "feature_scale") or 1000)
+    return {"features": [
+        {"index": index, "name": str(name), "integer_lower": 0, "integer_upper": scale}
+        for index, name in enumerate(names)
+    ]}
+
+
+def _normalize_action(raw_action, binding):
+    operation = raw_action.get("operation", raw_action.get("direction"))
+    task_id = raw_action.get("task_id", raw_action.get("target_task"))
+    ratio = raw_action.get("ratio")
+    if operation is None:
+        if raw_action.get("increase_task") is not None:
+            operation = "increase"
+            task_id = raw_action.get("increase_task")
+            ratio = raw_action.get("increase_ratio", ratio)
+        elif raw_action.get("decrease_tasks"):
+            operation = "decrease"
+            task_id = list(raw_action.get("decrease_tasks"))[0]
+            ratio = raw_action.get("decrease_ratio", ratio)
+        else:
+            operation = "noop"
+    operation = str(operation)
+    if ratio is None:
+        ratio = _path(binding, "default_action_ratio") or "1/50"
+    if bool(raw_action.get("is_noop")) or operation == "noop":
+        ratio = None
+        operation = "noop"
+    rounding = raw_action.get("rounding_mode")
+    if rounding is None:
+        rounding = "ceil" if operation == "increase" else "floor"
+    return SymbolicAction(
+        int(raw_action["action_id"]), task_id, operation,
+        parse_ratio(ratio) if ratio is not None else None,
+        int(raw_action.get("minimum_increment", 1 if operation != "noop" else 0)),
+        str(rounding),
+    )
 
 
 def build_symbolic_problem(resolved_target, binding, formula_kind):
@@ -52,7 +121,8 @@ def build_symbolic_problem(resolved_target, binding, formula_kind):
     if target.get("tree_sha256") and file_hash(tree_path) != target["tree_sha256"]:
         raise ValueError("tree hash mismatch")
     tree = _read(tree_path)
-    feature_schema = _read(_path(binding, "feature_schema_path") or _path(binding, "feature_schema"))
+    feature_schema_raw = _read(_path(binding, "feature_schema_path") or _path(binding, "feature_schema"))
+    feature_schema = _normalize_feature_schema(feature_schema_raw, tree, binding)
     budgets = _load_budgets(binding)
     feature_vars = {int(item["index"]): z3.Int(f"q_{item['index']}") for item in feature_schema.get("features", [])}
     budget_vars = {item.task_id: z3.Int(f"budget__{item.task_id}") for item in budgets}
@@ -75,7 +145,7 @@ def build_symbolic_problem(resolved_target, binding, formula_kind):
     raw_action = raw_for(target["action_id"])
     if not isinstance(raw_action, dict):
         raise ValueError("action definition missing")
-    action = SymbolicAction(int(target["action_id"]), raw_action.get("task_id"), str(raw_action.get("operation", "noop")), parse_ratio(raw_action["ratio"]) if raw_action.get("ratio") is not None else None, int(raw_action.get("minimum_increment", 0)), str(raw_action.get("rounding_mode", "ceil")))
+    action = _normalize_action(raw_action, binding)
     task = next((item for item in budgets if item.task_id == action.task_id), None)
     if task is None:
         raise ValueError("action task missing")
@@ -90,6 +160,47 @@ def build_symbolic_problem(resolved_target, binding, formula_kind):
     solver.add(domains, invariant)
     if formula_kind == "A_MASK_REJECT":
         solver.add(guard, z3.Not(legal))
+    elif formula_kind == "B2_NO_FIRST_VALID_DIFFERENCE":
+        ranking = [
+            int(item)
+            for item in target.get(
+                "original_ranking",
+                target.get("ranking", (target["action_id"],)),
+            )
+        ]
+        if not ranking or ranking[0] != int(target["action_id"]):
+            raise ValueError("B2 requires the resolved action to be raw top-1")
+        lower_legal_terms = []
+        for action_id in ranking[1:]:
+            candidate_action = raw_for(action_id)
+            if not isinstance(candidate_action, dict):
+                raise ValueError(f"action definition missing: {action_id}")
+            candidate_obj = _normalize_action(candidate_action, binding)
+            if candidate_obj.operation == "noop":
+                lower_legal_terms.append(z3.BoolVal(True))
+                continue
+            candidate_task = next(
+                (item for item in budgets if item.task_id == candidate_obj.task_id),
+                None,
+            )
+            if candidate_task is None:
+                raise ValueError(f"action task missing: {action_id}")
+            candidate_var = budget_vars[candidate_task.task_id]
+            candidate_value = encode_candidate_budget(candidate_obj, candidate_var)
+            lower_legal_terms.append(
+                z3.And(
+                    candidate_value >= candidate_task.minimum_budget,
+                    candidate_value <= candidate_task.certified_upper_bound,
+                    *(
+                        [candidate_value >= candidate_task.reference_budget]
+                        if candidate_task.criticality == "HI"
+                        else []
+                    ),
+                )
+            )
+        if not lower_legal_terms:
+            raise ValueError("B2 requires at least one lower-ranked action")
+        solver.add(guard, z3.Not(legal), z3.Or(*lower_legal_terms))
     elif formula_kind == "B_RAW_TOP1_BREAKS_INVARIANT":
         solver.add(guard, z3.Not(legal), z3.Not(post))
     elif formula_kind == "B3_ALL_INVALID":
@@ -99,7 +210,7 @@ def build_symbolic_problem(resolved_target, binding, formula_kind):
             candidate_action = raw_for(action_id)
             if not isinstance(candidate_action, dict):
                 raise ValueError(f"action definition missing: {action_id}")
-            candidate_obj = SymbolicAction(action_id, candidate_action.get("task_id"), str(candidate_action.get("operation", "noop")), parse_ratio(candidate_action["ratio"]) if candidate_action.get("ratio") is not None else None, int(candidate_action.get("minimum_increment", 0)), str(candidate_action.get("rounding_mode", "ceil")))
+            candidate_obj = _normalize_action(candidate_action, binding)
             candidate_task = next((item for item in budgets if item.task_id == candidate_obj.task_id), None)
             if candidate_task is None:
                 continue
@@ -110,17 +221,26 @@ def build_symbolic_problem(resolved_target, binding, formula_kind):
             raise ValueError("B3 requires ranked action definitions")
         solver.add(guard, z3.And(*(z3.Not(item) for item in legal_terms)))
     elif formula_kind == "B4_GUARD_NECESSITY":
-        disabled = target.get("disabled_guard_constraint")
+        disabled = target.get("disabled_guard_constraint", {"constant": True})
         if not isinstance(disabled, dict):
             raise ValueError("B4 requires disabled_guard_constraint")
         without_guard = _encode_simple_constraint(z3, disabled, feature_vars, budget_vars)
         solver.add(guard, invariant, z3.Not(legal), without_guard, z3.Not(post))
+    elif formula_kind == "C2_ROUNDING_DIFFERENCE":
+        nearest_action = SymbolicAction(
+            action.action_id, action.task_id, action.operation, action.ratio,
+            action.minimum_increment, "nearest",
+        )
+        nearest_candidate = encode_candidate_budget(nearest_action, current)
+        solver.add(guard, invariant, legal, candidate != nearest_candidate)
     else:
         raise ValueError(f"unknown formula kind {formula_kind}")
     return BuiltSymbolicProblem(solver, feature_vars, budget_vars, {"leaf_guard": guard, "feature_domains": domains, "pre_invariant": invariant, "action_legal": legal, "post_invariant": post}, {"tree_sha256": file_hash(tree_path), "leaf_id": int(target["leaf_id"]), "action_id": int(target["action_id"]), "formula_kind": formula_kind})
 
 
 def _encode_simple_constraint(z3, constraint, feature_vars, budget_vars):
+    if "constant" in constraint:
+        return z3.BoolVal(bool(constraint["constant"]))
     name = str(constraint["variable"])
     variable = feature_vars.get(int(name)) if name.isdigit() else budget_vars.get(name)
     if variable is None:

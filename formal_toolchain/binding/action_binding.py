@@ -79,6 +79,39 @@ def _legacy_noop_branch_returns_none_base(source: str) -> bool:
     return False
 
 
+def _detect_selection_semantics(source: str) -> str | None:
+    """Recognize the small set of executable tree-selection semantics.
+
+    The source binder must be able to bind both the certified baseline and the
+    deliberate non-vacuity overlays.  Accepting a known executable semantics
+    here does not prove it safe; it only records what the source implements so
+    the policy obligations can accept or reject it at the correct layer.
+    """
+
+    node = _function_node(source, "IntegerTreeBudgetPolicy.select_action_id")
+    if node is None:
+        return None
+    segment = ast.get_source_segment(source, node) or ""
+    has_rank_scan = "for rank, candidate in enumerate(ranking):" in segment
+    has_none_fallback = "return None, base" in segment
+    has_raw_return = segment.count("return raw_top1, base") >= 2
+    has_raw_invalid_branch = "if raw_invalid:" in segment
+    has_forced_after_scan = (
+        has_rank_scan
+        and "tree_no_valid_action" in segment
+        and has_raw_return
+        and not has_none_fallback
+    )
+    if has_forced_after_scan:
+        return "all_invalid_force_top1"
+    if not has_rank_scan and has_raw_invalid_branch and has_none_fallback:
+        return "top1_valid_else_noop"
+    if not has_rank_scan and has_raw_return and not has_none_fallback:
+        return "raw_top1"
+    if has_rank_scan and has_none_fallback:
+        return "ranked_first_valid"
+    return None
+
 def _audit_hashes(source_root: Path) -> dict[str, object]:
     records: list[dict[str, object]] = []
     for relative in ("amc_py/rl/env.py", "amc_py/rl/actions.py", "amc_py/rl/safety.py"):
@@ -106,6 +139,7 @@ def bind_action_runtime(source_root: Path, *, action_space_type: str = "single",
     frozen_path = frozen_action_runtime_path(root)
     frozen_source = frozen_path.read_text(encoding="utf-8")
     frozen_names = (
+        "round_budget_product",
         "build_budget_action_space",
         "apply_budget_action_candidate",
         "formal_valid_action_mask",
@@ -137,8 +171,12 @@ def bind_action_runtime(source_root: Path, *, action_space_type: str = "single",
             "implementation_audit": _audit_hashes(root),
         }
 
+    selection_semantics = _detect_selection_semantics(policy_source)
     fallback_semantics_ok = (
-        _has_none_base_return(policy_source, "IntegerTreeBudgetPolicy.select_action_id")
+        selection_semantics in {
+            "ranked_first_valid", "raw_top1", "top1_valid_else_noop",
+            "all_invalid_force_top1",
+        }
         and "tree_no_valid_action" in policy_source
         and "selection_semantics" not in policy_source
     )
@@ -166,8 +204,11 @@ def bind_action_runtime(source_root: Path, *, action_space_type: str = "single",
         "formal_valid_action_mask",
         "evaluate_budget_candidate",
         "apply_budget_action_candidate",
-        'inc_value = math.ceil(raw_inc) if rounding_mode == "ceil_floor" else int(round(raw_inc))',
-        'dec_value = math.floor(raw_dec) if rounding_mode == "ceil_floor" else int(round(raw_dec))',
+        "def round_budget_product",
+        'return math.ceil(value) if direction == "increase" else math.floor(value)',
+        'return int(round(value))',
+        'round_budget_product(raw_inc, direction="increase", mode=rounding_mode)',
+        'round_budget_product(raw_dec, direction="decrease", mode=rounding_mode)',
         "candidate.update(updates)",
         "action = actions[action_id]",
     )
@@ -211,7 +252,13 @@ def bind_action_runtime(source_root: Path, *, action_space_type: str = "single",
             "action_table_source_hash": frozen_hash,
             "mask_and_step_share_candidate_evaluator": shared_candidate_evaluator,
             "candidate_evaluator_name": "evaluate_budget_candidate",
-            "fallback": "implicit_none_when_no_valid_action",
+            "fallback": {
+                "ranked_first_valid": "implicit_none_when_no_valid_action",
+                "top1_valid_else_noop": "implicit_none_when_raw_top1_invalid",
+                "raw_top1": "raw_top1_even_when_invalid",
+                "all_invalid_force_top1": "raw_top1_when_all_invalid",
+            }[selection_semantics],
+            "selection_semantics": selection_semantics,
             "guards": ["ceil", "floor", "HI_decrease_guard", "LO_floor_guard"],
         },
         "implementation_audit": _audit_hashes(root),

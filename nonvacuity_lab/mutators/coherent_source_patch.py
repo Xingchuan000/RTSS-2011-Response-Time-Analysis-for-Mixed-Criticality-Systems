@@ -9,6 +9,7 @@ from ..canonical import canonical_json_hash, file_hash
 from ..schema import FORBIDDEN_PATCH_ROLES, PatchRole, SourcePatchSpec
 from .base import MutationContext, MutationResult, PreflightResult
 from .python_binding import bind_symbol
+from ..coherence import validate_roles
 
 
 FORBIDDEN_PATH_PREFIXES = ("formal_toolchain/verifier/", "formal_toolchain/reporting/")
@@ -39,8 +40,10 @@ class CoherentSourcePatchMutation:
     def preflight(self, context: MutationContext) -> PreflightResult:
         try:
             specs = self._specs(context)
-            if not any(spec.role is PatchRole.DEPLOYED_IMPLEMENTATION for spec in specs):
-                raise ValueError("COHERENT_PATCH_MISSING_DEPLOYED_IMPLEMENTATION")
+            validate_roles(
+                context.parameters.get("semantic_change_id"),
+                (spec.role.value for spec in specs),
+            )
             receipts = []
             for spec in specs:
                 path = self._target(context, spec.target_file)
@@ -80,5 +83,18 @@ class CoherentSourcePatchMutation:
         return MutationResult("PASS", canonical_json_hash(before), canonical_json_hash(after), tuple(dict.fromkeys(changed_files)), changed_symbols=tuple(changed_symbols), semantic_change_count=1, parser_validation="PASS", details=details)
 
     def verify_single_change(self, result: MutationResult) -> PreflightResult:
-        valid = result.status == "PASS" and result.semantic_change_count == 1 and result.before_hash != result.after_hash and bool(result.details.get("semantic_change_id")) and "DEPLOYED_IMPLEMENTATION" in set(result.details.get("coherent_roles", ()))
+        valid = (
+            result.status == "PASS"
+            and result.semantic_change_count == 1
+            and result.before_hash != result.after_hash
+            and bool(result.details.get("semantic_change_id"))
+        )
+        if valid:
+            try:
+                validate_roles(
+                    result.details.get("semantic_change_id"),
+                    result.details.get("coherent_roles", ()),
+                )
+            except ValueError:
+                valid = False
         return PreflightResult("PASS" if valid else "FAIL", result.to_dict())

@@ -83,6 +83,7 @@ def _build_leaf_audit_fields(
     tree_info: dict[str, object],
     selected_action_id: int | None,
     valid_action_mask: tuple[bool, ...],
+    mask_details: tuple[dict[str, object], ...] | None,
     teacher_diag: dict[str, object] | None,
     leaf_audit_state_mode: str,
     leaf_audit_top_k_actions: int,
@@ -97,6 +98,7 @@ def _build_leaf_audit_fields(
     - tree_info: select_action_id 返回的 info 字典（已包含 trace 信息）。
     - selected_action_id: 实际选中的动作编号。
     - valid_action_mask: 合法动作 mask 元组。
+    - mask_details: 最近一次 mask 对每个动作的逐项诊断（可为 None）。
     - teacher_diag: teacher 的 Q 诊断信息（可为 None）。
     - leaf_audit_state_mode: "none" / "split" / "all"。
     - leaf_audit_top_k_actions: 记录 top-k 个动作。
@@ -135,6 +137,22 @@ def _build_leaf_audit_fields(
     fields["tree_selected_action_id"] = selected_action_id
     fields["tree_leaf_predicted_action_id"] = tree_info.get("tree_leaf_predicted_class_id")
     fields["tree_raw_top1_invalid"] = tree_info.get("tree_raw_top1_invalid")
+    fields["rejected_action_id"] = (
+        raw_top1_action_id
+        if bool(tree_info.get("tree_raw_top1_invalid"))
+        else None
+    )
+    raw_top1_reject_reason = None
+    if (
+        bool(tree_info.get("tree_raw_top1_invalid"))
+        and raw_top1_action_id is not None
+        and mask_details is not None
+    ):
+        for detail in mask_details:
+            if detail.get("action_id") == raw_top1_action_id:
+                raw_top1_reject_reason = detail.get("reject_reason")
+                break
+    fields["tree_raw_top1_reject_reason"] = raw_top1_reject_reason
     fields["tree_fallback_used"] = tree_info.get("tree_fallback_used")
     fields["tree_no_valid_action"] = tree_info.get("tree_no_valid_action")
     fields["tree_selected_rank"] = tree_info.get("tree_selected_rank")
@@ -335,6 +353,7 @@ def evaluate_tree_policy_once(
                 tree_info=info,
                 selected_action_id=action_id,
                 valid_action_mask=mask,
+                mask_details=tuple(dict(item) for item in getattr(env, "_last_mask_details", ())),
                 teacher_diag=teacher_diag,
                 leaf_audit_state_mode=leaf_audit_state_mode,
                 leaf_audit_top_k_actions=leaf_audit_top_k_actions,

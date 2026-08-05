@@ -37,11 +37,14 @@ class ExperimentWorkspace:
         mutation_id: str,
         seed_dir: Path | None,
         source_root: Path,
+        overwrite_existing: bool = False,
     ) -> tuple["ExperimentWorkspace", dict[str, str]]:
         root = (Path(output_root) / campaign_id / mutation_id).resolve()
         _validate_isolated(root, seed_dir=seed_dir, source_root=source_root)
         if root.exists():
-            raise FileExistsError(f"实验工作区已存在，拒绝覆盖: {root}")
+            if not overwrite_existing:
+                raise FileExistsError(f"实验工作区已存在，拒绝覆盖: {root}")
+            shutil.rmtree(root)
         paths = cls(
             root=root,
             base_snapshot=root / "base",

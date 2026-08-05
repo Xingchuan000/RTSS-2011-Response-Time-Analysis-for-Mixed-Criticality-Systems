@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from .action_config import ActionConfigMutation
+from .action_config import ActionConfigMutation, ActionStepMutation
 from .bundle_tamper import BundleTamperMutation
 from .coherent_source_patch import CoherentSourcePatchMutation
 from .envelope import EnvelopeMutation
 from .tree_ranking import DangerousTop1Mutation
+from .retroactive_release_budget import RetroactiveReleaseBudgetMutation
 
 
 MUTATOR_FACTORY = {
@@ -15,12 +16,13 @@ MUTATOR_FACTORY = {
     "ALL_INVALID_FORCE_TOP1": CoherentSourcePatchMutation,
     "GUARD_REMOVAL": CoherentSourcePatchMutation,
     "GUARD_ABLATION": CoherentSourcePatchMutation,
-    "ACTION_RATIO_2_TO_5": ActionConfigMutation,
-    "ACTION_SEMANTICS": ActionConfigMutation,
+    "ACTION_RATIO_2_TO_5": ActionStepMutation,
+    "ACTION_SEMANTICS": ActionStepMutation,
     "RUNTIME_SOURCE": CoherentSourcePatchMutation,
     "ENVELOPE": EnvelopeMutation,
     "ROUNDING_TO_NEAREST": CoherentSourcePatchMutation,
-    "RETROACTIVE_RELEASE_BUDGET": CoherentSourcePatchMutation,
+    "RETROACTIVE_RELEASE_BUDGET": RetroactiveReleaseBudgetMutation,
+    "C3_RETROACTIVE_RELEASE_BUDGET": RetroactiveReleaseBudgetMutation,
     "MODEL_SEMANTICS_MUTATION": CoherentSourcePatchMutation,
     "SOURCE_BINDING_TAMPER": BundleTamperMutation,
     "E1_DEADLINE_CLEANUP_REMOVE": CoherentSourcePatchMutation,
@@ -36,7 +38,6 @@ MUTATOR_FACTORY = {
     "BUNDLE_ARTIFACT_DELETE": BundleTamperMutation,
     "BUNDLE_TREE_TAMPER": BundleTamperMutation,
     "BUNDLE_INTEGRITY": BundleTamperMutation,
-    "ENVELOPE": EnvelopeMutation,
 }
 
 

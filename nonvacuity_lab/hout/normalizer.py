@@ -16,6 +16,7 @@ class NormalizedDecisionEvent:
     leaf_id: int | None = None
     raw_top1_action_id: int | None = None
     raw_top1_valid: bool | None = None
+    rejected_action_id: int | None = None
     selected_action_id: int | None = None
     selected_rank: int | None = None
     all_invalid: bool = False
@@ -75,6 +76,7 @@ def normalize_event(raw: dict[str, Any]) -> NormalizedDecisionEvent:
         leaf_id=_optional_int(canonical.get("leaf_id")),
         raw_top1_action_id=_optional_int(canonical.get("raw_top1_action_id")),
         raw_top1_valid=_optional_bool(canonical.get("raw_top1_valid")),
+        rejected_action_id=_optional_int(canonical.get("rejected_action_id")),
         selected_action_id=_optional_int(canonical.get("selected_action_id")),
         selected_rank=_optional_int(canonical.get("selected_rank")),
         all_invalid=bool(canonical["all_invalid"]),

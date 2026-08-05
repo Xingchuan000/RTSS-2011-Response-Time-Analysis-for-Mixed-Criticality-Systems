@@ -71,6 +71,17 @@ def action_violates_hi_decrease_guard(
     return any(ordered_tasks[idx].criticality is Criticality.HI for idx in action.decrease_indices)
 
 
+def round_budget_product(value: float, *, direction: str, mode: str) -> int:
+    """Round one budget product using the experiment's executable semantics."""
+    if direction not in {"increase", "decrease"}:
+        raise ValueError(f"UNSUPPORTED_BUDGET_DIRECTION:{direction}")
+    if mode == "ceil_floor":
+        return math.ceil(value) if direction == "increase" else math.floor(value)
+    if mode == "nearest":
+        return int(round(value))
+    raise ValueError(f"UNSUPPORTED_ROUNDING_MODE:{mode}")
+
+
 def build_budget_action_space(
     ordered_tasks: Sequence[Task],
     *,
@@ -488,7 +499,7 @@ def apply_budget_action_candidate(
         old_inc = budget_state.budgets[inc_name]
         inc_task = ordered_tasks[action.increase_idx]
         raw_inc = old_inc * (1.0 + action.increase_ratio)
-        inc_value = math.ceil(raw_inc) if rounding_mode == "ceil_floor" else int(round(raw_inc))
+        inc_value = round_budget_product(raw_inc, direction="increase", mode=rounding_mode)
         inc_value = max(inc_value, old_inc + int(min_budget_delta))
 
         if inc_task.criticality is Criticality.HI:
@@ -503,7 +514,7 @@ def apply_budget_action_candidate(
         dec_name = task_names[dec_idx]
         old_dec = budget_state.budgets[dec_name]
         raw_dec = old_dec * (1.0 - action.decrease_ratio)
-        dec_value = math.floor(raw_dec) if rounding_mode == "ceil_floor" else int(round(raw_dec))
+        dec_value = round_budget_product(raw_dec, direction="decrease", mode=rounding_mode)
         dec_value = min(dec_value, old_dec - int(min_budget_delta))
         candidate[dec_name] = max(1, dec_value)
 
