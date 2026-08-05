@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import traceback
 from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping
+
+# Allow direct execution via ``python scripts/bind_ppp_nonvacuity_targets.py``
+# without requiring an editable installation of the repository.
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPOSITORY_ROOT))
 
 from nonvacuity_lab.audit.action_risk import classify_actions
 from nonvacuity_lab.canonical import file_hash, tree_hash
