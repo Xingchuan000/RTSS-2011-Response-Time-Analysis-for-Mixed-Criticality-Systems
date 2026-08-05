@@ -5,6 +5,7 @@ import importlib
 import json
 from pathlib import Path
 import sys
+import traceback
 
 from ..canonical import tree_hash
 from ..config_io import validate_config_kind, verify_config_hash
@@ -146,7 +147,7 @@ def _requires_z3(mutations: list[dict]) -> bool:
         for item in mutations
     )
 
-def run_doctor(config_path: Path, output_path: Path | None = None) -> DoctorReceipt:
+def _run_doctor_impl(config_path: Path, output_path: Path | None = None) -> DoctorReceipt:
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     validate_config_kind(config)
     verify_config_hash(config)
@@ -238,3 +239,61 @@ def _importable(name):
     try: importlib.import_module(name)
     except Exception: return False
     return True
+
+def run_doctor(config_path: Path, output_path: Path | None = None) -> DoctorReceipt:
+    """Run doctor and always materialize a diagnostic receipt.
+
+    The original implementation could raise before writing ``output_path``
+    when the config hash/kind or source binding envelope was malformed.  The
+    PowerShell wrapper would then read a stale receipt and hide the real
+    failure.  Fail closed, but preserve the exception and traceback in a fresh
+    receipt so the next action is deterministic.
+    """
+
+    try:
+        return _run_doctor_impl(config_path, output_path)
+    except Exception as exc:  # diagnostic boundary: never reuse a stale receipt
+        config_path = Path(config_path).resolve()
+        config: dict = {}
+        try:
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                config = raw
+        except Exception:
+            config = {}
+
+        actual_source_hash = ""
+        source_value = config.get("source_binding", {}).get("clean_source_root")
+        if source_value:
+            try:
+                source_path = Path(str(source_value)).resolve()
+                if source_path.is_dir():
+                    actual_source_hash = tree_hash(source_path)
+            except Exception:
+                actual_source_hash = ""
+
+        check = DoctorCheck.fail(
+            "doctor_setup",
+            "doctor setup failed before normal checks completed",
+            exception_type=type(exc).__name__,
+            error=str(exc),
+            traceback=traceback.format_exc(),
+            config_path=str(config_path),
+        )
+        receipt = DoctorReceipt(
+            "nonvacuity_doctor_receipt_v1",
+            str(config.get("campaign_id", "UNKNOWN_CAMPAIGN")),
+            str(config.get("config_sha256", "")),
+            actual_source_hash,
+            DoctorStatus.FAIL,
+            (check,),
+        )
+        if output_path is not None:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(
+                json.dumps(receipt.to_dict(), indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+        return receipt
+
