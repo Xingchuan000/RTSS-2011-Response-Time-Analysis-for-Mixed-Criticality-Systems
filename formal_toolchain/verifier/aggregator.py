@@ -97,32 +97,53 @@ def _check_proof_role_invariants(
     certificates: dict[str, dict[str, object]],
     claim: str = "DEPLOYED_HI_SAFETY",
 ) -> dict[str, object] | None:
-    """验证 proof_role 不变量：唯一数学根、授权门全 PASS。"""
-    by_id = {str(item["id"]): item for item in registry}
-    math_roots = [item["id"] for item in registry if item.get("proof_role") == "mathematical_root"]
-    if math_roots != ["FINAL_CLAIM_COMPOSITION"]:
-        return {"code": "PROOF_ROLE_INVARIANT_VIOLATED",
-                "math_roots": math_roots}
+    """验证 proof-role 结构完整性，但不把正常的 FAIL/UNRESOLVED 当作包损坏。
 
-    # 数学根必须 PASS
-    root_cert = certificates.get("FINAL_CLAIM_COMPOSITION")
-    if not isinstance(root_cert, dict) or root_cert.get("obligation_status") != "PASS":
-        return {"code": "MATHEMATICAL_ROOT_NOT_PASS",
-                "status": root_cert.get("obligation_status") if root_cert else "MISSING"}
+    最终 claim 的成功确实要求数学根和所有 authorization gate 为 PASS，
+    但该条件应由 :func:`aggregate` 按 certificate 的 failure route 聚合。
+    在这里强制要求 PASS 会把诸如 ``DEPLOYED_POLICY_PRESERVATION`` 的真实
+    策略反例提前改写成 ``PROOF_BUNDLE_INVALID``，遮蔽应报告的
+    ``POLICY_CONTRACT_VIOLATION``。
 
-    # 所有 authorization_gate 必须 PASS
-    auth_gates = [item for item in registry
-                  if item.get("proof_role") == "authorization_gate"
-                  and item.get("activation") == "active"
-                  and claim in item.get("authorization_for", [])
-                  and item.get("id") in certificates]
-    failed_gates = [
-        item["id"] for item in auth_gates
-        if certificates.get(item["id"], {}).get("obligation_status") != "PASS"
+    本检查只负责 fail-closed 的结构约束：唯一数学根存在，并且 claim 所需
+    的数学根与授权门 certificate 均被提供。certificate 的 envelope/hash 与
+    status 合法性由调用方随后独立验证。
+    """
+    math_roots = [
+        str(item["id"])
+        for item in registry
+        if item.get("proof_role") == "mathematical_root"
     ]
-    if failed_gates:
-        return {"code": "AUTHORIZATION_GATE_NOT_PASS",
-                "failed_gates": failed_gates}
+    if math_roots != ["FINAL_CLAIM_COMPOSITION"]:
+        return {
+            "code": "PROOF_ROLE_INVARIANT_VIOLATED",
+            "math_roots": math_roots,
+        }
+
+    root_cert = certificates.get("FINAL_CLAIM_COMPOSITION")
+    if not isinstance(root_cert, dict):
+        return {
+            "code": "MATHEMATICAL_ROOT_CERTIFICATE_MISSING",
+            "status": "MISSING",
+        }
+
+    required_auth_gate_ids = [
+        str(item["id"])
+        for item in registry
+        if item.get("proof_role") == "authorization_gate"
+        and item.get("activation") == "active"
+        and claim in item.get("authorization_for", [])
+    ]
+    missing_auth_gates = [
+        obligation_id
+        for obligation_id in required_auth_gate_ids
+        if not isinstance(certificates.get(obligation_id), dict)
+    ]
+    if missing_auth_gates:
+        return {
+            "code": "AUTHORIZATION_GATE_CERTIFICATE_MISSING",
+            "missing_gates": missing_auth_gates,
+        }
 
     return None
 
