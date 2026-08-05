@@ -192,6 +192,14 @@ def registry_predecessors_or_fail(
     return {x: certificates[x] for x in ids}
 
 
+def _select_route_reference_envelope(envelope_state: Any) -> Mapping[str, Any] | None:
+    """Use the certified envelope on successful proofs; candidate view is failure-only fallback."""
+    return (
+        envelope_state.certified_envelope
+        or envelope_state.candidate_reference_envelope
+    )
+
+
 def build_fresh_verifier_state(
     inputs: Any,
     envelope_state: Any,
@@ -838,10 +846,7 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
     # untrusted candidate-envelope view.  Rebuild that same view even when
     # deployed preservation fails, so component-context integrity remains a
     # structural check and does not hide the policy-contract failure.
-    route_reference_envelope = (
-        envelope_state.candidate_reference_envelope
-        or envelope_state.certified_envelope
-    )
+    route_reference_envelope = _select_route_reference_envelope(envelope_state)
     if route_reference_envelope is not None:
         try:
             fresh_reference = _fresh_reference_taskset(inputs, route_reference_envelope)

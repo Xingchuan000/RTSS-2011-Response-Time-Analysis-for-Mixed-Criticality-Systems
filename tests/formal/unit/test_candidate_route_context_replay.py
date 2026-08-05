@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from formal_toolchain.core.hashing import sha256_object, sha256_proof_object
-from formal_toolchain.verifier import envelope_checker
+from types import SimpleNamespace
+
+from formal_toolchain.verifier import envelope_checker, recompute
 
 
 def test_deployed_failure_keeps_untrusted_candidate_reference_view(monkeypatch):
@@ -66,3 +68,24 @@ def test_deployed_failure_keeps_untrusted_candidate_reference_view(monkeypatch):
     assert reference_view["candidate_envelope_hash"] == sha256_proof_object(candidate)
     assert reference_view["common_candidate_hash"] == sha256_proof_object(common)
     assert reference_view["deployed_candidate_hash"] == sha256_proof_object(deployed)
+
+
+def test_successful_proof_prefers_certified_envelope_for_reference_replay():
+    certified = {"status": "PASS", "schema_version": "certified_envelope_v3"}
+    candidate = {"status": "CANDIDATE", "trust_level": "CANDIDATE_UNVERIFIED"}
+    state = SimpleNamespace(
+        certified_envelope=certified,
+        candidate_reference_envelope=candidate,
+    )
+
+    assert recompute._select_route_reference_envelope(state) is certified
+
+
+def test_deployed_failure_falls_back_to_candidate_reference_view():
+    candidate = {"status": "CANDIDATE", "trust_level": "CANDIDATE_UNVERIFIED"}
+    state = SimpleNamespace(
+        certified_envelope=None,
+        candidate_reference_envelope=candidate,
+    )
+
+    assert recompute._select_route_reference_envelope(state) is candidate
