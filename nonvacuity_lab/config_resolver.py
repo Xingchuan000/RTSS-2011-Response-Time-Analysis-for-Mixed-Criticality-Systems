@@ -154,9 +154,58 @@ def _resolve_v2_campaign(
             if selector and not {"leaf_id", "action_id"}.issubset(target):
                 _bind_symbolic_target(mutation, scoped, dangerous=True)
             elif canonical == "B2" and not {"leaf_id", "action_id"}.issubset(target):
-                _bind_observed_raw_target(mutation, scoped, evidence_field="raw_top1_invalid_count")
+                _bind_observed_raw_target(
+                    mutation,
+                    scoped,
+                    evidence_field="raw_top1_invalid_count",
+                    require_fallback=True,
+                )
             elif canonical == "B3" and not {"leaf_id", "action_id"}.issubset(target):
-                _bind_observed_raw_target(mutation, scoped, evidence_field="all_invalid_count")
+                try:
+                    _bind_observed_raw_target(
+                        mutation,
+                        scoped,
+                        evidence_field="all_invalid_count",
+                    )
+                except ValueError as exc:
+                    # B3 is defined by an observed all-invalid state, not by a
+                    # fixed seed name.  If the historical s1264 scope has no
+                    # such state, search the complete audited population.  The
+                    # experiment remains disabled when no positive witness is
+                    # available anywhere; a zero-count row must never be
+                    # silently promoted into a long-running campaign.
+                    if not str(exc).startswith("OBSERVED_TARGET_EVIDENCE_MISSING:"):
+                        raise
+                    global_rows = [
+                        row for row in audit_rows
+                        if int(row.get("all_invalid_count", 0)) > 0
+                        and row.get("action_ranking")
+                    ]
+                    if not global_rows:
+                        raise ValueError("B3_ALL_INVALID_WITNESS_UNAVAILABLE") from exc
+                    best = max(
+                        global_rows,
+                        key=lambda row: (
+                            int(row.get("all_invalid_count", 0)),
+                            int(row.get("hout_hit_count", 0)),
+                            int(row.get("training_samples", 0)),
+                        ),
+                    )
+                    mutation["seed"] = int(best["seed"])
+                    mutation["tree_variant"] = str(best["tree_variant"])
+                    scoped = _scope_v2_rows(
+                        audit_rows,
+                        seed=mutation["seed"],
+                        variant=mutation["tree_variant"],
+                    )
+                    target.clear()
+                    _bind_seed_target(mutation, scoped, seed=int(mutation["seed"]))
+                    _bind_observed_raw_target(
+                        mutation,
+                        scoped,
+                        evidence_field="all_invalid_count",
+                    )
+                    target["dynamic_seed_selection"] = True
             elif canonical == "C2" and not {"leaf_id", "action_id"}.issubset(target):
                 _bind_c2_rounding_target(mutation, scoped)
 
@@ -325,18 +374,50 @@ def _bind_symbolic_target(mutation: dict, scoped: list[dict], *, dangerous: bool
 
 
 
-def _bind_observed_raw_target(mutation: dict, scoped: list[dict], *, evidence_field: str) -> None:
-    """Bind B2/B3 to an original raw top-1 action, never to an unpromoted action."""
-    candidates = [row for row in scoped if row.get("action_ranking")]
+def _bind_observed_raw_target(
+    mutation: dict,
+    scoped: list[dict],
+    *,
+    evidence_field: str,
+    require_fallback: bool = False,
+) -> None:
+    """Bind B2/B3 only to a positive, behavior-relevant observed witness.
+
+    B2 needs an invalid raw top-1 for which ranked-first-valid actually chose a
+    lower-ranked action.  Merely observing an invalid top-1 is insufficient:
+    if the baseline already produced noop, replacing first-valid by noop is
+    behaviorally equivalent.  B3 requires a genuinely observed all-invalid
+    state.  Zero-count rows are rejected instead of being selected by a
+    max-over-empty-evidence tie.
+    """
+
+    candidates = []
+    for row in scoped:
+        if not row.get("action_ranking"):
+            continue
+        evidence = int(row.get(evidence_field, 0))
+        fallback = int(row.get("fallback_count", 0))
+        rank_histogram = row.get("selected_rank_histogram", {})
+        lower_rank_selected = fallback > 0 or (
+            isinstance(rank_histogram, dict)
+            and any(int(rank) > 0 and int(count) > 0 for rank, count in rank_histogram.items())
+        )
+        if evidence <= 0:
+            continue
+        if require_fallback and not lower_rank_selected:
+            continue
+        candidates.append(row)
     if not candidates:
-        raise ValueError(f"SYMBOLIC_RAW_TARGET_MISSING:{evidence_field}")
+        qualifier = ":fallback_required" if require_fallback else ""
+        raise ValueError(
+            f"OBSERVED_TARGET_EVIDENCE_MISSING:{evidence_field}{qualifier}"
+        )
     row = max(
         candidates,
         key=lambda item: (
-            int(item.get(evidence_field, 0) > 0),
             int(item.get(evidence_field, 0)),
-            int(item.get("hout_hit_count", 0)),
             int(item.get("fallback_count", 0)),
+            int(item.get("hout_hit_count", 0)),
             int(item.get("training_samples", 0)),
         ),
     )
@@ -347,6 +428,8 @@ def _bind_observed_raw_target(mutation: dict, scoped: list[dict], *, evidence_fi
         "original_ranking": ranking,
         "activation_evidence_field": evidence_field,
         "activation_evidence_count": int(row.get(evidence_field, 0)),
+        "baseline_fallback_count": int(row.get("fallback_count", 0)),
+        "baseline_selected_rank_histogram": dict(row.get("selected_rank_histogram", {})),
     })
 
 
@@ -821,12 +904,14 @@ def refresh_resolved_runtime_bindings(
                 activation.update({
                     "require_baseline_reject": True,
                     "require_selection_difference": True,
+                    "difference_scope": "global",
                 })
             elif canonical == "B3":
                 activation.update({
                     "require_all_invalid": True,
                     "require_selected_after_mutation": True,
                     "require_selection_difference": True,
+                    "difference_scope": "global",
                 })
             elif canonical == "B4":
                 activation.update({

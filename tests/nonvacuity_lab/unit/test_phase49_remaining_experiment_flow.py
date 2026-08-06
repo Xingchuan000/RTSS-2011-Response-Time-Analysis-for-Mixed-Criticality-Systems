@@ -405,26 +405,37 @@ def test_leaf_coverage_reads_jsonl_hout_output(tmp_path: Path):
     assert row["rejected_action_histogram"]["4"] == 1
 
 
-def test_d1_coordinate_fallback_finds_limiting_lo_upper(tmp_path: Path):
+def test_d1_coordinate_requires_authoritative_binding(tmp_path: Path):
+    import pytest
     from nonvacuity_lab.runners.campaign import _resolve_d1_envelope_coordinate
 
     seed_dir = tmp_path / "s77"
     formal = seed_dir / "formal_inputs"
     formal.mkdir(parents=True)
-    (formal / "code_taskset_canonical.json").write_text(
-        json.dumps({"ordered_tasks": [
-            {"name": "LO_A", "criticality": "LO", "action_hard_upper": 20},
-            {"name": "LO_B", "criticality": "LO", "action_hard_upper": 30},
-        ]}),
+    target = formal / "certified_reference_envelope.json"
+    target.write_text(
+        json.dumps({"tasks": {"LO_B": {"upper": 30}}}),
         encoding="utf-8",
     )
+
+    with pytest.raises(ValueError, match="D1_AUTHORITATIVE_ENVELOPE_BINDING_MISSING"):
+        _resolve_d1_envelope_coordinate(
+            selected={"limiting_lo_task": "LO_B"},
+            parameters={},
+            seed_dir=seed_dir,
+        )
+
     target_file, pointer = _resolve_d1_envelope_coordinate(
-        selected={"limiting_lo_task": "LO_B"},
+        selected={
+            "limiting_lo_task": "LO_B",
+            "envelope_target_file": "formal_inputs/certified_reference_envelope.json",
+            "envelope_json_pointer": "/tasks/LO_B/upper",
+        },
         parameters={},
         seed_dir=seed_dir,
     )
-    assert target_file == "formal_inputs/code_taskset_canonical.json"
-    assert pointer == "/ordered_tasks/1/action_hard_upper"
+    assert target_file == "formal_inputs/certified_reference_envelope.json"
+    assert pointer == "/tasks/LO_B/upper"
 
 
 def test_research_campaign_configurator_enables_and_disables_rows(tmp_path: Path):

@@ -140,3 +140,53 @@ def test_c1_inc_only_updates_copied_recipe_and_artifact(tmp_path: Path):
     assert updated_actions[1]["decrease_ratio"] == 0.02
     assert recipe["kwargs"]["runtime_args"]["budget_increase_ratio"] == 0.05
     assert recipe["kwargs"]["runtime_args"]["budget_decrease_ratio"] == 0.02
+
+
+def test_action_step_matches_recipe_rows_by_action_id_not_position(tmp_path: Path):
+    seed = tmp_path / "seed"
+    variant = seed / "best_overall"
+    formal_inputs = seed / "formal_inputs"
+    variant.mkdir(parents=True)
+    formal_inputs.mkdir(parents=True)
+    actions = [
+        {"action_id": 0, "increase_task": "lo0", "increase_ratio": 0.02, "decrease_tasks": []},
+        {"action_id": 1, "increase_task": None, "increase_ratio": 0.02, "decrease_tasks": ["lo0"], "decrease_ratio": 0.02},
+    ]
+    (variant / "action_definitions.json").write_text(json.dumps({"actions": actions}), encoding="utf-8")
+    (variant / "artifact_manifest.json").write_text(
+        json.dumps({"files": {"action_definitions.json": "old"}}), encoding="utf-8"
+    )
+    (formal_inputs / "target_recipe.json").write_text(
+        json.dumps({
+            "factory": "example:build",
+            "kwargs": {
+                "expected_action_definitions": list(reversed(actions)),
+                "runtime_args": {
+                    "budget_increase_ratio": 0.02,
+                    "budget_decrease_ratio": 0.02,
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+    result = ActionStepMutation().apply(
+        MutationContext(
+            mutation_id="C1",
+            source_root=tmp_path,
+            mutated_seed=seed,
+            source_overlay=None,
+            parameters={
+                "tree_variant": "best_overall",
+                "direction": "inc_only",
+                "before_ratio": 0.02,
+                "after_ratio": 0.05,
+            },
+        )
+    )
+    assert result.status == "PASS"
+    artifact = json.loads((variant / "action_definitions.json").read_text(encoding="utf-8"))["actions"]
+    recipe = json.loads((formal_inputs / "target_recipe.json").read_text(encoding="utf-8"))
+    expected = recipe["kwargs"]["expected_action_definitions"]
+    assert artifact == expected
+    assert expected[0]["action_id"] == 0
+    assert expected[0]["increase_ratio"] == 0.05

@@ -62,6 +62,64 @@ ROUTED_FAILURES = frozenset({
     "CONCRETE_TIMING_COUNTEREXAMPLE", "UNRESOLVED",
 })
 
+# These obligations can be replayed solely from the sealed request, source
+# overlay, and fresh runtime adapter.  Replaying them before candidate-envelope
+# loading prevents a compiler-side candidate_failure.json from hiding the
+# scientifically relevant first failing model/policy obligation.
+EARLY_DECISIVE_OBLIGATIONS = frozenset({
+    "OVERHEAD_PROFILE",
+    "MODE_SEMANTICS_CONFORMANCE",
+    "DEMAND_ORACLE_BATCH_CONTRACT",
+    "HI_NONTRUNCATION",
+    "DEADLINE_OBSERVATION",
+    "EFFECTIVE_EVENT_ORDER",
+    "CONTROLLER_POSTCLOSURE",
+    "ACTIVE_RELEASE_BUDGET_INVARIANT",
+})
+
+
+def _replay_early_decisive_failure(*, inputs: Any, active: list[str],
+                                    order: list[str]) -> dict[str, Any] | None:
+    """Return the first independently reproduced decisive failure, if any.
+
+    This is deliberately fail-closed: only a checker result whose status is
+    exactly ``FAIL`` is returned.  Missing evidence, checker exceptions, and
+    ``UNRESOLVED`` results do not convert a malformed candidate into a semantic
+    negative; normal candidate structural verification remains responsible for
+    those cases.
+    """
+
+    route_strategy = resolve_route(inputs.proof_route)
+    for obligation_id in order:
+        if obligation_id not in active or obligation_id not in EARLY_DECISIVE_OBLIGATIONS:
+            continue
+        checker = checker_for(obligation_id, route_strategy=route_strategy)
+        if checker is None:
+            continue
+        try:
+            checked = checker(
+                raw_inputs=inputs,
+                candidate_evidence=None,
+                expected_context_hash=expected_context_for_obligation(
+                    obligation_id, inputs.contexts
+                ),
+                verified_predecessors={},
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        if checked.get("status") != "FAIL":
+            continue
+        failure = checked.get("failure") if isinstance(checked.get("failure"), Mapping) else {}
+        route = str(checked.get("route") or failure.get("route") or "UNRESOLVED")
+        code = str(checked.get("code") or failure.get("code") or f"{obligation_id}_FAILED")
+        return {
+            "obligation_id": obligation_id,
+            "route": route,
+            "code": code,
+            "witness": checked.get("witness", checked),
+        }
+    return None
+
 
 def _read(path: Path) -> Any:
     return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -811,6 +869,20 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
     if not phase_k_map.is_file():
         summary = _fail_summary(active=active, status="UNRESOLVED",
                                 code="PHASE_K_CASE_MAP_MISSING")
+        _write(out_dir / "proof_summary.json", summary)
+        return summary
+
+    early_failure = _replay_early_decisive_failure(
+        inputs=inputs, active=active, order=order
+    )
+    if early_failure is not None:
+        summary = _fail_summary(
+            active=active,
+            status=str(early_failure["route"]),
+            code=str(early_failure["code"]),
+            violated_obligation_id=str(early_failure["obligation_id"]),
+            witness=early_failure.get("witness"),
+        )
         _write(out_dir / "proof_summary.json", summary)
         return summary
 

@@ -212,9 +212,26 @@ class ActionStepMutation:
         recipe_after = json.loads(json.dumps(recipe_before))
         action_rows = _action_rows(action_after)
         expected_rows = recipe_after["kwargs"]["expected_action_definitions"]
+        if not isinstance(expected_rows, list) or any(
+            not isinstance(row, dict) for row in expected_rows
+        ):
+            raise ValueError("C1 expected_action_definitions 必须为 object array")
+        action_by_id = _rows_by_action_id(action_rows, label="artifact")
+        expected_by_id = _rows_by_action_id(expected_rows, label="recipe")
+        if set(action_by_id) != set(expected_by_id):
+            raise ValueError(
+                "C1 action identity set mismatch: "
+                f"artifact={sorted(action_by_id)} recipe={sorted(expected_by_id)}"
+            )
         changed_action_ids = []
-        for row, expected in zip(action_rows, expected_rows, strict=True):
-            action_id = int(row["action_id"])
+        # Do not rely on positional zip.  Real VIPER exports may serialize the
+        # tree artifact and target recipe in different stable orders while
+        # preserving action_id identity.  Updating by position can therefore
+        # create a recipe/artifact mismatch that only appears during seed
+        # import as REAL_TARGET_ACTION_SCHEMA_MISMATCH.
+        for action_id in sorted(action_by_id):
+            row = action_by_id[action_id]
+            expected = expected_by_id[action_id]
             changed = False
             if direction in {"inc_only", "both"} and row.get("increase_task") is not None:
                 if float(row["increase_ratio"]) != before_ratio:
@@ -235,6 +252,14 @@ class ActionStepMutation:
             runtime_args["budget_increase_ratio"] = after_ratio
         if direction in {"dec_only", "both"}:
             runtime_args["budget_decrease_ratio"] = after_ratio
+        if action_rows != expected_rows:
+            # The formal target factory compares these arrays exactly.  Keep
+            # the recipe serialization in the artifact's canonical order after
+            # applying identity-based updates.
+            recipe_after["kwargs"]["expected_action_definitions"] = [
+                dict(row) for row in action_rows
+            ]
+            expected_rows = recipe_after["kwargs"]["expected_action_definitions"]
         action_path.write_text(
             json.dumps(action_after, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
@@ -290,6 +315,18 @@ class ActionStepMutation:
             and result.artifact_manifest_validation == "PASS"
         )
         return PreflightResult("PASS" if valid else "FAIL", result.to_dict())
+
+
+def _rows_by_action_id(rows: list[dict[str, Any]], *, label: str) -> dict[int, dict[str, Any]]:
+    result: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        if "action_id" not in row:
+            raise ValueError(f"C1 {label} action row 缺少 action_id")
+        action_id = int(row["action_id"])
+        if action_id in result:
+            raise ValueError(f"C1 {label} action_id 重复: {action_id}")
+        result[action_id] = row
+    return result
 
 
 def get_pointer(value: Any, pointer: str) -> Any:

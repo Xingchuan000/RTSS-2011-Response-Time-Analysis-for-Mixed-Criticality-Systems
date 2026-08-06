@@ -105,6 +105,26 @@ def run_semantic_recompile(
         timeout_seconds=timeout_seconds,
     )
     proof_result = _read_proof_result(workspace.semantic_output)
+    diagnostic = {
+        "schema_version": "semantic_recompile_diagnostic_v1",
+        "mutation_id": manifest.mutation_id,
+        "mutator_kind": kind,
+        "seed_dir": str(workspace.mutated_seed),
+        "source_root": str(proof_source),
+        "proof_output": str(workspace.semantic_output),
+        "returncode": int(receipt.get("returncode", -1)),
+        "proof_result_status": proof_result.get("result_status"),
+        "failure_route": proof_result.get("failure_route"),
+        "failure_code": proof_result.get("failure_code"),
+        "violated_obligation_id": proof_result.get("violated_obligation_id"),
+        "failure_message": proof_result.get("failure_message"),
+        "seed_import_error_log": str(workspace.semantic_output / "logs" / "seed_import_error.log"),
+        "candidate_failure": str(workspace.semantic_output / "candidate" / "candidate_failure.json"),
+    }
+    write_input_snapshot(
+        workspace.semantic_output.parent / "semantic_recompile_diagnostic.json",
+        diagnostic,
+    )
     write_command_receipt(
         workspace.command_output / "semantic_recompile.json",
         argv=argv,

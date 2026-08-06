@@ -843,51 +843,25 @@ def _resolve_d1_envelope_coordinate(
     parameters: dict[str, Any],
     seed_dir: Path,
 ) -> tuple[str, str]:
-    """Resolve a seed-relative integer envelope coordinate for D1.
+    """Resolve only an authoritative reference-envelope coordinate for D1.
 
-    Preferred proof artifacts can publish ``envelope_target_file`` and
-    ``envelope_json_pointer``.  For older bundles, a small research-oriented
-    adapter finds the limiting LO task's certified upper-bound field in the
-    copied seed inputs.  The verifier is still run fresh for every delta.
+    D1 is a reference-certificate sensitivity experiment.  Guessing an
+    arbitrary ``*upper`` field from a copied seed can mutate a derived model
+    snapshot instead of the certified reference envelope and therefore fail in
+    an unrelated model/preflight layer.  The selected RTA artifact (or an
+    explicit campaign parameter) must publish the exact seed-relative file and
+    JSON pointer.
     """
 
     raw_file = selected.get("envelope_target_file") or parameters.get("target_file")
     raw_pointer = selected.get("envelope_json_pointer") or parameters.get("json_pointer")
-    if raw_file and raw_pointer:
-        relative = _seed_relative_json_file(seed_dir, str(raw_file), str(raw_pointer))
-        return relative, str(raw_pointer)
-
-    limiting_task = _limiting_lo_task_name(selected)
-    key_priority = (
-        "action_hard_upper",
-        "certified_upper_bound",
-        "runtime_budget_upper",
-        "lo_budget_upper",
-        "budget_upper",
-        "upper_budget",
-        "max_budget",
-    )
-    candidates: list[tuple[int, str, str]] = []
-    for path in sorted(seed_dir.rglob("*.json")):
-        if any(part in {"proof_bundle", "verified", "candidate"} for part in path.parts):
-            continue
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        for pointer, value, score in _iter_envelope_coordinates(
-            raw,
-            limiting_task=limiting_task,
-            key_priority=key_priority,
-        ):
-            if isinstance(value, int) and not isinstance(value, bool):
-                candidates.append((score, path.relative_to(seed_dir).as_posix(), pointer))
-    if not candidates:
+    if not raw_file or not raw_pointer:
         raise ValueError(
-            "D1 limiting artifact 缺少 envelope target/pointer，且无法在 seed 输入中解析整数上界"
+            "D1_AUTHORITATIVE_ENVELOPE_BINDING_MISSING:"
+            "RTA artifact must provide envelope_target_file and envelope_json_pointer"
         )
-    _, relative, pointer = max(candidates, key=lambda item: (item[0], -len(item[1]), item[1]))
-    return relative, pointer
+    relative = _seed_relative_json_file(seed_dir, str(raw_file), str(raw_pointer))
+    return relative, str(raw_pointer)
 
 
 def _seed_relative_json_file(seed_dir: Path, raw_file: str, pointer: str) -> str:

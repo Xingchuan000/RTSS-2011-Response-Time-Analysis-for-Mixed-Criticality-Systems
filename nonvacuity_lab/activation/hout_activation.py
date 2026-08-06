@@ -56,7 +56,14 @@ def evaluate_hout_activation(
     require_budget_difference = bool(rule.get("require_any_budget_difference", False))
     require_release_difference = bool(rule.get("require_active_release_budget_difference", False))
     require_selection_difference = bool(rule.get("require_selection_difference", False))
-    paired_differences = _paired_differences(base_target, mutated_target)
+    target_differences = _paired_differences(base_target, mutated_target)
+    global_differences = _paired_differences(base, mutated)
+    difference_scope = str(rule.get("difference_scope", "target"))
+    if difference_scope not in {"target", "global"}:
+        raise ValueError(f"unsupported activation difference_scope: {difference_scope}")
+    paired_differences = (
+        global_differences if difference_scope == "global" else target_differences
+    )
     activated = bool(base_target or mutated_target)
     if require_reject:
         activated = activated and bool(baseline_rejects)
@@ -96,6 +103,9 @@ def evaluate_hout_activation(
             "baseline_reject_count": len(baseline_rejects),
             "mutated_reject_count": len(mutated_rejects),
             **paired_differences,
+            "difference_scope": difference_scope,
+            "target_differences": target_differences,
+            "global_differences": global_differences,
             "base_event_count": len(base),
             "mutated_event_count": len(mutated),
         },
