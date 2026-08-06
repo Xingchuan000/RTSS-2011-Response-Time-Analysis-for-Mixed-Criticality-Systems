@@ -143,3 +143,49 @@ def test_refresh_rejects_stale_b3_target_before_long_run(tmp_path, monkeypatch):
         "evidence_field": "all_invalid_count",
         "evidence_count": 0,
     }
+
+
+def test_refresh_defers_b2_lower_rank_witness_to_paired_hout(tmp_path, monkeypatch):
+    from nonvacuity_lab.config_resolver import refresh_resolved_runtime_bindings
+
+    monkeypatch.setattr(
+        "nonvacuity_lab.mutators.catalog.selection_mutations.build_selection_catalog",
+        lambda source_root: {"B2": ()},
+    )
+    monkeypatch.setattr(
+        "nonvacuity_lab.config_resolver._bind_symbolic_activation",
+        lambda mutation, canonical: None,
+    )
+    config = {
+        "mutations": [
+            {
+                "mutation_id": "B2_demo",
+                "resolved_target": {
+                    "tree_path": str(tmp_path / "tree.json"),
+                    "leaf_id": 1,
+                    "action_id": 0,
+                    "activation_evidence_field": "raw_top1_invalid_count",
+                    "activation_evidence_count": 25,
+                },
+                "mutator": {"parameters": {}},
+                "activation": {},
+            }
+        ]
+    }
+
+    refreshed = refresh_resolved_runtime_bindings(
+        config,
+        source_root=tmp_path,
+        mutation_ids={"B2_demo"},
+    )
+
+    mutation = refreshed["mutations"][0]
+    assert mutation.get("enabled", True) is True
+    assert mutation["activation"]["require_selection_difference"] is True
+    assert mutation["activation"]["difference_scope"] == "global"
+    assert mutation["metadata"]["b2_lower_rank_witness"] == {
+        "status": "DEFERRED_TO_PAIRED_HOUT",
+        "fallback_count_present": False,
+        "histogram_present": False,
+        "fallback_count": 0,
+    }

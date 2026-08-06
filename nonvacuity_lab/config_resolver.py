@@ -826,6 +826,14 @@ def _validate_refreshed_observed_target(mutation: dict, canonical: str) -> bool:
             return False
         raise ValueError(detail)
     if canonical == "B2":
+        # Historical audit targets seal raw-top1-invalid evidence but do not
+        # necessarily carry a fallback count or selected-rank histogram.  Those
+        # optional fields cannot be used as a mandatory setup gate.  B2's
+        # decisive activation condition is the paired-HOUT selection difference
+        # configured below; if no lower-ranked action is actually replaced by
+        # noop, activation will fail there without aborting the whole mode.
+        fallback_count_present = "baseline_fallback_count" in target
+        histogram_present = "baseline_selected_rank_histogram" in target
         fallback_count = int(target.get("baseline_fallback_count", 0) or 0)
         histogram = target.get("baseline_selected_rank_histogram", {})
         lower_rank_selected = fallback_count > 0 or (
@@ -835,8 +843,17 @@ def _validate_refreshed_observed_target(mutation: dict, canonical: str) -> bool:
                 for rank, count in histogram.items()
             )
         )
-        if not lower_rank_selected:
-            raise ValueError("B2_LOWER_RANK_FALLBACK_WITNESS_UNAVAILABLE")
+        metadata = mutation.setdefault("metadata", {})
+        metadata["b2_lower_rank_witness"] = {
+            "status": (
+                "AUDIT_CONFIRMED"
+                if lower_rank_selected
+                else "DEFERRED_TO_PAIRED_HOUT"
+            ),
+            "fallback_count_present": fallback_count_present,
+            "histogram_present": histogram_present,
+            "fallback_count": fallback_count,
+        }
     return True
 
 def refresh_resolved_runtime_bindings(
