@@ -18,6 +18,21 @@ from .check_registry import check_expected_obligations, load_obligation_ids
 from ..analysis.rta_slack import scan_rta_slack, select_minimum_slack
 
 
+
+def _coherent_text_patches(mutation: dict) -> tuple[dict, ...]:
+    """Return only patches that use SourcePatchSpec's text schema."""
+
+    mutator = mutation.get("mutator", {})
+    if not isinstance(mutator, dict) or str(mutator.get("kind", "")) != "coherent_source_patch":
+        return ()
+    parameters = mutator.get("parameters", {})
+    if not isinstance(parameters, dict):
+        return ()
+    patches = parameters.get("patches", ())
+    if not isinstance(patches, (list, tuple)):
+        return ()
+    return tuple(item for item in patches if isinstance(item, dict))
+
 def _core_findings(source_root: Path):
     findings = []
     for package in ("amc_py", "formal_toolchain"):
@@ -188,12 +203,11 @@ def _run_doctor_impl(config_path: Path, output_path: Path | None = None) -> Doct
         )
         checks.append(check_hout_profile(profile))
     for mutation in enabled_mutations:
-        mutator = mutation.get("mutator", {})
-        parameters = mutator.get("parameters", {}) if isinstance(mutator, dict) else {}
-        patches = parameters.get("patches", []) if isinstance(parameters, dict) else []
-        for patch in patches:
-            if isinstance(patch, dict):
-                checks.append(check_patch_binding(source, patch))
+        # Other mutators may also expose a ``patches`` array, but C3 for
+        # example stores only target_file entries and validates them through
+        # its own AST-aware preflight below.
+        for patch in _coherent_text_patches(mutation):
+            checks.append(check_patch_binding(source, patch))
     for mutation in enabled_mutations:
         try:
             v1 = _v2_mutation_to_v1(
@@ -215,16 +229,39 @@ def _run_doctor_impl(config_path: Path, output_path: Path | None = None) -> Doct
             roots = metadata.get("bundle_roots", [])
             minimum_population_size = int(metadata.get("minimum_population_size", 20))
             try:
-                rows = scan_rta_slack([Path(str(item)) for item in roots])
+                resolved_roots = []
+                for item in roots:
+                    root = Path(str(item))
+                    if not root.is_absolute():
+                        root = source / root
+                    resolved_roots.append(root.resolve())
+                rows = scan_rta_slack(resolved_roots)
                 identities = {(row.get("seed"), row.get("variant")) for row in rows}
                 if len(identities) < minimum_population_size:
                     raise ValueError(
                         f"fewer than {minimum_population_size} proof artifacts: {len(identities)}"
                     )
                 selected = select_minimum_slack(rows)
-                if not selected.get("envelope_target_file") or not selected.get("envelope_json_pointer"):
-                    raise ValueError("minimum-slack record lacks target adapter fields")
-                checks.append(DoctorCheck.pass_("d1_population", "D1 proof artifact population valid", count=len(identities), minimum=minimum_population_size))
+                # Current all_task_rta_v3 artifacts do not publish an explicit
+                # seed-input JSON coordinate.  The campaign runner already has
+                # a safe fallback adapter that resolves the limiting task to an
+                # integer envelope field in the copied seed inputs.  Exercise
+                # that exact resolver here instead of requiring legacy fields.
+                from ..runners.campaign import _resolve_dynamic_envelope_manifest
+                resolved_manifest = _resolve_dynamic_envelope_manifest(
+                    manifest, source_root=source
+                )
+                dynamic = resolved_manifest.metadata.get("dynamic_selection", {})
+                checks.append(DoctorCheck.pass_(
+                    "d1_population",
+                    "D1 proof artifact population and dynamic target valid",
+                    count=len(identities),
+                    minimum=minimum_population_size,
+                    selected_seed=selected.get("seed"),
+                    selected_variant=selected.get("variant"),
+                    target_file=dynamic.get("resolved_envelope_target_file"),
+                    json_pointer=dynamic.get("resolved_envelope_json_pointer"),
+                ))
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 checks.append(DoctorCheck.fail("d1_population", "D1 proof artifact population invalid", error=str(exc)))
     overall = DoctorStatus.FAIL if any(c.status is DoctorStatus.FAIL for c in checks) else DoctorStatus.PASS

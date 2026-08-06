@@ -284,8 +284,15 @@ def _audit_mutation(
         if not isinstance(target, str) or not target:
             issues.append(PreflightIssue(mid, "BUNDLE_TARGET_MISSING", "bundle tamper 缺少 target_file", "mutator.parameters.target_file"))
         else:
-            target_path = manifest.reuse_source_bundle / target
             tamper_kind = str(parameters.get("tamper_kind", ""))
+            # ``source_file`` tampering runs against an isolated source overlay,
+            # not inside the reused request/candidate bundle.  Validate the
+            # target against the clean source root; the integrity runner copies
+            # it before applying the mutation.
+            if tamper_kind == "source_file":
+                target_path = source_root / target
+            else:
+                target_path = manifest.reuse_source_bundle / target
             if tamper_kind != "replace_from" and not target_path.exists():
                 issues.append(PreflightIssue(mid, "BUNDLE_TARGET_NOT_FOUND", str(target_path), "mutator.parameters.target_file"))
     mode = str(manifest.activation.get("mode", "")).lower()

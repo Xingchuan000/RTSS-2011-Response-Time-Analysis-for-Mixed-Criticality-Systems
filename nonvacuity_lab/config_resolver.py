@@ -595,6 +595,31 @@ def _bundle_json_target(run_root: Path, patterns: tuple[str, ...], keys: set[str
     raise ValueError(f"BUNDLE_JSON_TARGET_NOT_FOUND:{patterns}:{keys}")
 
 
+def _request_json_target(run_root: Path, patterns: tuple[str, ...], keys: set[str]) -> tuple[str, str, object]:
+    """Resolve a verifier-request input copied by integrity_reuse.
+
+    The compiled candidate bundle does not contain the raw integer tree.  F1
+    must therefore mutate the copied request tree while reusing the untouched
+    candidate certificates, which is exactly the stale-input attack being
+    tested.
+    """
+
+    request_root = run_root / "request"
+    if not request_root.is_dir():
+        raise ValueError(f"REQUEST_ROOT_NOT_FOUND:{request_root}")
+    files = [p for pattern in patterns for p in request_root.rglob(pattern)]
+    for path in files:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        found = _find_json_pointer(raw, keys)
+        if found:
+            pointer, value = found
+            return path.relative_to(run_root).as_posix(), pointer, value
+    raise ValueError(f"REQUEST_JSON_TARGET_NOT_FOUND:{patterns}:{keys}")
+
+
 def _bind_integrity_mutation(mutation: dict, *, canonical: str, proof_root: Path, source_root: Path) -> None:
     runs = _proof_run_roots(proof_root)
     base = _choose_base_run(runs)
@@ -602,7 +627,11 @@ def _bind_integrity_mutation(mutation: dict, *, canonical: str, proof_root: Path
     parameters = mutation.setdefault("mutator", {}).setdefault("parameters", {})
     candidate = _candidate_dir(base)
     if canonical == "F1":
-        target, pointer, value = _bundle_json_target(base, ("*integer_tree*.json",), {"threshold_int", "threshold"})
+        target, pointer, value = _request_json_target(
+            base,
+            ("integer_tree.json", "*integer_tree*.json"),
+            {"threshold_int", "threshold"},
+        )
         parameters.update({"target_file": target, "json_pointer": pointer, "value": int(value) + 1})
     elif canonical == "F4":
         target, pointer, value = _bundle_json_target(base, ("*priority*.json", "proof_request.json"), {"priority_order"})
@@ -624,8 +653,16 @@ def _bind_integrity_mutation(mutation: dict, *, canonical: str, proof_root: Path
         target = resolve_f6_obligation_artifact(build_bundle_inventory(candidate))
         parameters.update({"target_file": "candidate/" + target["artifact"]})
     elif canonical in {"F2", "F3"}:
+        # The PROOF_REQUEST certificate is present in every candidate and is
+        # seed/variant-bound through its context.  Replacing this exact common
+        # artifact gives deterministic cross-seed/cross-variant attacks; a
+        # verified proof_summary is not part of the candidate directory.
+        preferred = candidate / "artifacts" / "proof_request.json"
         base_files = sorted(candidate.rglob("*.json"))
-        target_path = next((p for p in base_files if "proof_summary" in p.name), base_files[0] if base_files else None)
+        target_path = preferred if preferred.is_file() else (
+            next((p for p in base_files if p.name == "proof_request.json"), None)
+            or (base_files[0] if base_files else None)
+        )
         if target_path is None:
             raise ValueError("CROSS_BUNDLE_TARGET_MISSING")
         if canonical == "F2":
@@ -659,10 +696,109 @@ def _bind_integrity_mutation(mutation: dict, *, canonical: str, proof_root: Path
         raise ValueError(f"UNKNOWN_INTEGRITY_MUTATION:{canonical}")
 
 
+def refresh_resolved_runtime_bindings(
+    config: dict,
+    *,
+    source_root: Path,
+    mutation_ids: set[str] | None = None,
+) -> dict:
+    """Refresh bindings that depend on the current proof-bundle layout.
+
+    Long-running experiments keep a sealed base config under experiment_data.
+    Source-only fixes must not require repeating HOUT/audit binding, but F1-F7
+    targets and D1's current obligation ID can be safely reconstructed from the
+    proof root already recorded in that config.
+    """
+
+    source_root = Path(source_root).resolve()
+    selected = set(mutation_ids or ())
+    rows = [item for item in config.get("mutations", ()) if isinstance(item, dict)]
+
+    proof_root: Path | None = None
+    for mutation in rows:
+        if str(mutation.get("mutation_id", "")).split("_", 1)[0] != "D1":
+            continue
+        roots = mutation.get("metadata", {}).get("bundle_roots", ())
+        if isinstance(roots, (list, tuple)):
+            candidates = []
+            for item in roots:
+                candidate = Path(str(item))
+                if not candidate.is_absolute():
+                    candidate = source_root / candidate
+                candidate = candidate.resolve()
+                if candidate.is_dir():
+                    candidates.append(candidate)
+            proof_root = next(iter(candidates), None)
+        if proof_root is not None:
+            break
+
+    # Fall back to the nearest ancestor that contains multiple ordinary proof
+    # workspaces when an older config did not publish D1 bundle_roots.
+    if proof_root is None:
+        reuse_roots = [
+            Path(str(item["reuse_source_bundle"])).resolve()
+            for item in rows
+            if item.get("reuse_source_bundle")
+        ]
+        for run_root in reuse_roots:
+            for parent in (run_root, *run_root.parents):
+                if len(_proof_run_roots(parent)) >= 2:
+                    proof_root = parent
+                    break
+            if proof_root is not None:
+                break
+
+    runtime_rebind_ids = {"F1", "F2", "F3"}
+    needs_integrity_root = any(
+        str(item.get("mutation_id", "")) in selected
+        and str(item.get("mutation_id", "")).split("_", 1)[0] in runtime_rebind_ids
+        for item in rows
+    )
+    if needs_integrity_root and proof_root is None:
+        raise ValueError("CURRENT_PROOF_BUNDLE_ROOT_UNRESOLVED")
+
+    for mutation in rows:
+        mutation_id = str(mutation.get("mutation_id", ""))
+        if selected and mutation_id not in selected:
+            continue
+        canonical = mutation_id.split("_", 1)[0]
+        if canonical in runtime_rebind_ids:
+            assert proof_root is not None
+            _bind_integrity_mutation(
+                mutation,
+                canonical=canonical,
+                proof_root=proof_root,
+                source_root=source_root,
+            )
+            mutation["resolution_status"] = "RESOLVED"
+            mutation.pop("resolution_error", None)
+            mutation.pop("resolution_gaps", None)
+        elif canonical == "D1":
+            expected = mutation.setdefault("expected", {})
+            expected["allowed_first_failing_obligations"] = [
+                "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"
+            ]
+            expected.pop("first_failing_obligations", None)
+    return config
+
+
 def _seed_token(path: Path) -> str:
     import re
-    match = re.search(r"(?:^|[/_])s?(\d{2,})(?:$|[/_])", path.as_posix().lower())
-    return match.group(1) if match else path.name
+
+    # Search from the run directory upward.  The global experiment name often
+    # contains ranges such as s1550_1599; scanning the full absolute path from
+    # the front makes every run look like seed 1550 and breaks F2 selection.
+    patterns = (
+        re.compile(r"(?:^|_)r\d+_s(\d+)(?:_|$)"),
+        re.compile(r"(?:^|_)s(\d+)(?:_|$)"),
+    )
+    for part in reversed(path.parts):
+        lowered = part.lower()
+        for pattern in patterns:
+            match = pattern.search(lowered)
+            if match:
+                return match.group(1)
+    return path.name
 
 
 def _variant_token(path: Path) -> str:

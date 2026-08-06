@@ -5,6 +5,7 @@ import re
 import ast
 
 from ..canonical import python_symbol_hash
+from ..mutators.python_binding import bind_symbol
 
 from .schema import DoctorCheck
 
@@ -117,24 +118,77 @@ def check_hout_profile(profile):
 
 
 def check_patch_binding(source_root: Path, patch: dict):
+    """Validate a coherent text patch inside its declared Python symbol.
+
+    Patch catalogs bind snippets to a specific function/class and the mutator
+    applies replacements only inside that symbol.  Counting against the whole
+    file can therefore reject a valid patch merely because the same short
+    snippet occurs in unrelated functions.  Reuse the mutator's exact binding
+    model here so doctor and execution cannot disagree.
+    """
+
     from .schema import DoctorCheck
+
     path = source_root / str(patch.get("target_file", ""))
     if not path.is_file() or path.is_symlink():
         return DoctorCheck.fail("patch_binding", "patch target missing", path=str(path))
     try:
         source = path.read_text(encoding="utf-8")
         ast.parse(source, filename=str(path))
+        target_symbol = str(patch["target_symbol"])
+        bound = bind_symbol(source, target_symbol)
         if patch.get("before_ast_hash"):
-            actual_hash = python_symbol_hash(source, str(patch["target_symbol"]))
+            actual_hash = python_symbol_hash(source, target_symbol)
             if actual_hash != str(patch["before_ast_hash"]):
-                return DoctorCheck.fail("patch_binding", "symbol AST hash mismatch", path=str(path), expected=patch["before_ast_hash"], actual=actual_hash)
+                return DoctorCheck.fail(
+                    "patch_binding",
+                    "symbol AST hash mismatch",
+                    path=str(path),
+                    target_symbol=target_symbol,
+                    expected=patch["before_ast_hash"],
+                    actual=actual_hash,
+                )
         before = str(patch["before_snippet"])
-        count = source.count(before)
         expected = int(patch.get("occurrence", 1))
+        count = bound.source.count(before)
         if count != expected:
-            return DoctorCheck.fail("patch_binding", "before snippet is not unique", path=str(path), expected=expected, actual=count)
-        after = source.replace(before, str(patch["after_snippet"]), 1)
-        ast.parse(after, filename=str(path))
+            return DoctorCheck.fail(
+                "patch_binding",
+                "before snippet count mismatch inside target symbol",
+                path=str(path),
+                target_symbol=target_symbol,
+                expected=expected,
+                actual=count,
+            )
+        changed_symbol = bound.source.replace(
+            before,
+            str(patch["after_snippet"]),
+            expected,
+        )
+        if changed_symbol == bound.source:
+            return DoctorCheck.fail(
+                "patch_binding",
+                "patch would make no change",
+                path=str(path),
+                target_symbol=target_symbol,
+            )
+        lines = source.splitlines(keepends=True)
+        updated = (
+            "".join(lines[: bound.start_line - 1])
+            + changed_symbol
+            + "".join(lines[bound.end_line :])
+        )
+        ast.parse(updated, filename=str(path))
     except (OSError, KeyError, TypeError, SyntaxError, ValueError) as exc:
-        return DoctorCheck.fail("patch_binding", "patch does not parse", path=str(path), error=repr(exc))
-    return DoctorCheck.pass_("patch_binding", "patch binds and parses", path=str(path))
+        return DoctorCheck.fail(
+            "patch_binding",
+            "patch does not parse",
+            path=str(path),
+            error=repr(exc),
+        )
+    return DoctorCheck.pass_(
+        "patch_binding",
+        "patch binds and parses",
+        path=str(path),
+        target_symbol=target_symbol,
+    )

@@ -23,6 +23,7 @@ from nonvacuity_lab.config_io import (
 )
 from nonvacuity_lab.doctor.runner import run_doctor
 from nonvacuity_lab.preflight import audit_v2_campaign_path
+from nonvacuity_lab.config_resolver import refresh_resolved_runtime_bindings
 from nonvacuity_lab.v2_runner import run_v2_campaign
 
 
@@ -250,6 +251,11 @@ def main() -> int:
                     if isinstance(mutation, dict):
                         mutation["enabled"] = str(mutation.get("mutation_id")) in selected
                 config["enabled"] = True
+                refresh_resolved_runtime_bindings(
+                    config,
+                    source_root=project_root,
+                    mutation_ids=selected,
+                )
                 config["source_binding"] = {
                     "clean_source_root": str(project_root),
                     "clean_source_root_sha256": tree_hash(project_root),

@@ -330,7 +330,7 @@
       "activation": {"mode": "hout"},
       "expected": {
         "result_status": "REFERENCE_CERTIFICATE_FAILED",
-        "first_failing_obligations": ["RTA_HI_BOUND"]
+        "first_failing_obligations": ["PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"]
       },
       "metadata": {
         "requires_all_20_bundles": true,
