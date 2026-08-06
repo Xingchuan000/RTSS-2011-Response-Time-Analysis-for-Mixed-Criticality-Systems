@@ -98,3 +98,57 @@ def test_phase_fh_empty_registry_and_direct_certification_fail_closed():
     assert aggregate_p0_certificates({})["status"] != "PASS"
     with pytest.raises(ValueError):
         certify_envelope({"status": "PASS"}, {"status": "PASS"}, {"status": "PASS"}, context_hash="a" * 64)
+
+
+def test_top1_valid_else_noop_is_safe_selection_semantics(tasks):
+    metadata = {
+        "L": {"initial_runtime_budget": 2, "budget_floor": 1, "budget_cap": 10},
+        "H": {"initial_runtime_budget": 3, "budget_floor": 3, "budget_cap": 4},
+    }
+    domain = build_budget_domain(
+        tasks,
+        metadata,
+        runtime_config=type("Config", (), {"processor_overhead": 0})(),
+    )
+    domain["context_hash"] = "a" * 64
+    actions = build_budget_action_space(
+        tasks,
+        action_space="single",
+        budget_increase_ratio=.02,
+        budget_decrease_ratio=.02,
+    )
+    candidate = synthesize_candidate_envelope(
+        domain, actions, tasks, context_hash="a" * 64
+    )
+    candidate["schema_version"] = "candidate_envelope_v2"
+    candidate["safety_polytope_hash"] = "b" * 64
+    from formal_toolchain.policy.actions import build_action_transition_table
+
+    action_transition = build_action_transition_table(
+        actions,
+        tasks,
+        domain["tasks"],
+        rounding_mode="ceil_floor",
+        min_budget_delta=1,
+    )
+    ranking = tuple(action.action_id for action in actions)
+    mask_fallback = {
+        "status": "PASS",
+        "leaves": [{"leaf_id": 0, "ranking": ranking}],
+    }
+    mask_contract = {
+        "shared_with_step": True,
+        "check_safety": True,
+        "selection": "top1_valid_else_noop",
+    }
+    result = check_deployed_policy_preservation(
+        candidate,
+        actions,
+        tasks,
+        mask_fallback_certificate=mask_fallback,
+        action_transition_certificate=action_transition,
+        mask_contract=mask_contract,
+        selection_semantics="top1_valid_else_noop",
+    )
+    assert result["status"] == "PASS"
+    assert result["implicit_noop_checked"] is True

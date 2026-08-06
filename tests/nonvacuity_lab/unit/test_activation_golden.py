@@ -120,3 +120,41 @@ def test_b4_requires_target_guard_to_be_the_unique_blocker():
     }
     assert evaluate_policy_witness(unique)["activated_b4"] is True
     assert evaluate_policy_witness(redundant)["activated_b4"] is False
+
+
+def test_symbolic_builder_accepts_list_action_definitions(tmp_path):
+    pytest.importorskip("z3")
+    import json
+    from nonvacuity_lab.activation.symbolic_model_builder import build_symbolic_problem
+
+    tree = {
+        "root_node_id": 0,
+        "nodes": [],
+        "leaves": [{"node_id": 0, "action_ranking": [0, 1]}],
+        "feature_names": ["x"],
+    }
+    tree_path = tmp_path / "tree.json"
+    tree_path.write_text(json.dumps(tree), encoding="utf-8")
+    features = tmp_path / "features.json"
+    features.write_text(json.dumps(["x"]), encoding="utf-8")
+    tasks = tmp_path / "tasks.json"
+    tasks.write_text(json.dumps({"tasks": [
+        {"name": "L", "criticality": "LO", "initial_runtime_budget": 2,
+         "budget_floor": 1, "action_hard_upper": 3}
+    ]}), encoding="utf-8")
+    actions = tmp_path / "actions.json"
+    actions.write_text(json.dumps([
+        {"action_id": 0, "increase_task": "L", "increase_ratio": 0.5,
+         "minimum_increment": 1},
+        {"action_id": 1, "decrease_tasks": ["L"], "decrease_ratio": 0.5,
+         "minimum_increment": 1},
+    ]), encoding="utf-8")
+    from nonvacuity_lab.canonical import file_hash
+    problem = build_symbolic_problem(
+        {"tree_path": str(tree_path), "tree_sha256": file_hash(tree_path),
+         "leaf_id": 0, "action_id": 0, "original_ranking": [0, 1]},
+        {"feature_schema_path": str(features), "taskset_path": str(tasks),
+         "action_definitions_path": str(actions), "feature_scale": 1000},
+        "B2_NO_FIRST_VALID_DIFFERENCE",
+    )
+    assert problem.metadata["action_id"] == 0

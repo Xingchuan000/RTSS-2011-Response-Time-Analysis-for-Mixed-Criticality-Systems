@@ -30,6 +30,9 @@ from formal_toolchain.core.hashing import sha256_object, sha256_proof_object
 from formal_toolchain.core.artifact import verify_obligation_certificate
 from formal_toolchain.core.registry import load_registry
 from formal_toolchain.conformance.time_domain import build_budget_domain
+from formal_toolchain.conformance.active_release_budget import (
+    check_active_release_budget_source_contract,
+)
 from formal_toolchain.invariant.candidate_envelope import synthesize_candidate_envelope
 from formal_toolchain.invariant.certified_envelope import _certify_envelope_from_verifier
 from formal_toolchain.invariant.common_preservation import check_common_transition_preservation
@@ -1367,6 +1370,17 @@ def _verify_budget_invariant(obligation_id: str, *, raw_inputs=None, candidate_e
     context_hash = _expected_context(raw_inputs, obligation_id, expected_context_hash)
     if context_hash is None:
         return _raw_inputs_result(obligation_id, code="CANDIDATE_CONTEXT_MISSING")
+    if obligation_id == "ACTIVE_RELEASE_BUDGET_INVARIANT":
+        source_result = check_active_release_budget_source_contract(
+            _field(raw_inputs, "source_root")
+        )
+        if source_result.get("status") == "FAIL":
+            return _finish(
+                obligation_id,
+                source_result,
+                expected_context_hash=context_hash,
+                candidate_evidence=candidate_evidence,
+            )
     try:
         pipeline = _fresh_structural_envelope_pipeline(raw_inputs, context_hash=context_hash)
         candidate = pipeline["candidate"]

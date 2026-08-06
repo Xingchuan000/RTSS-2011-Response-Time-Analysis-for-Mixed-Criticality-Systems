@@ -73,17 +73,24 @@ class RetroactiveReleaseBudgetMutation:
             relative = Path(str(patch["target_file"]))
             if relative.is_absolute() or ".." in relative.parts:
                 raise ValueError("C3 target_file 非法")
+            # Legacy resolved configs contain both deployed and frozen mirrors.
+            # C3 is a model-conformance mutation: keep the frozen semantics and
+            # theorem sources unchanged, and mutate only the deployed runtime.
+            if relative.as_posix() != "amc_py/event_runtime.py":
+                continue
             path = (context.source_overlay / relative).resolve()
             if context.source_overlay.resolve() not in path.parents or not path.is_file():
                 raise ValueError(f"C3 target missing: {relative}")
             targets.append(path)
+        if len(targets) != 1:
+            raise ValueError("C3_DEPLOYED_RUNTIME_TARGET_NOT_UNIQUE")
         return targets
 
     def preflight(self, context: MutationContext) -> PreflightResult:
         try:
             targets = self._targets(context)
-            if len(targets) != 2:
-                raise ValueError("C3 requires deployed and frozen runtime patches")
+            if len(targets) != 1:
+                raise ValueError("C3 requires exactly one deployed runtime patch")
             for path in targets:
                 source = path.read_text(encoding="utf-8")
                 if "def apply_budget_updates" not in source:
@@ -129,9 +136,18 @@ class RetroactiveReleaseBudgetMutation:
         return MutationResult(
             status="PASS", before_hash=";".join(before_hashes), after_hash=";".join(after_hashes),
             changed_files=tuple(changed), semantic_change_count=1,
-            parser_validation="PASS", details={"coherent_insertions": len(changed)},
+            parser_validation="PASS",
+            details={
+                "deployed_insertions": len(changed),
+                "frozen_semantics_modified": False,
+            },
         )
 
     def verify_single_change(self, result: MutationResult) -> PreflightResult:
-        valid = result.status == "PASS" and len(result.changed_files) == 2 and result.semantic_change_count == 1
+        valid = (
+            result.status == "PASS"
+            and result.changed_files == ("amc_py/event_runtime.py",)
+            and result.semantic_change_count == 1
+            and result.details.get("frozen_semantics_modified") is False
+        )
         return PreflightResult("PASS" if valid else "FAIL", result.to_dict())

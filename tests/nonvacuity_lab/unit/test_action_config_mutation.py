@@ -136,7 +136,7 @@ def test_c1_inc_only_updates_copied_recipe_and_artifact(tmp_path: Path):
     assert mutator.verify_single_change(result).status == "PASS"
     assert updated_actions[0]["increase_ratio"] == 0.05
     assert updated_actions[0]["decrease_ratio"] == 0.02
-    assert updated_actions[1]["increase_ratio"] == 0.02
+    assert updated_actions[1]["increase_ratio"] == 0.05
     assert updated_actions[1]["decrease_ratio"] == 0.02
     assert recipe["kwargs"]["runtime_args"]["budget_increase_ratio"] == 0.05
     assert recipe["kwargs"]["runtime_args"]["budget_decrease_ratio"] == 0.02
@@ -190,3 +190,5 @@ def test_action_step_matches_recipe_rows_by_action_id_not_position(tmp_path: Pat
     assert artifact == expected
     assert expected[0]["action_id"] == 0
     assert expected[0]["increase_ratio"] == 0.05
+    assert expected[1]["action_id"] == 1
+    assert expected[1]["increase_ratio"] == 0.05

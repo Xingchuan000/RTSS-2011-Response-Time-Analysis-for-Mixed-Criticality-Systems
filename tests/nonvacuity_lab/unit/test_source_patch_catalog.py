@@ -93,3 +93,11 @@ def test_coherent_source_patch_rejects_verifier_target(tmp_path: Path):
     result = CoherentSourcePatchMutation().preflight(context)
     assert result.status == "FAIL"
     assert "FORBIDDEN_PATCH_TARGET" in str(result.details.get("reason"))
+
+
+def test_b2_patch_does_not_mislabel_top1_invalid_noop_as_all_invalid():
+    from nonvacuity_lab.mutators.catalog.selection_mutations import _policy_patch
+
+    patch = _policy_patch(Path('.'), semantics="top1_valid_else_noop")
+    assert '"tree_top1_invalid_noop": True' in patch.after_snippet
+    assert '"tree_no_valid_action": False' in patch.after_snippet

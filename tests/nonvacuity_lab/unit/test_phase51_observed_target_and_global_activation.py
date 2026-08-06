@@ -103,3 +103,43 @@ def test_global_difference_scope_detects_earlier_global_selection_change():
     # divergence.  The global paired trace still proves that the semantics was
     # activated.
     assert result.details["global_differences"]["selection_difference_count"] == 2
+
+
+def test_refresh_rejects_stale_b3_target_before_long_run(tmp_path, monkeypatch):
+    from nonvacuity_lab.config_resolver import refresh_resolved_runtime_bindings
+
+    monkeypatch.setattr(
+        "nonvacuity_lab.mutators.catalog.selection_mutations.build_selection_catalog",
+        lambda source_root: {"B3": ()},
+    )
+    config = {
+        "mutations": [
+            {
+                "mutation_id": "B3_demo",
+                "resolved_target": {
+                    "tree_path": str(tmp_path / "tree.json"),
+                    "leaf_id": 1,
+                    "action_id": 0,
+                    "activation_evidence_field": "all_invalid_count",
+                    "activation_evidence_count": 0,
+                },
+                "mutator": {"parameters": {}},
+                "activation": {},
+            }
+        ]
+    }
+    refreshed = refresh_resolved_runtime_bindings(
+        config,
+        source_root=tmp_path,
+        mutation_ids={"B3_demo"},
+    )
+    mutation = refreshed["mutations"][0]
+    assert mutation["enabled"] is False
+    assert mutation["resolution_status"] == "BLOCKED_NO_WITNESS"
+    assert "B3_ALL_INVALID_WITNESS_UNAVAILABLE" in mutation["resolution_error"]
+    assert mutation["metadata"]["runtime_block"] == {
+        "status": "BLOCKED_NO_WITNESS",
+        "reason": "B3_ALL_INVALID_WITNESS_UNAVAILABLE",
+        "evidence_field": "all_invalid_count",
+        "evidence_count": 0,
+    }

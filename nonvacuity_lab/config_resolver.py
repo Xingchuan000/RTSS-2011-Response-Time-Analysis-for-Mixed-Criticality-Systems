@@ -779,6 +779,66 @@ def _bind_integrity_mutation(mutation: dict, *, canonical: str, proof_root: Path
         raise ValueError(f"UNKNOWN_INTEGRITY_MUTATION:{canonical}")
 
 
+
+def _validate_refreshed_observed_target(mutation: dict, canonical: str) -> bool:
+    """Reject stale B2/B3 targets before an expensive mode run.
+
+    Initial resolution is the only phase that has the complete audit table and
+    can dynamically select another seed.  The long-lived resolved config may
+    nevertheless predate that rule.  Runtime refresh therefore validates the
+    sealed positive evidence instead of silently reusing a zero-evidence
+    target.
+    """
+
+    if canonical not in {"B2", "B3"}:
+        return True
+    target = mutation.get("resolved_target")
+    if not isinstance(target, dict):
+        raise ValueError(f"{canonical}_OBSERVED_TARGET_MISSING")
+    evidence_field = (
+        "raw_top1_invalid_count" if canonical == "B2" else "all_invalid_count"
+    )
+    declared_field = str(target.get("activation_evidence_field", ""))
+    evidence_count = int(target.get("activation_evidence_count", 0) or 0)
+    if declared_field != evidence_field or evidence_count <= 0:
+        code = (
+            "B2_BEHAVIOR_WITNESS_UNAVAILABLE"
+            if canonical == "B2"
+            else "B3_ALL_INVALID_WITNESS_UNAVAILABLE"
+        )
+        detail = f"{code}:field={declared_field or 'missing'}:count={evidence_count}"
+        if canonical == "B3":
+            # B3 is witness-driven.  A historical zero-evidence target must
+            # not launch another long paired-HOUT run, but it also must not
+            # abort the independent P1/P2/B2/B4 experiments in B234.  Disable
+            # only B3 and leave an auditable block reason in the sealed mode
+            # config.
+            mutation["enabled"] = False
+            mutation["resolution_status"] = "BLOCKED_NO_WITNESS"
+            mutation["resolution_error"] = detail
+            metadata = mutation.setdefault("metadata", {})
+            metadata["runtime_block"] = {
+                "status": "BLOCKED_NO_WITNESS",
+                "reason": code,
+                "evidence_field": declared_field or evidence_field,
+                "evidence_count": evidence_count,
+            }
+            return False
+        raise ValueError(detail)
+    if canonical == "B2":
+        fallback_count = int(target.get("baseline_fallback_count", 0) or 0)
+        histogram = target.get("baseline_selected_rank_histogram", {})
+        lower_rank_selected = fallback_count > 0 or (
+            isinstance(histogram, dict)
+            and any(
+                int(rank) > 0 and int(count) > 0
+                for rank, count in histogram.items()
+            )
+        )
+        if not lower_rank_selected:
+            raise ValueError("B2_LOWER_RANK_FALLBACK_WITNESS_UNAVAILABLE")
+    return True
+
 def refresh_resolved_runtime_bindings(
     config: dict,
     *,
@@ -877,6 +937,8 @@ def refresh_resolved_runtime_bindings(
         if selected and mutation_id not in selected:
             continue
         canonical = mutation_id.split("_", 1)[0]
+        if not _validate_refreshed_observed_target(mutation, canonical):
+            continue
         parameters = mutation.setdefault("mutator", {}).setdefault("parameters", {})
         expected = mutation.setdefault("expected", {})
         activation = mutation.setdefault("activation", {})

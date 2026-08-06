@@ -233,15 +233,24 @@ class ActionStepMutation:
             row = action_by_id[action_id]
             expected = expected_by_id[action_id]
             changed = False
-            if direction in {"inc_only", "both"} and row.get("increase_task") is not None:
+            # increase_ratio/decrease_ratio are global runtime parameters that
+            # the real environment serializes into every action-definition row,
+            # including rows whose primary operation is the opposite direction.
+            # Updating only increase actions leaves the copied recipe different
+            # from the action schema rebuilt by s185_target.build_target().
+            if direction in {"inc_only", "both"} and "increase_ratio" in row:
                 if float(row["increase_ratio"]) != before_ratio:
                     raise ValueError(f"C1 inc ratio 原值不匹配: action {action_id}")
+                if "increase_ratio" not in expected or float(expected["increase_ratio"]) != before_ratio:
+                    raise ValueError(f"C1 recipe inc ratio 原值不匹配: action {action_id}")
                 row["increase_ratio"] = after_ratio
                 expected["increase_ratio"] = after_ratio
                 changed = True
-            if direction in {"dec_only", "both"} and row.get("decrease_tasks"):
+            if direction in {"dec_only", "both"} and "decrease_ratio" in row:
                 if float(row["decrease_ratio"]) != before_ratio:
                     raise ValueError(f"C1 dec ratio 原值不匹配: action {action_id}")
+                if "decrease_ratio" not in expected or float(expected["decrease_ratio"]) != before_ratio:
+                    raise ValueError(f"C1 recipe dec ratio 原值不匹配: action {action_id}")
                 row["decrease_ratio"] = after_ratio
                 expected["decrease_ratio"] = after_ratio
                 changed = True

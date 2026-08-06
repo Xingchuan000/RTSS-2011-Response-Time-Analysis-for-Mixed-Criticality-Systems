@@ -93,13 +93,15 @@ def _policy_patch(source_root: Path, *, semantics: str) -> SelectionPatch:
         if raw_invalid:
             base.update({
                 "tree_fallback_used": False,
-                "tree_no_valid_action": True,
+                "tree_top1_invalid_noop": True,
+                "tree_no_valid_action": False,
                 "tree_selected_action_id": None,
                 "tree_selected_rank": None,
             })
             if trace is not None:
                 base.update(trace)
             return None, base
+        base["tree_top1_invalid_noop"] = False
         if trace is not None:
             base.update(trace)
         return raw_top1, base

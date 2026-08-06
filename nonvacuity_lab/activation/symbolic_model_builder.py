@@ -142,11 +142,28 @@ def build_symbolic_problem(resolved_target, binding, formula_kind):
             invariant_terms.append(var >= item.reference_budget)
     invariant = z3.And(*invariant_terms) if invariant_terms else z3.BoolVal(True)
     action_defs = _read(_path(binding, "action_definitions_path") or _path(binding, "action_definitions"))
+    if isinstance(action_defs, dict) and isinstance(action_defs.get("actions"), list):
+        action_rows = action_defs["actions"]
+    elif isinstance(action_defs, list):
+        action_rows = action_defs
+    elif isinstance(action_defs, dict):
+        action_rows = []
+        for key, value in action_defs.items():
+            if not isinstance(value, dict):
+                continue
+            row = dict(value)
+            row.setdefault("action_id", int(key))
+            action_rows.append(row)
+    else:
+        action_rows = []
+    action_by_id = {
+        int(row["action_id"]): row
+        for row in action_rows
+        if isinstance(row, dict) and "action_id" in row
+    }
+
     def raw_for(action_id):
-        value = action_defs.get(str(int(action_id)), action_defs.get(int(action_id))) if isinstance(action_defs, dict) else None
-        if value is None and isinstance(action_defs, dict):
-            value = next((a for a in action_defs.get("actions", []) if int(a["action_id"]) == int(action_id)), None)
-        return value
+        return action_by_id.get(int(action_id))
     raw_action = raw_for(target["action_id"])
     if not isinstance(raw_action, dict):
         raise ValueError("action definition missing")

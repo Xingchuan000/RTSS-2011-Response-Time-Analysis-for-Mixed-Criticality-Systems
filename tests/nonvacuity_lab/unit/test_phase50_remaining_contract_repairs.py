@@ -109,3 +109,6 @@ def test_templates_publish_current_c3_and_integrity_contracts():
         "ACTIVE_RELEASE_BUDGET_INVARIANT"
     ]
     assert c3["expected"]["require_failure"] is True
+    assert c3["mutator"]["parameters"]["patches"] == [
+        {"target_file": "amc_py/event_runtime.py"}
+    ]

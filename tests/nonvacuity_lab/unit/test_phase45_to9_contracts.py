@@ -83,3 +83,33 @@ def test_ordinary_hout_factory_runs_each_scenario(monkeypatch, tmp_path: Path):
     assert summary["scenario_count"] == 2
     assert summary["score"] == 2
     assert events == []
+
+
+def test_c3_mutator_changes_only_deployed_runtime(tmp_path):
+    from nonvacuity_lab.mutators.base import MutationContext
+    from nonvacuity_lab.mutators.retroactive_release_budget import RetroactiveReleaseBudgetMutation
+
+    overlay = tmp_path / "overlay"
+    deployed = overlay / "amc_py" / "event_runtime.py"
+    frozen = overlay / "formal_toolchain" / "semantics" / "frozen_c_amc_sem_event_runtime.py"
+    deployed.parent.mkdir(parents=True)
+    frozen.parent.mkdir(parents=True)
+    source = '''class EventRuntimeEngine:\n    def apply_budget_updates(self, updates):\n        update_payload = dict(updates)\n        self.budget_state.apply_updates(update_payload)\n'''
+    deployed.write_text(source, encoding="utf-8")
+    frozen.write_text(source, encoding="utf-8")
+    result = RetroactiveReleaseBudgetMutation().apply(
+        MutationContext(
+            mutation_id="C3",
+            source_root=tmp_path,
+            mutated_seed=None,
+            source_overlay=overlay,
+            parameters={"patches": [
+                {"target_file": "amc_py/event_runtime.py"},
+                {"target_file": "formal_toolchain/semantics/frozen_c_amc_sem_event_runtime.py"},
+            ]},
+        )
+    )
+    assert result.changed_files == ("amc_py/event_runtime.py",)
+    assert result.details["frozen_semantics_modified"] is False
+    assert "runtime_budget_at_release" in deployed.read_text(encoding="utf-8")
+    assert frozen.read_text(encoding="utf-8") == source
