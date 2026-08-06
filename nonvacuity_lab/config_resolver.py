@@ -490,7 +490,7 @@ def _discover_symbolic_binding(target: dict) -> dict:
 
 def _bind_symbolic_activation(mutation: dict, canonical: str) -> None:
     activation = mutation.get("activation")
-    if not isinstance(activation, dict) or str(activation.get("mode", "")).lower() != "symbolic_auto":
+    if not isinstance(activation, dict) or "symbolic_auto" not in str(activation.get("mode", "")).lower():
         return
     target = mutation.get("resolved_target")
     if not isinstance(target, dict) or not {"tree_path", "leaf_id", "action_id"}.issubset(target):
@@ -702,17 +702,47 @@ def refresh_resolved_runtime_bindings(
     source_root: Path,
     mutation_ids: set[str] | None = None,
 ) -> dict:
-    """Refresh bindings that depend on the current proof-bundle layout.
+    """Refresh every binding derived from mutable source or proof layout.
 
-    Long-running experiments keep a sealed base config under experiment_data.
-    Source-only fixes must not require repeating HOUT/audit binding, but F1-F7
-    targets and D1's current obligation ID can be safely reconstructed from the
-    proof root already recorded in that config.
+    The sealed base config is intentionally long lived.  A mode run must not
+    reuse source snippets, AST hashes, model-obligation contracts, activation
+    adapters, or integrity targets from an older checkout.  HOUT/audit-selected
+    leaf identities remain stable inputs, while all checkout-dependent material
+    is rebuilt here immediately before doctor and execution.
     """
+
+    from .mutators.catalog.selection_mutations import build_selection_catalog
+    from .mutators.catalog.rounding_mutations import build_rounding_catalog
+    from .mutators.catalog.guard_mutations import build_guard_catalog
+    from .mutators.catalog.model_mutations import build_current_source_model_catalog
 
     source_root = Path(source_root).resolve()
     selected = set(mutation_ids or ())
     rows = [item for item in config.get("mutations", ()) if isinstance(item, dict)]
+    active_rows = [
+        item for item in rows
+        if not selected or str(item.get("mutation_id", "")) in selected
+    ]
+    active_canonicals = {
+        str(item.get("mutation_id", "")).split("_", 1)[0]
+        for item in active_rows
+    }
+    selection_catalog = (
+        build_selection_catalog(source_root)
+        if active_canonicals & {"B1", "B2", "B3", "B5"}
+        else {}
+    )
+    rounding_catalog = (
+        build_rounding_catalog(source_root) if "C2" in active_canonicals else ()
+    )
+    guard_catalog = (
+        build_guard_catalog(source_root) if "B4" in active_canonicals else {}
+    )
+    model_catalog = (
+        build_current_source_model_catalog(source_root)
+        if active_canonicals & {f"E{index}" for index in range(1, 7)}
+        else {}
+    )
 
     proof_root: Path | None = None
     for mutation in rows:
@@ -732,14 +762,16 @@ def refresh_resolved_runtime_bindings(
         if proof_root is not None:
             break
 
-    # Fall back to the nearest ancestor that contains multiple ordinary proof
-    # workspaces when an older config did not publish D1 bundle_roots.
     if proof_root is None:
-        reuse_roots = [
-            Path(str(item["reuse_source_bundle"])).resolve()
-            for item in rows
-            if item.get("reuse_source_bundle")
-        ]
+        reuse_roots = []
+        for item in rows:
+            raw = item.get("reuse_source_bundle")
+            if not raw:
+                continue
+            candidate = Path(str(raw))
+            if not candidate.is_absolute():
+                candidate = source_root / candidate
+            reuse_roots.append(candidate.resolve())
         for run_root in reuse_roots:
             for parent in (run_root, *run_root.parents):
                 if len(_proof_run_roots(parent)) >= 2:
@@ -748,10 +780,10 @@ def refresh_resolved_runtime_bindings(
             if proof_root is not None:
                 break
 
-    runtime_rebind_ids = {"F1", "F2", "F3"}
+    integrity_ids = {f"F{index}" for index in range(1, 8)}
     needs_integrity_root = any(
-        str(item.get("mutation_id", "")) in selected
-        and str(item.get("mutation_id", "")).split("_", 1)[0] in runtime_rebind_ids
+        (not selected or str(item.get("mutation_id", "")) in selected)
+        and str(item.get("mutation_id", "")).split("_", 1)[0] in integrity_ids
         for item in rows
     )
     if needs_integrity_root and proof_root is None:
@@ -762,7 +794,79 @@ def refresh_resolved_runtime_bindings(
         if selected and mutation_id not in selected:
             continue
         canonical = mutation_id.split("_", 1)[0]
-        if canonical in runtime_rebind_ids:
+        parameters = mutation.setdefault("mutator", {}).setdefault("parameters", {})
+        expected = mutation.setdefault("expected", {})
+        activation = mutation.setdefault("activation", {})
+
+        selection_key = "B1" if canonical == "B5" else canonical
+        if selection_key in selection_catalog:
+            parameters["patches"] = [dict(item) for item in selection_catalog[selection_key]]
+
+        if canonical == "B4":
+            target = mutation.get("resolved_target", {})
+            patch_key = str(target.get("catalog_key", target.get("guard_id", "")))
+            if patch_key not in guard_catalog:
+                raise ValueError(f"B4_PATCH_CATALOG_MISSING:{patch_key}")
+            parameters["patches"] = [dict(item) for item in guard_catalog[patch_key]]
+
+        if canonical == "C2":
+            parameters["patches"] = [dict(item) for item in rounding_catalog]
+
+        if canonical in {"B2", "B3", "B4", "C2"}:
+            # The real campaigns already carry paired HOUT profiles.  Keep the
+            # symbolic witness as a fast secondary check, but let concrete HOUT
+            # activation win when the action space uses residual/dynamic slots.
+            activation["mode"] = "symbolic_auto_or_hout"
+            if canonical == "B2":
+                activation.update({
+                    "require_baseline_reject": True,
+                    "require_selection_difference": True,
+                })
+            elif canonical == "B3":
+                activation.update({
+                    "require_all_invalid": True,
+                    "require_selected_after_mutation": True,
+                    "require_selection_difference": True,
+                })
+            elif canonical == "B4":
+                activation.update({
+                    "require_baseline_reject": True,
+                    "require_selected_after_mutation": True,
+                    "require_selection_difference": True,
+                })
+            else:
+                activation["require_any_budget_difference"] = True
+            _bind_symbolic_activation(mutation, canonical)
+            _bind_hout_profile(config, mutation)
+
+        if canonical == "C3":
+            expected.update({
+                "allowed_result_statuses": ["MODEL_CONFORMANCE_FAILED"],
+                "allowed_first_failing_obligations": ["ACTIVE_RELEASE_BUDGET_INVARIANT"],
+                "allowed_upstream_obligations": ["SOURCE_TREE_INTEGRITY"],
+                "allow_strict_upstream_failure": True,
+                "require_failure": True,
+                "require_activation": True,
+            })
+            expected.pop("result_status", None)
+            expected.pop("first_failing_obligations", None)
+
+        if canonical in model_catalog:
+            entry = model_catalog[canonical]
+            parameters["semantic_change_id"] = entry.semantic_change_id
+            parameters["patches"] = [dict(item) for item in entry.patches]
+            expected.update({
+                "allowed_result_statuses": [entry.expected_status],
+                "allowed_first_failing_obligations": list(entry.expected_obligations),
+                "allowed_upstream_obligations": ["SOURCE_TREE_INTEGRITY"],
+                "allow_strict_upstream_failure": True,
+                "require_failure": True,
+                "require_activation": False,
+            })
+            expected.pop("result_status", None)
+            expected.pop("first_failing_obligations", None)
+
+        if canonical in integrity_ids:
             assert proof_root is not None
             _bind_integrity_mutation(
                 mutation,
@@ -770,17 +874,39 @@ def refresh_resolved_runtime_bindings(
                 proof_root=proof_root,
                 source_root=source_root,
             )
+            # Request/source tampering can be rejected during verifier-input
+            # replay (MODEL_CONFORMANCE_FAILED), while candidate-artifact
+            # tampering is normally rejected as PROOF_BUNDLE_INVALID.  Both are
+            # fail-closed integrity outcomes; tool/timeout statuses remain
+            # excluded by the classifier.
+            expected.update({
+                "allowed_result_statuses": [
+                    "PROOF_BUNDLE_INVALID",
+                    "MODEL_CONFORMANCE_FAILED",
+                ],
+                "integrity_result_statuses": [
+                    "PROOF_BUNDLE_INVALID",
+                    "MODEL_CONFORMANCE_FAILED",
+                ],
+                "require_activation": False,
+            })
+            expected.pop("result_status", None)
             mutation["resolution_status"] = "RESOLVED"
             mutation.pop("resolution_error", None)
             mutation.pop("resolution_gaps", None)
-        elif canonical == "D1":
-            expected = mutation.setdefault("expected", {})
-            expected["allowed_first_failing_obligations"] = [
-                "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"
-            ]
+
+        if canonical == "D1":
+            expected.update({
+                "allowed_result_statuses": ["REFERENCE_CERTIFICATE_FAILED"],
+                "allowed_first_failing_obligations": [
+                    "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"
+                ],
+                "require_failure": True,
+                "require_activation": False,
+            })
+            expected.pop("result_status", None)
             expected.pop("first_failing_obligations", None)
     return config
-
 
 def _seed_token(path: Path) -> str:
     import re

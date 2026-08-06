@@ -27,16 +27,39 @@ def classify_experiment(
             ExperimentStatus.VERIFIER_TIMEOUT.value,
             ExperimentStatus.VERIFIER_OUTPUT_MISSING.value,
         }
-        if proof.get("result_status") in execution_statuses:
+        actual = proof.get("result_status")
+        if actual in execution_statuses:
             return _result(
-                ExperimentStatus(str(proof["result_status"])),
-                str(proof.get("reason", proof["result_status"])),
+                ExperimentStatus(str(actual)),
+                str(proof.get("reason", actual)),
             )
-        if proof.get("result_status") == expected.integrity_result_status:
-            return _result(ExperimentStatus.INTEGRITY_REJECTION_EXPECTED, "old bundle rejected")
+        allowed_integrity = set(expected.canonical_integrity_statuses)
+        if actual not in allowed_integrity:
+            return _result(
+                ExperimentStatus.INTEGRITY_REJECTION_MISSING,
+                f"expected one of {sorted(allowed_integrity)}, got {actual}",
+            )
+        obligation = proof.get("violated_obligation_id")
+        failure_route = proof.get("failure_route")
+        allowed_exact = set(expected.allowed_first_failing_obligations)
+        allowed_upstream = (
+            set(expected.allowed_upstream_obligations)
+            if expected.allow_strict_upstream_failure
+            else set()
+        )
+        if (allowed_exact or allowed_upstream) and obligation not in allowed_exact | allowed_upstream:
+            return _result(
+                ExperimentStatus.INTEGRITY_REJECTION_MISSING,
+                f"integrity rejection obligation {obligation!r} is not allowed",
+            )
+        if expected.allowed_failure_routes and failure_route not in set(expected.allowed_failure_routes):
+            return _result(
+                ExperimentStatus.INTEGRITY_REJECTION_MISSING,
+                f"integrity rejection route {failure_route!r} is not allowed",
+            )
         return _result(
-            ExperimentStatus.INTEGRITY_REJECTION_MISSING,
-            f"expected {expected.integrity_result_status}, got {proof.get('result_status')}",
+            ExperimentStatus.INTEGRITY_REJECTION_EXPECTED,
+            f"tampered input rejected as {actual}",
         )
 
     if expected.require_activation:

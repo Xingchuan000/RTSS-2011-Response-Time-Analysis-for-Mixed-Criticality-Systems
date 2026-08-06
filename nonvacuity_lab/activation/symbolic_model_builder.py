@@ -83,6 +83,9 @@ def _normalize_feature_schema(raw, tree, binding):
 
 
 def _normalize_action(raw_action, binding):
+    if bool(raw_action.get("is_residual_ranked")) or bool(raw_action.get("is_constraint_guided_pair")):
+        action_kind = raw_action.get("residual_action_type", "constraint_guided_pair")
+        raise ValueError(f"UNSUPPORTED_DYNAMIC_ACTION_SLOT:{action_kind}")
     operation = raw_action.get("operation", raw_action.get("direction"))
     task_id = raw_action.get("task_id", raw_action.get("target_task"))
     ratio = raw_action.get("ratio")
@@ -95,8 +98,10 @@ def _normalize_action(raw_action, binding):
             operation = "decrease"
             task_id = list(raw_action.get("decrease_tasks"))[0]
             ratio = raw_action.get("decrease_ratio", ratio)
-        else:
+        elif bool(raw_action.get("is_noop")) or raw_action.get("residual_action_type") == "noop":
             operation = "noop"
+        else:
+            raise ValueError("UNSUPPORTED_ACTION_DEFINITION_WITHOUT_STATIC_TASK")
     operation = str(operation)
     if ratio is None:
         ratio = _path(binding, "default_action_ratio") or "1/50"

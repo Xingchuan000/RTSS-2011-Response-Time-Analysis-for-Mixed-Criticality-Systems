@@ -456,42 +456,72 @@ def _run_activation(
 ) -> dict[str, Any] | None:
     if manifest.mutation_class in {MutationClass.BASELINE, MutationClass.BUNDLE_INTEGRITY}:
         return None
-    mode = str(manifest.activation.get("mode", "symbolic")).lower()
-    results = []
-    if mode == "symbolic_auto":
-        result = run_auto_symbolic_activation(
-            mutation_id=manifest.mutation_id,
-            activation=dict(manifest.activation),
-            resolved_target=dict(manifest.metadata["resolved_target"]),
-            clean_source_root=source_root,
-            overlay_source_root=workspace.source_overlay,
-            output_dir=workspace.activation_output,
-        )
-        payload = result.to_dict()
-        (workspace.activation_output / "activation_result.json").write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        return payload
-    if "symbolic" in mode:
-        result = solve_symbolic_activation(
-            mutation_id=manifest.mutation_id,
-            rule=manifest.activation,
-            output_path=workspace.activation_output / "symbolic_witness.json",
-        )
-        results.append(result)
-    if "hout" in mode and hout and hout.get("setup_valid"):
-        result = evaluate_hout_activation(
-            mutation_id=manifest.mutation_id,
-            base_events=load_events(Path(hout["base_events"])),
-            mutated_events=load_events(Path(hout["mutated_events"])),
-            rule=manifest.activation,
-        )
-        results.append(result)
-    if not results:
-        from ..activation.schema import ActivationResult
-        from ..schema import ActivationStatus
 
+    from ..activation.schema import ActivationResult
+    from ..schema import ActivationStatus
+
+    mode = str(manifest.activation.get("mode", "symbolic")).lower()
+    results: list[ActivationResult] = []
+
+    if "symbolic_auto" in mode:
+        try:
+            results.append(
+                run_auto_symbolic_activation(
+                    mutation_id=manifest.mutation_id,
+                    activation=dict(manifest.activation),
+                    resolved_target=dict(manifest.metadata["resolved_target"]),
+                    clean_source_root=source_root,
+                    overlay_source_root=workspace.source_overlay,
+                    output_dir=workspace.activation_output,
+                )
+            )
+        except Exception as exc:  # Evidence-source failure must not suppress paired HOUT.
+            results.append(
+                ActivationResult(
+                    mutation_id=manifest.mutation_id,
+                    status=ActivationStatus.ACTIVATION_SETUP_INVALID,
+                    evidence_modes=("SYMBOLIC", "CONCRETE_REPLAY"),
+                    details={
+                        "reason": "automatic symbolic activation unavailable",
+                        "exception_type": type(exc).__name__,
+                        "exception": str(exc),
+                    },
+                )
+            )
+    elif "symbolic" in mode:
+        results.append(
+            solve_symbolic_activation(
+                mutation_id=manifest.mutation_id,
+                rule=manifest.activation,
+                output_path=workspace.activation_output / "symbolic_witness.json",
+            )
+        )
+
+    if "hout" in mode:
+        if hout and hout.get("setup_valid"):
+            results.append(
+                evaluate_hout_activation(
+                    mutation_id=manifest.mutation_id,
+                    base_events=load_events(Path(hout["base_events"])),
+                    mutated_events=load_events(Path(hout["mutated_events"])),
+                    rule=manifest.activation,
+                )
+            )
+        else:
+            results.append(
+                ActivationResult(
+                    mutation_id=manifest.mutation_id,
+                    status=ActivationStatus.ACTIVATION_SETUP_INVALID,
+                    evidence_modes=("HOUT",),
+                    details={
+                        "reason": "paired HOUT activation evidence unavailable",
+                        "hout_setup_valid": None if hout is None else bool(hout.get("setup_valid")),
+                        "hout_reason": None if hout is None else hout.get("reason", hout.get("hout_schema_error")),
+                    },
+                )
+            )
+
+    if not results:
         results.append(
             ActivationResult(
                 mutation_id=manifest.mutation_id,
@@ -499,8 +529,14 @@ def _run_activation(
                 details={"reason": "requested activation evidence unavailable"},
             )
         )
-    activated = next((item for item in results if item.status.value == "ACTIVATED"), None)
-    selected = activated or results[0]
+
+    priority = {
+        ActivationStatus.ACTIVATED: 0,
+        ActivationStatus.NOT_ACTIVATED: 1,
+        ActivationStatus.ACTIVATION_SETUP_INVALID: 2,
+        ActivationStatus.ACTIVATION_INCONCLUSIVE: 3,
+    }
+    selected = min(results, key=lambda item: priority[item.status])
     payload = selected.to_dict()
     payload["all_evidence"] = [item.to_dict() for item in results]
     (workspace.activation_output / "activation_result.json").write_text(

@@ -134,6 +134,7 @@ class ExpectedResult:
     allowed_upstream_obligations: tuple[str, ...] = ()
     allow_strict_upstream_failure: bool = False
     integrity_result_status: str = "PROOF_BUNDLE_INVALID"
+    integrity_result_statuses: tuple[str, ...] = ()
     performance_degradation_metrics: tuple[str, ...] = ()
 
     @classmethod
@@ -159,6 +160,12 @@ class ExpectedResult:
             allowed_upstream_obligations=_strings(raw.get("allowed_upstream_obligations", ())),
             allow_strict_upstream_failure=bool(raw.get("allow_strict_upstream_failure", False)),
             integrity_result_status=str(raw.get("integrity_result_status", "PROOF_BUNDLE_INVALID")),
+            integrity_result_statuses=_strings(
+                raw.get(
+                    "integrity_result_statuses",
+                    raw.get("allowed_integrity_result_statuses", ()),
+                )
+            ),
             performance_degradation_metrics=_strings(raw.get("performance_degradation_metrics", ())),
         )
 
@@ -171,6 +178,10 @@ class ExpectedResult:
     @property
     def canonical_statuses(self) -> tuple[str, ...]:
         return self.allowed_result_statuses or ((self.result_status,) if self.result_status else ())
+
+    @property
+    def canonical_integrity_statuses(self) -> tuple[str, ...]:
+        return self.integrity_result_statuses or (self.integrity_result_status,)
 
 
 @dataclass(frozen=True)

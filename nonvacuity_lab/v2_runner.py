@@ -113,16 +113,32 @@ def _v2_mutation_to_v1(
             expected.get("first_failing_obligations", ()),
         )
     )
+    integrity_statuses = tuple(
+        str(item)
+        for item in expected.get(
+            "integrity_result_statuses",
+            expected.get("allowed_integrity_result_statuses", ()),
+        )
+    )
+    if not integrity_statuses and (
+        mutation_class == "BUNDLE_INTEGRITY"
+        or str(mutation.get("mutation_class", "")).startswith("BUNDLE_")
+        or str(mutation.get("mutation_class", "")) == "SOURCE_BINDING_TAMPER"
+    ):
+        integrity_statuses = allowed_statuses
     expected_v1 = {
         "allowed_result_statuses": list(allowed_statuses),
         "allowed_first_failing_obligations": list(allowed_obligations),
         "allowed_failure_routes": list(expected.get("allowed_failure_routes", ())),
+        "allowed_upstream_obligations": list(expected.get("allowed_upstream_obligations", ())),
+        "allow_strict_upstream_failure": bool(expected.get("allow_strict_upstream_failure", False)),
         "require_failure": bool(expected.get("require_failure", False)),
         "require_proved": bool(expected.get("require_proved", False)),
         "require_activation": bool(expected.get("require_activation", True)),
         "integrity_result_status": expected.get(
             "integrity_result_status", "PROOF_BUNDLE_INVALID"
         ),
+        "integrity_result_statuses": list(integrity_statuses),
     }
     # Keep the legacy scalar only when it is unambiguous.  The v1 execution
     # model now understands allowed_result_statuses directly.
@@ -150,6 +166,15 @@ def _v2_mutation_to_v1(
             {"profile_id": str(profile_id), **profile},
             base_dir=base_dir or Path.cwd(),
         )
+        if str(mutation.get("mutation_class", "")) == "ACTION_SEMANTICS":
+            direction = str(parameters.get("direction", "inc_only"))
+            after_ratio = float(parameters.get("after_ratio", 0.05))
+            overrides = dict(metadata["hout"].get("mutated_runtime_overrides", {}))
+            if direction in {"inc_only", "both"}:
+                overrides["budget_increase_ratio"] = after_ratio
+            if direction in {"dec_only", "both"}:
+                overrides["budget_decrease_ratio"] = after_ratio
+            metadata["hout"]["mutated_runtime_overrides"] = overrides
 
     activation_v1 = dict(mutation.get("activation", {}))
     activation_mode = str(activation_v1.get("mode", "")).lower()

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..analysis.comparison import compare_metrics
-from ..canonical import canonical_json_hash
+from ..canonical import canonical_json_hash, file_hash
 from ..subprocess_runner import run_command
 from ..hout.normalizer import load_events as load_normalized_events
 from ..hout.aggregate import compare_paired_hout
@@ -40,6 +40,11 @@ def run_paired_hout(
         workspace_root=workspace_root,
     )
     determinism = {key: config.get(key) for key in DETERMINISM_KEYS}
+    determinism["runtime_config"] = {
+        "base_sha256": file_hash(Path(config["base_runtime_config"])),
+        "mutated_sha256": file_hash(Path(config["mutated_runtime_config"])),
+        "mutated_runtime_overrides": dict(config.get("mutated_runtime_overrides", {})),
+    }
     required_determinism = set(DETERMINISM_KEYS) - {"demand_trace"}
     if any(determinism[key] is None for key in required_determinism):
         missing = [key for key in required_determinism if determinism[key] is None]
@@ -52,11 +57,11 @@ def run_paired_hout(
     common_context = {
         **dict(command_context),
         "scenario_file": str(config["scenario_file"]),
-        "runtime_config": str(config["runtime_config"]),
         "taskset": str(config["taskset"]),
     }
     base_context = {
         **common_context,
+        "runtime_config": str(config["base_runtime_config"]),
         "seed_dir": str(base_seed),
         "tree_path": str(base_seed / variant / "integer_tree.json"),
         "out": str(base_dir),
@@ -64,6 +69,7 @@ def run_paired_hout(
     }
     mutated_context = {
         **common_context,
+        "runtime_config": str(config["mutated_runtime_config"]),
         "seed_dir": str(mutated_seed),
         "tree_path": str(mutated_seed / variant / "integer_tree.json"),
         "out": str(mutated_dir),
@@ -108,6 +114,13 @@ def run_paired_hout(
         "base_receipt": base_receipt,
         "mutated_receipt": mutated_receipt,
         "runtime_determinism_checks": determinism_checks,
+        "runtime_configs": {
+            "base": str(config["base_runtime_config"]),
+            "mutated": str(config["mutated_runtime_config"]),
+            "base_sha256": file_hash(Path(config["base_runtime_config"])),
+            "mutated_sha256": file_hash(Path(config["mutated_runtime_config"])),
+            "mutated_runtime_overrides": dict(config.get("mutated_runtime_overrides", {})),
+        },
         "comparison": compare_metrics(
             base_summary,
             mutated_summary,
@@ -168,15 +181,34 @@ def _materialize_profile_inputs(
     runtime_source = Path(str(raw.get("runtime_config_path", raw.get("runtime_config", "")))).resolve()
     if not runtime_source.is_file():
         raise ValueError(f"HOUT runtime config missing: {runtime_source}")
-    runtime_file = inputs / "runtime_config.json"
-    shutil.copy2(runtime_source, runtime_file)
+    runtime_raw = json.loads(runtime_source.read_text(encoding="utf-8"))
+    if not isinstance(runtime_raw, dict):
+        raise ValueError(f"HOUT runtime config must be an object: {runtime_source}")
+    overrides = raw.get("mutated_runtime_overrides", {})
+    if not isinstance(overrides, Mapping):
+        raise ValueError("mutated_runtime_overrides must be an object")
+    base_runtime_file = inputs / "base_runtime_config.json"
+    mutated_runtime_file = inputs / "mutated_runtime_config.json"
+    base_runtime_file.write_text(
+        json.dumps(runtime_raw, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    mutated_runtime = dict(runtime_raw)
+    mutated_runtime.update(dict(overrides))
+    mutated_runtime_file.write_text(
+        json.dumps(mutated_runtime, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     taskset = Path(str(raw.get("taskset_path", raw.get("taskset", "")))).resolve()
     if not taskset.is_file():
         raise ValueError(f"HOUT taskset missing: {taskset}")
 
     raw["scenario_file"] = str(scenario_file)
-    raw["runtime_config"] = str(runtime_file)
+    raw["runtime_config"] = str(base_runtime_file)
+    raw["base_runtime_config"] = str(base_runtime_file)
+    raw["mutated_runtime_config"] = str(mutated_runtime_file)
+    raw["mutated_runtime_overrides"] = dict(overrides)
     raw["taskset"] = str(taskset)
     return raw
 

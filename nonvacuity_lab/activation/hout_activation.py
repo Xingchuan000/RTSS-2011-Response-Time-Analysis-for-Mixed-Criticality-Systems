@@ -55,6 +55,7 @@ def evaluate_hout_activation(
     require_all_invalid = bool(rule.get("require_all_invalid", False))
     require_budget_difference = bool(rule.get("require_any_budget_difference", False))
     require_release_difference = bool(rule.get("require_active_release_budget_difference", False))
+    require_selection_difference = bool(rule.get("require_selection_difference", False))
     paired_differences = _paired_differences(base_target, mutated_target)
     activated = bool(base_target or mutated_target)
     if require_reject:
@@ -69,6 +70,8 @@ def evaluate_hout_activation(
         activated = activated and paired_differences["budget_difference_count"] > 0
     if require_release_difference:
         activated = activated and paired_differences["active_release_budget_difference_count"] > 0
+    if require_selection_difference:
+        activated = activated and paired_differences["selection_difference_count"] > 0
     first_intervention = min(
         (
             row.get("time", row.get("timestamp", row.get("step")))
@@ -112,12 +115,17 @@ def _paired_differences(base: list[dict[str, Any]], mutated: list[dict[str, Any]
     budget_count = 0
     release_count = 0
     event_count = 0
+    selection_count = 0
     for key in sorted(base_by_key.keys() & mutated_by_key.keys()):
         left, right = base_by_key[key], mutated_by_key[key]
         if left.get("budget_after") != right.get("budget_after"):
             budget_count += 1
         if left.get("active_release_budgets_after_update") != right.get("active_release_budgets_after_update"):
             release_count += 1
+        if any(left.get(name) != right.get(name) for name in (
+            "selected_action_id", "selected_rank",
+        )):
+            selection_count += 1
         if any(left.get(name) != right.get(name) for name in (
             "selected_action_id", "selected_rank", "budget_after",
             "active_release_budgets_after_update",
@@ -127,6 +135,7 @@ def _paired_differences(base: list[dict[str, Any]], mutated: list[dict[str, Any]
         "paired_event_count": len(base_by_key.keys() & mutated_by_key.keys()),
         "budget_difference_count": budget_count,
         "active_release_budget_difference_count": release_count,
+        "selection_difference_count": selection_count,
         "event_difference_count": event_count,
     }
 
