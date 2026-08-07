@@ -129,7 +129,7 @@ class RetroactiveReleaseBudgetMutation:
             if inserted != 1:
                 raise ValueError("C3_COHERENT_INSERT_FAILED")
             path.write_text(updated, encoding="utf-8")
-            relative = str(path.relative_to(context.source_overlay))
+            relative = path.relative_to(context.source_overlay).as_posix()
             changed.append(relative)
             before_hashes.append(hashlib.sha256(source.encode("utf-8")).hexdigest())
             after_hashes.append(file_hash(path))
@@ -144,9 +144,12 @@ class RetroactiveReleaseBudgetMutation:
         )
 
     def verify_single_change(self, result: MutationResult) -> PreflightResult:
+        normalized_changed_files = tuple(
+            str(item).replace("\\", "/") for item in result.changed_files
+        )
         valid = (
             result.status == "PASS"
-            and result.changed_files == ("amc_py/event_runtime.py",)
+            and normalized_changed_files == ("amc_py/event_runtime.py",)
             and result.semantic_change_count == 1
             and result.details.get("frozen_semantics_modified") is False
         )

@@ -113,3 +113,21 @@ def test_c3_mutator_changes_only_deployed_runtime(tmp_path):
     assert result.details["frozen_semantics_modified"] is False
     assert "runtime_budget_at_release" in deployed.read_text(encoding="utf-8")
     assert frozen.read_text(encoding="utf-8") == source
+
+
+def test_c3_single_change_accepts_windows_path_separator():
+    from nonvacuity_lab.mutators.base import MutationResult
+    from nonvacuity_lab.mutators.retroactive_release_budget import RetroactiveReleaseBudgetMutation
+
+    result = MutationResult(
+        status="PASS",
+        before_hash="before",
+        after_hash="after",
+        changed_files=(r"amc_py\event_runtime.py",),
+        semantic_change_count=1,
+        parser_validation="PASS",
+        details={"frozen_semantics_modified": False},
+    )
+
+    check = RetroactiveReleaseBudgetMutation().verify_single_change(result)
+    assert check.status == "PASS"
