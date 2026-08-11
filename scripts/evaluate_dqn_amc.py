@@ -71,6 +71,11 @@ from amc_py.rl.runtime_wrapper import (
     simulate_ordered_taskset_with_agent,
 )
 from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationResult
+from scripts.common_mc_stratified_dynamic_cli import (
+    add_mc_stratified_dynamic_args,
+    build_mc_stratified_dynamic_config_from_args,
+    build_mc_stratified_dynamic_workload_cli_config,
+)
 from amc_py.qamc.metrics_support import compute_qamc_metrics, qamc_metrics_to_row
 from amc_py.qamc.loss_metrics import (
     compute_qamc_loss_metrics,
@@ -408,7 +413,7 @@ def _task_level_info_row(info: dict[str, int | float | str | bool | None]) -> di
     return {key: str(info.get(key, "")) if info.get(key, "") is not None else "" for key in TASK_LEVEL_INFO_KEYS}
 
 
-def _eval_summary_fieldnames() -> list[str]:
+def _eval_summary_fieldnames(*, include_mc_stratified_dynamic: bool = False) -> list[str]:
     """返回 evaluate 输出 CSV 的固定 header。
 
     抽成 helper 的目的是让测试可以直接断言列集合，而无需真正跑完整 evaluate 流程。
@@ -441,6 +446,13 @@ def _eval_summary_fieldnames() -> list[str]:
         "deadline_misses",
         "budget_overruns",
     ]
+    if include_mc_stratified_dynamic:
+        fieldnames[1:1] = [
+            "workload_schema_version",
+            "stratum",
+            "period_family",
+            "generator_config_hash",
+        ]
     fieldnames.extend(DEGRADATION_FIELDNAMES)
     fieldnames.extend(
         [
@@ -2431,6 +2443,8 @@ def _evaluate_enabled_methods_for_seed(
     seed: int,
     experiment_config,
     workload: str,
+    workload_stratum: str | None,
+    workload_generator_config_hash: str | None,
     total_util: float,
     num_tasks: int,
     cf: float,
@@ -2549,6 +2563,18 @@ def _evaluate_enabled_methods_for_seed(
         "deploy_cap_mask_ratio": deploy_cap_mask_ratio,
         "deploy_cap_mask_criticality": deploy_cap_mask_criticality,
     }
+    if workload == "mc_stratified_dynamic":
+        workload_metadata = bundle.metadata or {}
+        row_base.update(
+            {
+                "workload_schema_version": workload_metadata.get(
+                    "schema_version", "mc_stratified_dynamic_workload_v1"
+                ),
+                "stratum": workload_stratum or "unassigned",
+                "period_family": workload_metadata.get("period_family"),
+                "generator_config_hash": workload_generator_config_hash,
+            }
+        )
     # trace / debug 的开关粒度仍然保持“按 seed、按 method 控制”，
     # 这样并行后也不会改变原有调试文件的生成规则，同时正式 HOUT 默认不积累
     # 逐 tick trace 与事件级 debug 日志，仅在显式调试时再打开。
@@ -3196,6 +3222,53 @@ def _evaluate_enabled_methods_for_seed(
             )
         )
 
+    if "global_fixed_pressure" in enabled_methods:
+        if action_space != "single":
+            raise ValueError("global fixed pressure baseline requires action_space=single")
+        global_pressure_run = run_pressure_threshold_baseline(
+            ordered_tasks=list(bundle.ordered_tasks),
+            u_low=1.0,
+            u_high=1.2,
+            experiment_config=experiment_config,
+            seed=seed,
+            end_time=end_time,
+            agent_period=agent_period,
+            reward_mode=reward_mode,
+            action_space=action_space,
+            budget_increase_ratio=budget_increase_ratio,
+            budget_decrease_ratio=budget_decrease_ratio,
+            include_explicit_noop=include_explicit_noop,
+            budget_floor_ratio=budget_floor_ratio,
+            forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+            mask_detail_mode=mask_detail_mode,
+            enable_deploy_cap_mask=enable_deploy_cap_mask,
+            deploy_cap_mask_ratio=deploy_cap_mask_ratio,
+            deploy_cap_mask_criticality=deploy_cap_mask_criticality,
+            feature_config=feature_config,
+            c_amc_sem_xf=c_amc_sem_xf,
+        )
+        global_pressure_row = _build_dynamic_baseline_row(
+            row_base=row_base,
+            method="global_fixed_pressure",
+            run=global_pressure_run,
+            action_space=action_space,
+            action_count=len(actions),
+            budget_increase_ratio=budget_increase_ratio,
+            budget_decrease_ratio=budget_decrease_ratio,
+            budget_floor_ratio=budget_floor_ratio,
+        )
+        global_pressure_row["pressure_u_low"] = 1.0
+        global_pressure_row["pressure_u_high"] = 1.2
+        rows.append(global_pressure_row)
+        deadline_miss_details.extend(
+            _deadline_miss_detail_rows(
+                row_base=row_base,
+                method="global_fixed_pressure",
+                runtime_result=global_pressure_run.runtime_result,
+                action_log=global_pressure_run.action_log,
+            )
+        )
+
     if "dqn_agent" in enabled_methods:
         dqn_row, dqn_runtime_result, dqn_action_log = _evaluate_dqn_once(
             model_path=model_path,
@@ -3338,6 +3411,8 @@ def _evaluate_seed_worker(
         int,
         object,
         str,
+        str | None,
+        str | None,
         float,
         int,
         float,
@@ -3398,6 +3473,8 @@ def _evaluate_seed_worker(
         seed,
         experiment_config,
         workload,
+        workload_stratum,
+        workload_generator_config_hash,
         total_util,
         num_tasks,
         cf,
@@ -3450,6 +3527,8 @@ def _evaluate_seed_worker(
         seed=seed,
         experiment_config=experiment_config,
         workload=workload,
+        workload_stratum=workload_stratum,
+        workload_generator_config_hash=workload_generator_config_hash,
         total_util=total_util,
         num_tasks=num_tasks,
         cf=cf,
@@ -3505,7 +3584,11 @@ def build_parser() -> argparse.ArgumentParser:
     """构建正式评估 CLI 的参数解析器。"""
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--workload", choices=["small", "rtss11", "automotive", "mc_fairgen"], default="small")
+    parser.add_argument(
+        "--workload",
+        choices=["small", "rtss11", "automotive", "mc_fairgen", "mc_stratified_dynamic"],
+        default="small",
+    )
     parser.add_argument("--total-util", type=float, default=0.65)
     parser.add_argument("--num-tasks", type=int, default=20)
     parser.add_argument("--cf", type=float, default=2.0)
@@ -3703,6 +3786,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mc-fairgen-hi-overrun-factor-max", type=float, default=1.25)
     parser.add_argument("--mc-fairgen-lo-overrun-factor-min", type=float, default=1.05)
     parser.add_argument("--mc-fairgen-lo-overrun-factor-max", type=float, default=1.80)
+    add_mc_stratified_dynamic_args(parser)
     parser.add_argument("--mask-detail-mode", choices=["minimal", "full"], default="minimal")
     parser.add_argument(
         "--observation-mode",
@@ -3813,6 +3897,8 @@ def main() -> None:
             lo_overrun_factor_min=args.mc_fairgen_lo_overrun_factor_min,
             lo_overrun_factor_max=args.mc_fairgen_lo_overrun_factor_max,
         )
+    elif args.workload == "mc_stratified_dynamic":
+        experiment_config = build_mc_stratified_dynamic_config_from_args(args)
     else:
         raise ValueError(f"unsupported workload: {args.workload}")
     if dqn_runtime_semantics is RuntimeSemantics.Q_AMC:
@@ -3854,7 +3940,17 @@ def main() -> None:
             qamc_profile_spec_path=str(args.qamc_profile_spec_path),
         )
     effective_num_tasks = (
-        args.mc_fairgen_num_tasks if args.workload == "mc_fairgen" else args.num_tasks
+        args.mc_fairgen_num_tasks
+        if args.workload == "mc_fairgen"
+        else args.mc_strat_dyn_num_tasks
+        if args.workload == "mc_stratified_dynamic"
+        else args.num_tasks
+    )
+
+    workload_cli_config = (
+        build_mc_stratified_dynamic_workload_cli_config(args)
+        if args.workload == "mc_stratified_dynamic"
+        else None
     )
 
     enabled_methods = set(_parse_baselines(args.baselines))
@@ -3954,6 +4050,8 @@ def main() -> None:
         "dagger_tree_agent",
         "viper_tree_agent",
     }
+    if args.workload == "mc_stratified_dynamic":
+        valid_methods.add("global_fixed_pressure")
     unsupported_methods = sorted(enabled_methods - valid_methods)
     if unsupported_methods:
         raise ValueError(f"不支持的 baselines: {unsupported_methods}")
@@ -3967,6 +4065,14 @@ def main() -> None:
                 seed=seed,
                 experiment_config=experiment_config,
                 workload=args.workload,
+                workload_stratum=(
+                    None if workload_cli_config is None else str(workload_cli_config["stratum"])
+                ),
+                workload_generator_config_hash=(
+                    None
+                    if workload_cli_config is None
+                    else str(workload_cli_config["generator_config_hash"])
+                ),
                 total_util=args.total_util,
                 num_tasks=effective_num_tasks,
                 cf=args.cf,
@@ -4027,6 +4133,14 @@ def main() -> None:
                 seed,
                 experiment_config,
                 args.workload,
+                (
+                    None if workload_cli_config is None else str(workload_cli_config["stratum"])
+                ),
+                (
+                    None
+                    if workload_cli_config is None
+                    else str(workload_cli_config["generator_config_hash"])
+                ),
                 args.total_util,
                 effective_num_tasks,
                 args.cf,
@@ -4096,7 +4210,9 @@ def main() -> None:
         row.setdefault("policy_rng_seed", None)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = _eval_summary_fieldnames()
+    fieldnames = _eval_summary_fieldnames(
+        include_mc_stratified_dynamic=(args.workload == "mc_stratified_dynamic")
+    )
     with args.output.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()

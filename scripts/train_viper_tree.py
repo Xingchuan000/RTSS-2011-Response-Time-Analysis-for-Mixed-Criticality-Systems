@@ -26,6 +26,11 @@ from scripts.common_mc_fairgen_cli import (
     assert_mc_fairgen_args_match_dataset,
     build_workload_cli_config,
 )
+from scripts.common_mc_stratified_dynamic_cli import (
+    add_mc_stratified_dynamic_args,
+    assert_mc_stratified_dynamic_args_match_dataset,
+    build_mc_stratified_dynamic_workload_cli_config,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,7 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-mode", choices=["uniform", "viper_q_span", "q_margin_second"], default="viper_q_span")
     parser.add_argument("--resample-size", type=int, default=None)
     parser.add_argument("--random-seed", type=int, default=0)
-    parser.add_argument("--workload", choices=["small", "rtss11", "automotive", "mc_fairgen"], default="small")
+    parser.add_argument(
+        "--workload",
+        choices=["small", "rtss11", "automotive", "mc_fairgen", "mc_stratified_dynamic"],
+        default="small",
+    )
     parser.add_argument("--scenario", choices=["nominal", "stress"], default="stress")
     parser.add_argument("--dqn-runtime-semantics", choices=["AMC_PLUS", "AMC_RA", "AMC_RH", "C_AMC_SEM", "Q_AMC"], default="AMC_PLUS")
     parser.add_argument("--c-amc-sem-xf", type=float, default=0.5)
@@ -97,6 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--automotive-num-runnables", type=int, default=150)
     parser.add_argument("--automotive-mode", type=str, default="paper_like")
     add_mc_fairgen_args(parser)
+    add_mc_stratified_dynamic_args(parser)
     parser.add_argument("--allow-workload-mismatch", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--tree-state-encoding", choices=["legacy_float32", "fixed_point_int"], default="legacy_float32")
     parser.add_argument("--tree-fixed-point-scale", type=int, default=1_000_000)
@@ -121,7 +131,11 @@ def main() -> None:
     experiment_config, _qamc_metadata = _configure_qamc_experiment(
         args, _build_experiment_config(args)
     )
-    workload_cli_config = build_workload_cli_config(args)
+    workload_cli_config = (
+        build_mc_stratified_dynamic_workload_cli_config(args)
+        if args.workload == "mc_stratified_dynamic"
+        else build_workload_cli_config(args)
+    )
     fixed_point_config = FixedPointConfig(scale=args.tree_fixed_point_scale, output_max=args.tree_fixed_point_scale, rounding_mode=args.tree_fixed_point_rounding) if args.tree_state_encoding == "fixed_point_int" else None
     workload_mismatch_warning: str | None = None
     # 当 tree 训练复用已有 dataset 时，先做一次严格的参数一致性校验，
@@ -129,6 +143,13 @@ def main() -> None:
     if args.workload == "mc_fairgen" and args.initial_dataset is not None:
         try:
             assert_mc_fairgen_args_match_dataset(args, args.initial_dataset)
+        except ValueError as exc:
+            if not args.allow_workload_mismatch:
+                raise
+            workload_mismatch_warning = str(exc)
+    if args.workload == "mc_stratified_dynamic" and args.initial_dataset is not None:
+        try:
+            assert_mc_stratified_dynamic_args_match_dataset(args, args.initial_dataset)
         except ValueError as exc:
             if not args.allow_workload_mismatch:
                 raise

@@ -84,6 +84,11 @@ from amc_py.qamc.reference_config import (
     load_and_validate_frozen_reference,
 )
 from amc_py.qamc.effective_config import QAmcReferenceEffectiveConfig
+from scripts.common_mc_stratified_dynamic_cli import (
+    add_mc_stratified_dynamic_args,
+    build_mc_stratified_dynamic_config_from_args,
+    build_mc_stratified_dynamic_workload_cli_config,
+)
 from amc_py.qamc.loss_metrics import (
     compute_qamc_loss_metrics,
     qamc_loss_metrics_to_row,
@@ -1686,6 +1691,8 @@ def _build_experiment_config(args: argparse.Namespace) -> ExperimentConfig:
             lo_overrun_factor_min=args.mc_fairgen_lo_overrun_factor_min,
             lo_overrun_factor_max=args.mc_fairgen_lo_overrun_factor_max,
         )
+    if args.workload == "mc_stratified_dynamic":
+        return build_mc_stratified_dynamic_config_from_args(args)
     if args.workload == "automotive":
         return build_automotive_experiment_config(
             num_runnables=args.automotive_num_runnables,
@@ -1702,6 +1709,26 @@ def _build_experiment_config(args: argparse.Namespace) -> ExperimentConfig:
             budget_floor_ratio=args.budget_floor_ratio,
         )
     raise ValueError(f"unsupported workload: {args.workload}")
+
+
+def _mc_stratified_dynamic_output_fields(
+    args: argparse.Namespace,
+    bundle,
+) -> dict[str, object]:
+    """返回新 workload 的统一输出审计字段；旧 workload 返回空字典。"""
+
+    if args.workload != "mc_stratified_dynamic":
+        return {}
+    metadata = bundle.metadata or {}
+    cli_config = build_mc_stratified_dynamic_workload_cli_config(args)
+    return {
+        "workload_schema_version": metadata.get(
+            "schema_version", cli_config["workload_schema_version"]
+        ),
+        "stratum": cli_config["stratum"],
+        "period_family": metadata.get("period_family"),
+        "generator_config_hash": cli_config["generator_config_hash"],
+    }
 
 
 def _run_validation(
@@ -2760,7 +2787,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--checkpoint", type=int, default=0)
-    parser.add_argument("--workload", choices=["small", "rtss11", "automotive", "mc_fairgen"], default="small")
+    parser.add_argument(
+        "--workload",
+        choices=["small", "rtss11", "automotive", "mc_fairgen", "mc_stratified_dynamic"],
+        default="small",
+    )
     # automotive workload 允许从 CLI 显式切换 runnable 数量与 workload 语义模式，
     # 这样训练入口就不再把 automotive 固定写死为 150 + paper_like。
     parser.add_argument("--automotive-num-runnables", type=int, choices=[150, 250], default=150)
@@ -2796,6 +2827,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mc-fairgen-hi-overrun-factor-max", type=float, default=1.25)
     parser.add_argument("--mc-fairgen-lo-overrun-factor-min", type=float, default=1.05)
     parser.add_argument("--mc-fairgen-lo-overrun-factor-max", type=float, default=1.80)
+    add_mc_stratified_dynamic_args(parser)
     parser.add_argument("--scenario", choices=["nominal", "stress"], default="stress")
     parser.add_argument("--total-util", type=float, default=0.65)
     parser.add_argument("--num-tasks", type=int, default=20)
@@ -4132,6 +4164,7 @@ def main() -> None:
                 "mixed_horizon_enabled": mixed_horizon_enabled,
                 "taskset_seed": taskset_seed,
                 "scenario_seed": scenario_seed,
+                **_mc_stratified_dynamic_output_fields(args, bundle),
                 "network_seed": network_seed,
                 "exploration_seed": exploration_seed,
                 "replay_seed": replay_seed,
@@ -4448,6 +4481,14 @@ def main() -> None:
             if used_baseline_cache:
                 print("Using cached baseline validation metrics")
             validation_row["episode"] = episode + 1
+            if args.workload == "mc_stratified_dynamic":
+                validation_bundle = resolve_experiment_bundle(
+                    experiment_config,
+                    validation_seeds[0],
+                )
+                validation_row.update(
+                    _mc_stratified_dynamic_output_fields(args, validation_bundle)
+                )
             # 阶段 2：显式记录相对 baseline 的两类 delta，并按 alpha 计算综合分数。
             # 当前版本采用“归一化 validation 口径”，使 validation 选模尺度与 interval reward 更一致：
             # - raw_delta_lo   = dqn_lo_cancellations_mean - baseline_lo_cancellations_mean
@@ -5038,8 +5079,23 @@ def main() -> None:
             "reward_mean",
             "observation_mode",
             "state_dim_mean",
+            "workload",
+            "workload_schema_version",
+            "stratum",
+            "period_family",
+            "generator_config_hash",
         ]
         validation_fieldnames.extend(QOS_VALIDATION_FIELDNAMES)
+        if args.workload == "mc_stratified_dynamic":
+            validation_fieldnames.extend(
+                [
+                    "workload",
+                    "workload_schema_version",
+                    "stratum",
+                    "period_family",
+                    "generator_config_hash",
+                ]
+            )
         validation_fieldnames.extend(
             [
                 "plateau_current_reduction",
@@ -5776,6 +5832,16 @@ def main() -> None:
             "reward_config_path": effective_reference.reward_config_path,
         }
     )
+    if args.workload == "mc_stratified_dynamic":
+        config_payload["mc_stratified_dynamic"] = build_mc_stratified_dynamic_workload_cli_config(args)
+        config_payload["workload_schema_version"] = (
+            initial_bundle.metadata or {}
+        ).get("schema_version", "mc_stratified_dynamic_workload_v1")
+        config_payload["stratum"] = args.mc_strat_dyn_stratum
+        config_payload["period_family"] = (initial_bundle.metadata or {}).get("period_family")
+        config_payload["generator_config_hash"] = build_mc_stratified_dynamic_workload_cli_config(args)[
+            "generator_config_hash"
+        ]
     with config_path.open("w", encoding="utf-8") as f:
         json.dump(config_payload, f, ensure_ascii=False, indent=2)
 

@@ -35,6 +35,11 @@ from scripts.common_mc_fairgen_cli import (
     build_mc_fairgen_config_from_args,
     build_workload_cli_config,
 )
+from scripts.common_mc_stratified_dynamic_cli import (
+    add_mc_stratified_dynamic_args,
+    build_mc_stratified_dynamic_config_from_args,
+    build_mc_stratified_dynamic_workload_cli_config,
+)
 
 
 def _parse_seeds(raw_value: str) -> list[int]:
@@ -76,6 +81,8 @@ def _build_experiment_config(args: argparse.Namespace):
         )
     if args.workload == "mc_fairgen":
         return build_mc_fairgen_config_from_args(args)
+    if args.workload == "mc_stratified_dynamic":
+        return build_mc_stratified_dynamic_config_from_args(args)
     raise ValueError(f"unsupported workload: {args.workload}")
 
 
@@ -138,7 +145,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--teacher-id", type=str, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--workload", choices=["small", "rtss11", "automotive", "mc_fairgen"], default="small")
+    parser.add_argument(
+        "--workload",
+        choices=["small", "rtss11", "automotive", "mc_fairgen", "mc_stratified_dynamic"],
+        default="small",
+    )
     parser.add_argument("--scenario", choices=["nominal", "stress"], default="stress")
     parser.add_argument("--seeds", type=str, default="0")
     parser.add_argument("--end-time", type=int, default=100)
@@ -195,6 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--automotive-num-runnables", type=int, default=150)
     parser.add_argument("--automotive-mode", type=str, default="paper_like")
     add_mc_fairgen_args(parser)
+    add_mc_stratified_dynamic_args(parser)
     return parser
 
 
@@ -246,7 +258,11 @@ def main() -> None:
         manifest["qamc"] = qamc_metadata
     # 无论后续数据集被谁消费，都把 workload CLI 口径完整落盘，便于检查
     # teacher 采样分布是否与 tree 训练/HOUT 评估保持一致。
-    manifest["workload_cli_config"] = build_workload_cli_config(args)
+    manifest["workload_cli_config"] = (
+        build_mc_stratified_dynamic_workload_cli_config(args)
+        if args.workload == "mc_stratified_dynamic"
+        else build_workload_cli_config(args)
+    )
     write_viper_dataset(args.output_dir, samples, manifest)
     with (args.output_dir / "feature_names.json").open("w", encoding="utf-8") as handle:
         json.dump(manifest["feature_names"], handle, ensure_ascii=False, indent=2)

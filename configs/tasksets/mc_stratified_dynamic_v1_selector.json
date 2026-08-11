@@ -1,0 +1,129 @@
+{
+  "schema_version": "mc_stratified_dynamic_selector_config_v1",
+  "workload_family": "mc_stratified_dynamic",
+  "manifest_schema_version": "mc_stratified_dynamic_manifest_v1",
+  "workload_config": {},
+  "runtime": {
+    "semantics": "C_AMC_SEM",
+    "xf": 0.5,
+    "agent_period": 25000,
+    "single_action_space": true,
+    "increase_ratio": 0.02,
+    "decrease_ratio": 0.02,
+    "budget_floor_ratio": 0.9,
+    "forbid_decreasing_hi_budgets": true,
+    "mask_detail": "full",
+    "lo_deploy_cap_ratio": 4.0,
+    "baseline_executes_budget_action": false
+  },
+  "characterization": {
+    "d0": {
+      "runtime": false,
+      "candidate_limit": null
+    },
+    "d1": {
+      "scenario_seeds": "200:202",
+      "end_time": 1000000,
+      "candidate_limit": 800
+    },
+    "d2": {
+      "scenario_seeds": "200:206",
+      "end_time": 3000000,
+      "candidate_limit": 400
+    }
+  },
+  "selection": {
+    "schema_version": "mc_stratified_dynamic_selection_v1",
+    "features": [
+      "load_p",
+      "tightness_p",
+      "autocorr_p",
+      "stress_p",
+      "leader_turnover_p",
+      "mask_turnover_p",
+      "competition_p",
+      "mode_pressure_p"
+    ],
+    "prototype_distance": "weighted_euclidean",
+    "prototype_weights": {
+      "load_p": 1.0,
+      "tightness_p": 1.0,
+      "autocorr_p": 1.0,
+      "stress_p": 1.0,
+      "leader_turnover_p": 1.0,
+      "mask_turnover_p": 1.0,
+      "competition_p": 1.0,
+      "mode_pressure_p": 1.0
+    },
+    "prototypes": {
+      "S1": {
+        "load_p": 0.5,
+        "tightness_p": 0.45,
+        "autocorr_p": 0.45,
+        "stress_p": 0.5,
+        "leader_turnover_p": 0.4,
+        "mask_turnover_p": 0.5,
+        "competition_p": 0.4,
+        "mode_pressure_p": 0.35
+      },
+      "S2": {
+        "load_p": 0.5,
+        "tightness_p": 0.5,
+        "autocorr_p": 0.8,
+        "stress_p": 0.75,
+        "leader_turnover_p": 0.45,
+        "mask_turnover_p": 0.5,
+        "competition_p": 0.45,
+        "mode_pressure_p": 0.35
+      },
+      "S3": {
+        "load_p": 0.8,
+        "tightness_p": 0.8,
+        "autocorr_p": 0.5,
+        "stress_p": 0.5,
+        "leader_turnover_p": 0.5,
+        "mask_turnover_p": 0.6,
+        "competition_p": 0.8,
+        "mode_pressure_p": 0.5
+      },
+      "S4": {
+        "load_p": 0.6,
+        "tightness_p": 0.65,
+        "autocorr_p": 0.5,
+        "stress_p": 0.5,
+        "leader_turnover_p": 0.5,
+        "mask_turnover_p": 0.5,
+        "competition_p": 0.55,
+        "mode_pressure_p": 0.8
+      },
+      "S5": {
+        "load_p": 0.5,
+        "tightness_p": 0.5,
+        "autocorr_p": 0.65,
+        "stress_p": 0.5,
+        "leader_turnover_p": 0.8,
+        "mask_turnover_p": 0.8,
+        "competition_p": 0.65,
+        "mode_pressure_p": 0.5
+      }
+    },
+    "period_families": [
+      "semi-harmonic",
+      "log-uniform"
+    ],
+    "one_per_stratum_and_family": true,
+    "fail_closed_on_shortage": true
+  },
+  "selection_guard": {
+    "forbidden_selection_prefixes": [
+      "dqn_",
+      "viper_",
+      "heuristic_",
+      "pressure_",
+      "retention",
+      "reward",
+      "train_",
+      "hout_"
+    ]
+  }
+}

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import asdict
+import hashlib
 import json
 from pathlib import Path
 
@@ -210,6 +212,25 @@ def collect_teacher_labeled_rollouts(
         "action_definitions": action_definitions or [],
         "mask_reject_reasons": dict(manifest_mask_reasons),
     }
+    provider = experiment_config.workload_provider
+    if provider is not None and getattr(provider, "name", "") == "mc_stratified_dynamic":
+        provider_config = asdict(provider.config)
+        provider_config.pop("seed", None)
+        first_bundle = resolve_experiment_bundle(experiment_config, int(seeds[0])) if seeds else None
+        first_metadata = (first_bundle.metadata if first_bundle is not None else {}) or {}
+        manifest["workload_family"] = "mc_stratified_dynamic"
+        manifest["workload_schema_version"] = first_metadata.get(
+            "schema_version", "mc_stratified_dynamic_workload_v1"
+        )
+        manifest["mc_stratified_dynamic"] = {
+            **provider_config,
+            "scenario_seed_offset": int(provider.scenario_seed_offset),
+            "fixed_taskset_seed": provider.fixed_taskset_seed,
+        }
+        manifest["generator_config_hash"] = hashlib.sha256(
+            json.dumps(manifest["mc_stratified_dynamic"], sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        manifest["period_family"] = first_metadata.get("period_family")
     if runtime_semantics is RuntimeSemantics.Q_AMC:
         if (
             experiment_config.qamc_reference_config_path is None

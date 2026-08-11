@@ -276,6 +276,104 @@ def build_mc_fairgen_experiment_config(
     )
 
 
+def build_mc_stratified_dynamic_experiment_config(
+    *,
+    num_tasks: int = 12,
+    hi_ratio: float = 0.5,
+    period_family: str = "seed_paired",
+    period_scale: int = 500,
+    tick_ns: int = 10,
+    total_util_min: float = 0.58,
+    total_util_max: float = 0.84,
+    criticality_factor_min: float = 1.40,
+    criticality_factor_max: float = 2.20,
+    max_task_util: float = 0.25,
+    lo_budget_quantile_min: float = 0.65,
+    lo_budget_quantile_max: float = 0.80,
+    hi_budget_quantile_min: float = 0.75,
+    hi_budget_quantile_max: float = 0.90,
+    normal_cost_ratio_min: float = 0.55,
+    normal_cost_ratio_max: float = 0.95,
+    lo_stress_cost_ratio_min: float = 0.95,
+    lo_stress_cost_ratio_max: float = 1.35,
+    hi_stress_cost_ratio_min: float = 0.95,
+    hi_stress_cost_ratio_max: float = 1.45,
+    lo_stress_duty_min: float = 0.10,
+    lo_stress_duty_max: float = 0.35,
+    lo_stress_dwell_min: float = 4.0,
+    lo_stress_dwell_max: float = 20.0,
+    hi_stress_duty_min: float = 0.03,
+    hi_stress_duty_max: float = 0.15,
+    hi_stress_dwell_min: float = 2.0,
+    hi_stress_dwell_max: float = 10.0,
+    log_uniform_period_min_ms: int = 10,
+    log_uniform_period_max_ms: int = 200,
+    require_schedulable: bool = False,
+    max_attempts: int = 100,
+    sched_method: str = "amc_rtb",
+    priority_policy: str = "dm",
+    scenario_seed_offset: int = 100000,
+    fixed_taskset_seed: int | None = None,
+    check_safety: bool = True,
+) -> ExperimentConfig:
+    """构造完全独立的 mc_stratified_dynamic experiment 配置。
+
+    该 builder 直接实例化新 workload provider，不能退回到 mc_fairgen
+    builder；这样 workload family、参数 schema 和结果审计边界保持独立。
+    """
+
+    from amc_py.workloads.mc_stratified_dynamic import (
+        MCStratifiedDynamicWorkloadConfig,
+        MCStratifiedDynamicWorkloadProvider,
+    )
+
+    provider = MCStratifiedDynamicWorkloadProvider(
+        MCStratifiedDynamicWorkloadConfig(
+            num_tasks=num_tasks,
+            hi_ratio=hi_ratio,
+            period_family=period_family,  # type: ignore[arg-type]
+            period_scale=period_scale,
+            tick_ns=tick_ns,
+            total_util_min=total_util_min,
+            total_util_max=total_util_max,
+            criticality_factor_min=criticality_factor_min,
+            criticality_factor_max=criticality_factor_max,
+            max_task_util=max_task_util,
+            lo_budget_quantile_min=lo_budget_quantile_min,
+            lo_budget_quantile_max=lo_budget_quantile_max,
+            hi_budget_quantile_min=hi_budget_quantile_min,
+            hi_budget_quantile_max=hi_budget_quantile_max,
+            normal_cost_ratio_min=normal_cost_ratio_min,
+            normal_cost_ratio_max=normal_cost_ratio_max,
+            lo_stress_cost_ratio_min=lo_stress_cost_ratio_min,
+            lo_stress_cost_ratio_max=lo_stress_cost_ratio_max,
+            hi_stress_cost_ratio_min=hi_stress_cost_ratio_min,
+            hi_stress_cost_ratio_max=hi_stress_cost_ratio_max,
+            lo_stress_duty_min=lo_stress_duty_min,
+            lo_stress_duty_max=lo_stress_duty_max,
+            lo_stress_dwell_min=lo_stress_dwell_min,
+            lo_stress_dwell_max=lo_stress_dwell_max,
+            hi_stress_duty_min=hi_stress_duty_min,
+            hi_stress_duty_max=hi_stress_duty_max,
+            hi_stress_dwell_min=hi_stress_dwell_min,
+            hi_stress_dwell_max=hi_stress_dwell_max,
+            log_uniform_period_min_ms=log_uniform_period_min_ms,
+            log_uniform_period_max_ms=log_uniform_period_max_ms,
+            require_schedulable=require_schedulable,
+            max_attempts=max_attempts,
+            sched_method=sched_method,
+            priority_policy=priority_policy,
+        ),
+        fixed_taskset_seed=fixed_taskset_seed,
+        scenario_seed_offset=scenario_seed_offset,
+    )
+    return ExperimentConfig(
+        name=f"mc_stratified_dynamic_{period_family}_{num_tasks}",
+        workload_provider=provider,
+        check_safety=check_safety,
+    )
+
+
 def build_runtime_config_for_semantics(
     *,
     end_time: int,
@@ -317,6 +415,8 @@ def build_experiment_config(name: str, **kwargs) -> ExperimentConfig:
         return build_automotive_experiment_config(**kwargs)
     if name == "mc_fairgen":
         return build_mc_fairgen_experiment_config(**kwargs)
+    if name == "mc_stratified_dynamic":
+        return build_mc_stratified_dynamic_experiment_config(**kwargs)
     raise ValueError(f"unsupported workload/experiment name: {name}")
 
 
