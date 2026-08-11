@@ -284,7 +284,10 @@ function Invoke-TasksetBaselineSuite {
 }
 
 function New-SeedWorkerCommand {
-  param([string]$Seed)
+  param(
+    [string]$Seed,
+    [string]$StatusPath
+  )
   if ([string]::IsNullOrWhiteSpace($PSCommandPath)) {
     throw "Cannot resolve current script path for parallel workers."
   }
@@ -308,14 +311,17 @@ function New-SeedWorkerCommand {
   if ($SkipHout) { $Parts += "-SkipHout" }
   if ($ContinueOnSeedFailure) { $Parts += "-ContinueOnSeedFailure" }
   $Invocation = $Parts -join " "
+  $StatusLiteral = ConvertTo-PsSingleQuotedLiteral -Value $StatusPath
   return @"
 `$ErrorActionPreference = 'Stop'
 try {
   $Invocation
+  [System.IO.File]::WriteAllText($StatusLiteral, 'SUCCESS')
   exit 0
 }
 catch {
   Write-Error (`$_ | Out-String)
+  [System.IO.File]::WriteAllText($StatusLiteral, 'FAILED')
   exit 1
 }
 "@
@@ -337,15 +343,21 @@ function Invoke-ParallelTasksetWorkers {
       $Seed = [string]$Pending.Dequeue()
       $StdoutPath = Join-Path $LogRoot "seed_${Seed}.stdout.log"
       $StderrPath = Join-Path $LogRoot "seed_${Seed}.stderr.log"
+      $StatusPath = Join-Path $LogRoot "seed_${Seed}.worker_status.txt"
       if (Test-Path $StdoutPath) { Remove-Item -Force $StdoutPath }
       if (Test-Path $StderrPath) { Remove-Item -Force $StderrPath }
-      $WorkerCommand = New-SeedWorkerCommand -Seed $Seed
+      if (Test-Path $StatusPath) { Remove-Item -Force $StatusPath }
+      $WorkerCommand = New-SeedWorkerCommand -Seed $Seed -StatusPath $StatusPath
       $EncodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($WorkerCommand))
       $Process = Start-Process -FilePath $PowerShellExe `
         -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $EncodedCommand) `
         -PassThru -RedirectStandardOutput $StdoutPath -RedirectStandardError $StderrPath
       $Running[$Seed] = [pscustomobject]@{
-        Seed = $Seed; Process = $Process; StdoutPath = $StdoutPath; StderrPath = $StderrPath
+        Seed = $Seed
+        Process = $Process
+        StdoutPath = $StdoutPath
+        StderrPath = $StderrPath
+        StatusPath = $StatusPath
       }
       Write-Host "[parallel] START seed=$Seed running=$($Running.Count)/$ParallelTasksets"
     }
@@ -354,15 +366,44 @@ function Invoke-ParallelTasksetWorkers {
     foreach ($Seed in @($Running.Keys)) {
       $Entry = $Running[$Seed]
       if (-not $Entry.Process.HasExited) { continue }
+
+      # Wait for the process handle and redirected streams to be fully finalized before
+      # reading its state. The worker also writes an explicit terminal status file just
+      # before exiting, which avoids the intermittent blank ExitCode observed with
+      # Start-Process -PassThru on this parallel runner.
       $Entry.Process.WaitForExit()
-      $ExitCode = $Entry.Process.ExitCode
+      $Entry.Process.Refresh()
+
+      $WorkerStatus = ""
+      if (Test-Path $Entry.StatusPath) {
+        $WorkerStatus = (Get-Content -Path $Entry.StatusPath -Raw).Trim()
+      }
+
+      $ExitCode = $null
+      try {
+        $ExitCode = $Entry.Process.ExitCode
+      }
+      catch {
+        $ExitCode = $null
+      }
+
+      $WorkerSucceeded = ($WorkerStatus -eq "SUCCESS")
+      $WorkerFailed = ($WorkerStatus -eq "FAILED")
+
+      if ((-not $WorkerSucceeded) -and (-not $WorkerFailed) -and ($null -ne $ExitCode)) {
+        $WorkerSucceeded = ([int]$ExitCode -eq 0)
+        $WorkerFailed = (-not $WorkerSucceeded)
+      }
+
       $Running.Remove($Seed)
-      if ($ExitCode -eq 0) {
+      if ($WorkerSucceeded) {
         $Completed += [int]$Seed
         Write-Host "[parallel] DONE seed=$Seed"
       } else {
         $Failed += [int]$Seed
-        $Message = "seed=$Seed worker failed with exit code $ExitCode; stdout=$($Entry.StdoutPath); stderr=$($Entry.StderrPath)"
+        $ExitCodeText = if ($null -eq $ExitCode) { "<unavailable>" } else { [string]$ExitCode }
+        $StatusText = if ([string]::IsNullOrWhiteSpace($WorkerStatus)) { "<missing>" } else { $WorkerStatus }
+        $Message = "seed=$Seed worker failed; worker_status=$StatusText; exit_code=$ExitCodeText; stdout=$($Entry.StdoutPath); stderr=$($Entry.StderrPath)"
         Write-Host $Message -ForegroundColor Red
         Add-Content -Path $GlobalFailureLog -Value $Message
         if (Test-Path $Entry.StdoutPath) { Get-Content $Entry.StdoutPath -Tail 60 | ForEach-Object { Write-Host $_ } }
