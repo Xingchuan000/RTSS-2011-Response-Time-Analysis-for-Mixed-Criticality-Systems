@@ -32,6 +32,15 @@ from amc_py.dqn import (
     resolve_experiment_bundle,
 )
 from amc_py.event_runtime import simulate_ordered_taskset_event_driven
+from amc_py.evaluation.csem_dynamic_baselines import (
+    load_pressure_heuristic_selection,
+    run_pressure_threshold_baseline,
+    run_random_valid_baseline,
+)
+from amc_py.evaluation.csem_static_baseline import (
+    load_static_budget_selection,
+    run_static_budget_baseline,
+)
 from amc_py.experiments import evaluate_taskset
 from amc_py.metrics import (
     compute_lo_quality_weighted_metrics,
@@ -464,6 +473,10 @@ def _eval_summary_fieldnames() -> list[str]:
             "budget_increase_ratio",
             "budget_decrease_ratio",
             "budget_floor_ratio",
+            "static_budget_alpha",
+            "pressure_u_low",
+            "pressure_u_high",
+            "policy_rng_seed",
             "no_safe_action_steps",
             "masked_budget_floor_violation_count",
             "masked_budget_floor_violation_rate",
@@ -680,6 +693,141 @@ def _build_pure_runtime_baseline_row(
         **_degradation_metrics_to_row(runtime_result),
         **service_metrics_to_row(service_metrics),
         **_lo_quality_weighted_metrics_to_row_from_result(runtime_result),
+    }
+
+
+def _build_static_budget_row(
+    *,
+    row_base: dict[str, int | float | str | bool],
+    runtime_result: SimulationResult,
+    alpha: float,
+    action_space: str,
+    action_count: int,
+    budget_increase_ratio: float,
+    budget_decrease_ratio: float,
+    budget_floor_ratio: float,
+) -> dict[str, int | float | str | bool | None]:
+    """构造 validation-tuned static budget baseline 的统一评估行。"""
+
+    row = _build_pure_runtime_baseline_row(
+        row_base=row_base,
+        method="static_tuned_budget",
+        runtime_result=runtime_result,
+        action_space=action_space,
+        action_count=action_count,
+        budget_increase_ratio=budget_increase_ratio,
+        budget_decrease_ratio=budget_decrease_ratio,
+        budget_floor_ratio=budget_floor_ratio,
+    )
+    row["static_budget_alpha"] = float(alpha)
+    return row
+
+
+def _build_dynamic_baseline_row(
+    *,
+    row_base: dict[str, int | float | str | bool],
+    method: str,
+    run,
+    action_space: str,
+    action_count: int,
+    budget_increase_ratio: float,
+    budget_decrease_ratio: float,
+    budget_floor_ratio: float,
+) -> dict[str, int | float | str | bool | None]:
+    """按 DQN evaluator 的统计口径构造 mask-aware dynamic baseline 行。"""
+
+    runtime_result = run.runtime_result
+    debug_stats = run.debug_statistics
+    action_log_metrics = _aggregate_action_log_metrics(run.action_log)
+    service_metrics = compute_service_quality_metrics(runtime_result)
+    step_count = int(run.step_count)
+    accepted_actions = int(run.accepted_actions)
+    rejected_actions = int(run.rejected_actions)
+    noop_actions = int(run.noop_actions)
+    explicit_noop_actions = int(run.explicit_noop_actions)
+    last_info = run.action_log[-1] if run.action_log else {}
+
+    return {
+        **row_base,
+        **_empty_noop_q_diagnostics_row(),
+        **_empty_tree_diagnostics_row(),
+        "method": method,
+        "q_network_type": "",
+        "mode_changes": runtime_result.mode_change_count(),
+        "lo_cancellations": runtime_result.lo_job_cancellation_count(),
+        "deadline_misses": len(runtime_result.deadline_misses),
+        "budget_overruns": _budget_overruns_from_result(runtime_result),
+        "accepted_actions": accepted_actions,
+        "rejected_actions": rejected_actions,
+        "step_count": step_count,
+        "selected_action_count": int(run.selected_action_count),
+        "noop_actions": noop_actions,
+        "explicit_noop_actions": explicit_noop_actions,
+        "noop_action_rate": (noop_actions / step_count) if step_count else 0.0,
+        "explicit_noop_action_rate": (
+            explicit_noop_actions / step_count if step_count else 0.0
+        ),
+        "accepted_action_rate": (
+            accepted_actions / step_count if step_count else 0.0
+        ),
+        "rejection_rate": (
+            rejected_actions / step_count if step_count else 0.0
+        ),
+        "total_reward": float(run.total_reward),
+        "check_safety": bool(debug_stats["check_safety"]),
+        "safety_checked_actions": int(debug_stats["safety_checked_actions"]),
+        "safety_accepted_actions": int(debug_stats["safety_accepted_actions"]),
+        "safety_rejected_actions": int(debug_stats["safety_rejected_actions"]),
+        "valid_action_count_mean": float(debug_stats["valid_action_count_mean"]),
+        "masked_action_count_mean": float(debug_stats["masked_action_count_mean"]),
+        "masked_decrease_hi_forbidden_count": int(
+            debug_stats["masked_decrease_hi_forbidden_count"]
+        ),
+        "masked_decrease_hi_forbidden_rate": float(
+            debug_stats["masked_decrease_hi_forbidden_rate"]
+        ),
+        "masked_action_count_max": int(debug_stats["masked_action_count_max"]),
+        "mask_rejection_rate_mean": float(debug_stats["mask_rejection_rate_mean"]),
+        "selected_invalid_mask_actions": int(
+            debug_stats["selected_invalid_mask_actions"]
+        ),
+        "selected_explicit_noop_actions": int(
+            debug_stats["selected_explicit_noop_actions"]
+        ),
+        "selected_explicit_noop_rate": float(
+            debug_stats["selected_explicit_noop_rate"]
+        ),
+        "action_space_type": str(debug_stats.get("action_space_type", action_space)),
+        "action_count": int(debug_stats.get("action_count", action_count)),
+        "budget_increase_ratio": float(
+            debug_stats.get("budget_increase_ratio", budget_increase_ratio)
+        ),
+        "budget_decrease_ratio": float(
+            debug_stats.get("budget_decrease_ratio", budget_decrease_ratio)
+        ),
+        "budget_floor_ratio": float(
+            debug_stats.get("budget_floor_ratio", budget_floor_ratio)
+        ),
+        "no_safe_action_steps": int(debug_stats["no_safe_action_steps"]),
+        "masked_budget_floor_violation_count": int(
+            debug_stats["masked_budget_floor_violation_count"]
+        ),
+        "masked_budget_floor_violation_rate": float(
+            debug_stats["masked_budget_floor_violation_rate"]
+        ),
+        "masked_deploy_cap_increase_count": int(
+            debug_stats["masked_deploy_cap_increase_count"]
+        ),
+        "masked_deploy_cap_increase_rate": float(
+            debug_stats["masked_deploy_cap_increase_rate"]
+        ),
+        **action_log_metrics,
+        **_degradation_metrics_to_row(runtime_result),
+        **service_metrics_to_row(service_metrics),
+        **_lo_quality_weighted_metrics_to_row_from_result(runtime_result),
+        "observation_mode": last_info.get("observation_mode"),
+        "state_dim": last_info.get("state_dim"),
+        **_task_level_info_row(last_info),
     }
 
 
@@ -2328,6 +2476,9 @@ def _evaluate_enabled_methods_for_seed(
     tree_audit_state_mode: str = "split",
     tree_audit_top_k_actions: int = 5,
     require_integer_tree_artifact: bool = False,
+    static_budget_config: Path | None = None,
+    pressure_heuristic_config: Path | None = None,
+    random_valid_policy_seed_offset: int = 0,
 ) -> tuple[list[dict[str, int | float | str | bool]], list[dict[str, object]]]:
     """评估单个 seed 下的所有启用方法。
 
@@ -2570,6 +2721,42 @@ def _evaluate_enabled_methods_for_seed(
                 action_log=[],
                 runtime_result=runtime_baseline_result,
             )
+
+    if "static_tuned_budget" in enabled_methods:
+        if dqn_runtime_semantics is not RuntimeSemantics.C_AMC_SEM:
+            raise ValueError("static_tuned_budget requires C_AMC_SEM")
+        if static_budget_config is None:
+            raise ValueError("--static-budget-config is required")
+
+        selection = load_static_budget_selection(static_budget_config)
+        if int(selection.taskset_seed) != int(taskset_seed):
+            raise ValueError("STATIC_CONFIG_TASKSET_SEED_MISMATCH")
+        static_run = run_static_budget_baseline(
+            ordered_tasks=list(bundle.ordered_tasks),
+            scenario=bundle.scenario,
+            runtime_config=runtime_config,
+            alpha=float(selection.alpha),
+        )
+        rows.append(
+            _build_static_budget_row(
+                row_base=row_base,
+                runtime_result=static_run.runtime_result,
+                alpha=selection.alpha,
+                action_space=action_space,
+                action_count=len(actions),
+                budget_increase_ratio=budget_increase_ratio,
+                budget_decrease_ratio=budget_decrease_ratio,
+                budget_floor_ratio=budget_floor_ratio,
+            )
+        )
+        deadline_miss_details.extend(
+            _deadline_miss_detail_rows(
+                row_base=row_base,
+                method="static_tuned_budget",
+                runtime_result=static_run.runtime_result,
+                action_log=[],
+            )
+        )
 
     if "noop_agent" in enabled_methods:
         noop_result = simulate_ordered_taskset_with_agent(
@@ -2906,6 +3093,109 @@ def _evaluate_enabled_methods_for_seed(
                 runtime_result=heuristic_result.runtime_result,
             )
 
+    if "random_valid_agent" in enabled_methods:
+        if action_space != "single":
+            raise ValueError(
+                "random_valid_agent formal10 baseline requires action_space=single"
+            )
+        policy_seed = int(scenario_seed) + int(random_valid_policy_seed_offset)
+        random_valid_run = run_random_valid_baseline(
+            selector_seed=policy_seed,
+            experiment_config=experiment_config,
+            seed=seed,
+            end_time=end_time,
+            agent_period=agent_period,
+            reward_mode=reward_mode,
+            action_space=action_space,
+            budget_increase_ratio=budget_increase_ratio,
+            budget_decrease_ratio=budget_decrease_ratio,
+            include_explicit_noop=include_explicit_noop,
+            budget_floor_ratio=budget_floor_ratio,
+            forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+            mask_detail_mode=mask_detail_mode,
+            enable_deploy_cap_mask=enable_deploy_cap_mask,
+            deploy_cap_mask_ratio=deploy_cap_mask_ratio,
+            deploy_cap_mask_criticality=deploy_cap_mask_criticality,
+            feature_config=feature_config,
+            c_amc_sem_xf=c_amc_sem_xf,
+        )
+        random_valid_row = _build_dynamic_baseline_row(
+            row_base=row_base,
+            method="random_valid_agent",
+            run=random_valid_run,
+            action_space=action_space,
+            action_count=len(actions),
+            budget_increase_ratio=budget_increase_ratio,
+            budget_decrease_ratio=budget_decrease_ratio,
+            budget_floor_ratio=budget_floor_ratio,
+        )
+        random_valid_row["policy_rng_seed"] = policy_seed
+        rows.append(random_valid_row)
+        deadline_miss_details.extend(
+            _deadline_miss_detail_rows(
+                row_base=row_base,
+                method="random_valid_agent",
+                runtime_result=random_valid_run.runtime_result,
+                action_log=random_valid_run.action_log,
+            )
+        )
+
+    if "pressure_threshold_valid_agent" in enabled_methods:
+        if action_space != "single":
+            raise ValueError(
+                "pressure heuristic formal10 baseline requires action_space=single"
+            )
+        if pressure_heuristic_config is None:
+            raise ValueError("--pressure-heuristic-config is required")
+        pressure_selection = load_pressure_heuristic_selection(
+            pressure_heuristic_config
+        )
+        if int(pressure_selection["taskset_seed"]) != int(taskset_seed):
+            raise ValueError("PRESSURE_CONFIG_TASKSET_SEED_MISMATCH")
+        pressure_run = run_pressure_threshold_baseline(
+            ordered_tasks=list(bundle.ordered_tasks),
+            u_low=float(pressure_selection["u_low"]),
+            u_high=float(pressure_selection["u_high"]),
+            experiment_config=experiment_config,
+            seed=seed,
+            end_time=end_time,
+            agent_period=agent_period,
+            reward_mode=reward_mode,
+            action_space=action_space,
+            budget_increase_ratio=budget_increase_ratio,
+            budget_decrease_ratio=budget_decrease_ratio,
+            include_explicit_noop=include_explicit_noop,
+            budget_floor_ratio=budget_floor_ratio,
+            forbid_decreasing_hi_budgets=forbid_decreasing_hi_budgets,
+            mask_detail_mode=mask_detail_mode,
+            enable_deploy_cap_mask=enable_deploy_cap_mask,
+            deploy_cap_mask_ratio=deploy_cap_mask_ratio,
+            deploy_cap_mask_criticality=deploy_cap_mask_criticality,
+            feature_config=feature_config,
+            c_amc_sem_xf=c_amc_sem_xf,
+        )
+        pressure_row = _build_dynamic_baseline_row(
+            row_base=row_base,
+            method="pressure_threshold_valid_agent",
+            run=pressure_run,
+            action_space=action_space,
+            action_count=len(actions),
+            budget_increase_ratio=budget_increase_ratio,
+            budget_decrease_ratio=budget_decrease_ratio,
+            budget_floor_ratio=budget_floor_ratio,
+        )
+        pressure_row["pressure_u_low"] = float(pressure_selection["u_low"])
+        pressure_row["pressure_u_high"] = float(pressure_selection["u_high"])
+        rows.append(pressure_row)
+        deadline_miss_details.extend(
+            _deadline_miss_detail_rows(
+                row_base=row_base,
+                method="pressure_threshold_valid_agent",
+                runtime_result=pressure_run.runtime_result,
+                action_log=pressure_run.action_log,
+            )
+        )
+
     if "dqn_agent" in enabled_methods:
         dqn_row, dqn_runtime_result, dqn_action_log = _evaluate_dqn_once(
             model_path=model_path,
@@ -3092,6 +3382,9 @@ def _evaluate_seed_worker(
         str,
         int,
         bool,
+        Path | None,
+        Path | None,
+        int,
     ],
 ) -> tuple[list[dict[str, int | float | str | bool]], list[dict[str, object]]]:
     """并行 worker：完成单个 seed 的全部评估方法。
@@ -3149,6 +3442,9 @@ def _evaluate_seed_worker(
         tree_audit_state_mode,
         tree_audit_top_k_actions,
         require_integer_tree_artifact,
+        static_budget_config,
+        pressure_heuristic_config,
+        random_valid_policy_seed_offset,
     ) = args_tuple
     return _evaluate_enabled_methods_for_seed(
         seed=seed,
@@ -3199,6 +3495,9 @@ def _evaluate_seed_worker(
         tree_audit_state_mode=tree_audit_state_mode,
         tree_audit_top_k_actions=tree_audit_top_k_actions,
         require_integer_tree_artifact=require_integer_tree_artifact,
+        static_budget_config=static_budget_config,
+        pressure_heuristic_config=pressure_heuristic_config,
+        random_valid_policy_seed_offset=random_valid_policy_seed_offset,
     )
 
 
@@ -3256,6 +3555,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bc-tree-model", type=Path, default=None)
     parser.add_argument("--dagger-tree-model", type=Path, default=None)
     parser.add_argument("--viper-tree-model", type=Path, default=None)
+    parser.add_argument("--static-budget-config", type=Path, default=None)
+    parser.add_argument("--pressure-heuristic-config", type=Path, default=None)
+    parser.add_argument("--random-valid-policy-seed-offset", type=int, default=0)
     parser.add_argument("--tree-compare-teacher-model", type=Path, default=None)
     parser.add_argument("--require-integer-tree-artifact", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
@@ -3642,6 +3944,9 @@ def main() -> None:
         "amc_rh_baseline",
         "c_amc_sem_baseline",
         "noop_agent",
+        "static_tuned_budget",
+        "random_valid_agent",
+        "pressure_threshold_valid_agent",
         "random_agent",
         "heuristic_agent",
         "dqn_agent",
@@ -3708,6 +4013,9 @@ def main() -> None:
                 tree_audit_state_mode=args.tree_audit_state_mode,
                 tree_audit_top_k_actions=args.tree_audit_top_k_actions,
                 require_integer_tree_artifact=args.require_integer_tree_artifact,
+                static_budget_config=args.static_budget_config,
+                pressure_heuristic_config=args.pressure_heuristic_config,
+                random_valid_policy_seed_offset=args.random_valid_policy_seed_offset,
             )
             for seed in seeds
         ]
@@ -3763,6 +4071,9 @@ def main() -> None:
                 args.tree_audit_state_mode,
                 args.tree_audit_top_k_actions,
                 args.require_integer_tree_artifact,
+                args.static_budget_config,
+                args.pressure_heuristic_config,
+                args.random_valid_policy_seed_offset,
             )
             for seed in seeds
         ]
@@ -3777,6 +4088,12 @@ def main() -> None:
     for seed_rows, seed_deadline_miss_details in per_seed_results:
         rows.extend(seed_rows)
         deadline_miss_details.extend(seed_deadline_miss_details)
+
+    for row in rows:
+        row.setdefault("static_budget_alpha", None)
+        row.setdefault("pressure_u_low", None)
+        row.setdefault("pressure_u_high", None)
+        row.setdefault("policy_rng_seed", None)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = _eval_summary_fieldnames()

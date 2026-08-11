@@ -1,9 +1,0 @@
-{
-  "schema_version": "real_seed_provenance_v1",
-  "seed": 185,
-  "variant": "best_overall",
-  "taskset_seed": 185,
-  "scenario_seed": 100185,
-  "taskset_fingerprint": "208c52d68b164ecd8bf9210a0accd061e1d5374400704bf2b2d3e752518f6763",
-  "tree_integer_sha256": "f34ff7cce78434bbc7d90fb92d80b8c6e55fb09298ebba5eec04463055f40acb"
-}

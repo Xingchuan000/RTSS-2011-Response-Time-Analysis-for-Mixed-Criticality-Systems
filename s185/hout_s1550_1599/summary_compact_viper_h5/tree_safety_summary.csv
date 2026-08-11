@@ -1,8 +1,0 @@
-metric,value
-deadline_misses_sum,0
-hi_deadline_misses_sum,0
-lo_deadline_misses_sum,0
-max_tree_raw_top1_invalid_rate,0.0
-mean_tree_raw_top1_invalid_rate,0.0
-max_tree_fallback_rate,0.0
-mean_tree_fallback_rate,0.0

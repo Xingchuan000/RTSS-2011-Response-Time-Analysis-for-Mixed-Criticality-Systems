@@ -1,7 +1,0 @@
-leaf_id,path_depth,predicted_action_id,predicted_action_summary,leaf_n_node_samples,leaf_impurity,path_text
-2,2,9,9,259,0.0,T08.mc_lo_3.util_budget <= 16260.000000 AND T09.mc_lo_5.recent_cost_norm <= 190037.000000
-3,2,8,8,15691,0.0,T08.mc_lo_3.util_budget <= 16260.000000 AND T09.mc_lo_5.recent_cost_norm > 190037.000000
-6,3,9,9,3074,0.16725922156953466,T08.mc_lo_3.util_budget > 16260.000000 AND T09.mc_lo_5.util_budget <= 55240.000000 AND T08.mc_lo_3.risk <= 92546.500000
-7,3,9,9,900,0.5431827160493827,T08.mc_lo_3.util_budget > 16260.000000 AND T09.mc_lo_5.util_budget <= 55240.000000 AND T08.mc_lo_3.risk > 92546.500000
-9,3,11,11,5502,0.4611331314570386,T08.mc_lo_3.util_budget > 16260.000000 AND T09.mc_lo_5.util_budget > 55240.000000 AND T11.mc_lo_4.util_budget <= 66270.000000
-10,3,23,23,6574,0.16562859894918436,T08.mc_lo_3.util_budget > 16260.000000 AND T09.mc_lo_5.util_budget > 55240.000000 AND T11.mc_lo_4.util_budget > 66270.000000
