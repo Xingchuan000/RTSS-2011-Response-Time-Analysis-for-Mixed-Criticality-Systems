@@ -110,3 +110,18 @@ def test_shortage_fails_closed_without_cross_stratum_fill() -> None:
     assert "shortage" in exc_info.value.report
     assert "missing_slot" in exc_info.value.report
 
+
+
+def test_degenerate_structural_metrics_fail_closed() -> None:
+    rows = _diagnostic_rows()
+    for row in rows:
+        row["mask_turnover_rate"] = 0.0
+        row["budget_competition_index"] = 0.0
+    with pytest.raises(SelectionShortageError) as exc_info:
+        select_primary10(rows)
+    report = exc_info.value.report
+    assert report["schema_version"] == "mc_stratified_dynamic_structural_variation_report_v1"
+    assert {item["field"] for item in report["problems"]} == {
+        "mask_turnover_rate",
+        "budget_competition_index",
+    }

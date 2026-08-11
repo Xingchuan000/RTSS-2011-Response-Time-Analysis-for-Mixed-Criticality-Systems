@@ -71,3 +71,63 @@ def test_new_scripts_do_not_import_legacy_workload_or_cli() -> None:
         assert "from amc_py.workloads.mc_fairgen" not in source
         assert "common_mc_fairgen_cli" not in source
 
+
+
+def test_multistep_probe_detects_delayed_competition() -> None:
+    from scripts.diagnose_mc_stratified_dynamic_structure import multistep_competition_frontier_probe
+
+    tasks = {
+        "a": Task("a", 100, 100, 10, 10, Criticality.LO),
+        "b": Task("b", 100, 100, 10, 10, Criticality.LO),
+    }
+    actions = (_Action("a"), _Action("b"))
+    budgets = {"a": 10, "b": 10}
+
+    # Both actions are initially legal. Increasing a twice consumes the shared
+    # synthetic frontier and removes b; one 2% step alone does not.
+    def mask_for_budget(candidate: dict[str, int]) -> tuple[bool, bool]:
+        total = candidate["a"] + candidate["b"]
+        return (candidate["a"] < 20, total < 23)
+
+    result = multistep_competition_frontier_probe(
+        mask_before=(True, True),
+        actions=actions,
+        budget_before=budgets,
+        mask_for_budget=mask_for_budget,
+        tasks_by_name=tasks,
+        max_depth=12,
+    )
+    assert max(result["competition_scores"]) > 0.0
+    assert result["first_other_loss_steps"]
+    assert budgets == {"a": 10, "b": 10}
+
+
+def test_round_robin_probe_produces_frontier_mask_turnover() -> None:
+    from scripts.diagnose_mc_stratified_dynamic_structure import (
+        deterministic_round_robin_frontier_probe,
+        normalized_hamming_distance,
+    )
+
+    tasks = {
+        "a": Task("a", 100, 100, 10, 10, Criticality.LO),
+        "b": Task("b", 100, 100, 10, 10, Criticality.LO),
+    }
+    actions = (_Action("a"), _Action("b"))
+    budgets = {"a": 10, "b": 10}
+
+    def mask_for_budget(candidate: dict[str, int]) -> tuple[bool, bool]:
+        return (candidate["a"] < 13, candidate["b"] < 14)
+
+    result = deterministic_round_robin_frontier_probe(
+        mask_before=(True, True),
+        actions=actions,
+        budget_before=budgets,
+        mask_for_budget=mask_for_budget,
+        tasks_by_name=tasks,
+        max_steps=20,
+    )
+    masks = result["mask_sequence"]
+    turnover = [normalized_hamming_distance(a, b) for a, b in zip(masks, masks[1:])]
+    assert result["unique_mask_count"] > 1
+    assert max(turnover) > 0.0
+    assert budgets == {"a": 10, "b": 10}

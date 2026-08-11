@@ -30,10 +30,17 @@
       "scenario_seeds": "200:206",
       "end_time": 3000000,
       "candidate_limit": 400
+    },
+    "structural_probe": {
+      "competition": "multistep_frontier_competition_probe_v2",
+      "frontier_probe_max_depth": 96,
+      "mask_turnover": "deterministic_round_robin_budget_probe_v2",
+      "round_robin_probe_max_steps": 256,
+      "selector_fail_closed_on_degenerate_structural_features": true
     }
   },
   "selection": {
-    "schema_version": "mc_stratified_dynamic_selection_v1",
+    "schema_version": "mc_stratified_dynamic_selection_v2",
     "features": [
       "load_p",
       "tightness_p",

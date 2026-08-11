@@ -31,8 +31,8 @@ from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationRes
 
 
 MANIFEST_SCHEMA_VERSION = "mc_stratified_dynamic_manifest_v1"
-DIAGNOSTICS_SCHEMA_VERSION = "mc_stratified_dynamic_diagnostics_v1"
-SELECTION_SCHEMA_VERSION = "mc_stratified_dynamic_selection_v1"
+DIAGNOSTICS_SCHEMA_VERSION = "mc_stratified_dynamic_diagnostics_v2"
+SELECTION_SCHEMA_VERSION = "mc_stratified_dynamic_selection_v2"
 
 SCENARIO_SEEDS = tuple(range(200, 206))
 DEFAULT_D1_SCENARIO_SEEDS = tuple(range(200, 202))
@@ -44,6 +44,8 @@ DECREASE_RATIO = 0.02
 BUDGET_FLOOR_RATIO = 0.90
 XF = 0.50
 LO_DEPLOY_CAP_RATIO = 4.0
+FRONTIER_PROBE_MAX_DEPTH = 96
+ROUND_ROBIN_PROBE_MAX_STEPS = 256
 
 # This is an explicit audit boundary.  A field with one of these prefixes may
 # be copied into a diagnostics/audit CSV, but it can never be read by the
@@ -75,6 +77,12 @@ SELECTION_FEATURES = (
 SELECTION_CONFIG = {
     "schema_version": SELECTION_SCHEMA_VERSION,
     "features": SELECTION_FEATURES,
+    "structural_probe": {
+        "frontier_probe_max_depth": FRONTIER_PROBE_MAX_DEPTH,
+        "round_robin_probe_max_steps": ROUND_ROBIN_PROBE_MAX_STEPS,
+        "mask_turnover_source": "deterministic_round_robin_budget_probe_v2",
+        "competition_source": "multistep_frontier_competition_probe_v2",
+    },
     "prototype_weights": {
         "load_p": 1.0,
         "tightness_p": 1.0,
@@ -558,11 +566,11 @@ def one_step_competition_probe(
     tasks_by_name: Mapping[str, Task],
     increase_ratio: float = INCREASE_RATIO,
 ) -> list[float]:
-    """Probe every legal LO increase on a copied budget vector.
+    """Legacy one-step audit probe.
 
-    ``mask_for_budget`` must be a side-effect-free/call-and-restore adapter.
-    The helper itself never mutates ``budget_before`` and never applies an
-    update to the live runtime.
+    This helper is retained only as an audit metric.  It is intentionally *not*
+    used by the selector because a single 2% increase is too shallow to reveal
+    a safety frontier that is tens of deployment actions away.
     """
 
     before_count = sum(
@@ -599,6 +607,222 @@ def one_step_competition_probe(
     return values
 
 
+def _lo_increase_action_indices(
+    mask: Sequence[bool],
+    actions: Sequence[Any],
+    tasks_by_name: Mapping[str, Task],
+) -> list[int]:
+    return [
+        index
+        for index, (is_valid, action) in enumerate(zip(mask, actions, strict=True))
+        if bool(is_valid)
+        and action.increase_task is not None
+        and not action.decrease_tasks
+        and tasks_by_name[action.increase_task].criticality is Criticality.LO
+    ]
+
+
+def _next_lo_increase_budget(
+    budget_before: Mapping[str, int],
+    *,
+    action: Any,
+    tasks_by_name: Mapping[str, Task],
+    increase_ratio: float = INCREASE_RATIO,
+) -> dict[str, int]:
+    """Apply one exact single-LO increase to a copied budget vector.
+
+    The production single-action path uses ceil rounding and at least one tick
+    of change.  For LO tasks the task deadline is the hard local upper bound;
+    the deploy-cap and global safety constraints are checked by ``mask_for_budget``.
+    """
+
+    if action.increase_task is None or action.decrease_tasks:
+        raise ValueError("frontier probe requires a single increase action")
+    task = tasks_by_name[action.increase_task]
+    if task.criticality is not Criticality.LO:
+        raise ValueError("frontier probe only supports LO increases")
+    candidate = dict(budget_before)
+    current = int(candidate[action.increase_task])
+    updated = min(
+        int(task.deadline),
+        max(current + 1, math.ceil(current * (1.0 + increase_ratio))),
+    )
+    candidate[action.increase_task] = max(1, int(updated))
+    return candidate
+
+
+def multistep_competition_frontier_probe(
+    *,
+    mask_before: Sequence[bool],
+    actions: Sequence[Any],
+    budget_before: Mapping[str, int],
+    mask_for_budget: Callable[[Mapping[str, int]], Sequence[bool]],
+    tasks_by_name: Mapping[str, Task],
+    max_depth: int = FRONTIER_PROBE_MAX_DEPTH,
+) -> dict[str, Any]:
+    """Measure how quickly one LO budget consumes other LO increase options.
+
+    Each initially legal LO increase is followed repeatedly using the *same*
+    deployed 2%/ceil/min-delta semantics until that action reaches the safety
+    frontier or ``max_depth`` is exhausted.  Competition is the fraction of
+    *other initially legal LO increases* lost along that path, discounted by
+    how many increments were needed before the first loss.  Therefore a task
+    only scores as competitive if allocating budget to it actually removes
+    alternatives; merely hitting its own deploy cap is reported separately as
+    frontier closeness.
+    """
+
+    if max_depth <= 0:
+        raise ValueError("max_depth must be positive")
+    initial_valid = set(_lo_increase_action_indices(mask_before, actions, tasks_by_name))
+    competition_scores: list[float] = []
+    frontier_closeness_scores: list[float] = []
+    frontier_steps: list[float] = []
+    reached_flags: list[float] = []
+    first_other_loss_steps: list[float] = []
+
+    for action_index in sorted(initial_valid):
+        action = actions[action_index]
+        candidate = dict(budget_before)
+        current_mask = tuple(bool(value) for value in mask_before)
+        initial_others = initial_valid - {action_index}
+        max_other_loss = 0.0
+        first_other_loss: int | None = None
+        applied_steps = 0
+
+        for step in range(1, max_depth + 1):
+            if action_index >= len(current_mask) or not current_mask[action_index]:
+                break
+            updated = _next_lo_increase_budget(
+                candidate,
+                action=action,
+                tasks_by_name=tasks_by_name,
+            )
+            if updated == candidate:
+                break
+            candidate = updated
+            current_mask = tuple(bool(value) for value in mask_for_budget(candidate))
+            applied_steps = step
+            if initial_others:
+                valid_now = set(_lo_increase_action_indices(current_mask, actions, tasks_by_name))
+                loss_fraction = len(initial_others - valid_now) / float(len(initial_others))
+                if loss_fraction > max_other_loss:
+                    max_other_loss = loss_fraction
+                if loss_fraction > 0.0 and first_other_loss is None:
+                    first_other_loss = step
+
+        reached_frontier = bool(
+            action_index >= len(current_mask) or not current_mask[action_index]
+        )
+        reached_flags.append(1.0 if reached_frontier else 0.0)
+        frontier_steps.append(float(applied_steps))
+        if reached_frontier and applied_steps > 0:
+            closeness = 1.0 - (min(applied_steps, max_depth) - 1.0) / float(max_depth)
+        else:
+            closeness = 0.0
+        frontier_closeness_scores.append(max(0.0, min(1.0, closeness)))
+
+        if first_other_loss is None or max_other_loss <= 0.0:
+            competition_scores.append(0.0)
+        else:
+            proximity = 1.0 - (min(first_other_loss, max_depth) - 1.0) / float(max_depth)
+            competition_scores.append(max_other_loss * max(0.0, min(1.0, proximity)))
+            first_other_loss_steps.append(float(first_other_loss))
+
+    return {
+        "competition_scores": competition_scores,
+        "frontier_closeness_scores": frontier_closeness_scores,
+        "frontier_steps": frontier_steps,
+        "frontier_reached_flags": reached_flags,
+        "first_other_loss_steps": first_other_loss_steps,
+        "initial_valid_lo_increase_count": len(initial_valid),
+        "max_depth": max_depth,
+    }
+
+
+def deterministic_round_robin_frontier_probe(
+    *,
+    mask_before: Sequence[bool],
+    actions: Sequence[Any],
+    budget_before: Mapping[str, int],
+    mask_for_budget: Callable[[Mapping[str, int]], Sequence[bool]],
+    tasks_by_name: Mapping[str, Task],
+    max_steps: int = ROUND_ROBIN_PROBE_MAX_STEPS,
+) -> dict[str, Any]:
+    """Trace mask evolution along an algorithm-independent budget path.
+
+    The probe cycles through LO increase action slots in fixed action-id order.
+    At each probe step it applies the next currently legal LO increase.  It uses
+    no QoS, pressure, reward, learned policy, or heuristic signal.  The result
+    is therefore a structural description of how the deployed safety frontier
+    changes as budget is allocated, rather than the constant no-action mask of
+    the baseline trajectory.
+    """
+
+    if max_steps <= 0:
+        raise ValueError("max_steps must be positive")
+    all_lo_indices = [
+        index
+        for index, action in enumerate(actions)
+        if action.increase_task is not None
+        and not action.decrease_tasks
+        and tasks_by_name[action.increase_task].criticality is Criticality.LO
+    ]
+    candidate = dict(budget_before)
+    current_mask = tuple(bool(value) for value in mask_before)
+    mask_sequence: list[tuple[bool, ...]] = [current_mask]
+    pointer = 0
+    applied_steps = 0
+    first_mask_change_step: int | None = None
+    selected_action_indices: list[int] = []
+    exhausted = False
+
+    for step in range(1, max_steps + 1):
+        if not all_lo_indices:
+            exhausted = True
+            break
+        chosen_position: int | None = None
+        for offset in range(len(all_lo_indices)):
+            position = (pointer + offset) % len(all_lo_indices)
+            action_index = all_lo_indices[position]
+            if action_index < len(current_mask) and current_mask[action_index]:
+                chosen_position = position
+                break
+        if chosen_position is None:
+            exhausted = True
+            break
+        action_index = all_lo_indices[chosen_position]
+        updated = _next_lo_increase_budget(
+            candidate,
+            action=actions[action_index],
+            tasks_by_name=tasks_by_name,
+        )
+        if updated == candidate:
+            current_mask = tuple(bool(value) for value in mask_for_budget(candidate))
+            pointer = (chosen_position + 1) % len(all_lo_indices)
+            continue
+        candidate = updated
+        next_mask = tuple(bool(value) for value in mask_for_budget(candidate))
+        applied_steps = step
+        selected_action_indices.append(action_index)
+        if first_mask_change_step is None and next_mask != current_mask:
+            first_mask_change_step = step
+        mask_sequence.append(next_mask)
+        current_mask = next_mask
+        pointer = (chosen_position + 1) % len(all_lo_indices)
+
+    final_valid = len(_lo_increase_action_indices(current_mask, actions, tasks_by_name))
+    return {
+        "mask_sequence": mask_sequence,
+        "applied_steps": applied_steps,
+        "first_mask_change_step": first_mask_change_step,
+        "unique_mask_count": len(set(mask_sequence)),
+        "frontier_exhausted": exhausted or final_valid == 0,
+        "final_valid_lo_increase_count": final_valid,
+        "selected_action_indices": tuple(selected_action_indices),
+        "max_steps": max_steps,
+    }
+
 def collect_runtime_characterization(
     bundle: Any,
     static: Mapping[str, Any],
@@ -608,7 +832,7 @@ def collect_runtime_characterization(
     priority_policy: str = "dm",
     scenario_factory: Callable[[int], Any] | None = None,
 ) -> dict[str, Any]:
-    """Run no-action C-AMC-sem baseline plus read-only masks and probes."""
+    """Run baseline dynamics and independent structural safety-frontier probes."""
 
     tasks = tuple(bundle.tasks)
     ordered_tasks = tuple(static["_ordered_tasks"])
@@ -624,28 +848,25 @@ def collect_runtime_characterization(
     )
     all_results: list[SimulationResult] = []
     all_masks: list[tuple[bool, ...]] = []
-    mask_sequences: list[list[tuple[bool, ...]]] = []
+    baseline_mask_sequences: list[list[tuple[bool, ...]]] = []
     valid_counts: list[int] = []
     valid_lo_increases: list[int] = []
     valid_lo_decreases: list[int] = []
-    competition_values: list[float] = []
     budget_mutation_violations = 0
+
+    one_step_values: list[float] = []
+    frontier_probe: dict[str, Any] | None = None
+    round_robin_probe: dict[str, Any] | None = None
+    probe_actions: tuple[Any, ...] = ()
 
     for scenario_seed in scenario_seeds:
         scenario = bundle.scenario
-        # The provider bundle may expose a scenario factory; the CLI also
-        # supplies one when the provider supports fixed taskset seeds.  Without
-        # an explicit factory there is no safe way to rebuild the scenario, so
-        # retaining the bundle scenario is deterministic and fail-closed.
         bundle_scenario_factory = getattr(bundle, "scenario_for_seed", None)
         if callable(scenario_factory):
             scenario = scenario_factory(int(scenario_seed))
         elif callable(bundle_scenario_factory):
             scenario = bundle_scenario_factory(int(scenario_seed))
         elif int(scenario_seed) != int(getattr(bundle, "scenario_seed", scenario_seed)):
-            # A provider may encode a scenario seed in metadata.  Without an
-            # explicit factory there is no safe way to rebuild it, so retaining
-            # the bundle scenario is deterministic and fail-closed.
             scenario = bundle.scenario
 
         env = AmcBudgetEnv(
@@ -668,9 +889,10 @@ def collect_runtime_characterization(
             deploy_cap_mask_criticality="lo",
         )
         env.reset(seed=int(scenario_seed))
-        actions = tuple(env._actions)  # fixed, public action semantics are audited by the env itself
+        actions = tuple(env._actions)
         tasks_by_name = {task.name: task for task in ordered_tasks}
         scenario_masks: list[tuple[bool, ...]] = []
+
         while True:
             mask = tuple(bool(value) for value in env.valid_action_mask())
             all_masks.append(mask)
@@ -692,26 +914,44 @@ def collect_runtime_characterization(
                     engine.runtime_budgets.budgets.update({name: int(value) for name, value in candidate.items()})
                     return tuple(bool(value) for value in env.valid_action_mask())
                 finally:
-                    restored = dict(engine.runtime_budgets.budgets)
                     engine.runtime_budgets.budgets.clear()
                     engine.runtime_budgets.budgets.update(saved)
-                    if restored == saved:
-                        # This branch is intentionally empty; the comparison
-                        # below is made after restoration as a stronger guard.
-                        pass
                     if dict(engine.runtime_budgets.budgets) != saved:
                         budget_mutation_violations += 1
 
-            competition_values.extend(
-                one_step_competition_probe(
+            # The safety mask for the current single-action semantics is a
+            # function of the budget vector and static safety constraints.  A
+            # no-action baseline therefore cannot reveal its frontier.  Run the
+            # structural probes exactly once from the initial deployed budget
+            # vector; repeating them at every control point would add cost but
+            # no new information.
+            if frontier_probe is None:
+                probe_actions = actions
+                one_step_values = one_step_competition_probe(
                     mask_before=mask,
                     actions=actions,
                     budget_before=before_budgets,
                     mask_for_budget=mask_for_budget,
                     tasks_by_name=tasks_by_name,
                 )
-            )
-            step_result = env.step(None)  # explicit no-action path; never mutates budget
+                frontier_probe = multistep_competition_frontier_probe(
+                    mask_before=mask,
+                    actions=actions,
+                    budget_before=before_budgets,
+                    mask_for_budget=mask_for_budget,
+                    tasks_by_name=tasks_by_name,
+                )
+                round_robin_probe = deterministic_round_robin_frontier_probe(
+                    mask_before=mask,
+                    actions=actions,
+                    budget_before=before_budgets,
+                    mask_for_budget=mask_for_budget,
+                    tasks_by_name=tasks_by_name,
+                )
+                if dict(env._engine.runtime_budgets.budgets) != before_budgets:  # type: ignore[union-attr]
+                    budget_mutation_violations += 1
+
+            step_result = env.step(None)
             if step_result.info.get("updates"):
                 budget_mutation_violations += 1
             if step_result.done:
@@ -720,7 +960,7 @@ def collect_runtime_characterization(
         if result.budget_update_events:
             budget_mutation_violations += len(result.budget_update_events)
         all_results.append(result)
-        mask_sequences.append(scenario_masks)
+        baseline_mask_sequences.append(scenario_masks)
 
     metrics = baseline_result_metrics(
         all_results,
@@ -728,18 +968,70 @@ def collect_runtime_characterization(
         ordered_tasks=ordered_tasks,
         observation_window=AGENT_PERIOD,
     )
-    mask_turnover = [
+
+    baseline_turnover_values = [
         normalized_hamming_distance(previous, current)
-        for sequence in mask_sequences
+        for sequence in baseline_mask_sequences
         for previous, current in zip(sequence, sequence[1:])
     ]
+    baseline_mask_turnover = statistics.fmean(baseline_turnover_values) if baseline_turnover_values else 0.0
+
+    frontier_probe = frontier_probe or {
+        "competition_scores": [],
+        "frontier_closeness_scores": [],
+        "frontier_steps": [],
+        "frontier_reached_flags": [],
+        "first_other_loss_steps": [],
+        "initial_valid_lo_increase_count": 0,
+        "max_depth": FRONTIER_PROBE_MAX_DEPTH,
+    }
+    competition_values = [float(value) for value in frontier_probe["competition_scores"]]
+    closeness_values = [float(value) for value in frontier_probe["frontier_closeness_scores"]]
+    frontier_steps = [float(value) for value in frontier_probe["frontier_steps"]]
+    reached_flags = [float(value) for value in frontier_probe["frontier_reached_flags"]]
+    first_loss_steps = [float(value) for value in frontier_probe["first_other_loss_steps"]]
+
+    round_robin_probe = round_robin_probe or {
+        "mask_sequence": [],
+        "applied_steps": 0,
+        "first_mask_change_step": None,
+        "unique_mask_count": 0,
+        "frontier_exhausted": False,
+        "final_valid_lo_increase_count": 0,
+        "max_steps": ROUND_ROBIN_PROBE_MAX_STEPS,
+    }
+    probe_mask_sequence = [tuple(bool(value) for value in mask) for mask in round_robin_probe["mask_sequence"]]
+    probe_turnover_values = [
+        normalized_hamming_distance(previous, current)
+        for previous, current in zip(probe_mask_sequence, probe_mask_sequence[1:])
+    ]
+    probe_mask_turnover = statistics.fmean(probe_turnover_values) if probe_turnover_values else 0.0
+    probe_lo_inc_turnover = _masked_action_turnover(
+        [probe_mask_sequence], probe_actions, ordered_tasks, kind="increase"
+    ) if probe_mask_sequence and probe_actions else 0.0
+    probe_lo_dec_turnover = _masked_action_turnover(
+        [probe_mask_sequence], probe_actions, ordered_tasks, kind="decrease"
+    ) if probe_mask_sequence and probe_actions else 0.0
+
     competition_summary = {
         "budget_competition_index": statistics.fmean(competition_values) if competition_values else 0.0,
         "budget_competition_p50": statistics.median(competition_values) if competition_values else 0.0,
-        "budget_competition_p90": (
-            _quantile(competition_values, 0.90) if competition_values else 0.0
-        ),
+        "budget_competition_p90": _quantile(competition_values, 0.90) if competition_values else 0.0,
         "budget_competition_max": max(competition_values, default=0.0),
+        "budget_competition_one_step_index": statistics.fmean(one_step_values) if one_step_values else 0.0,
+        "budget_frontier_closeness_index": statistics.fmean(closeness_values) if closeness_values else 0.0,
+        "budget_frontier_closeness_p50": statistics.median(closeness_values) if closeness_values else 0.0,
+        "budget_frontier_closeness_p90": _quantile(closeness_values, 0.90) if closeness_values else 0.0,
+        "budget_frontier_closeness_max": max(closeness_values, default=0.0),
+        "budget_frontier_steps_mean": statistics.fmean(frontier_steps) if frontier_steps else 0.0,
+        "budget_frontier_steps_p50": statistics.median(frontier_steps) if frontier_steps else 0.0,
+        "budget_frontier_steps_p90": _quantile(frontier_steps, 0.90) if frontier_steps else 0.0,
+        "budget_frontier_steps_max": max(frontier_steps, default=0.0),
+        "budget_frontier_reached_rate": statistics.fmean(reached_flags) if reached_flags else 0.0,
+        "budget_first_other_loss_step_mean": statistics.fmean(first_loss_steps) if first_loss_steps else 0.0,
+        "budget_frontier_probe_initial_valid_lo_increase_count": int(frontier_probe["initial_valid_lo_increase_count"]),
+        "budget_frontier_probe_max_depth": int(frontier_probe["max_depth"]),
+        "budget_competition_source": "multistep_frontier_competition_probe_v2",
     }
     metrics.update(competition_summary)
     metrics.update(
@@ -747,20 +1039,30 @@ def collect_runtime_characterization(
             "valid_action_count_mean": statistics.fmean(valid_counts) if valid_counts else 0.0,
             "valid_action_count_std": statistics.pstdev(valid_counts) if len(valid_counts) > 1 else 0.0,
             "valid_lo_increase_count_mean": statistics.fmean(valid_lo_increases) if valid_lo_increases else 0.0,
-            "valid_lo_increase_count_std": (
-                statistics.pstdev(valid_lo_increases) if len(valid_lo_increases) > 1 else 0.0
-            ),
+            "valid_lo_increase_count_std": statistics.pstdev(valid_lo_increases) if len(valid_lo_increases) > 1 else 0.0,
             "valid_lo_decrease_count_mean": statistics.fmean(valid_lo_decreases) if valid_lo_decreases else 0.0,
-            "valid_lo_decrease_count_std": (
-                statistics.pstdev(valid_lo_decreases) if len(valid_lo_decreases) > 1 else 0.0
-            ),
-            "mask_turnover_rate": statistics.fmean(mask_turnover) if mask_turnover else 0.0,
-            "lo_increase_mask_turnover_rate": _masked_action_turnover(
-                mask_sequences, actions, ordered_tasks, kind="increase"
-            ),
-            "lo_decrease_mask_turnover_rate": _masked_action_turnover(
-                mask_sequences, actions, ordered_tasks, kind="decrease"
-            ),
+            "valid_lo_decrease_count_std": statistics.pstdev(valid_lo_decreases) if len(valid_lo_decreases) > 1 else 0.0,
+            # Selector-facing mask turnover is now measured along a deterministic
+            # deployment-valid budget trajectory.  Preserve the baseline value
+            # separately so the v1 failure mode remains auditable.
+            "mask_turnover_rate": probe_mask_turnover,
+            "lo_increase_mask_turnover_rate": probe_lo_inc_turnover,
+            "lo_decrease_mask_turnover_rate": probe_lo_dec_turnover,
+            "baseline_mask_turnover_rate": baseline_mask_turnover,
+            "baseline_lo_increase_mask_turnover_rate": _masked_action_turnover(
+                baseline_mask_sequences, probe_actions, ordered_tasks, kind="increase"
+            ) if probe_actions else 0.0,
+            "baseline_lo_decrease_mask_turnover_rate": _masked_action_turnover(
+                baseline_mask_sequences, probe_actions, ordered_tasks, kind="decrease"
+            ) if probe_actions else 0.0,
+            "mask_turnover_source": "deterministic_round_robin_budget_probe_v2",
+            "probe_mask_observation_count": len(probe_mask_sequence),
+            "probe_budget_update_count": int(round_robin_probe["applied_steps"]),
+            "probe_unique_mask_count": int(round_robin_probe["unique_mask_count"]),
+            "probe_first_mask_change_step": int(round_robin_probe["first_mask_change_step"] or 0),
+            "probe_frontier_exhausted": int(bool(round_robin_probe["frontier_exhausted"])),
+            "probe_final_valid_lo_increase_count": int(round_robin_probe["final_valid_lo_increase_count"]),
+            "probe_round_robin_max_steps": int(round_robin_probe["max_steps"]),
             "mask_observation_count": len(all_masks),
             "characterization_scenario_count": len(scenario_seeds),
             "characterization_horizon": end_time,
@@ -770,7 +1072,6 @@ def collect_runtime_characterization(
         }
     )
     return metrics
-
 
 def _masked_action_turnover(
     mask_sequences: Sequence[Sequence[Sequence[bool]]],
@@ -840,7 +1141,7 @@ def deterministic_static_reservoir(rows: Sequence[Mapping[str, Any]], limit: int
     return [unique[key] for key in sorted(unique)]
 
 
-def _runtime_metric_defaults() -> dict[str, float | int]:
+def _runtime_metric_defaults() -> dict[str, Any]:
     names = (
         "baseline_lo_quality_qos",
         "baseline_lo_zero_service_ratio",
@@ -866,13 +1167,38 @@ def _runtime_metric_defaults() -> dict[str, float | int]:
         "budget_competition_p50",
         "budget_competition_p90",
         "budget_competition_max",
+        "budget_competition_one_step_index",
+        "budget_frontier_closeness_index",
+        "budget_frontier_closeness_p50",
+        "budget_frontier_closeness_p90",
+        "budget_frontier_closeness_max",
+        "budget_frontier_steps_mean",
+        "budget_frontier_steps_p50",
+        "budget_frontier_steps_p90",
+        "budget_frontier_steps_max",
+        "budget_frontier_reached_rate",
+        "budget_first_other_loss_step_mean",
+        "baseline_mask_turnover_rate",
+        "baseline_lo_increase_mask_turnover_rate",
+        "baseline_lo_decrease_mask_turnover_rate",
         "mode_change_rate",
         "hi_overrun_event_rate",
         "fraction_time_hi_mode",
     )
-    result: dict[str, float | int] = {name: 0.0 for name in names}
+    result: dict[str, Any] = {name: 0.0 for name in names}
     result.update(
         {
+            "budget_frontier_probe_initial_valid_lo_increase_count": 0,
+            "budget_frontier_probe_max_depth": FRONTIER_PROBE_MAX_DEPTH,
+            "budget_competition_source": "multistep_frontier_competition_probe_v2",
+            "mask_turnover_source": "deterministic_round_robin_budget_probe_v2",
+            "probe_mask_observation_count": 0,
+            "probe_budget_update_count": 0,
+            "probe_unique_mask_count": 0,
+            "probe_first_mask_change_step": 0,
+            "probe_frontier_exhausted": 0,
+            "probe_final_valid_lo_increase_count": 0,
+            "probe_round_robin_max_steps": ROUND_ROBIN_PROBE_MAX_STEPS,
             "mask_observation_count": 0,
             "characterization_scenario_count": 0,
             "characterization_horizon": 0,
@@ -966,6 +1292,20 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "budget_competition_p50",
         "budget_competition_p90",
         "budget_competition_max",
+        "budget_competition_one_step_index",
+        "budget_frontier_closeness_index",
+        "budget_frontier_closeness_p50",
+        "budget_frontier_closeness_p90",
+        "budget_frontier_closeness_max",
+        "budget_frontier_steps_mean",
+        "budget_frontier_steps_p50",
+        "budget_frontier_steps_p90",
+        "budget_frontier_steps_max",
+        "budget_frontier_reached_rate",
+        "budget_first_other_loss_step_mean",
+        "baseline_mask_turnover_rate",
+        "baseline_lo_increase_mask_turnover_rate",
+        "baseline_lo_decrease_mask_turnover_rate",
         "mode_change_rate",
         "hi_overrun_event_rate",
         "fraction_time_hi_mode",
@@ -1025,6 +1365,10 @@ def run_cli(args: argparse.Namespace) -> None:
             "scenario_seeds": scenario_seeds,
             "end_time": horizon,
             "stage": args.stage,
+            "frontier_probe_max_depth": FRONTIER_PROBE_MAX_DEPTH,
+            "round_robin_probe_max_steps": ROUND_ROBIN_PROBE_MAX_STEPS,
+            "mask_turnover_source": "deterministic_round_robin_budget_probe_v2",
+            "competition_source": "multistep_frontier_competition_probe_v2",
         }
     )
 

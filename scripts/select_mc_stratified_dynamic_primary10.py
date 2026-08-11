@@ -91,6 +91,15 @@ DISTANCE_WEIGHTS = {feature: 1.0 for feature in SELECTION_FEATURES}
 DIVERSITY_PENALTY = 0.05
 DIVERSITY_RADIUS = 0.08
 
+STRUCTURAL_VARIATION_FIELDS = (
+    "mask_turnover_rate",
+    "budget_competition_index",
+)
+STRUCTURAL_VARIATION_EPS = 1e-12
+STRUCTURAL_VARIATION_MIN_UNIQUE = 3
+STRUCTURAL_VARIATION_MIN_POSITIVE = 4
+
+
 
 class SelectionShortageError(RuntimeError):
     """Raised when fail-closed selection cannot fill all 5 x 2 slots."""
@@ -289,6 +298,85 @@ def accepted_population(
     return candidates
 
 
+def structural_variation_report(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Audit whether selector-critical structural metrics actually vary.
+
+    S3 and S5 are only scientifically meaningful when competition and the
+    deployment safety-frontier turnover are observable in the accepted D2
+    population.  This guard does not rank candidates; it only prevents a
+    constant-zero diagnostic from silently becoming percentile 0.5 for every
+    taskset.
+    """
+
+    metrics: dict[str, Any] = {}
+    problems: list[dict[str, Any]] = []
+    families = PERIOD_FAMILIES
+    for field in STRUCTURAL_VARIATION_FIELDS:
+        values = [_float(row, field) for row in rows]
+        rounded_unique = sorted({round(value, 12) for value in values})
+        positive_rows = [row for row in rows if _float(row, field) > STRUCTURAL_VARIATION_EPS]
+        positive_by_family = {
+            family: sum(
+                normalize_period_family(row.get("period_family")) == family
+                and _float(row, field) > STRUCTURAL_VARIATION_EPS
+                for row in rows
+            )
+            for family in families
+        }
+        stats = {
+            "count": len(values),
+            "min": min(values, default=0.0),
+            "max": max(values, default=0.0),
+            "mean": statistics.fmean(values) if values else 0.0,
+            "unique_rounded_12_count": len(rounded_unique),
+            "positive_count": len(positive_rows),
+            "positive_by_period_family": positive_by_family,
+        }
+        metrics[field] = stats
+        field_problems: list[str] = []
+        if len(values) >= 10:
+            if stats["max"] - stats["min"] <= STRUCTURAL_VARIATION_EPS:
+                field_problems.append("near_constant")
+            if stats["unique_rounded_12_count"] < STRUCTURAL_VARIATION_MIN_UNIQUE:
+                field_problems.append("too_few_unique_values")
+            if stats["positive_count"] < STRUCTURAL_VARIATION_MIN_POSITIVE:
+                field_problems.append("too_few_positive_candidates")
+            for family, count in positive_by_family.items():
+                if count < 1:
+                    field_problems.append(f"no_positive_candidate_in_{family}")
+        if field_problems:
+            problems.append({"field": field, "reasons": field_problems, "stats": stats})
+    return {
+        "schema_version": "mc_stratified_dynamic_structural_variation_report_v1",
+        "candidate_count": len(rows),
+        "metrics": metrics,
+        "problems": problems,
+        "ok": not problems,
+    }
+
+
+def assert_structural_feature_variation(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    report = structural_variation_report(rows)
+    if len(rows) >= 10 and not report["ok"]:
+        raise SelectionShortageError(report)
+    return report
+
+
+def _stratum_structural_gate(row: Mapping[str, Any], stratum: str) -> bool:
+    """Minimal structure-only identity gates for named strata.
+
+    Prototype distance still performs the ranking.  These gates only ensure
+    that S3/S5 actually exhibit the property named by the stratum instead of
+    receiving a percentile score derived from zero/near-zero measurements.
+    """
+
+    if stratum == "S3":
+        return _float(row, "budget_competition_index") > STRUCTURAL_VARIATION_EPS
+    if stratum == "S5":
+        return _float(row, "mask_turnover_rate") > STRUCTURAL_VARIATION_EPS
+    return True
+
+
 def _diversity_adjustment(vector: Mapping[str, float], selected: Sequence[SelectedCandidate]) -> float:
     if not selected:
         return 0.0
@@ -331,6 +419,8 @@ def select_primary10(
     if not accepted:
         report = _shortage_report(rows, accepted)
         raise SelectionShortageError(report)
+    if len(accepted) >= 10:
+        assert_structural_feature_variation(accepted)
 
     feature_vectors = build_percentile_features(accepted)
     selected: list[SelectedCandidate] = []
@@ -343,6 +433,7 @@ def select_primary10(
                 for row in accepted
                 if normalize_period_family(row.get("period_family")) == family
                 and int(row["candidate_seed"]) not in used_seeds
+                and _stratum_structural_gate(row, stratum)
             ]
             ranked: list[tuple[float, int, dict[str, Any], dict[str, float]]] = []
             for row in family_rows:
