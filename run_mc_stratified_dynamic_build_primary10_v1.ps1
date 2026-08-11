@@ -2,13 +2,18 @@ param(
   [string]$ProjectRoot = ".",
   [string]$Python = "python",
   [int]$CandidateCount = 3000,
-  [switch]$RequireSchedulable,
+  [switch]$RequireSchedulable = $true,
   [switch]$DryRun
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 Set-Location $ProjectRoot
+
+# Running ``python scripts/foo.py`` does not reliably put the repository root
+# on sys.path.  Keep the build runner consistent with the training/HOUT runners.
+$env:PYTHONPATH = "."
+$env:KMP_DUPLICATE_LIB_OK = "TRUE"
 
 $OutRoot = Join-Path $ProjectRoot "outputs\tasksets\mc_stratified_dynamic_v1"
 $Manifest = Join-Path $OutRoot "candidates.csv"

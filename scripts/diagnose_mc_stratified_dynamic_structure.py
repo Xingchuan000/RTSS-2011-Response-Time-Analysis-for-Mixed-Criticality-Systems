@@ -901,7 +901,13 @@ def build_diagnostic_row(
         manifest_row.get("period_family", base_config.get("period_family", ""))
     )
     generator_config = base_config.get("workload_config", base_config)
-    row["generator_config_hash"] = canonical_hash(generator_config)
+    # Candidate generation is the authority for the generator configuration.
+    # The selector config intentionally carries no duplicated workload config,
+    # so never overwrite a valid manifest hash with canonical_hash({}).
+    manifest_generator_hash = str(manifest_row.get("generator_config_hash", "")).strip()
+    row["generator_config_hash"] = (
+        manifest_generator_hash if manifest_generator_hash else canonical_hash(generator_config)
+    )
     row["diagnostics_config_hash"] = diagnostics_hash
     row["selection_config_hash"] = selection_config_hash()
     row["selection_feature_list"] = json.dumps(SELECTION_FEATURES, ensure_ascii=False)

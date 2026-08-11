@@ -594,42 +594,45 @@ def generate_mc_stratified_dynamic_workload(
 def generate_schedulable_mc_stratified_dynamic_workload(
     config: MCStratifiedDynamicWorkloadConfig,
 ) -> MCStratifiedDynamicWorkload:
-    """Retry independently seeded candidates until AMC-rtb accepts one."""
+    """Build the exact requested seed and require AMC-rtb schedulability.
+
+    ``candidate_seed`` is the experiment identity used by generation,
+    diagnostics, selection, training, HOUT and later policy extraction.  A
+    schedulability gate therefore must never substitute ``seed + offset`` for
+    the requested candidate.  If the exact seed is not schedulable we reject
+    it and let the outer candidate-pool/selector logic choose another seed.
+
+    ``max_attempts`` remains in the config only for backward schema/CLI
+    compatibility; it is intentionally not used to change taskset identity.
+    """
 
     from amc_py.experiments import evaluate_taskset
 
-    for offset in range(config.max_attempts):
-        candidate_config = replace(
-            config,
-            seed=config.seed + offset,
-            require_schedulable=False,
-        )
-        try:
-            workload = _generate_raw_mc_stratified_dynamic_workload(candidate_config)
-        except _CandidateRejected:
-            continue
-        result = evaluate_taskset(
-            list(workload.tasks),
-            method=config.sched_method,
-            priority_policy=config.priority_policy,
-        )
-        if result.schedulable:
-            metadata = dict(workload.metadata or {})
-            metadata.update(
-                {
-                    "schedulability_checked": True,
-                    "sched_method": config.sched_method,
-                    "priority_policy": config.priority_policy,
-                    "attempts": offset + 1,
-                    "effective_taskset_seed": candidate_config.seed,
-                }
-            )
-            return replace(workload, attempts=offset + 1, metadata=metadata)
-
-    raise RuntimeError(
-        "在 max_attempts 范围内未找到可调度的 mc_stratified_dynamic workload: "
-        f"max_attempts={config.max_attempts}"
+    exact_config = replace(config, require_schedulable=False)
+    workload = _generate_raw_mc_stratified_dynamic_workload(exact_config)
+    result = evaluate_taskset(
+        list(workload.tasks),
+        method=config.sched_method,
+        priority_policy=config.priority_policy,
     )
+    if not result.schedulable:
+        raise RuntimeError(
+            "requested mc_stratified_dynamic seed is not schedulable: "
+            f"seed={config.seed}, method={config.sched_method}, "
+            f"priority_policy={config.priority_policy}"
+        )
+
+    metadata = dict(workload.metadata or {})
+    metadata.update(
+        {
+            "schedulability_checked": True,
+            "sched_method": config.sched_method,
+            "priority_policy": config.priority_policy,
+            "attempts": 1,
+            "effective_taskset_seed": config.seed,
+        }
+    )
+    return replace(workload, attempts=1, metadata=metadata)
 
 
 def build_mc_stratified_dynamic_workload(
@@ -660,9 +663,14 @@ def build_mc_stratified_dynamic_normalization_bounds(
             meta.normal_cost_max,
             meta.stress_cost_max,
         )
+        # v11/basic observation normalization requires a strict interval.
+        # Very small generated tasks can legitimately collapse every cost and
+        # budget quantity to one tick after integer rounding, so keep the
+        # physical lower bound at 1 while widening only the normalization
+        # envelope.  This does not change Task budgets or execution costs.
         bounds[meta.name] = TaskNormalizationBound(
             min_cost=1.0,
-            max_cost=float(max_cost),
+            max_cost=float(max(max_cost, 2)),
         )
     return bounds
 

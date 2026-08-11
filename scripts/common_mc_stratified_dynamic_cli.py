@@ -82,10 +82,20 @@ def mc_stratified_dynamic_config_dict_from_args(args: argparse.Namespace) -> dic
 
 
 def mc_stratified_dynamic_config_hash(config: dict[str, Any]) -> str:
-    """计算不依赖 task seed 的稳定 generator config hash。"""
+    """Compute the same generator-config hash used by candidate manifests.
 
-    payload = dict(config)
-    payload.pop("seed", None)
+    Provider/run identity fields such as ``fixed_taskset_seed`` and
+    ``scenario_seed_offset`` must not change the workload-generator hash.
+    Keeping this payload aligned with ``MCStratifiedDynamicWorkloadConfig``
+    makes candidate CSV, training config and HOUT rows directly comparable.
+    """
+
+    allowed = {
+        field.name
+        for field in fields(MCStratifiedDynamicWorkloadConfig)
+        if field.name != "seed"
+    }
+    payload = {key: config[key] for key in sorted(allowed) if key in config}
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
