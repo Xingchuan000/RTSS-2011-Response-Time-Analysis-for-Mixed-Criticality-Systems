@@ -51,7 +51,7 @@ if ($ValidationWorkers -lt 1) { throw "ValidationWorkers must be >= 1" }
 if ($ParallelHoutSeeds -lt 1) { throw "ParallelHoutSeeds must be >= 1" }
 if ($EvaluationWorkers -lt 1) { throw "EvaluationWorkers must be >= 1" }
 
-$RewardMode = "interval_lo_quality_direct_v2"
+$RewardMode = "interval_lo_quality_predictive_v4_medium"
 $AgentPeriod = 25000
 
 # "Old" non-tree baselines from the pre-existing evaluator plus the four
@@ -473,7 +473,7 @@ function Invoke-TrainWorker {
     Write-Host "============================================================"
     Write-Host "TRAIN seed=$TasksetSeed stratum=$WorkerStratum"
     Write-Host "============================================================"
-    Invoke-PythonCommand -Arguments $Arguments | Out-Null
+    Invoke-PythonCommand -Arguments $Arguments
 
     if (-not $DryRun) {
       [void](Resolve-ModelBestPath -RunDir $RunDir)
