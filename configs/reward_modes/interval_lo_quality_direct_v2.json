@@ -1,0 +1,14 @@
+{
+  "event_weights": {
+    "job_start": 0.0,
+    "lo_overrun": 0.0,
+    "hi_overrun": 0.0
+  },
+  "paper_reward_formula": "event_job_start_reward + event_lo_overrun_reward + event_hi_overrun_reward",
+  "reward_parameters": {
+    "lo_equiv_jne_penalty": 0.25,
+    "hi_deadline_miss_penalty": 1000.0,
+    "invalid_action_penalty": 10.0
+  },
+  "step_reward_formula": "- lo_equiv_jne_penalty * delta_lo_equiv_jne - hi_deadline_miss_penalty * delta_hi_deadline_misses - invalid_action_penalty * invalid_action"
+}
