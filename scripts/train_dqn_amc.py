@@ -731,6 +731,68 @@ def _build_episode_end_time_schedule(
     raise ValueError(f"不支持的 train-end-time-schedule-mode: {mode}")
 
 
+def _validation_horizon_label(end_time: int) -> str:
+    """Return a stable filename label for a validation horizon."""
+
+    if end_time <= 0:
+        raise ValueError("validation end_time must be positive")
+    if end_time % 1_000_000 == 0:
+        return f"{end_time // 1_000_000}m"
+    return f"t{end_time}"
+
+
+def _parse_aux_validation_specs(
+    *,
+    primary_end_time: int,
+    end_times_text: str,
+    every_text: str,
+) -> list[tuple[int, int, str]]:
+    """Parse auxiliary validation horizons as ``(end_time, cadence, label)`` tuples."""
+
+    end_times = _parse_int_list(end_times_text)
+    cadences = _parse_int_list(every_text)
+    if not end_times and not cadences:
+        return []
+    if not end_times or not cadences:
+        raise ValueError(
+            "--aux-validation-end-times and --aux-validation-every must be provided together"
+        )
+    if len(end_times) != len(cadences):
+        raise ValueError(
+            "--aux-validation-every length must match --aux-validation-end-times"
+        )
+    if len(set(end_times)) != len(end_times):
+        raise ValueError("--aux-validation-end-times must not contain duplicates")
+    specs: list[tuple[int, int, str]] = []
+    for end_time, cadence in zip(end_times, cadences):
+        if end_time <= 0:
+            raise ValueError("aux validation end_time must be positive")
+        if cadence <= 0:
+            raise ValueError("aux validation cadence must be positive")
+        if end_time == primary_end_time:
+            raise ValueError(
+                "aux validation horizon duplicates --validation-end-time; keep the primary horizon only once"
+            )
+        specs.append((end_time, cadence, _validation_horizon_label(end_time)))
+    return specs
+
+
+def _write_rows_csv(path: Path, rows: list[dict[str, object]]) -> None:
+    """Write heterogeneous dict rows using the stable union of encountered keys."""
+
+    if not rows:
+        return
+    fieldnames: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def _relative_lc_reduction_from_validation_row(row: dict[str, int | float | None]) -> float | None:
     """从 validation row 计算相对 LC cancellation reduction。
 
@@ -2882,6 +2944,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--validate-every", type=int, default=50)
     parser.add_argument("--validation-end-time", type=int, default=10000)
     parser.add_argument(
+        "--aux-validation-end-times",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated auxiliary validation horizons used only for independent "
+            "long-horizon model selection. Example: 10000000,20000000."
+        ),
+    )
+    parser.add_argument(
+        "--aux-validation-every",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated cadences matching --aux-validation-end-times. "
+            "Example: 50,100. The final episode is always evaluated as well."
+        ),
+    )
+    parser.add_argument(
         "--log-validation-policy-actions",
         action="store_true",
         help="Log per-checkpoint validation policy action histogram and resolved residual targets.",
@@ -3085,6 +3165,11 @@ def main() -> None:
         raise ValueError("--validate-every 必须为非负整数")
     if args.validation_workers < 1:
         raise ValueError("--validation-workers 必须为正整数")
+    aux_validation_specs = _parse_aux_validation_specs(
+        primary_end_time=args.validation_end_time,
+        end_times_text=args.aux_validation_end_times,
+        every_text=args.aux_validation_every,
+    )
     if not (0.0 < args.c_amc_sem_xf <= 1.0):
         raise ValueError("--c-amc-sem-xf must be in (0, 1]")
     if args.log_step_every < 0:
@@ -3429,6 +3514,8 @@ def main() -> None:
     print(f"[DQN] train end-times: {train_end_times}")
     print(f"[DQN] train end-time target probs: {train_end_time_probs}")
     print(f"[DQN] train end-time realized counts: {dict(train_end_time_counts)}")
+    print(f"[DQN] primary validation horizon: {args.validation_end_time}")
+    print(f"[DQN] auxiliary validation specs: {aux_validation_specs}")
     print(f"[DQN] learning-rate schedule enabled: {learning_rate_schedule_enabled}")
     print(f"[DQN] learning-rate schedule: {learning_rate_schedule}")
     print(f"[DQN] runtime semantics: {dqn_runtime_semantics.value}")
@@ -3459,6 +3546,25 @@ def main() -> None:
         else "best_model_metadata.json"
     )
     best_model_saved = False
+    primary_horizon_label = _validation_horizon_label(args.validation_end_time)
+    primary_horizon_best_path = output_dir / (
+        f"model_best_lo_quality_qos_best_{primary_horizon_label}.pt"
+        if args.save_best_by == "lo_quality_qos_best"
+        else f"model_best_{primary_horizon_label}.pt"
+    )
+    aux_validation_rows: dict[int, list[dict[str, object]]] = {
+        end_time: [] for end_time, _, _ in aux_validation_specs
+    }
+    aux_best_rows: dict[int, dict[str, object] | None] = {
+        end_time: None for end_time, _, _ in aux_validation_specs
+    }
+    aux_baseline_validation_caches: dict[int, dict[str, int | float | None] | None] = {
+        end_time: None for end_time, _, _ in aux_validation_specs
+    }
+    aux_best_paths: dict[int, Path] = {
+        end_time: output_dir / f"model_best_lo_quality_qos_best_{label}.pt"
+        for end_time, _, label in aux_validation_specs
+    }
     best_rows_by_type: dict[str, dict[str, int | float | None] | None] = {
         "conservative_qos": None,
         "qos_stable": None,
@@ -4507,6 +4613,9 @@ def main() -> None:
             if used_baseline_cache:
                 print("Using cached baseline validation metrics")
             validation_row["episode"] = episode + 1
+            validation_row["validation_end_time"] = int(args.validation_end_time)
+            validation_row["validation_horizon_label"] = primary_horizon_label
+            validation_row["validation_kind"] = "primary"
             if args.workload == "mc_stratified_dynamic":
                 validation_bundle = resolve_experiment_bundle(
                     experiment_config,
@@ -4855,6 +4964,9 @@ def main() -> None:
             if should_update_best:
                 best_validation_row = validation_row
                 agent.save(model_best_path)
+                if args.save_best_by == "lo_quality_qos_best":
+                    # Backward-compatible historical name + explicit horizon alias.
+                    agent.save(primary_horizon_best_path)
                 best_model_saved = True
             if args.save_all_best_types:
                 for best_type in (
@@ -4887,6 +4999,83 @@ def main() -> None:
                     "train_loss_last": loss_last,
                 }
             )
+
+        # Auxiliary long-horizon validations are selection-only. They intentionally do not
+        # update elite replay, plateau exploration, or any other training state.
+        for aux_end_time, aux_cadence, aux_label in aux_validation_specs:
+            aux_due = (episode + 1) % aux_cadence == 0 or (episode + 1) == args.episodes
+            if not (aux_due and validation_seeds):
+                continue
+            aux_row, aux_cache, aux_used_cache = _run_validation(
+                agent=agent,
+                experiment_config=experiment_config,
+                validation_seeds=validation_seeds,
+                validation_end_time=aux_end_time,
+                agent_period=args.agent_period,
+                dqn_runtime_semantics=dqn_runtime_semantics,
+                validation_baseline_semantics=validation_baseline_semantics,
+                c_amc_sem_xf=args.c_amc_sem_xf,
+                reward_mode=args.reward_mode,
+                action_space=args.action_space,
+                budget_increase_ratio=args.budget_increase_ratio,
+                budget_decrease_ratio=args.budget_decrease_ratio,
+                include_explicit_noop=args.include_explicit_noop,
+                budget_floor_ratio=args.budget_floor_ratio,
+                forbid_decreasing_hi_budgets=args.forbid_decreasing_hi_budgets,
+                mask_detail_mode=args.mask_detail_mode,
+                enable_deploy_cap_mask=args.enable_deploy_cap_mask,
+                deploy_cap_mask_ratio=args.deploy_cap_mask_ratio,
+                deploy_cap_mask_criticality=args.deploy_cap_mask_criticality,
+                feature_config=feature_config,
+                validation_workers=args.validation_workers,
+                baseline_cache=aux_baseline_validation_caches[aux_end_time],
+                max_q_diagnostic_samples=args.max_q_diagnostic_samples,
+                constraint_guided_pair_top_k_risk=args.constraint_guided_pair_top_k_risk,
+                constraint_guided_pair_top_k_decrease=args.constraint_guided_pair_top_k_decrease,
+                constraint_guided_pair_prefer_lo=args.constraint_guided_pair_prefer_lo,
+                constraint_guided_pair_include_hi_risk_boost=args.constraint_guided_pair_include_hi_risk_boost,
+                constraint_guided_pair_allow_increase_only_when_safe=(
+                    args.constraint_guided_pair_allow_increase_only_when_safe
+                ),
+                enable_residual_safety_fallback=args.enable_residual_safety_fallback,
+                residual_guard_hi_pressure_delta_limit=args.residual_guard_hi_pressure_delta_limit,
+                residual_guard_hi_pressure_abs_limit=args.residual_guard_hi_pressure_abs_limit,
+                residual_guard_reject_decrease_pressure_threshold=(
+                    args.residual_guard_reject_decrease_pressure_threshold
+                ),
+                residual_guard_use_hi_pressure_max=args.residual_guard_use_hi_pressure_max,
+                log_validation_policy_actions=False,
+            )
+            aux_baseline_validation_caches[aux_end_time] = aux_cache
+            if aux_used_cache:
+                print(f"Using cached auxiliary baseline validation metrics: {aux_label}")
+            aux_row["episode"] = episode + 1
+            aux_row["validation_end_time"] = int(aux_end_time)
+            aux_row["validation_horizon_label"] = aux_label
+            aux_row["validation_kind"] = "auxiliary_selection_only"
+            if args.workload == "mc_stratified_dynamic":
+                aux_bundle = resolve_experiment_bundle(experiment_config, validation_seeds[0])
+                aux_row.update(_mc_stratified_dynamic_output_fields(args, aux_bundle))
+            aux_validation_rows[aux_end_time].append(aux_row)
+
+            if _is_better_validation_row(
+                candidate_row=aux_row,
+                best_row=aux_best_rows[aux_end_time],
+                save_best_by="lo_quality_qos_best",
+                relative_score_alpha=args.relative_score_alpha,
+                require_better_than_baseline_for_best=args.require_better_than_baseline_for_best,
+                qos_stable_mode_delta=args.qos_stable_mode_delta,
+                qos_recovery_max_increase_rate=args.qos_recovery_max_increase_rate,
+                qos_recovery_min_recovery_decrease_rate=args.qos_recovery_min_recovery_decrease_rate,
+                qos_recovery_max_over_increase_rate=args.qos_recovery_max_over_increase_rate,
+                qos_recovery_require_positive_qos=not args.qos_recovery_allow_nonpositive_qos,
+            ):
+                aux_best_rows[aux_end_time] = aux_row
+                agent.save(aux_best_paths[aux_end_time])
+                print(
+                    f"[DQN] updated {aux_label} best: episode={episode + 1}, "
+                    f"lo_quality_qos={float(aux_row['lo_quality_qos_mean']):.9f}"
+                )
 
     train_log_path = output_dir / "train_log.csv"
     train_metrics_path = output_dir / "train_metrics.csv"
@@ -5511,6 +5700,26 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(elite_replay_rows)
 
+    for aux_end_time, _, aux_label in aux_validation_specs:
+        rows = aux_validation_rows[aux_end_time]
+        if rows:
+            _write_rows_csv(output_dir / f"validation_metrics_{aux_label}.csv", rows)
+        aux_best_row = aux_best_rows[aux_end_time]
+        if aux_best_row is not None:
+            metadata = {
+                "selection_metric": "lo_quality_qos_best",
+                "validation_end_time": int(aux_end_time),
+                "validation_horizon_label": aux_label,
+                "best_episode": int(aux_best_row["episode"]),
+                "best_lo_quality_qos_mean": float(aux_best_row["lo_quality_qos_mean"]),
+                "model_path": str(aux_best_paths[aux_end_time]),
+                "selection_only": True,
+            }
+            (output_dir / f"best_model_metadata_lo_quality_qos_best_{aux_label}.json").write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
     agent.save(model_path)
     if validation_rows:
         best_model_metadata = _build_best_metadata(
@@ -5623,6 +5832,11 @@ def main() -> None:
         "validation_seeds": validation_seeds,
         "validate_every": args.validate_every,
         "validation_end_time": args.validation_end_time,
+        "validation_horizon_label": primary_horizon_label,
+        "aux_validation_specs": [
+            {"end_time": int(end_time), "every": int(cadence), "label": label}
+            for end_time, cadence, label in aux_validation_specs
+        ],
         "validation_workers": args.validation_workers,
         "max_q_diagnostic_samples": args.max_q_diagnostic_samples,
         "save_best_by": args.save_best_by,

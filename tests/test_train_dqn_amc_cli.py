@@ -495,3 +495,58 @@ def test_train_cli_constraint_guided_pair_smoke(tmp_path: Path) -> None:
     # bundled transfer 口径：top_k_risk=3 且开启 explicit noop 时动作维度应为 4。
     assert payload["action_space_size"] == 4
     assert (output_dir / "train_metrics.csv").exists()
+
+
+def test_train_dqn_amc_cli_saves_independent_multi_horizon_best_models(tmp_path: Path) -> None:
+    """Primary and auxiliary validation horizons should keep independent QoS-best checkpoints."""
+
+    output_dir = tmp_path / "dqn_amc_multi_horizon_validation"
+    env = {**os.environ, "KMP_DUPLICATE_LIB_OK": "TRUE", "PYTHONPATH": "."}
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_dqn_amc.py",
+            "--episodes",
+            "2",
+            "--end-time",
+            "20",
+            "--seed",
+            "0",
+            "--checkpoint",
+            "1",
+            "--validation-seeds",
+            "100",
+            "--validate-every",
+            "1",
+            "--validation-end-time",
+            "20",
+            "--aux-validation-end-times",
+            "30,40",
+            "--aux-validation-every",
+            "1,2",
+            "--save-best-by",
+            "lo_quality_qos_best",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+
+    assert (output_dir / "model_best_lo_quality_qos_best.pt").exists()
+    assert (output_dir / "model_best_lo_quality_qos_best_t20.pt").exists()
+    assert (output_dir / "model_best_lo_quality_qos_best_t30.pt").exists()
+    assert (output_dir / "model_best_lo_quality_qos_best_t40.pt").exists()
+    assert (output_dir / "validation_metrics_t30.csv").exists()
+    assert (output_dir / "validation_metrics_t40.csv").exists()
+    assert (output_dir / "best_model_metadata_lo_quality_qos_best_t30.json").exists()
+    assert (output_dir / "best_model_metadata_lo_quality_qos_best_t40.json").exists()
+
+    with (output_dir / "config.json").open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    assert payload["validation_horizon_label"] == "t20"
+    assert payload["aux_validation_specs"] == [
+        {"end_time": 30, "every": 1, "label": "t30"},
+        {"end_time": 40, "every": 2, "label": "t40"},
+    ]
