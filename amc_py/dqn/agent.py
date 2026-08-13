@@ -918,13 +918,16 @@ class DqnBudgetAgent:
         states: torch.Tensor,
         valid_masks: torch.Tensor,
         noop_action_id: int | None = None,
+        action_features: torch.Tensor | None = None,
     ) -> NoopQDiagnostics:
         """计算显式 noop 在合法动作 Q 值集合中的位置。
 
         参数说明：
         - `states`：形状为 `[N, observation_dim]` 的决策状态张量；
         - `valid_masks`：形状为 `[N, action_dim]` 的 bool 张量，True 表示对应动作合法；
-        - `noop_action_id`：显式 noop 的动作编号；不传时使用 agent 初始化时解析到的编号。
+        - `noop_action_id`：显式 noop 的动作编号；不传时使用 agent 初始化时解析到的编号；
+        - `action_features`：可选的 `[N, action_dim, feature_dim]` 动态动作特征。
+          `action_aware + dynamic_v1` 的批量诊断必须传入每个 state 自己的特征矩阵。
 
         诊断口径严格按文档执行：rank 只在 valid actions 中计算，1 表示 noop 的
         Q 值不低于任何合法动作；如果没有显式 noop 或 noop 在所有样本中都无效，
@@ -938,7 +941,11 @@ class DqnBudgetAgent:
             return NoopQDiagnostics(None, None, None, None, None, None, None, None, None, 0)
 
         # 诊断只读取 policy network 的 Q 值，不应改变训练/评估模式之外的状态。
-        q_values = self._network_q_values(self.policy_network, states)
+        q_values = self._network_q_values(
+            self.policy_network,
+            states,
+            action_features=action_features,
+        )
         noop_valid = valid_masks[:, resolved_noop_action_id]
         sample_count = int(states.shape[0])
         noop_valid_count = int(noop_valid.sum().item())

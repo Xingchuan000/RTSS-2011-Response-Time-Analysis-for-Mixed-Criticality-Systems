@@ -69,6 +69,15 @@ def evaluate_budget_action(
         return BudgetActionExecutionResult(False, False, {}, before, str(exc), False)
     candidate = dict(before)
     candidate.update(updates)
+    if all(int(candidate[name]) == int(before[name]) for name in before):
+        return BudgetActionExecutionResult(
+            False,
+            False,
+            {},
+            before,
+            "no_effective_budget_change",
+            False,
+        )
     initial = dict(initial_budgets or budget_state.initial_budgets or before)
     fixed_floor = dict(cfg.fixed_floor_by_task or {})
     for task_name, value in updates.items():

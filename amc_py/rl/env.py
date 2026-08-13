@@ -39,6 +39,7 @@ from amc_py.rl.monitor import RuntimeMonitor
 from amc_py.rl.lo_service_reward import LoServiceRewardTracker
 from amc_py.rl.observation import (
     NormalizationBounds,
+    build_default_normalization_bounds,
     build_observation,
 )
 from amc_py.qamc.observation_state import (
@@ -63,9 +64,9 @@ from amc_py.runtime_scenarios import ExecutionScenario
 from amc_py.qamc.models import QAmcProfileBundle
 from amc_py.qamc.rl_contract import validate_qamc_rl_semantics
 
-ACTION_FEATURE_PRESSURE_THRESHOLD = 0.85
-ACTION_FEATURE_NEAR_CANCEL_THRESHOLD = 0.95
-ACTION_FEATURE_HI_PRESSURE_THRESHOLD = 0.85
+ACTION_FEATURE_PRESSURE_THRESHOLD = 0.80
+ACTION_FEATURE_NEAR_CANCEL_THRESHOLD = 0.90
+ACTION_FEATURE_HI_PRESSURE_THRESHOLD = 0.80
 
 DYNAMIC_V1_ACTION_FEATURE_NAMES = (
     "is_noop",
@@ -94,6 +95,10 @@ DYNAMIC_V1_ACTION_FEATURE_NAMES = (
     "target_overrun_ema",
     "target_cancel_ema",
     "target_recent_cost_over_initial",
+    "target_max_cost_k_norm",
+    "target_priority_norm",
+    "target_risk",
+    "target_surplus",
     "action_delta_budget_norm",
     "action_after_budget_norm",
     "action_after_budget_ratio_to_initial",
@@ -476,6 +481,9 @@ class AmcBudgetEnv:
                 for name, value in pair_budgets.items()
                 if int(value) != int(self._engine.runtime_budgets.budgets[name])
             }
+            if not updates:
+                valid = False
+                reason = "no_effective_budget_change"
         else:
             updates = {}
         return ConstraintGuidedResolvedAction(
@@ -622,6 +630,11 @@ class AmcBudgetEnv:
             min_budget_delta=self.min_budget_delta,
         )
         candidate_budgets = merge_budget_candidate(budget_state, updates)
+        if all(
+            int(candidate_budgets[name]) == int(budget_before[name])
+            for name in budget_before
+        ):
+            return {}, dict(budget_before), "no_effective_budget_change", concrete
         return (updates, candidate_budgets, None, concrete)
 
     def _select_residual_increase_target(
@@ -701,6 +714,16 @@ class AmcBudgetEnv:
         这个函数的目的只有一个：把“一个候选预算更新是否可接受”的判定收敛到单点，
         让 safe residual 的 resolver、mask、step 三条路径共用同一套语义，减少偏差。
         """
+
+        if (
+            action is not None
+            and not action.is_noop
+            and all(
+                int(candidate_budgets[name]) == int(budget_before[name])
+                for name in budget_before
+            )
+        ):
+            return "no_effective_budget_change"
 
         if (
             True
@@ -923,6 +946,18 @@ class AmcBudgetEnv:
             budget_state,
             updates,
         )
+        if all(
+            int(candidate_budgets[name]) == int(before[name])
+            for name in before
+        ):
+            return BudgetCandidateEvaluation(
+                action_id=int(action.action_id),
+                accepted=False,
+                reject_reason="no_effective_budget_change",
+                candidate_budgets=dict(before),
+                updates={},
+                safety_checked=False,
+            )
         residual_guard_reason = self._residual_safety_guard_reject_reason(
             action=action,
             budget_before=before,
@@ -2236,6 +2271,7 @@ class AmcBudgetEnv:
         max_c_hi = max((float(task.c_hi) for task in self.ordered_tasks), default=1.0)
         max_initial_budget = max((float(value) for value in self._initial_budgets.values()), default=1.0)
         max_upper_budget = max((float(value) for value in self._task_upper_bounds), default=1.0)
+        active_bounds = self.normalization_bounds or build_default_normalization_bounds(self.ordered_tasks)
         lo_stats = self._compute_lo_pressure_stats(
             budgets=budgets,
             pressure_threshold=ACTION_FEATURE_PRESSURE_THRESHOLD,
@@ -2271,6 +2307,10 @@ class AmcBudgetEnv:
             target_overrun_ema = 0.0
             target_cancel_ema = 0.0
             target_recent_cost_over_initial = 0.0
+            target_max_cost_k_norm = 0.0
+            target_priority_norm = 0.0
+            target_risk = 0.0
+            target_surplus = 0.0
             action_delta_budget_norm = 0.0
             action_after_budget_norm = 0.0
             action_after_budget_ratio_to_initial = 0.0
@@ -2290,6 +2330,15 @@ class AmcBudgetEnv:
                 floor_budget = max(1.0, math.ceil(initial_budget * float(self.budget_floor_ratio)))
                 recent_exec = float(self._monitor.recent_execution.get(task_name, 0.0))
                 ema_exec = float(self._feature_state.ema_cost.get(task_name, float(task.c_lo)))
+                history = self._feature_state.cost_history.get(task_name)
+                max_cost_k = float(max(history)) if history and len(history) > 0 else recent_exec
+                overrun_ema = float(self._feature_state.overrun_ema.get(task_name, 0.0))
+                priority_norm = 1.0 - float(target_idx) / float(max(1, num_tasks - 1))
+                pred_cost = max(
+                    recent_exec,
+                    ema_exec,
+                    float(self.feature_config.max_cost_weight) * max_cost_k,
+                )
                 est_exec = max(recent_exec, ema_exec)
                 after_budget = self._estimate_single_action_target_budget_after(
                     action=action,
@@ -2318,9 +2367,26 @@ class AmcBudgetEnv:
                     1.0,
                     clip=1.0,
                 )
-                target_overrun_ema = self._clip01(float(self._feature_state.overrun_ema.get(task_name, 0.0)))
+                target_overrun_ema = self._clip01(overrun_ema)
                 target_cancel_ema = self._clip01(float(self._feature_state.task_cancel_ema.get(task_name, 0.0)))
                 target_recent_cost_over_initial = self._safe_div01(recent_exec, initial_budget)
+                task_bound = active_bounds[task_name]
+                bound_lo = float(task_bound.min_cost)
+                bound_hi = float(task_bound.max_cost)
+                if bound_hi <= bound_lo:
+                    raise ValueError(f"normalization bound 非法: {task_name}")
+                target_max_cost_k_norm = self._clip01((max_cost_k - bound_lo) / (bound_hi - bound_lo))
+                target_priority_norm = self._clip01(priority_norm)
+                is_hi = 1.0 if task.criticality is Criticality.HI else 0.0
+                raw_risk = (
+                    pred_cost / max(1.0, current_budget)
+                    + 0.5 * overrun_ema
+                    + 0.2 * is_hi
+                    + 0.1 * priority_norm
+                )
+                target_risk = self._clip01(raw_risk / float(self.feature_config.risk_max_scale))
+                raw_surplus = (current_budget - pred_cost) / max(1.0, current_budget)
+                target_surplus = self._clip01((raw_surplus + 1.0) / 2.0)
                 action_delta_budget_norm = self._safe_div01(abs(after_budget - current_budget), max_upper_budget, clip=1.0)
                 action_after_budget_norm = self._clip01(after_budget / max_upper_budget)
                 action_after_budget_ratio_to_initial = self._safe_div01(after_budget, initial_budget)
@@ -2363,6 +2429,10 @@ class AmcBudgetEnv:
                     target_overrun_ema,
                     target_cancel_ema,
                     target_recent_cost_over_initial,
+                    target_max_cost_k_norm,
+                    target_priority_norm,
+                    target_risk,
+                    target_surplus,
                     action_delta_budget_norm,
                     action_after_budget_norm,
                     action_after_budget_ratio_to_initial,

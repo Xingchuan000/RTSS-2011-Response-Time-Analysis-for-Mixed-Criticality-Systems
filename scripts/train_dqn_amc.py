@@ -866,7 +866,12 @@ def _get_increase_action_ids(env) -> tuple[int, ...]:
     return tuple(sorted(increase_ids))
 
 
-def _noop_q_diagnostics_to_row(agent: DqnBudgetAgent, states: list[tuple[float, ...]], masks: list[tuple[bool, ...]]) -> dict[str, float | int | None]:
+def _noop_q_diagnostics_to_row(
+    agent: DqnBudgetAgent,
+    states: list[tuple[float, ...]],
+    masks: list[tuple[bool, ...]],
+    action_features: list[tuple[tuple[float, ...], ...]] | None = None,
+) -> dict[str, float | int | None]:
     """把采集到的 validation 决策状态转换为 CSV 可写字段。
 
     `states` 与 `masks` 只来自 agent 做 greedy 决策前的同一时刻：
@@ -883,7 +888,14 @@ def _noop_q_diagnostics_to_row(agent: DqnBudgetAgent, states: list[tuple[float, 
     else:
         state_tensor = torch.empty((0, agent.observation_dim), dtype=torch.float32, device=agent.device)
         mask_tensor = torch.empty((0, agent.action_dim), dtype=torch.bool, device=agent.device)
-    diagnostics = agent.compute_noop_q_diagnostics(state_tensor, mask_tensor)
+    action_feature_tensor = None
+    if action_features:
+        action_feature_tensor = torch.tensor(action_features, dtype=torch.float32, device=agent.device)
+    diagnostics = agent.compute_noop_q_diagnostics(
+        state_tensor,
+        mask_tensor,
+        action_features=action_feature_tensor,
+    )
     return {
         "noop_q_mean": diagnostics.noop_q_mean,
         "noop_q_std": diagnostics.noop_q_std,
@@ -1214,6 +1226,7 @@ def _evaluate_agent_on_validation_seed(
     # 这里不改变 agent 的动作选择，只额外记录 policy network 当时实际看到的输入。
     diagnostic_states: list[tuple[float, ...]] = []
     diagnostic_valid_masks: list[tuple[bool, ...]] = []
+    diagnostic_action_features: list[tuple[tuple[float, ...], ...]] = []
     validation_action_counter: Counter[int] = Counter()
     validation_action_accepted_counter: Counter[int] = Counter()
     validation_action_rejected_counter: Counter[int] = Counter()
@@ -1249,14 +1262,20 @@ def _evaluate_agent_on_validation_seed(
         # 因此所有 per-step rate 的分母都必须统一使用它。
         step_count += 1
         mask = env.valid_action_mask()
+        diagnostic_action_feature_matrix = None
         # dynamic_v1 是状态相关特征，必须在每次决策前刷新。
         if agent.q_network_type == "action_aware" and agent.action_feature_mode == "dynamic_v1":
             action_features = env.get_action_feature_matrix(agent.action_feature_mode)
             action_feature_names = env.get_action_feature_names(agent.action_feature_mode)
             agent.set_action_features(action_features, action_feature_names)
+            diagnostic_action_feature_matrix = action_features
         if len(diagnostic_states) < max_q_diagnostic_samples:
             diagnostic_states.append(tuple(float(value) for value in obs.state_vector))
             diagnostic_valid_masks.append(tuple(bool(value) for value in mask))
+            if diagnostic_action_feature_matrix is not None:
+                diagnostic_action_features.append(
+                    tuple(tuple(float(value) for value in row) for row in diagnostic_action_feature_matrix)
+                )
         action_id = agent.select_action_id(
             obs.state_vector,
             valid_action_mask=mask,
@@ -1382,7 +1401,14 @@ def _evaluate_agent_on_validation_seed(
         "state_dim": int(last_info.get("state_dim", len(obs.state_vector))),
         **runtime_metrics,
     }
-    row.update(_noop_q_diagnostics_to_row(agent, diagnostic_states, diagnostic_valid_masks))
+    row.update(
+        _noop_q_diagnostics_to_row(
+            agent,
+            diagnostic_states,
+            diagnostic_valid_masks,
+            diagnostic_action_features if diagnostic_action_features else None,
+        )
+    )
     if log_validation_policy_actions:
         action_definitions = {
             str(action.action_id): describe_budget_action(action)

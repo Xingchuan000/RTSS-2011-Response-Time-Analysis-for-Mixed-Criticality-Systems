@@ -367,7 +367,12 @@ def _formal_agent_runtime_config(
     )
 
 
-def _noop_q_diagnostics_to_row(agent: DqnBudgetAgent, states: list[tuple[float, ...]], masks: list[tuple[bool, ...]]) -> dict[str, float | int | None]:
+def _noop_q_diagnostics_to_row(
+    agent: DqnBudgetAgent,
+    states: list[tuple[float, ...]],
+    masks: list[tuple[bool, ...]],
+    action_features: list[tuple[tuple[float, ...], ...]] | None = None,
+) -> dict[str, float | int | None]:
     """把评估期采集的决策状态转换为 explicit noop Q 诊断字段。
 
     这些状态均在 agent 调用 `select_action_id()` 之前记录，因此 Q 值诊断反映的是
@@ -380,7 +385,14 @@ def _noop_q_diagnostics_to_row(agent: DqnBudgetAgent, states: list[tuple[float, 
     else:
         state_tensor = torch.empty((0, agent.observation_dim), dtype=torch.float32, device=agent.device)
         mask_tensor = torch.empty((0, agent.action_dim), dtype=torch.bool, device=agent.device)
-    diagnostics = agent.compute_noop_q_diagnostics(state_tensor, mask_tensor)
+    action_feature_tensor = None
+    if action_features:
+        action_feature_tensor = torch.tensor(action_features, dtype=torch.float32, device=agent.device)
+    diagnostics = agent.compute_noop_q_diagnostics(
+        state_tensor,
+        mask_tensor,
+        action_features=action_feature_tensor,
+    )
     return {
         "noop_q_mean": diagnostics.noop_q_mean,
         "noop_q_std": diagnostics.noop_q_std,
@@ -1069,19 +1081,26 @@ def _evaluate_dqn_once(
     # 结束后统一送入 agent.compute_noop_q_diagnostics，避免在每个 step 中重复做额外统计。
     diagnostic_states: list[tuple[float, ...]] = []
     diagnostic_valid_masks: list[tuple[bool, ...]] = []
+    diagnostic_action_features: list[tuple[tuple[float, ...], ...]] = []
 
     while not done:
         # 每次循环对应一次环境 step，所有 rate 都以该值为主分母。
         step_count += 1
         mask = env.valid_action_mask()
+        diagnostic_action_feature_matrix = None
         # dynamic_v1 为状态相关特征，评估时也必须逐步刷新。
         if getattr(agent, "q_network_type", "mlp") == "action_aware" and agent.action_feature_mode == "dynamic_v1":
             action_features = env.get_action_feature_matrix(agent.action_feature_mode)
             action_feature_names = env.get_action_feature_names(agent.action_feature_mode)
             agent.set_action_features(action_features, action_feature_names)
+            diagnostic_action_feature_matrix = action_features
         if len(diagnostic_states) < max_q_diagnostic_samples:
             diagnostic_states.append(tuple(float(value) for value in obs.state_vector))
             diagnostic_valid_masks.append(tuple(bool(value) for value in mask))
+            if diagnostic_action_feature_matrix is not None:
+                diagnostic_action_features.append(
+                    tuple(tuple(float(value) for value in row) for row in diagnostic_action_feature_matrix)
+                )
         action_id = agent.select_action_id(obs.state_vector, valid_action_mask=mask, training=False)
         # 是否提供 action_id 与动作是否 accepted/noop 是两个独立维度。
         selected_action_count += int(action_id is not None)
@@ -1223,7 +1242,14 @@ def _evaluate_dqn_once(
             **_lo_quality_weighted_metrics_to_row_from_result(runtime_result),
             **_task_level_info_row(last_info),
         }
-    row.update(_noop_q_diagnostics_to_row(agent, diagnostic_states, diagnostic_valid_masks))
+    row.update(
+        _noop_q_diagnostics_to_row(
+            agent,
+            diagnostic_states,
+            diagnostic_valid_masks,
+            diagnostic_action_features if diagnostic_action_features else None,
+        )
+    )
     return (
         row,
         runtime_result,
