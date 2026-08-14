@@ -20,7 +20,7 @@ from .experiment import (
     resolve_experiment_bundle,
 )
 from .network import ActionAwareQNetwork, DqnNetwork
-from .replay import ReplayBuffer
+from .replay import NStepTransitionAccumulator, ReplayBuffer
 from .types import Transition
 
 __all__ = [
@@ -34,6 +34,7 @@ __all__ = [
     "ActionAwareQNetwork",
     "DqnNetwork",
     "ReplayBuffer",
+    "NStepTransitionAccumulator",
     "Transition",
     "build_automotive_experiment_config",
     "build_mc_fairgen_experiment_config",

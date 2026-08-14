@@ -27,3 +27,6 @@ class Transition:
     action_features: tuple[tuple[float, ...], ...] | None = None
     # 下一状态对应的动作描述符矩阵（仅 dynamic_v1 需要，static_v1 可保持 None）。
     next_action_features: tuple[tuple[float, ...], ...] | None = None
+    # 该 transition 的 bootstrap 跨度。1 表示标准 1-step；n-step 聚合后记录实际跨度 k。
+    # 对 terminal tail，k 可能小于配置的 n_step_return，但 done=True 时不会 bootstrap。
+    bootstrap_steps: int = 1

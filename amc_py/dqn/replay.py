@@ -2,9 +2,81 @@
 
 from __future__ import annotations
 
+from collections import deque
 import random
 
 from amc_py.dqn.types import Transition
+
+
+class NStepTransitionAccumulator:
+    """把连续 1-step transition 聚合为 n-step replay transition。
+
+    聚合规则：
+    - 保留第一个 transition 的 state/action/current mask/current action features；
+    - reward 使用 ``r0 + gamma*r1 + ...``；
+    - next_state / next mask / next action features 取聚合窗口最后一个 transition；
+    - 非 terminal 情况达到 n 步后发射一条样本；
+    - episode terminal 时把不足 n 步的尾部样本全部 flush，且保持 done=True。
+
+    ``n_step=1`` 时严格退化为原始 transition 流，不改变既有训练口径。
+    """
+
+    def __init__(self, n_step: int, gamma: float):
+        if n_step <= 0:
+            raise ValueError("n_step 必须为正整数")
+        if not 0.0 < gamma <= 1.0:
+            raise ValueError("gamma 必须在 (0, 1] 内")
+        self.n_step = int(n_step)
+        self.gamma = float(gamma)
+        self._pending: deque[Transition] = deque()
+
+    def append(self, transition: Transition) -> list[Transition]:
+        """加入一条 1-step transition，并返回本次可写入 replay 的聚合样本。"""
+
+        self._pending.append(transition)
+        emitted: list[Transition] = []
+
+        if transition.done:
+            # terminal 时所有 pending 前缀都有完整的 episode 结局，可全部 flush。
+            while self._pending:
+                emitted.append(self._aggregate_prefix(min(self.n_step, len(self._pending))))
+                self._pending.popleft()
+            return emitted
+
+        if len(self._pending) >= self.n_step:
+            emitted.append(self._aggregate_prefix(self.n_step))
+            self._pending.popleft()
+        return emitted
+
+    def _aggregate_prefix(self, length: int) -> Transition:
+        if length <= 0 or length > len(self._pending):
+            raise ValueError("invalid n-step prefix length")
+        items = list(self._pending)[:length]
+        first = items[0]
+        last = items[-1]
+        discounted_reward = 0.0
+        discount = 1.0
+        for item in items:
+            discounted_reward += discount * float(item.reward)
+            discount *= self.gamma
+        return Transition(
+            state=first.state,
+            action_id=first.action_id,
+            reward=float(discounted_reward),
+            next_state=last.next_state,
+            done=bool(last.done),
+            valid_action_mask=first.valid_action_mask,
+            next_valid_action_mask=last.next_valid_action_mask,
+            action_features=first.action_features,
+            next_action_features=last.next_action_features,
+            bootstrap_steps=int(length),
+        )
+
+    @property
+    def pending_count(self) -> int:
+        """返回尚未形成 replay transition 的尾部 1-step 样本数。"""
+
+        return len(self._pending)
 
 
 class ReplayBuffer:

@@ -814,6 +814,7 @@ class DqnBudgetAgent:
         actions_np = np.asarray([item.action_id for item in batch], dtype=np.int64)
         rewards_np = np.asarray([item.reward for item in batch], dtype=np.float32)
         dones_np = np.asarray([item.done for item in batch], dtype=np.float32)
+        bootstrap_steps_np = np.asarray([item.bootstrap_steps for item in batch], dtype=np.float32)
         next_valid_masks_np = np.asarray(
             [item.next_valid_action_mask for item in batch],
             dtype=np.bool_,
@@ -826,6 +827,7 @@ class DqnBudgetAgent:
         actions = torch.from_numpy(actions_np).to(self.device).unsqueeze(1)
         rewards = torch.from_numpy(rewards_np).to(self.device)
         dones = torch.from_numpy(dones_np).to(self.device)
+        bootstrap_steps = torch.from_numpy(bootstrap_steps_np).to(self.device)
         next_valid_masks = torch.from_numpy(next_valid_masks_np).to(self.device)
         next_valid_masks = self._apply_action_aware_next_valid_masks(next_valid_masks)
 
@@ -876,8 +878,14 @@ class DqnBudgetAgent:
                 next_q = masked_next_q_values.max(dim=1).values
                 has_any_valid_action = next_valid_masks.any(dim=1)
                 next_q = torch.where(has_any_valid_action, next_q, torch.zeros_like(next_q))
-            # terminal transition 不 bootstrap：done=True 时只保留即时 reward。
-            targets = rewards + (1.0 - dones) * self.config.gamma * next_q
+            # n-step target：reward 已在写入 replay 前按 gamma 聚合；这里只对 bootstrap
+            # 项使用 gamma^k，其中 k 是该 replay transition 的实际跨度。
+            # terminal transition 不 bootstrap，因此 tail transition 即使 k<n 也不会引入额外项。
+            bootstrap_discount = torch.pow(
+                torch.full_like(bootstrap_steps, float(self.config.gamma)),
+                bootstrap_steps,
+            )
+            targets = rewards + (1.0 - dones) * bootstrap_discount * next_q
 
         loss = self.loss_fn(policy_q, targets)
         self.optimizer.zero_grad()

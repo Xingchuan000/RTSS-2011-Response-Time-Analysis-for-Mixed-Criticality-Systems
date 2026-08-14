@@ -25,6 +25,7 @@ from amc_py.dqn import (
     DqnBudgetAgent,
     DqnConfig,
     ExperimentConfig,
+    NStepTransitionAccumulator,
     Transition,
     build_automotive_experiment_config,
     build_mc_fairgen_experiment_config,
@@ -2768,6 +2769,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument(
+        "--n-step-return",
+        type=int,
+        default=1,
+        help=(
+            "DQN return horizon. 1 preserves the historical one-step target; "
+            "3 enables a three-step discounted return before bootstrapping."
+        ),
+    )
     # 稳定性修改 C：默认 target network 更新频率改为 5（优化步为单位）。
     # 该值可继续通过 CLI 覆盖，用于后续对照实验。
     parser.add_argument("--target-update-freq", type=int, default=5)
@@ -2959,6 +2969,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Comma-separated cadences matching --aux-validation-end-times. "
             "Example: 50,100. The final episode is always evaluated as well."
+        ),
+    )
+    parser.add_argument(
+        "--aux-validation-trigger-on-best",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "In addition to fixed auxiliary cadences, immediately evaluate longer auxiliary "
+            "horizons when a shorter-horizon QoS best is refreshed. With 5M primary + 10M/20M "
+            "auxiliary validation this means: new 5M best -> run 10M and 20M; new 10M best -> "
+            "run 20M. Disabled by default to preserve historical validation behavior."
         ),
     )
     parser.add_argument(
@@ -3176,6 +3197,8 @@ def main() -> None:
         raise ValueError("--log-step-every 必须为非负整数")
     if args.max_q_diagnostic_samples < 0:
         raise ValueError("--max-q-diagnostic-samples 必须为非负整数")
+    if args.n_step_return < 1:
+        raise ValueError("--n-step-return 必须为正整数")
     if args.elite_replay_capacity <= 0:
         raise ValueError("--elite-replay-capacity 必须为正整数")
     if args.elite_replay_min_size < 0:
@@ -3354,6 +3377,7 @@ def main() -> None:
     replay_seed = args.seed if args.replay_seed is None else int(args.replay_seed)
     config = DqnConfig(
         gamma=args.gamma,
+        n_step_return=args.n_step_return,
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
         replay_capacity=args.replay_capacity,
@@ -3514,8 +3538,10 @@ def main() -> None:
     print(f"[DQN] train end-times: {train_end_times}")
     print(f"[DQN] train end-time target probs: {train_end_time_probs}")
     print(f"[DQN] train end-time realized counts: {dict(train_end_time_counts)}")
+    print(f"[DQN] n-step return: {config.n_step_return}")
     print(f"[DQN] primary validation horizon: {args.validation_end_time}")
     print(f"[DQN] auxiliary validation specs: {aux_validation_specs}")
+    print(f"[DQN] auxiliary best-trigger validation: {args.aux_validation_trigger_on_best}")
     print(f"[DQN] learning-rate schedule enabled: {learning_rate_schedule_enabled}")
     print(f"[DQN] learning-rate schedule: {learning_rate_schedule}")
     print(f"[DQN] runtime semantics: {dqn_runtime_semantics.value}")
@@ -3711,6 +3737,11 @@ def main() -> None:
         feature_safety_margin_min_values: list[float] = []
         # Elite Replay v1：按 episode 收集 transition，供 validation 后按窗口批量入池。
         episode_transitions: list[Transition] = []
+        # 每个 episode 单独维护 n-step accumulator，严禁跨 reset 聚合回报。
+        n_step_accumulator = NStepTransitionAccumulator(
+            n_step=config.n_step_return,
+            gamma=config.gamma,
+        )
         exploration_action_count_before = int(agent.exploration_action_count)
         exploration_noop_action_count_before = int(agent.exploration_noop_action_count)
         exploration_safe_increase_action_count_before = int(agent.exploration_safe_increase_action_count)
@@ -3775,7 +3806,7 @@ def main() -> None:
 
             loss: float | None = None
             if action_id is not None:
-                transition = Transition(
+                raw_transition = Transition(
                     state=obs.state_vector,
                     action_id=action_id,
                     reward=result.reward,
@@ -3794,12 +3825,17 @@ def main() -> None:
                         else None
                     ),
                 )
-                agent.remember(transition)
-                if collect_elite_transitions:
-                    episode_transitions.append(transition)
-                loss = agent.optimize_one_step()
-                if loss is not None:
-                    episode_losses.append(loss)
+                replay_transitions = n_step_accumulator.append(raw_transition)
+                # 保持“每条写入 replay 的 transition 对应一次 optimize 调用”的训练强度。
+                # terminal 时会一次 flush 多条尾部样本，使整集的优化调用数仍与可学习动作数一致。
+                for transition in replay_transitions:
+                    agent.remember(transition)
+                    if collect_elite_transitions:
+                        episode_transitions.append(transition)
+                    step_loss = agent.optimize_one_step()
+                    if step_loss is not None:
+                        loss = step_loss
+                        episode_losses.append(step_loss)
                 episode_action_hist[action_id]["count"] += 1
                 if bool(result.info.get("accepted")):
                     episode_action_hist[action_id]["accepted"] += 1
@@ -4569,6 +4605,10 @@ def main() -> None:
         if args.checkpoint > 0 and (episode + 1) % args.checkpoint == 0:
             agent.save(checkpoint_dir / f"model_episode_{episode + 1:04d}.pt")
 
+        # 当前 episode 由“短 horizon 刷新 best”触发的辅助 validation 请求。
+        # 该集合每个 episode 重置，并与固定 cadence 取并集；每个 aux horizon 最多执行一次。
+        aux_trigger_end_times: set[int] = set()
+
         if args.validate_every > 0 and validation_seeds and (episode + 1) % args.validate_every == 0:
             validation_row, baseline_validation_cache, used_baseline_cache = _run_validation(
                 agent=agent,
@@ -4967,6 +5007,14 @@ def main() -> None:
                 if args.save_best_by == "lo_quality_qos_best":
                     # Backward-compatible historical name + explicit horizon alias.
                     agent.save(primary_horizon_best_path)
+                    if args.aux_validation_trigger_on_best:
+                        # Primary horizon（正式脚本中为 5M）刷新 QoS best 后，立即把所有
+                        # 已配置的更长 auxiliary horizon 加入本 episode 的验证请求。
+                        aux_trigger_end_times.update(
+                            end_time
+                            for end_time, _, _ in aux_validation_specs
+                            if end_time > args.validation_end_time
+                        )
                 best_model_saved = True
             if args.save_all_best_types:
                 for best_type in (
@@ -5002,8 +5050,13 @@ def main() -> None:
 
         # Auxiliary long-horizon validations are selection-only. They intentionally do not
         # update elite replay, plateau exploration, or any other training state.
-        for aux_end_time, aux_cadence, aux_label in aux_validation_specs:
-            aux_due = (episode + 1) % aux_cadence == 0 or (episode + 1) == args.episodes
+        for aux_end_time, aux_cadence, aux_label in sorted(aux_validation_specs, key=lambda item: item[0]):
+            triggered_by_best = aux_end_time in aux_trigger_end_times
+            aux_due = (
+                (episode + 1) % aux_cadence == 0
+                or (episode + 1) == args.episodes
+                or triggered_by_best
+            )
             if not (aux_due and validation_seeds):
                 continue
             aux_row, aux_cache, aux_used_cache = _run_validation(
@@ -5053,12 +5106,17 @@ def main() -> None:
             aux_row["validation_end_time"] = int(aux_end_time)
             aux_row["validation_horizon_label"] = aux_label
             aux_row["validation_kind"] = "auxiliary_selection_only"
+            aux_row["validation_trigger"] = (
+                "best_trigger"
+                if triggered_by_best
+                else ("final" if (episode + 1) == args.episodes else "cadence")
+            )
             if args.workload == "mc_stratified_dynamic":
                 aux_bundle = resolve_experiment_bundle(experiment_config, validation_seeds[0])
                 aux_row.update(_mc_stratified_dynamic_output_fields(args, aux_bundle))
             aux_validation_rows[aux_end_time].append(aux_row)
 
-            if _is_better_validation_row(
+            aux_updated_best = _is_better_validation_row(
                 candidate_row=aux_row,
                 best_row=aux_best_rows[aux_end_time],
                 save_best_by="lo_quality_qos_best",
@@ -5069,13 +5127,23 @@ def main() -> None:
                 qos_recovery_min_recovery_decrease_rate=args.qos_recovery_min_recovery_decrease_rate,
                 qos_recovery_max_over_increase_rate=args.qos_recovery_max_over_increase_rate,
                 qos_recovery_require_positive_qos=not args.qos_recovery_allow_nonpositive_qos,
-            ):
+            )
+            if aux_updated_best:
                 aux_best_rows[aux_end_time] = aux_row
                 agent.save(aux_best_paths[aux_end_time])
                 print(
                     f"[DQN] updated {aux_label} best: episode={episode + 1}, "
                     f"lo_quality_qos={float(aux_row['lo_quality_qos_mean']):.9f}"
                 )
+                if args.aux_validation_trigger_on_best:
+                    # 10M 等较短 auxiliary horizon 刷新 best 时，在同一 episode 继续验证
+                    # 所有更长 auxiliary horizon（正式脚本中即 10M best -> 20M）。
+                    # aux specs 按 end_time 升序执行，因此后续 horizon 会在本轮直接收到触发。
+                    aux_trigger_end_times.update(
+                        longer_end_time
+                        for longer_end_time, _, _ in aux_validation_specs
+                        if longer_end_time > aux_end_time
+                    )
 
     train_log_path = output_dir / "train_log.csv"
     train_metrics_path = output_dir / "train_metrics.csv"
@@ -5712,6 +5780,7 @@ def main() -> None:
                 "validation_horizon_label": aux_label,
                 "best_episode": int(aux_best_row["episode"]),
                 "best_lo_quality_qos_mean": float(aux_best_row["lo_quality_qos_mean"]),
+                "best_validation_trigger": str(aux_best_row.get("validation_trigger", "unknown")),
                 "model_path": str(aux_best_paths[aux_end_time]),
                 "selection_only": True,
             }
@@ -5837,7 +5906,9 @@ def main() -> None:
             {"end_time": int(end_time), "every": int(cadence), "label": label}
             for end_time, cadence, label in aux_validation_specs
         ],
+        "aux_validation_trigger_on_best": bool(args.aux_validation_trigger_on_best),
         "validation_workers": args.validation_workers,
+        "n_step_return": int(config.n_step_return),
         "max_q_diagnostic_samples": args.max_q_diagnostic_samples,
         "save_best_by": args.save_best_by,
         "qos_stable_mode_delta": args.qos_stable_mode_delta,

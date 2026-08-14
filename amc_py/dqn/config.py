@@ -11,6 +11,8 @@ class DqnConfig:
 
     # 折扣因子，对应 Bellman target 中未来回报的权重。
     gamma: float = 0.99
+    # n-step return 跨度。1 保持历史 1-step DQN 语义；3 表示使用 3-step return。
+    n_step_return: int = 1
     # Adam 优化器的学习率。
     learning_rate: float = 5e-5
     # 经验回放池最大容量。
