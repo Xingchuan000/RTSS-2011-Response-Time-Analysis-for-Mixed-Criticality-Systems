@@ -2983,6 +2983,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--aux-validation-trigger-on-best-start-episode",
+        type=int,
+        default=1,
+        help=(
+            "First 1-based training episode on which best-triggered auxiliary validation is "
+            "allowed. Fixed validation cadences are unaffected. Example: 451 disables only "
+            "best-triggered 10M/20M validation during episodes 1-450. Default 1 preserves the "
+            "existing --aux-validation-trigger-on-best behavior."
+        ),
+    )
+    parser.add_argument(
         "--log-validation-policy-actions",
         action="store_true",
         help="Log per-checkpoint validation policy action histogram and resolved residual targets.",
@@ -3186,6 +3197,8 @@ def main() -> None:
         raise ValueError("--validate-every 必须为非负整数")
     if args.validation_workers < 1:
         raise ValueError("--validation-workers 必须为正整数")
+    if args.aux_validation_trigger_on_best_start_episode < 1:
+        raise ValueError("--aux-validation-trigger-on-best-start-episode 必须为正整数")
     aux_validation_specs = _parse_aux_validation_specs(
         primary_end_time=args.validation_end_time,
         end_times_text=args.aux_validation_end_times,
@@ -3542,6 +3555,10 @@ def main() -> None:
     print(f"[DQN] primary validation horizon: {args.validation_end_time}")
     print(f"[DQN] auxiliary validation specs: {aux_validation_specs}")
     print(f"[DQN] auxiliary best-trigger validation: {args.aux_validation_trigger_on_best}")
+    print(
+        "[DQN] auxiliary best-trigger start episode: "
+        f"{args.aux_validation_trigger_on_best_start_episode}"
+    )
     print(f"[DQN] learning-rate schedule enabled: {learning_rate_schedule_enabled}")
     print(f"[DQN] learning-rate schedule: {learning_rate_schedule}")
     print(f"[DQN] runtime semantics: {dqn_runtime_semantics.value}")
@@ -5007,7 +5024,10 @@ def main() -> None:
                 if args.save_best_by == "lo_quality_qos_best":
                     # Backward-compatible historical name + explicit horizon alias.
                     agent.save(primary_horizon_best_path)
-                    if args.aux_validation_trigger_on_best:
+                    if (
+                        args.aux_validation_trigger_on_best
+                        and (episode + 1) >= args.aux_validation_trigger_on_best_start_episode
+                    ):
                         # Primary horizon（正式脚本中为 5M）刷新 QoS best 后，立即把所有
                         # 已配置的更长 auxiliary horizon 加入本 episode 的验证请求。
                         aux_trigger_end_times.update(
@@ -5135,7 +5155,10 @@ def main() -> None:
                     f"[DQN] updated {aux_label} best: episode={episode + 1}, "
                     f"lo_quality_qos={float(aux_row['lo_quality_qos_mean']):.9f}"
                 )
-                if args.aux_validation_trigger_on_best:
+                if (
+                    args.aux_validation_trigger_on_best
+                    and (episode + 1) >= args.aux_validation_trigger_on_best_start_episode
+                ):
                     # 10M 等较短 auxiliary horizon 刷新 best 时，在同一 episode 继续验证
                     # 所有更长 auxiliary horizon（正式脚本中即 10M best -> 20M）。
                     # aux specs 按 end_time 升序执行，因此后续 horizon 会在本轮直接收到触发。
@@ -5907,6 +5930,9 @@ def main() -> None:
             for end_time, cadence, label in aux_validation_specs
         ],
         "aux_validation_trigger_on_best": bool(args.aux_validation_trigger_on_best),
+        "aux_validation_trigger_on_best_start_episode": int(
+            args.aux_validation_trigger_on_best_start_episode
+        ),
         "validation_workers": args.validation_workers,
         "n_step_return": int(config.n_step_return),
         "max_q_diagnostic_samples": args.max_q_diagnostic_samples,
