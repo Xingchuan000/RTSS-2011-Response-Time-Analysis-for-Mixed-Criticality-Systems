@@ -41,9 +41,9 @@
   "source_bindings": {
     "formal_toolchain/bridge/logical_events.py": "87c4ec04755534cd4ffc82b3f7682341bb49d9fc276313da370afd943ae5041f",
     "formal_toolchain/reference/c_amc_sem_semantics.py": "d0ae27dcb954a278aadaf061df130c907960ea2385123445ad4759fb527bfe7c",
-    "formal_toolchain/reference/executable_semantics.py": "49b09f87507ba957f6e35c58f5e61baefdf4f3f1de8f83faa6cd9cf05792f1c4",
+    "formal_toolchain/reference/executable_semantics.py": "f26667f2034a1af965e8b2888d3ae8bedb246eabcf2c87ee74a83ea7a22810b4",
     "formal_toolchain/reference/p0_projection.py": "4b4057d67c064cd82e79e0f37cdcdecd5e5d940c53ab548ca4435dc55d4ef21f",
-    "formal_toolchain/reference/p0_transition_contract.py": "984359a136b4a15671e5ad80e157167ac1d792b900d0408f43ccf672be187342",
+    "formal_toolchain/reference/p0_transition_contract.py": "f3f70143a7d352dd5c4d5d568de59fcaf7c769ca1011e452044be005ac56bcfa",
     "formal_toolchain/reference/reference_state.py": "717831658057f120844fcf47aa597c8a921168b3a3fa0a03f9e6d72aafd901ae"
   },
   "theorem_assumption_hash": "2bfaaa35b6fb853a96c619dbb8528d548b169053e5d375f1177e005091158f4a",

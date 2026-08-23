@@ -35,6 +35,13 @@ class AMCRealRuntimeAdapter:
         self.environment = environment
         self.observation_extractor = observation_extractor
         self.action_space = tuple(action_space or tuple(getattr(environment, "_actions", ())))
+        self.noop_action_ids = tuple(
+            int(row.action_id if hasattr(row, "action_id") else row["action_id"])
+            for row in self.action_space
+            if bool(row.is_noop if hasattr(row, "is_noop") else row.get("is_noop", False))
+        )
+        if len(self.noop_action_ids) > 1:
+            raise ValueError("MULTIPLE_EXPLICIT_NOOP_ACTIONS_NOT_CERTIFIED")
         if selection_semantics not in {
             "ranked_first_valid", "raw_top1", "top1_valid_else_noop",
             "all_invalid_force_top1",
@@ -107,6 +114,8 @@ class AMCRealRuntimeAdapter:
         if len(details) != len(mask):
             raise RuntimeError("REAL_RUNTIME_MASK_DETAIL_LENGTH_INVALID")
         reasons = tuple(str(item.get("reject_reason") or "accepted") for item in details)
+        if any(not mask[action_id] for action_id in self.noop_action_ids):
+            raise RuntimeError("EXPLICIT_NOOP_MASK_NOT_TOTAL")
         return mask, reasons
 
     def apply_action(self, runtime_state: Mapping[str, Any], action_id: int | None):
@@ -118,6 +127,7 @@ class AMCRealRuntimeAdapter:
         from amc_py.rl.actions import apply_budget_action_candidate
         from amc_py.budget_runtime import BudgetState
         action = environment._actions[int(action_id)]
+        is_noop = bool(getattr(action, "is_noop", False))
         before = dict(environment._engine.runtime_budgets.budgets)
         updates = apply_budget_action_candidate(
             action=action,
@@ -126,8 +136,12 @@ class AMCRealRuntimeAdapter:
             rounding_mode=self.rounding_mode,
             min_budget_delta=self.min_budget_delta,
         )
+        if is_noop and updates:
+            raise RuntimeError("REAL_RUNTIME_NOOP_NOT_IDENTITY")
         after = dict(before)
         after.update(updates)
+        if is_noop and after != before:
+            raise RuntimeError("REAL_RUNTIME_NOOP_CHANGED_BUDGETS")
         diagnosis = environment.diagnose_candidate_budget_update(new_budgets=after)
         if not diagnosis.accepted:
             raise RuntimeError("REAL_RUNTIME_ACTION_REJECTED_BY_ENVIRONMENT")
@@ -155,7 +169,9 @@ class AMCRealRuntimeAdapter:
             "action_ids": [int(row.action_id) if hasattr(row, "action_id") else int(row["action_id"]) for row in self.action_space],
             "shared_with_step": callable(getattr(self.environment, "formal_valid_action_mask", None))
             and callable(getattr(self.environment, "evaluate_budget_candidate", None)),
-            "explicit_noop": False,
+            "explicit_noop": bool(self.noop_action_ids),
+            "explicit_noop_action_ids": list(self.noop_action_ids),
+            "explicit_noop_always_valid": bool(self.noop_action_ids),
             "implicit_noop_when_all_invalid": True,
             "check_safety": bool(getattr(self.environment, "check_safety", False)),
             "safety_checker_type": None if checker is None else type(checker).__qualname__,
@@ -169,7 +185,16 @@ class AMCRealRuntimeAdapter:
         }
 
     def export_action_contract(self):
-        return {"action_definitions": [dict(row) if isinstance(row, Mapping) else {"action_id": int(row.action_id)} for row in self.action_space]}
+        from amc_py.rl.observation_metadata import build_action_definitions
+
+        if all(not isinstance(row, Mapping) for row in self.action_space):
+            definitions = build_action_definitions(self.action_space)
+        else:
+            definitions = [dict(row) for row in self.action_space]
+        return {
+            "action_definitions": definitions,
+            "explicit_noop_action_ids": list(self.noop_action_ids),
+        }
 
     def export_source_binding_targets(self):
         return {

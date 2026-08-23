@@ -315,6 +315,14 @@ def _verify_universal_closed_prefix(candidate: Mapping[str, Any], bridge_context
 
 def verify_closed_prefix_proof_object(*, candidate: Mapping[str, Any],
                                       bridge_context_hash: str, **kwargs: Any) -> dict[str, Any]:
+    witness = candidate.get("witness", {}) if isinstance(candidate, Mapping) else {}
+    if (
+        isinstance(witness, Mapping)
+        and witness.get("pointwise_closed_prefix_relation") is True
+        and witness.get("schema_version") is None
+    ):
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                "code": "CLOSED_PREFIX_LEGACY_SCHEMA_REJECTED"}
     return _verify_cases(candidate, "CLOSED_PREFIX_REFINEMENT", bridge_context_hash, **kwargs)
 
 

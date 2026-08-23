@@ -36,7 +36,16 @@ def _inputs():
     for index, oid in enumerate(predecessor_ids):
         layer = OBLIGATION_CONTEXT_LAYERS[oid]
         context_hash = contexts[layer]["hash"]
-        witness = {"reference_taskset": {"fingerprint": "b" * 64}} if oid == "REFERENCE_TASKSET" else {"source": oid}
+        if oid == "REFERENCE_TASKSET":
+            witness = {"reference_taskset": {"fingerprint": "b" * 64}}
+        elif oid == "REFERENCE_TRANSITION_SYSTEM_IDENTITY":
+            witness = {
+                "transition_system_id": "FIXED_EXECUTABLE_REFERENCE_P0_V3",
+                "contract": {"status": "PASS"},
+                "identity_scope": {"event_frontier": "EFFECTIVE_EVENT_FRONTIER_RELATION"},
+            }
+        else:
+            witness = {"source": oid}
         predecessors[oid] = obligation_certificate(
             obligation_id=oid, status="PASS", context_hash=context_hash,
             inputs={"fixture": True}, witness=witness,
@@ -63,9 +72,9 @@ def _build(predecessors=None, contract=None, contexts=None):
     )
 
 
-def test_contract_has_exactly_fourteen_unique_conditions_and_dag_is_acyclic():
+def test_contract_has_exactly_fifteen_unique_conditions_and_dag_is_acyclic():
     contract = load_reference_model_conformance_contract()
-    assert len(contract["conditions"]) == 14
+    assert len(contract["conditions"]) == 15
     assert {row["condition_id"] for row in contract["conditions"]} == set(mc.EXPECTED_CONFORMANCE_CONDITIONS)
     entries = load_registry(ROOT / "formal_toolchain/specs/obligation_registry.json")
     order = topological_order(entries)

@@ -21,7 +21,7 @@ FROZEN_EVENT_MODELS = "formal_toolchain/semantics/frozen_c_amc_sem_event_models.
 FROZEN_RUNTIME_WRAPPER = "formal_toolchain/semantics/frozen_c_amc_sem_runtime_wrapper.py"
 FROZEN_ACTION_RUNTIME = "formal_toolchain/semantics/frozen_c_amc_sem_action_runtime.py"
 FROZEN_OBSERVATION_RUNTIME = "formal_toolchain/semantics/frozen_c_amc_sem_observation.py"
-CONTRACT_VERSION = "c_amc_sem_p0_frozen_runtime_v2"
+CONTRACT_VERSION = "c_amc_sem_p0_frozen_runtime_v3_explicit_noop"
 
 
 def frozen_event_runtime_path(source_root: str | Path) -> Path:
@@ -62,7 +62,7 @@ def frozen_contract_manifest(source_root: str | Path) -> dict[str, object]:
         for relative in frozen_contract_files()
     ]
     return {
-        "schema_version": "frozen_runtime_contract_manifest_v2",
+        "schema_version": "frozen_runtime_contract_manifest_v3_explicit_noop",
         "contract_version": CONTRACT_VERSION,
         "files": records,
         "semantic_hash": sha256_object({

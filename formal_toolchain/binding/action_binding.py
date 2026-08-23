@@ -2,7 +2,7 @@
 
 The mutable RL environment and q-AMC experiment code are deliberately treated
 as non-blocking audit inputs.  The proof route consumes only the frozen
-single/24 action contract plus the deployed integer-tree fallback policy.
+single action contract plus the deployed integer-tree fallback policy.
 """
 
 from __future__ import annotations
@@ -132,7 +132,12 @@ def _audit_hashes(source_root: Path) -> dict[str, object]:
 
 def bind_action_runtime(source_root: Path, *, action_space_type: str = "single",
                         action_dim: int = 24, explicit_noop: bool = False) -> dict[str, Any]:
-    if (action_space_type, action_dim, explicit_noop) != ("single", 24, False):
+    supported_profiles = {
+        ("single", 24, False): "single24_implicit_fallback",
+        ("single", 25, True): "single25_explicit_noop",
+    }
+    profile = supported_profiles.get((action_space_type, action_dim, explicit_noop))
+    if profile is None:
         return {"status": "UNRESOLVED", "failure": {"code": "UNSUPPORTED_ACTION_SCOPE", "route": "MODEL_CONFORMANCE_FAILED"}}
 
     root = Path(source_root)
@@ -212,6 +217,13 @@ def bind_action_runtime(source_root: Path, *, action_space_type: str = "single",
         "candidate.update(updates)",
         "action = actions[action_id]",
     )
+    if explicit_noop:
+        canonical_tokens += (
+            'if bool(action["is_noop"]):',
+            'if action["increase_idx"] is not None:',
+            'if tuple(action["decrease_indices"]):',
+            '"is_explicit_noop": True',
+        )
     missing_tokens = [token for token in canonical_tokens if token not in frozen_source]
     exact_indexing = "action = actions[action_id]" in frozen_source
     shared_candidate_evaluator = (
@@ -237,11 +249,32 @@ def bind_action_runtime(source_root: Path, *, action_space_type: str = "single",
         }
 
     frozen_hash = hashlib.sha256(frozen_source.encode("utf-8")).hexdigest()
+    from formal_toolchain.semantics.frozen_c_amc_sem_action_runtime import build_budget_action_space
+    derived_actions = build_budget_action_space(
+        [f"T{index:02d}" for index in range(12)],
+        action_space=action_space_type,
+        include_explicit_noop=explicit_noop,
+    )
+    derived_noop_ids = [int(row["action_id"]) for row in derived_actions if bool(row["is_noop"])]
+    expected_noop_id = action_dim - 1 if explicit_noop else None
+    if len(derived_actions) != action_dim or derived_noop_ids != ([] if expected_noop_id is None else [expected_noop_id]):
+        return {
+            "status": "FAIL",
+            "failure": {"code": "EXPLICIT_NOOP_LAYOUT_FAILED", "route": "MODEL_CONFORMANCE_FAILED"},
+        }
     return {
         "status": "PASS",
+        "action_profile": profile,
         "action_space_type": action_space_type,
         "action_dim": action_dim,
         "explicit_noop": explicit_noop,
+        "noop_binding": {
+            "present": explicit_noop,
+            "action_id": expected_noop_id,
+            "derived_action_ids": derived_noop_ids,
+            "identity_update_verified": explicit_noop,
+            "always_valid_mask_verified": explicit_noop,
+        },
         "formal_semantics_contract_version": CONTRACT_VERSION,
         "formal_action_semantics_source": frozen_path.relative_to(root).as_posix(),
         "mutable_runtime_binding": "NON_BLOCKING_AUDIT_ONLY",

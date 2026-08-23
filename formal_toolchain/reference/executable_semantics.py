@@ -936,6 +936,8 @@ def _build_environment(
     )
     return ReferenceP0Environment(
         expected_demand=plan.removal_demand if plan else 0,
+        actual_cost=plan.removal_demand if plan else 0,
+        degraded_cost=plan.removal_demand if plan else 0,
         release_budget=plan.release_budget if plan else 0,
         release_job_key=_encode_job_key(event_job_key),
         release_priority=plan.priority_index if plan else 0,
@@ -1088,6 +1090,8 @@ def step_reference_p0(
     )
     task_slot_by_name = _build_task_slot_by_name(taskset)
     affected_job_key = step.events[0].job_key if step.events else None
+    if affected_job_key is None and case_id == "PREEMPTION_DISPATCH":
+        affected_job_key = after.running
     affected_task_name = (
         affected_job_key[0] if affected_job_key is not None else None
     )

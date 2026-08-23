@@ -123,6 +123,19 @@ def check_deployed_policy_preservation(
             "route": "UNRESOLVED",
             "failure": {"code": "MASK_SAFETY_CHECK_NOT_ACTIVE"},
         }
+    explicit_noop = bool(mask_contract.get("explicit_noop", False))
+    explicit_noop_ids = tuple(
+        int(value) for value in mask_contract.get("explicit_noop_action_ids", ())
+    )
+    if explicit_noop and (
+        len(explicit_noop_ids) != 1
+        or mask_contract.get("explicit_noop_always_valid") is not True
+    ):
+        return {
+            "status": "FAIL",
+            "route": "MODEL_CONFORMANCE_FAILED",
+            "failure": {"code": "EXPLICIT_NOOP_MASK_NOT_TOTAL"},
+        }
 
     names = [str(task.name) for task in tasks]
     lower = {name: int(candidate["lower"][name]) for name in names}
@@ -137,6 +150,24 @@ def check_deployed_policy_preservation(
 
     for action in actions:
         action_id = int(action.action_id)
+
+        if bool(getattr(action, "is_noop", False)):
+            if explicit_noop_ids != (action_id,):
+                return {"status": "FAIL", "route": "MODEL_CONFORMANCE_FAILED",
+                        "failure": {"code": "EXPLICIT_NOOP_ACTION_ID_MISMATCH"}}
+            if action.increase_idx is not None or tuple(action.decrease_indices):
+                return {"status": "FAIL", "route": "POLICY_CONTRACT_VIOLATION",
+                        "failure": {"code": "EXPLICIT_NOOP_NOT_IDENTITY"}}
+            action_witnesses.append({
+                "action_id": action_id,
+                "selected_requires_mask_valid": True,
+                "transition_kind": "IDENTITY",
+                "domain_total": True,
+                "changed_tasks": [],
+                "candidate_envelope_set_inclusion": "identity_image_equals_source_set",
+                "frame_condition": True,
+            })
+            continue
 
         if (
             "hi_decrease" not in disabled_guard_set
@@ -196,7 +227,8 @@ def check_deployed_policy_preservation(
         "state_enumeration_used": False,
         "proof_rule": (
             "selected_non_noop -> runtime_mask_valid -> candidate_in_polytope "
-            "-> componentwise_envelope; selected_none -> frame"
+            "-> componentwise_envelope; selected_explicit_noop -> identity_set_inclusion; "
+            "selected_none -> frame"
         ),
         "candidate_envelope_hash": sha256_proof_object(dict(candidate)),
         "mask_fallback_hash": sha256_proof_object(dict(mask_fallback_certificate)),
@@ -206,4 +238,6 @@ def check_deployed_policy_preservation(
         "action_witnesses": action_witnesses,
         "implicit_noop_checked": True,
         "implicit_noop_rule": "budget_vector_unchanged",
+        "explicit_noop_action_ids": list(explicit_noop_ids),
+        "explicit_noop_identity_preserved": explicit_noop,
     }

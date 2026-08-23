@@ -14,6 +14,10 @@ from typing import Any, Callable, Mapping
 
 from amc_py.models import Criticality
 from amc_py.rl.actions import build_budget_action_space
+from formal_toolchain.semantics.frozen_c_amc_sem_action_runtime import (
+    build_budget_action_space as build_frozen_budget_action_space,
+    canonical_action_schema,
+)
 from amc_py.viper.fixed_point import fixed_point_config_from_dict, quantize_value
 from amc_py.viper.integer_tree import evaluate_integer_tree
 from formal_toolchain.adapters.runtime_config import export_formal_target_config
@@ -191,12 +195,26 @@ def _fixed_point_config(raw_inputs: Any) -> dict[str, Any]:
 
 def _actions(raw_inputs: Any):
     target = _target(raw_inputs)
-    return build_budget_action_space(
-        target.ordered_tasks,
-        action_space=str(getattr(target.runtime_config, "action_space")),
-        budget_increase_ratio=float(getattr(target.runtime_config, "budget_increase_ratio")),
-        budget_decrease_ratio=float(getattr(target.runtime_config, "budget_decrease_ratio")),
+    adapter = _runtime_adapter(raw_inputs)
+    mask_contract = adapter.export_mask_contract()
+    kwargs = dict(
+        action_space=str(target.runtime_config.action_space),
+        budget_increase_ratio=float(target.runtime_config.budget_increase_ratio),
+        budget_decrease_ratio=float(target.runtime_config.budget_decrease_ratio),
+        include_explicit_noop=bool(mask_contract.get("explicit_noop", False)),
     )
+    actions = build_budget_action_space(target.ordered_tasks, **kwargs)
+    frozen = build_frozen_budget_action_space(
+        [str(task.name) for task in target.ordered_tasks],
+        **kwargs,
+    )
+    if len(actions) != len(target.action_definitions):
+        raise ValueError("VERIFIER_ACTION_DIMENSION_MISMATCH")
+    if [canonical_action_schema(row) for row in actions] != [canonical_action_schema(row) for row in frozen]:
+        raise ValueError("VERIFIER_ACTION_SCHEMA_MISMATCH")
+    if [canonical_action_schema(row) for row in actions] != [canonical_action_schema(row) for row in target.action_definitions]:
+        raise ValueError("VERIFIER_TARGET_ACTION_SCHEMA_MISMATCH")
+    return actions
 
 
 def _runtime_adapter(raw_inputs: Any):
@@ -205,6 +223,40 @@ def _runtime_adapter(raw_inputs: Any):
     if adapter is None:
         raise ValueError("FORMAL_RUNTIME_ADAPTER_MISSING")
     return adapter
+
+
+def _explicit_noop_witness(actions: tuple[Any, ...], action_table: Mapping[str, Any],
+                           mask_contract: Mapping[str, Any]) -> dict[str, Any]:
+    noop_actions = [action for action in actions if bool(getattr(action, "is_noop", False))]
+    if not noop_actions:
+        return {"present": False}
+    if len(noop_actions) != 1:
+        raise ValueError("EXPLICIT_NOOP_IDENTITY_UNRESOLVED")
+    noop = noop_actions[0]
+    noop_id = int(noop.action_id)
+    rows = {int(row["action_id"]): row for row in action_table.get("actions", ())}
+    transition = rows.get(noop_id)
+    identity_verified = bool(
+        action_table.get("status") == "PASS"
+        and transition is not None
+        and transition.get("affected_task_indices") == []
+        and int(transition.get("checked_value_count", 0)) == 1
+        and noop.increase_idx is None
+        and tuple(noop.decrease_indices) == ()
+    )
+    mask_total = bool(
+        mask_contract.get("explicit_noop_always_valid") is True
+        and [int(value) for value in mask_contract.get("explicit_noop_action_ids", ())] == [noop_id]
+    )
+    if not identity_verified:
+        raise ValueError("EXPLICIT_NOOP_IDENTITY_UNRESOLVED")
+    if not mask_total:
+        raise ValueError("EXPLICIT_NOOP_MASK_NOT_TOTAL")
+    return {"present": True, "action_id": noop_id, "transition_kind": "IDENTITY",
+            "changed_tasks": [], "domain_total": True,
+            "candidate_envelope_preserved": True,
+            "identity_transition_digest": transition["transition_digest"],
+            "mask_total": True}
 
 
 def _domain(raw_inputs: Any):
@@ -268,14 +320,23 @@ def _fresh_structural_envelope_pipeline(
         for leaf in tree.leaves
     }
     mask_contract = adapter.export_mask_contract()
+    action_cert["explicit_noop_witness"] = _explicit_noop_witness(
+        actions, action_cert, mask_contract
+    )
     selection_semantics = str(mask_contract.get("selection", "ranked_first_valid"))
     mask = build_parametric_mask_fallback_certificate(
         rankings=rankings,
         action_dim=len(actions),
         mask_contract=mask_contract,
     )
-    regions = selected_action_regions_v2(_leaf_guards(tree), rankings,
-                                         selection_semantics=selection_semantics)
+    regions = selected_action_regions_v2(
+        _leaf_guards(tree), rankings,
+        selection_semantics=selection_semantics,
+        explicit_noop_action_id=(
+            int(mask_contract["explicit_noop_action_ids"][0])
+            if mask_contract.get("explicit_noop") else None
+        ),
+    )
     deployed = check_deployed_policy_preservation(
         candidate,
         actions,

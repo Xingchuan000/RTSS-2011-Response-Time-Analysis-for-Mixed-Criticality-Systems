@@ -34,6 +34,7 @@ def selected_action_regions_v2(
     rankings: dict[int, Sequence[int]],
     valid_reasons: dict[int, Sequence[str]] | None = None,
     *, selection_semantics: str = "ranked_first_valid",
+    explicit_noop_action_id: int | None = None,
 ) -> dict[str, Any]:
     if selection_semantics not in {
         "ranked_first_valid", "raw_top1", "top1_valid_else_noop",
@@ -41,7 +42,32 @@ def selected_action_regions_v2(
     }:
         raise ValueError("UNSUPPORTED_POLICY_SELECTION_SEMANTICS")
     if selection_semantics == "ranked_first_valid":
-        regions = selected_action_regions(guards, rankings, valid_reasons)
+        if explicit_noop_action_id is None:
+            regions = selected_action_regions(guards, rankings, valid_reasons)
+        else:
+            regions = []
+            for leaf_id in sorted(guards):
+                ranking = list(rankings[leaf_id])
+                if explicit_noop_action_id not in ranking:
+                    raise ValueError("EXPLICIT_NOOP_MISSING_FROM_RANKING")
+                for position, action_id in enumerate(ranking):
+                    regions.append({
+                        "leaf_id": leaf_id,
+                        "rank_position": position,
+                        "action_id": int(action_id),
+                        "leaf_guard": list(guards[leaf_id]),
+                        "preceding_invalid": ranking[:position],
+                        "valid_reason": (valid_reasons or {}).get(leaf_id, ()),
+                        "predicate": {
+                            "leaf_guard": list(guards[leaf_id]),
+                            "preceding_actions_invalid": ranking[:position],
+                            "selected_action_valid": int(action_id),
+                        },
+                        "implicit_noop_predicate": False,
+                        "explicit_noop_predicate": action_id == explicit_noop_action_id,
+                    })
+                    if action_id == explicit_noop_action_id:
+                        break
     else:
         regions = []
         for leaf_id in sorted(guards):
@@ -89,4 +115,5 @@ def selected_action_regions_v2(
         "regions": regions,
         "state_enumeration_used": False,
         "selection_semantics": selection_semantics,
+        "explicit_noop_action_id": explicit_noop_action_id,
     }

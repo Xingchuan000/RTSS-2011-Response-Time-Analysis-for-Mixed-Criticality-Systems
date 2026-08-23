@@ -35,6 +35,8 @@ REFERENCE_P0_CASE_IDS = (
 @dataclass(frozen=True, slots=True)
 class ReferenceP0Environment:
     expected_demand: int = 0
+    actual_cost: int = 0
+    degraded_cost: int = 0
 
     release_budget: int = 0
     release_job_key: int = 0
@@ -61,6 +63,8 @@ class ReferenceP0Environment:
 
 REFERENCE_P0_ENVIRONMENT_FIELDS = (
     "expected_demand",
+    "actual_cost",
+    "degraded_cost",
     "release_budget",
     "release_job_key",
     "release_priority",
@@ -213,6 +217,9 @@ def _dispatch_job_overrides(prefix: str, bounds: P0ModelBounds) -> dict[str, str
             f"(= {base}key selected_job_key))"
         )
         result[f"job_{slot}_running"] = f"(ite {selected} 1 0)"
+        result[f"job_{slot}_ready"] = (
+            f"(ite {selected} 0 (ite (= {base}present 1) 1 0))"
+        )
     return result
 
 
@@ -282,11 +289,12 @@ def render_reference_p0_delta(
         c.update({f"job_{slot}_running": "0" for slot in range(bounds.job_slots)})
     elif case_id == "PREEMPTION_DISPATCH":
         c.update(
+            ready="(- r_active 1)",
             running="1",
             running_job_key="selected_job_key",
             affected_job_key="selected_job_key",
             affected_job_active="1",
-            affected_job_ready="1",
+            affected_job_ready="0",
             affected_job_running="1",
             queue_token_epoch="(+ r_queue_token_epoch 1)",
             queue_event_count="(+ r_queue_event_count 2)",
@@ -430,7 +438,7 @@ def legacy_reference_p0_numeric_delta(
                 after[f"job_{slot}_running"] = 0
     elif case_id in {"NORMAL_COMPLETION", "DEGRADED_COMPLETION", "PRIMARY_LO_CANCELLATION"}:
         after["active"] = before["active"] - 1
-        after["ready"] = before["ready"] - 1
+        after["ready"] = before["active"] - 1
         after["running"] = 0
         after["affected_job_active"] = 0
         after["affected_job_ready"] = 1
@@ -481,11 +489,12 @@ def legacy_reference_p0_numeric_delta(
         # ``running`` is the Boolean occupancy projection; the selected job
         # identity is carried separately by ``running_job_key``.
         after["running"] = 1
+        after["ready"] = before["ready"] - 1
         after["running_job_key"] = env.selected_job_key
         after["selected_job_key"] = env.selected_job_key
         after["affected_job_key"] = env.selected_job_key
         after["affected_job_active"] = 1
-        after["affected_job_ready"] = 1
+        after["affected_job_ready"] = 0
         after["affected_job_running"] = 1
         for slot in range(bounds.job_slots):
             key = f"job_{slot}_key"
@@ -499,8 +508,10 @@ def legacy_reference_p0_numeric_delta(
                 after["affected_job_budget"] = before[f"job_{slot}_budget"]
                 after["affected_job_demand"] = before[f"job_{slot}_demand"]
                 after[f"job_{slot}_running"] = 1
+                after[f"job_{slot}_ready"] = 0
             else:
                 after[f"job_{slot}_running"] = 0
+                after[f"job_{slot}_ready"] = before[f"job_{slot}_present"]
     elif case_id == "CONTROLLER_SELECTED_ACTION":
         after["future_budget"] = env.release_budget
         after["affected_task_budget"] = env.release_budget

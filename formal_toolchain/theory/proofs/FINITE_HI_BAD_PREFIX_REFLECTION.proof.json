@@ -46,9 +46,9 @@
     "formal_toolchain/bridge/prefix_refinement.py": "8c2f983d161a734a1bca8015e9b2436e2b7d63f25c6bbf402c1a6c9917dd62d7",
     "formal_toolchain/bridge/state_relation.py": "1df1edcebb0fa1bf0e8a55b1ff4132f0114997a3e16283aa03a63a892763c4f2",
     "formal_toolchain/bridge/transition_cases.py": "78ceaabfe5472bc6e3d4c332b063e5736c2fd3775eeb2f56098a35cb0055f4a1",
-    "formal_toolchain/reference/executable_semantics.py": "49b09f87507ba957f6e35c58f5e61baefdf4f3f1de8f83faa6cd9cf05792f1c4",
+    "formal_toolchain/reference/executable_semantics.py": "f26667f2034a1af965e8b2888d3ae8bedb246eabcf2c87ee74a83ea7a22810b4",
     "formal_toolchain/reference/p0_projection.py": "4b4057d67c064cd82e79e0f37cdcdecd5e5d940c53ab548ca4435dc55d4ef21f",
-    "formal_toolchain/reference/p0_transition_contract.py": "984359a136b4a15671e5ad80e157167ac1d792b900d0408f43ccf672be187342",
+    "formal_toolchain/reference/p0_transition_contract.py": "f3f70143a7d352dd5c4d5d568de59fcaf7c769ca1011e452044be005ac56bcfa",
     "formal_toolchain/reference/transition_identity.py": "e2a9ae71a2ebd0d03d312a4c6e854ae6c0e3f3a5461c12abe94d3b7d2ef414eb"
   },
   "theorem_assumption_hash": "2d3440a1b918dad591777af83002e4b1fd83ba2b815fdaa6b92a29e41755473c",

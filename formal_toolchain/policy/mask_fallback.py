@@ -124,6 +124,15 @@ def build_parametric_mask_fallback_certificate(
     }:
         return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
                 "failure": {"code": "UNSUPPORTED_POLICY_SELECTION_SEMANTICS"}}
+    explicit_noop = bool(mask_contract.get("explicit_noop", False))
+    noop_ids = tuple(int(value) for value in mask_contract.get("explicit_noop_action_ids", ()))
+    if explicit_noop:
+        if len(noop_ids) != 1 or mask_contract.get("explicit_noop_always_valid") is not True:
+            return {"status": "FAIL", "route": "MODEL_CONFORMANCE_FAILED",
+                    "failure": {"code": "EXPLICIT_NOOP_IDENTITY_UNRESOLVED"}}
+        if noop_ids[0] not in expected_actions:
+            return {"status": "FAIL", "route": "MODEL_CONFORMANCE_FAILED",
+                    "failure": {"code": "EXPLICIT_NOOP_ACTION_ID_INVALID"}}
 
     for leaf_id, ranking_value in sorted(rankings.items()):
         ranking = tuple(int(value) for value in ranking_value)
@@ -142,8 +151,11 @@ def build_parametric_mask_fallback_certificate(
             for position, action_id in enumerate(ranking):
                 regions.append({"rank_position": position, "selected_action": int(action_id),
                                 "predicate": {"selected_valid": int(action_id), "preceding_invalid": list(ranking[:position])}})
-            regions.append({"rank_position": len(ranking), "selected_action": None, "predicate": {"all_invalid": list(ranking)}})
-            coverage_rule = "first_true_or_none"
+                if explicit_noop and action_id == noop_ids[0]:
+                    break
+            if not explicit_noop:
+                regions.append({"rank_position": len(ranking), "selected_action": None, "predicate": {"all_invalid": list(ranking)}})
+            coverage_rule = "first_true_including_total_explicit_noop" if explicit_noop else "first_true_or_none"
         elif selection_semantics == "raw_top1":
             regions.append({"rank_position": 0, "selected_action": int(ranking[0]),
                             "predicate": {"unconditional_raw_top1": int(ranking[0])}})
@@ -170,7 +182,12 @@ def build_parametric_mask_fallback_certificate(
         "selection": selection_semantics,
         "action_dim": action_dim,
         "leaves": leaves,
-        "implicit_noop": selection_semantics in {"ranked_first_valid", "top1_valid_else_noop"},
+        "implicit_noop": (
+            not explicit_noop
+            and selection_semantics in {"ranked_first_valid", "top1_valid_else_noop"}
+        ),
+        "explicit_noop_action_ids": list(noop_ids),
+        "explicit_noop_mask_total": explicit_noop,
         "universal_over_runtime_masks": True,
         "mask_contract_hash": sha256_object(dict(mask_contract)),
     }

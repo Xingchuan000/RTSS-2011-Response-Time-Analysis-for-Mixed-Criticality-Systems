@@ -1,4 +1,4 @@
-"""Frozen single/24 budget-action semantics for the C-AMC-sem/P0 proof.
+"""Frozen single budget-action semantics for the C-AMC-sem/P0 proof.
 
 This module is a proof model, not the mutable training/runtime environment.  It
 captures the action ordering, candidate update, mask, fallback, and step
@@ -9,9 +9,32 @@ experimental action branches may evolve independently under ``amc_py``.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
+from typing import Any
 
 
-FORMAL_ACTION_CONTRACT_VERSION = "c_amc_sem_p0_single24_action_v1"
+FORMAL_ACTION_CONTRACT_VERSION = "c_amc_sem_p0_single_action_v2_explicit_noop"
+
+
+def canonical_action_schema(row: Any) -> dict[str, object]:
+    """Normalize frozen mappings and runtime ``BudgetAction`` rows identically."""
+
+    def field(name: str, default: object = None) -> object:
+        if isinstance(row, Mapping):
+            return row.get(name, default)
+        return getattr(row, name, default)
+
+    return {
+        "action_id": int(field("action_id")),
+        "action_space_type": str(field("action_space_type", "single")),
+        "is_noop": bool(field("is_noop", False)),
+        "increase_task": field("increase_task"),
+        "decrease_tasks": list(field("decrease_tasks", ())),
+        "increase_idx": field("increase_idx"),
+        "decrease_indices": list(field("decrease_indices", ())),
+        "increase_ratio": float(field("increase_ratio")),
+        "decrease_ratio": float(field("decrease_ratio")),
+    }
 
 
 def round_budget_product(value: float, *, direction: str, mode: str) -> int:
@@ -37,8 +60,6 @@ def build_budget_action_space(
 
     if action_space != "single":
         raise ValueError("UNSUPPORTED_ACTION_SCOPE")
-    if include_explicit_noop:
-        raise ValueError("EXPLICIT_NOOP_NOT_CERTIFIED")
     if budget_increase_ratio <= 0.0:
         raise ValueError("INVALID_INCREASE_RATIO")
     if budget_decrease_ratio <= 0.0 or budget_decrease_ratio >= 1.0:
@@ -70,6 +91,25 @@ def build_budget_action_space(
             "is_noop": False,
         })
         action_id += 1
+    if include_explicit_noop:
+        actions.append({
+            "action_id": action_id,
+            "increase_task": None,
+            "decrease_tasks": (),
+            "increase_idx": None,
+            "decrease_indices": (),
+            "increase_ratio": budget_increase_ratio,
+            "decrease_ratio": budget_decrease_ratio,
+            "is_noop": True,
+        })
+
+    expected_dim = 2 * len(ordered_task_names) + int(include_explicit_noop)
+    if len(actions) != expected_dim:
+        raise AssertionError("FORMAL_ACTION_DIMENSION_CONSTRUCTION_FAILED")
+    if include_explicit_noop:
+        noop = actions[-1]
+        if noop["action_id"] != expected_dim - 1 or not noop["is_noop"]:
+            raise AssertionError("FORMAL_EXPLICIT_NOOP_LAYOUT_FAILED")
     return tuple(actions)
 
 
@@ -87,6 +127,10 @@ def apply_budget_action_candidate(
     """Replay one certified static action without mutating the input budgets."""
 
     if bool(action["is_noop"]):
+        if action["increase_idx"] is not None:
+            raise ValueError("NOOP_HAS_INCREASE_TARGET")
+        if tuple(action["decrease_indices"]):
+            raise ValueError("NOOP_HAS_DECREASE_TARGET")
         return {}
     if rounding_mode not in {"ceil_floor", "nearest"}:
         raise ValueError("UNSUPPORTED_BUDGET_ROUNDING_MODE")
@@ -179,12 +223,30 @@ def evaluate_budget_candidate(
     """Single shared evaluator consumed by both mask and step in the proof model."""
 
     before = dict(budgets)
-    if action is None or bool(action["is_noop"]):
+    if action is None:
         return {
             "accepted": True,
             "reject_reason": None,
             "candidate_budgets": before,
             "updates": {},
+        }
+    if bool(action["is_noop"]):
+        updates = apply_budget_action_candidate(
+            action=action,
+            budgets=before,
+            task_names=task_names,
+            task_criticalities=task_criticalities,
+            task_deadlines=task_deadlines,
+            task_c_hi=task_c_hi,
+            rounding_mode=rounding_mode,
+            min_budget_delta=min_budget_delta,
+        )
+        return {
+            "accepted": True,
+            "reject_reason": None,
+            "candidate_budgets": before,
+            "updates": updates,
+            "is_explicit_noop": True,
         }
 
     cap_reason = deploy_cap_increase_reject_reason(
@@ -305,6 +367,8 @@ def step(
 ) -> dict[str, object]:
     """Apply exactly the action indexed by ``action_id`` or preserve budgets."""
 
+    if action_id < 0 or action_id >= len(actions):
+        raise ValueError("ACTION_ID_OUT_OF_RANGE")
     action = actions[action_id]
     evaluation = evaluate_budget_candidate(action=action, budgets=budgets, **evaluator_kwargs)
     if not bool(evaluation["accepted"]):

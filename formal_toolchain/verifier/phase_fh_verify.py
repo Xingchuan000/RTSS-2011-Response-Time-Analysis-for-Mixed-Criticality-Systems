@@ -40,7 +40,7 @@ def verify_payload(payload: dict) -> dict:
     if any(not (root / name).is_file() for name in required):
         return {"status": "UNRESOLVED", "failure": {"code": "SYNTHETIC_ARTIFACT_MISSING"}}
     recipe = json.loads((root / "target_recipe.json").read_text(encoding="utf-8"))
-    target = build_target(recipe["factory"])
+    target = build_target(recipe["factory"], dict(recipe.get("kwargs", {})))
     inventory = inspect_tree_artifact(root, expected_state_dim=len(target.feature_names), expected_action_dim=len(target.action_definitions))
     if payload.get("tree_artifact_hash") != sha256_file(root / "integer_tree.json"):
         return {"status": "FAIL", "failure": {"code": "TREE_ARTIFACT_HASH_MISMATCH"}}
@@ -60,6 +60,9 @@ def verify_payload(payload: dict) -> dict:
         action_space=target.runtime_config.action_space,
         budget_increase_ratio=target.runtime_config.budget_increase_ratio,
         budget_decrease_ratio=target.runtime_config.budget_decrease_ratio,
+        include_explicit_noop=bool(
+            target.runtime_adapter.export_mask_contract().get("explicit_noop", False)
+        ),
     )
     domain = __import__("formal_toolchain.conformance.time_domain", fromlist=["build_budget_domain"]).build_budget_domain(
         tasks, target.provenance["budget_by_task"], runtime_config=target.runtime_config)

@@ -61,6 +61,10 @@ from formal_toolchain.policy.quantization import (
 from formal_toolchain.policy.selected_regions import selected_action_regions_v2
 from formal_toolchain.policy.tree import validate_tree_and_leaf_partition
 from formal_toolchain.policy.tree_io import integer_tree_from_dict
+from formal_toolchain.semantics.frozen_c_amc_sem_action_runtime import (
+    build_budget_action_space as build_frozen_budget_action_space,
+    canonical_action_schema,
+)
 
 
 def _read(path: Path) -> Any:
@@ -72,6 +76,78 @@ def proof_safe(value: Any) -> Any:
     """把运行时诊断规范化后再进入证书或 proof-object hash。"""
 
     return proof_safe_value(value)
+
+
+def _build_formal_actions(target: Any) -> tuple[Any, ...]:
+    """Rebuild production actions and independently bind them to frozen semantics."""
+
+    adapter = target.runtime_adapter
+    if adapter is None:
+        raise ValueError("FORMAL_RUNTIME_ADAPTER_MISSING")
+    mask_contract = adapter.export_mask_contract()
+    explicit_noop = bool(mask_contract.get("explicit_noop", False))
+    kwargs = {
+        "action_space": str(target.runtime_config.action_space),
+        "budget_increase_ratio": float(target.runtime_config.budget_increase_ratio),
+        "budget_decrease_ratio": float(target.runtime_config.budget_decrease_ratio),
+        "include_explicit_noop": explicit_noop,
+    }
+    actions = build_budget_action_space(target.ordered_tasks, **kwargs)
+    frozen = build_frozen_budget_action_space(
+        [str(task.name) for task in target.ordered_tasks], **kwargs
+    )
+    if len(actions) != len(target.action_definitions):
+        raise ValueError("TARGET_FORMAL_ACTION_DIMENSION_MISMATCH")
+    formal_rows = [canonical_action_schema(row) for row in frozen]
+    runtime_rows = [canonical_action_schema(row) for row in actions]
+    target_rows = [canonical_action_schema(row) for row in target.action_definitions]
+    if formal_rows != runtime_rows or formal_rows != target_rows:
+        raise ValueError("TARGET_FORMAL_ACTION_SCHEMA_MISMATCH")
+    noop_ids = [row["action_id"] for row in formal_rows if row["is_noop"]]
+    contract_noop_ids = [int(value) for value in mask_contract.get("explicit_noop_action_ids", ())]
+    if noop_ids != contract_noop_ids:
+        raise ValueError("TARGET_EXPLICIT_NOOP_ID_MISMATCH")
+    return actions
+
+
+def _explicit_noop_witness(
+    actions: tuple[Any, ...], action_table: Mapping[str, Any], mask_contract: Mapping[str, Any]
+) -> dict[str, Any]:
+    noop_actions = [action for action in actions if bool(getattr(action, "is_noop", False))]
+    if not noop_actions:
+        return {"present": False}
+    if len(noop_actions) != 1:
+        raise ValueError("EXPLICIT_NOOP_IDENTITY_UNRESOLVED")
+    noop = noop_actions[0]
+    noop_id = int(noop.action_id)
+    rows = {int(row["action_id"]): row for row in action_table.get("actions", ())}
+    transition = rows.get(noop_id)
+    identity_verified = bool(
+        action_table.get("status") == "PASS"
+        and transition is not None
+        and transition.get("affected_task_indices") == []
+        and int(transition.get("checked_value_count", 0)) == 1
+        and noop.increase_idx is None
+        and tuple(noop.decrease_indices) == ()
+    )
+    mask_total = bool(
+        mask_contract.get("explicit_noop_always_valid") is True
+        and [int(value) for value in mask_contract.get("explicit_noop_action_ids", ())] == [noop_id]
+    )
+    if not identity_verified:
+        raise ValueError("EXPLICIT_NOOP_IDENTITY_UNRESOLVED")
+    if not mask_total:
+        raise ValueError("EXPLICIT_NOOP_MASK_NOT_TOTAL")
+    return {
+        "present": True,
+        "action_id": noop_id,
+        "transition_kind": "IDENTITY",
+        "changed_tasks": [],
+        "domain_total": True,
+        "candidate_envelope_preserved": True,
+        "identity_transition_digest": transition["transition_digest"],
+        "mask_total": True,
+    }
 
 
 def workspace_for_request(request_path: Path) -> Path:
@@ -276,14 +352,7 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
         deterministic_samples(), fixed_data,
         lambda value, _config: quantize_value(value, fixed_config),
     )
-    actions = build_budget_action_space(
-        target.ordered_tasks,
-        action_space=str(getattr(target.runtime_config, "action_space")),
-        budget_increase_ratio=float(getattr(target.runtime_config, "budget_increase_ratio")),
-        budget_decrease_ratio=float(getattr(target.runtime_config, "budget_decrease_ratio")),
-    )
-    if len(actions) != len(target.action_definitions):
-        raise ValueError("target action space 与 artifact action dimension 不一致")
+    actions = _build_formal_actions(target)
     domain = build_budget_domain(
         target.ordered_tasks, target.provenance.get("budget_by_task"),
         runtime_config=target.runtime_config,
@@ -377,6 +446,8 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
         for leaf in tree.leaves
     }
     mask_contract = adapter.export_mask_contract()
+    noop_witness = _explicit_noop_witness(actions, actions_table, mask_contract)
+    actions_table["explicit_noop_witness"] = noop_witness
     selection_semantics = str(mask_contract.get("selection", "ranked_first_valid"))
     mask_fallback = build_parametric_mask_fallback_certificate(
         rankings=rankings,
@@ -384,7 +455,11 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
         mask_contract=mask_contract,
     )
     regions = selected_action_regions_v2(
-        _leaf_guards(tree), rankings, selection_semantics=selection_semantics
+        _leaf_guards(tree), rankings, selection_semantics=selection_semantics,
+        explicit_noop_action_id=(
+            int(mask_contract["explicit_noop_action_ids"][0])
+            if mask_contract.get("explicit_noop") else None
+        ),
     )
 
     names = [str(task.name) for task in target.ordered_tasks]
@@ -431,6 +506,7 @@ def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = Non
         "TREE": tree_check,
         "QUANTIZATION": quantization,
         "ACTION": actions_table,
+        "EXPLICIT_NOOP": {"status": "PASS", **noop_witness},
         "MASK": mask_fallback,
         "SELECTED_REGIONS": regions,
         "EXECUTABLE": {"status": "PASS" if executable and all(item.get("status") == "PASS" for item in executable) else "UNRESOLVED",

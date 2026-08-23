@@ -18,7 +18,7 @@
     "backend": "reference-prefix-extension-z3-v3",
     "hash_mode": "canonical_json_v1",
     "path": "proofs/REFERENCE_PREFIX_EXTENSION.proof.json",
-    "sha256": "99563afaacce31b4af3c02d86e4d15e1ee9516d9f9c660428e6daf8ca188decd"
+    "sha256": "26b8dc326e04a4c91c09b20fefa55874d42b14d2e7b7cf8b029f8cdc3c8710b5"
   },
   "source_reference": "P0 reference periodic machine transition rule",
   "statement_hash": "ba42157a994cfab7bd16e50b3deee4bb98178adac4328dd964a7a06b9813216d",
