@@ -116,7 +116,7 @@ OBLIGATION_CONTEXT_LAYERS: dict[str, str] = {
     "REFERENCE_PREFIX_EXTENSION": "bridge_context", "HI_BAD_CLOSED_PREFIX_REFLECTION": "bridge_context",
     "EARLY_STOP_CONFIGURATION_GATE": "bridge_context",
     "EFFECTIVE_EVENT_FRONTIER_RELATION": "bridge_context",
-    "TOKEN_REFRESH_PROJECTION": "bridge_context",
+    "TOKEN_REFRESH_PROJECTION": "semantic_context",
     "CONTROLLER_WRITE_SET": "semantic_context",
     "CONTROLLER_BOUNDARY": "semantic_context",
     "CONTROLLER_PATH_UNIQUENESS": "semantic_context",

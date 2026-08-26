@@ -19,6 +19,7 @@ def _active_required_entries():
 def test_every_active_required_obligation_has_context_and_checker():
     for entry in _active_required_entries():
         assert entry["id"] in OBLIGATION_CONTEXT_LAYERS, entry["id"]
+        assert OBLIGATION_CONTEXT_LAYERS[entry["id"]] == entry["context_layer"], entry["id"]
         assert callable(checker_for(entry["id"])), entry["id"]
 
 
