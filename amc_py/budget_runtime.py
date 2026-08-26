@@ -51,10 +51,18 @@ class BudgetState:
         self.budgets[task_name] = value
 
     def apply_updates(self, updates: Mapping[str, int]) -> None:
-        """批量应用预算更新。"""
+        """校验全部预算更新后一次性提交。"""
 
-        for task_name, value in updates.items():
-            self.set_budget(task_name, value)
+        normalized = {
+            str(task_name): int(value)
+            for task_name, value in updates.items()
+        }
+        for task_name, value in normalized.items():
+            if value <= 0:
+                raise ValueError("runtime budget must be > 0")
+            if task_name not in self.budgets:
+                raise KeyError(f"missing runtime budget for task {task_name!r}")
+        self.budgets.update(normalized)
 
     def copy(self) -> "BudgetState":
         """返回当前预算状态的深拷贝。"""

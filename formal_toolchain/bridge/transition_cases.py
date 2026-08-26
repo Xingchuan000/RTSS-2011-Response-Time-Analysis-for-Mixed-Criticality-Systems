@@ -11,14 +11,28 @@ from .state_relation import p0_smt_relation_fields
 from .model_bounds import P0ModelBounds, _legacy_test_bounds
 
 
-REQUIRED_P0_CASE_IDS = (
+REQUIRED_PLANT_P0_CASE_IDS = (
     "BOOT_TO_PRECLOSED_0", "ARRIVAL_BATCH_NO_SWITCH", "ARRIVAL_BATCH_SWITCH_S0",
     "PRIMARY_LO_RELEASE", "DEGRADED_LO_RELEASE", "HI_RELEASE",
     "RESCHEDULE_KEEP_SAME", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH",
     "ONE_SERVICE_TICK", "NORMAL_COMPLETION", "PRIMARY_LO_CANCELLATION",
     "DEGRADED_COMPLETION", "HI_COMPLETION", "DEADLINE_OBSERVATION_NO_MISS",
-    "DEADLINE_OBSERVATION_FIRST_HI_MISS", "IDLE_RECOVERY", "CONTROLLER_NO_ACTION",
-    "CONTROLLER_SELECTED_ACTION", "JUMP_TO_NEXT_EVENT",
+    "DEADLINE_OBSERVATION_FIRST_HI_MISS", "IDLE_RECOVERY", "JUMP_TO_NEXT_EVENT",
+)
+
+REQUIRED_CONTROLLER_CASE_IDS = (
+    "CONTROLLER_NO_ACTION",
+    "CONTROLLER_SELECTED_ACTION",
+)
+
+# Backward-compatible name for callers that mean the formal plant casewise
+# partition. Controller cases have their own certificate and are intentionally
+# absent from this tuple.
+REQUIRED_P0_CASE_IDS = REQUIRED_PLANT_P0_CASE_IDS
+
+ALL_REQUIRED_P0_CASE_IDS = (
+    *REQUIRED_PLANT_P0_CASE_IDS,
+    *REQUIRED_CONTROLLER_CASE_IDS,
 )
 
 
@@ -82,8 +96,8 @@ class TransitionCaseProof:
 
 
 def required_p0_case_ids() -> tuple[str, ...]:
-    """返回计划 K05 固定要求的全部 case ID。"""
-    return REQUIRED_P0_CASE_IDS
+    """返回正式 plant runtime case partition 的 case ID。"""
+    return REQUIRED_PLANT_P0_CASE_IDS
 
 
 MAP_UPDATE_KINDS = frozenset({"UNCHANGED", "EXTEND_WITH_FRESH_RELEASE", "EXTEND_WITH_FINITE_RELEASE_BATCH", "MARK_TERMINAL", "ADD_MISS_RECORD"})

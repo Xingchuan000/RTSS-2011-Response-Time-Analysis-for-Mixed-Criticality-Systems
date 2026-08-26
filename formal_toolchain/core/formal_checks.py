@@ -138,6 +138,12 @@ def _explicit_noop_witness(
         raise ValueError("EXPLICIT_NOOP_IDENTITY_UNRESOLVED")
     if not mask_total:
         raise ValueError("EXPLICIT_NOOP_MASK_NOT_TOTAL")
+    fallback_same_noop = bool(
+        mask_contract.get("defensive_fallback_same_explicit_noop") is True
+        and int(mask_contract.get("defensive_fallback_action_id", -1)) == noop_id
+    )
+    if not fallback_same_noop:
+        raise ValueError("EXPLICIT_NOOP_DEFENSIVE_FALLBACK_UNRESOLVED")
     return {
         "present": True,
         "action_id": noop_id,
@@ -147,6 +153,7 @@ def _explicit_noop_witness(
         "candidate_envelope_preserved": True,
         "identity_transition_digest": transition["transition_digest"],
         "mask_total": True,
+        "defensive_fallback_same_noop": True,
     }
 
 

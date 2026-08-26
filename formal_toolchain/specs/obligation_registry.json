@@ -929,7 +929,9 @@
       "kind": "obligation",
       "activation": "active",
       "required": true,
-      "depends_on": [],
+      "depends_on": [
+        "CONTROLLER_INVISIBILITY"
+      ],
       "artifact": "artifacts/controller_postclosure.json",
       "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CONTROLLER_POSTCLOSURE",
@@ -2445,7 +2447,9 @@
       "kind": "obligation",
       "activation": "active",
       "required": true,
-      "depends_on": [],
+      "depends_on": [
+        "BATCH_CLOSURE"
+      ],
       "artifact": "artifacts/controller_boundary.json",
       "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.CONTROLLER_BOUNDARY",
@@ -2487,7 +2491,9 @@
       "kind": "obligation",
       "activation": "active",
       "required": true,
-      "depends_on": [],
+      "depends_on": [
+        "ACTIVE_RELEASE_BUDGET_INVARIANT"
+      ],
       "artifact": "artifacts/token_refresh_projection.json",
       "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.TOKEN_REFRESH_PROJECTION",
@@ -2508,7 +2514,9 @@
       "kind": "obligation",
       "activation": "active",
       "required": true,
-      "depends_on": [],
+      "depends_on": [
+        "DEPLOYED_POLICY_PRESERVATION"
+      ],
       "artifact": "artifacts/update_payload_totality.json",
       "artifact_schema": "certificates/common_certificate.schema.json",
       "summary_path": "obligations.UPDATE_PAYLOAD_TOTALITY",

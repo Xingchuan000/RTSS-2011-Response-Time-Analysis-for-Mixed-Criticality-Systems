@@ -44,6 +44,7 @@ from formal_toolchain.adapters.synthetic_policy import build_transition_witness
 from formal_toolchain.adapters.synthetic_runtime_adapter import SyntheticP0RuntimeAdapter
 from formal_toolchain.core.registry import active_obligations_for_claim
 from formal_toolchain.core.artifact import obligation_certificate
+from formal_toolchain.binding.controller_binding import bind_controller_runtime
 from formal_toolchain.verifier.artifact_verifier import verify_registry_certificate
 from formal_toolchain.invariant.candidate_envelope import synthesize_candidate_envelope
 from formal_toolchain.invariant.common_preservation import check_common_transition_preservation
@@ -126,14 +127,44 @@ def main(argv=None) -> int:
         "trace": [event for item in scenario_values.values() for event in item.get("event_sequence", [])],
         "job_records": {name: item.get("service_by_job", {}) for name, item in scenario_values.items()}}
     removal = check_deadline_removal_contract(tasks, runtime_evidence=runtime_evidence)
+    controller_binding = bind_controller_runtime(ROOT)
+    selected = controller_binding.get("selected_action_runtime_binding", {})
+    noop = controller_binding.get("explicit_noop_runtime_binding", {})
     controller_facts = {name: True for name in ("sequence_allocation_deterministic", "finite_token_height",
-        "changes_current_service", "ready_nonempty_advances_tick", "ready_empty_jumps_next_event",
-        "zero_time_stutter_forbidden", "active_release_budget_immutable")}
-    controller_facts["changes_mode"] = False; controller_facts["witnesses"] = [event_binding]
-    for field in ("changes_active", "changes_ready", "changes_running", "changes_current_service", "changes_service"):
-        controller_facts[field] = False
-    controller_facts["binding"] = event_binding
-    controller_facts["binding_hash"] = sha256_object(event_binding)
+        "ready_nonempty_advances_tick", "ready_empty_jumps_next_event", "zero_time_stutter_forbidden",
+        "active_release_budget_immutable")}
+    controller_facts.update({
+        "explicit_noop_budget_identity": noop.get("budget_identity") is True,
+        "explicit_noop_macro_stutter": all(noop.get(field) is True for field in (
+            "running_job_unchanged", "mode_unchanged", "controller_time_unchanged")),
+        "explicit_noop_effective_frontier_stutter": noop.get("effective_event_frontier_unchanged") is True,
+        "explicit_noop_released_jobs_immutable": noop.get("released_job_fields_unchanged") is True,
+        "explicit_noop_fallback_equivalent": noop.get("explicit_and_fallback_same_timing_semantics") is True,
+        "explicit_noop_plant_progress_separated": noop.get("plant_progress_separated") is True,
+        "changes_active": not (selected.get("status") == "PASS" and selected.get("active_jobs_unchanged") is True),
+        "changes_ready": not (selected.get("status") == "PASS" and selected.get("ready_jobs_unchanged") is True),
+        "changes_running": not (selected.get("status") == "PASS" and selected.get("running_job_unchanged") is True),
+        "changes_current_service": not (selected.get("status") == "PASS" and selected.get("service_unchanged") is True),
+        "changes_service": not (selected.get("status") == "PASS" and selected.get("service_unchanged") is True),
+        "changes_mode": not (selected.get("status") == "PASS" and selected.get("mode_unchanged") is True),
+        "selected_active_unchanged": selected.get("active_jobs_unchanged") is True,
+        "selected_ready_unchanged": selected.get("ready_jobs_unchanged") is True,
+        "selected_running_unchanged": selected.get("running_job_unchanged") is True,
+        "selected_released_job_fields_unchanged": selected.get("released_job_fields_unchanged") is True,
+        "selected_released_job_snapshot_unchanged": selected.get("released_job_snapshot_unchanged") is True,
+        "selected_released_job_service_unchanged": selected.get("released_job_service_unchanged") is True,
+        "selected_released_job_demand_unchanged": selected.get("released_job_demand_unchanged") is True,
+        "selected_released_job_classification_unchanged": selected.get("released_job_classification_unchanged") is True,
+        "selected_completion_miss_unchanged": selected.get("completion_miss_unchanged") is True,
+        "selected_service_unchanged": selected.get("service_unchanged") is True,
+        "selected_mode_unchanged": selected.get("mode_unchanged") is True,
+        "selected_effective_event_frontier_unchanged": selected.get("effective_event_frontier_unchanged") is True,
+        "selected_plant_progression_separated": selected.get("plant_progression_separated") is True,
+        "selected_timing_stutter": selected.get("timing_projection") == "STUTTER",
+        "witnesses": [controller_binding, event_binding],
+        "binding": controller_binding,
+        "binding_hash": sha256_object(controller_binding),
+    })
     phase_edges = derive_phase_edges(event_binding)
     controller = check_closure_controller_contract(phase_edges=phase_edges,
         controller_fields=controller_facts)
@@ -237,6 +268,17 @@ def main(argv=None) -> int:
         "DEADLINE_BOUNDARY_ORDER": {"status": controller.get("status"), "obligation": "DEADLINE_BOUNDARY_ORDER", "binding": event_binding},
         "CONTROLLER_INVISIBILITY": {"status": controller.get("status"), "obligation": "CONTROLLER_INVISIBILITY", "controller_facts": controller_facts},
         "CONTROLLER_POSTCLOSURE": {"status": controller.get("status"), "obligation": "CONTROLLER_POSTCLOSURE", "controller_facts": controller_facts},
+        "CONTROLLER_WRITE_SET": {"status": controller_binding.get("selected_action_runtime_binding", {}).get("status"), "obligation": "CONTROLLER_WRITE_SET", "binding": controller_binding.get("selected_action_runtime_binding", {})},
+        "CONTROLLER_BOUNDARY": {"status": controller_binding.get("selected_action_runtime_binding", {}).get("status"), "obligation": "CONTROLLER_BOUNDARY",
+                                 "source": controller_binding.get("selected_action_runtime_binding", {}).get("source"),
+                                 "source_kind": controller_binding.get("selected_action_runtime_binding", {}).get("source_kind"),
+                                 "source_binding": controller_binding.get("selected_action_runtime_binding", {}).get("source_binding")},
+        "CONTROLLER_PATH_UNIQUENESS": {"status": controller_binding.get("selected_action_runtime_binding", {}).get("status"), "obligation": "CONTROLLER_PATH_UNIQUENESS",
+                                        "branch_tests": controller_binding.get("selected_action_runtime_binding", {}).get("branch_tests")},
+        "UPDATE_PAYLOAD_TOTALITY": {"status": controller_binding.get("selected_action_runtime_binding", {}).get("controller_update_binding", {}).get("status"),
+                                     "obligation": "UPDATE_PAYLOAD_TOTALITY"},
+        "TOKEN_REFRESH_PROJECTION": {"status": controller_binding.get("selected_action_runtime_binding", {}).get("controller_update_binding", {}).get("effective_frontier_certificate", {}).get("status"),
+                                      "obligation": "TOKEN_REFRESH_PROJECTION"},
         "TIME_PROGRESS": {"status": controller.get("status"), "obligation": "TIME_PROGRESS", "controller_facts": controller_facts},
         "WINDOW_MODE_NORMALIZATION": {"status": mode.get("status"), "obligation": "WINDOW_MODE_NORMALIZATION", "scenarios": scenario_values},
         "BUDGET_DOMAIN": {"status": target_domain.get("status"), "obligation": "BUDGET_DOMAIN", "domain": target_domain},
@@ -272,7 +314,7 @@ def main(argv=None) -> int:
             witness={"obligation": obligation_id, "source_status": check.get("status"),
                      "source_schema": check.get("schema_version", "synthetic_runtime_evidence_v1")},
             evidence=[{"source": "synthetic_runtime_binding", "obligation": obligation_id}],
-            direct_predecessor_hashes={predecessor: sha256_object(built[predecessor])
+            direct_predecessor_hashes={predecessor: built[predecessor]["artifact_hash"]
                                        for predecessor in entry.get("depends_on", []) if predecessor in built},
             checker_id="synthetic_phase_f_checker",
             checker_version="1",

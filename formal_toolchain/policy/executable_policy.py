@@ -32,9 +32,15 @@ def replay_deployed_policy(runtime_state: Mapping[str, Any], target: Any,
         raise ValueError("runtime observation/mask 维度与 artifact 不一致")
     quantized = tuple(replay_quantize(value, config)[0] for value in observation)
     evaluation = evaluate_integer_tree(tree, quantized)
-    selection_semantics = str(adapter.export_mask_contract().get("selection", "ranked_first_valid"))
-    selected = select_by_semantics(evaluation.action_ranking, valid_mask, action_dim=tree.action_dim,
-                                   selection_semantics=selection_semantics)
+    mask_contract = adapter.export_mask_contract()
+    selection_semantics = str(mask_contract.get("selection", "ranked_first_valid"))
+    noop_ids = tuple(int(value) for value in mask_contract.get("explicit_noop_action_ids", ()))
+    explicit_noop_action_id = noop_ids[0] if mask_contract.get("explicit_noop") and len(noop_ids) == 1 else None
+    selected = select_by_semantics(
+        evaluation.action_ranking, valid_mask, action_dim=tree.action_dim,
+        selection_semantics=selection_semantics,
+        explicit_noop_action_id=explicit_noop_action_id,
+    )
     after = None
     if selected is not None:
             after = adapter.apply_action(runtime_state, selected)

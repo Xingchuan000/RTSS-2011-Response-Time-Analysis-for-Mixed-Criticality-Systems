@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .python_ast_ir import function_to_ir
+from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.semantics.frozen_runtime_contract import (
     CONTRACT_VERSION,
     frozen_action_runtime_path,
@@ -160,6 +161,9 @@ def bind_action_runtime(source_root: Path, *, action_space_type: str = "single",
     policy_source = policy_path.read_text(encoding="utf-8")
     functions["IntegerTreeBudgetPolicy.select_action_id"] = function_to_ir(
         policy_source, "IntegerTreeBudgetPolicy.select_action_id")
+    if explicit_noop:
+        functions["_explicit_noop_action_id"] = function_to_ir(
+            policy_source, "_explicit_noop_action_id")
 
     unresolved = [name for name, value in functions.items() if value.get("status") != "PASS"]
     if unresolved:
@@ -190,6 +194,43 @@ def bind_action_runtime(source_root: Path, *, action_space_type: str = "single",
             "status": "FAIL",
             "failure": {
                 "code": "ACTION_FALLBACK_SEMANTICS_FAILED",
+                "route": "MODEL_CONFORMANCE_FAILED",
+            },
+            "formal_semantics_contract_version": CONTRACT_VERSION,
+            "mutable_runtime_binding": "NON_BLOCKING_AUDIT_ONLY",
+            "functions": functions,
+            "implementation_audit": _audit_hashes(root),
+        }
+    if explicit_noop and selection_semantics != "ranked_first_valid":
+        return {
+            "status": "FAIL",
+            "failure": {
+                "code": "EXPLICIT_NOOP_REQUIRES_RANKED_FIRST_VALID",
+                "route": "MODEL_CONFORMANCE_FAILED",
+                "selection_semantics": selection_semantics,
+            },
+            "formal_semantics_contract_version": CONTRACT_VERSION,
+            "mutable_runtime_binding": "NON_BLOCKING_AUDIT_ONLY",
+            "functions": functions,
+            "implementation_audit": _audit_hashes(root),
+        }
+    explicit_noop_fallback_tokens = (
+        'if not bool(definition.get("is_noop", False)):',
+        'if len(noop_ids) > 1:',
+        'return noop_ids[0] if noop_ids else None',
+        'explicit_noop_action_id = _explicit_noop_action_id(self.action_definitions)',
+        'if explicit_noop_action_id is not None:',
+        'return explicit_noop_action_id, base',
+    )
+    defensive_fallback_same_action_verified = (
+        not explicit_noop
+        or all(token in policy_source for token in explicit_noop_fallback_tokens)
+    )
+    if explicit_noop and not defensive_fallback_same_action_verified:
+        return {
+            "status": "FAIL",
+            "failure": {
+                "code": "EXPLICIT_NOOP_DEFENSIVE_FALLBACK_BINDING_FAILED",
                 "route": "MODEL_CONFORMANCE_FAILED",
             },
             "formal_semantics_contract_version": CONTRACT_VERSION,
@@ -262,7 +303,7 @@ def bind_action_runtime(source_root: Path, *, action_space_type: str = "single",
             "status": "FAIL",
             "failure": {"code": "EXPLICIT_NOOP_LAYOUT_FAILED", "route": "MODEL_CONFORMANCE_FAILED"},
         }
-    return {
+    binding = {
         "status": "PASS",
         "action_profile": profile,
         "action_space_type": action_space_type,
@@ -274,6 +315,7 @@ def bind_action_runtime(source_root: Path, *, action_space_type: str = "single",
             "derived_action_ids": derived_noop_ids,
             "identity_update_verified": explicit_noop,
             "always_valid_mask_verified": explicit_noop,
+            "defensive_fallback_same_action_verified": defensive_fallback_same_action_verified,
         },
         "formal_semantics_contract_version": CONTRACT_VERSION,
         "formal_action_semantics_source": frozen_path.relative_to(root).as_posix(),
@@ -285,14 +327,20 @@ def bind_action_runtime(source_root: Path, *, action_space_type: str = "single",
             "action_table_source_hash": frozen_hash,
             "mask_and_step_share_candidate_evaluator": shared_candidate_evaluator,
             "candidate_evaluator_name": "evaluate_budget_candidate",
-            "fallback": {
-                "ranked_first_valid": "implicit_none_when_no_valid_action",
-                "top1_valid_else_noop": "implicit_none_when_raw_top1_invalid",
-                "raw_top1": "raw_top1_even_when_invalid",
-                "all_invalid_force_top1": "raw_top1_when_all_invalid",
-            }[selection_semantics],
+            "fallback": (
+                "same_explicit_noop_when_all_invalid"
+                if explicit_noop
+                else {
+                    "ranked_first_valid": "implicit_none_when_no_valid_action",
+                    "top1_valid_else_noop": "implicit_none_when_raw_top1_invalid",
+                    "raw_top1": "raw_top1_even_when_invalid",
+                    "all_invalid_force_top1": "raw_top1_when_all_invalid",
+                }[selection_semantics]
+            ),
             "selection_semantics": selection_semantics,
             "guards": ["ceil", "floor", "HI_decrease_guard", "LO_floor_guard"],
         },
         "implementation_audit": _audit_hashes(root),
     }
+    binding["binding_hash"] = sha256_object(binding)
+    return binding

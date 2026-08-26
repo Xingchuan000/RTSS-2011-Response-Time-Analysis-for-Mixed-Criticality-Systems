@@ -41,7 +41,9 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
                     upstream_certificates: Mapping[str, Mapping[str, Any]] | None = None,
                     release_mapping_certificate: Mapping[str, Any] | None = None,
                     closure_completion_certificate: Mapping[str, Any] | None = None,
-                    runtime_config: Any | None = None) -> dict[str, Any]:
+                    runtime_config: Any | None = None,
+                    action_binding: Mapping[str, Any] | None = None,
+                    deployed_policy_binding: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """不读取外部 proof PASS 对象，只消费已绑定源码与参考 taskset。"""
     if reference_prefix_proof_receipt.get("status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "REFERENCE_PREFIX_THEOREM_BACKEND_FAILED"}
@@ -133,12 +135,47 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
         build_handler_decomposition_certificate,
     )
     controller_binding = bind_controller_runtime(root)
+    from formal_toolchain.binding.action_binding import bind_action_runtime
+    from .controller_transition import build_controller_transition_certificate
+    if action_binding is None:
+        explicit_noop = bool(
+            runtime_config.get("include_explicit_noop", False)
+            if isinstance(runtime_config, Mapping)
+            else getattr(runtime_config, "include_explicit_noop", False)
+        )
+        action_space_type = (
+            runtime_config.get("action_space", "single")
+            if isinstance(runtime_config, Mapping)
+            else getattr(runtime_config, "action_space", "single")
+        )
+        action_binding = bind_action_runtime(
+            root,
+            action_space_type=str(action_space_type),
+            action_dim=25 if explicit_noop else 24,
+            explicit_noop=explicit_noop,
+        )
+    if deployed_policy_binding is None:
+        deployed_policy_binding = (
+            upstream_certificates.get("DEPLOYED_POLICY_PRESERVATION", {})
+            if isinstance(upstream_certificates, Mapping) else {}
+        )
+    controller_transition = build_controller_transition_certificate(
+        controller_binding=controller_binding,
+        action_binding=action_binding,
+        deployed_policy_binding=deployed_policy_binding,
+        controller_postclosure_certificate=(
+            upstream_certificates.get("CONTROLLER_POSTCLOSURE", {})
+            if isinstance(upstream_certificates, Mapping) else {}
+        ),
+        context_hash=bridge_context_hash,
+    )
     decomposition = build_handler_decomposition_certificate(
         root, context_hash=bridge_context_hash,
         transition_case_certificates=compiled["proofs"])
-    if controller_binding.get("status") != "PASS" or decomposition.get("status") != "PASS":
+    if controller_binding.get("status") != "PASS" or decomposition.get("status") != "PASS" or controller_transition.get("obligation_status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "COMPOSITE_HANDLER_DECOMPOSITION_REQUIRED",
                 "transition_cases": compiled, "controller_binding": controller_binding,
+                "controller_transition_certificate": controller_transition,
                 "decomposition": decomposition}
     if decomposition.get("schema_version") != HANDLER_DECOMPOSITION_SCHEMA_VERSION:
         return {"status": "UNRESOLVED", "failure": "HANDLER_DECOMPOSITION_MATH_FIXED_REQUIRED", "transition_cases": compiled, "decomposition": decomposition}
@@ -150,6 +187,7 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
         "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION", "DEADLINE_OBSERVATION",
         "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE", "CONTROLLER_POSTCLOSURE",
         "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION", "CERTIFIED_ENVELOPE",
+        "DEPLOYED_POLICY_PRESERVATION",
         "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
         "EFFECTIVE_EVENT_FRONTIER_RELATION",
     )
@@ -210,7 +248,8 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
         concrete_base=concrete_base, reference_base=reference_base,
         bounds=bounds,
         coverage_certificate=branch_map["coverage"], decomposition_certificate=decomposition,
-        controller_binding=controller_binding)
+        controller_binding=controller_binding,
+        controller_transition_certificate=controller_transition)
     # 旧的样例 base 只用于 debug 输入；正式 closed-prefix 只消费参数化
     # PreClosed(0) certificate。
     prereqs["base_relation"] = base_relation
@@ -242,7 +281,8 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
         handler_decomposition_certificate=decomposition)
     if closed.get("obligation_status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "CLOSED_PREFIX_INCOMPLETE", "transition_cases": compiled,
-                "prerequisites": prereqs, "closed_prefix": closed}
+                "prerequisites": prereqs, "controller_transition_certificate": controller_transition,
+                "closed_prefix": closed}
     # REFERENCE_PREFIX_EXTENSION consumes the registry obligations named by
     # its theorem interface.  ``prereqs["positive_time"]`` is the local
     # POSITIVE_TIME_SERVICE closure lemma, not the TIME_PROGRESS predecessor;
@@ -290,6 +330,7 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
             "model_bounds_status": "PASS", "model_bounds": bounds.to_dict(),
             "transition_cases": compiled, "prerequisites": prereqs,
             "coverage": branch_map["coverage"], "controller_binding": controller_binding,
+            "controller_transition_certificate": controller_transition,
             "decomposition": decomposition,
             "closed_prefix": closed, "reference_extension": extension,
             "deadline_observation": deadline, "hi_nontruncation": nontruncation,

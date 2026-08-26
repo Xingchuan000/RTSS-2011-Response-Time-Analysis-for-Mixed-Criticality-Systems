@@ -23,7 +23,7 @@ from formal_toolchain.semantics.frozen_runtime_contract import (
     frozen_contract_manifest,
 )
 from .p0_case_manifest import p0_case_manifest_hash
-from .transition_cases import REQUIRED_P0_CASE_IDS
+from .transition_cases import REQUIRED_CONTROLLER_CASE_IDS, REQUIRED_P0_CASE_IDS
 
 
 RESCHEDULE_CASE_IDS = (
@@ -173,8 +173,6 @@ def _semantic_path_predicate(case_id: str):
     if case_id == "IDLE_RECOVERY":
         return exact(("not _uses_idle_recovery(cfg.semantics)", False),
                      ("state.mode is SystemMode.HI and (not state.active_jobs) and (state.running_job is None)", True))
-    if case_id in {"CONTROLLER_NO_ACTION", "CONTROLLER_SELECTED_ACTION"}:
-        return exact(("event.event_type is EventType.BUDGET_UPDATE", True))
     if case_id == "JUMP_TO_NEXT_EVENT":
         return lambda path: (_has_guard(path, "self.state.current_time < target_time", True)
                              and _has_effect(path, "self._advance_time(target_time)"))
@@ -227,8 +225,6 @@ PATH_SPECS = (
     ("deadline/no_miss", "EventRuntimeEngine._process_event", "DEADLINE_OBSERVATION_NO_MISS", "job_finished", ()),
     ("deadline/first_hi_miss", "EventRuntimeEngine._process_event", "DEADLINE_OBSERVATION_FIRST_HI_MISS", "not job_finished and task_is_HI", ("hi_miss_flag", "deadline_observe_only")),
     ("recovery/idle", "_maybe_recover_to_lo", "IDLE_RECOVERY", "uses_idle_recovery and HI and quiescent", ("mode=LO", "recovery_event")),
-    ("controller/no_action", "EventRuntimeEngine._process_event", "CONTROLLER_NO_ACTION", "event_is_BUDGET_UPDATE and no_updates", ("budget_frame", "event_projection", "reschedule")),
-    ("controller/selected_action", "EventRuntimeEngine._process_event", "CONTROLLER_SELECTED_ACTION", "event_is_BUDGET_UPDATE and updates", ("future_budget_update", "event_projection", "reschedule")),
     ("time/jump_to_next_event", "EventRuntimeEngine.run_until", "JUMP_TO_NEXT_EVENT", "ready_empty and next_event_exists", ("next_event_min", "time_jump", "no_service")),
 )
 
@@ -372,6 +368,12 @@ def build_runtime_branch_map(source_root: str | Path, *, source_hash: str,
             return {"status": "UNRESOLVED", "failure": "FORMAL_SEMANTICS_CONTRACT_HASH_MISMATCH"}
     if not isinstance(path_map.get("paths"), Mapping):
         return {"status": "UNRESOLVED", "failure": "TRANSITION_PATH_MAP_SCHEMA_INVALID"}
+    controller_rows = [
+        row for row in path_map["paths"].values()
+        if isinstance(row, Mapping) and row.get("case_id") in REQUIRED_CONTROLLER_CASE_IDS
+    ]
+    if controller_rows:
+        return {"status": "FAIL", "failure": "CONTROLLER_CASE_MUST_NOT_BE_RUNTIME_BRANCH"}
     expected = {spec[0]: spec for spec in PATH_SPECS}
     if set(path_map["paths"]) != set(expected):
         return {"status": "FAIL", "failure": "TRANSITION_PATH_SET_MISMATCH",

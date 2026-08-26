@@ -9,7 +9,10 @@ from typing import Any
 
 
 def _read(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
+    # Windows PowerShell 5.1 writes a UTF-8 BOM for ``-Encoding UTF8``.
+    # utf-8-sig accepts both BOM and BOM-free UTF-8, keeping old artifacts
+    # readable while new runners use canonical BOM-free output.
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def _unwrap_list(value: Any, *keys: str) -> list[Any]:

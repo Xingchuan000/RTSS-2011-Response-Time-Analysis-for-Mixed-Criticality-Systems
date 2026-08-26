@@ -5,6 +5,7 @@ import json
 import shutil
 
 from formal_toolchain.binding.action_binding import bind_action_runtime
+from formal_toolchain.binding.controller_binding import bind_controller_runtime
 from formal_toolchain.binding.event_runtime_binding import bind_event_runtime
 from formal_toolchain.binding.observation_binding import bind_observation_runtime
 from formal_toolchain.binding.removal_binding import bind_removal_runtime
@@ -65,6 +66,37 @@ def _fresh_path_map(root: Path) -> dict:
         }),
     }
 
+
+
+def test_explicit_noop_controller_stutter_is_bound_to_production_step():
+    binding = bind_controller_runtime(ROOT)
+    assert binding["status"] == "PASS"
+    noop = binding["explicit_noop_runtime_binding"]
+    assert noop["status"] == "PASS"
+    assert noop["budget_identity"] is True
+    assert noop["apply_budget_updates_skipped"] is True
+    assert noop["running_job_unchanged"] is True
+    assert noop["effective_event_frontier_unchanged"] is True
+    assert noop["released_job_fields_unchanged"] is True
+    assert noop["explicit_and_fallback_same_timing_semantics"] is True
+    assert noop["plant_progress_separated"] is True
+    assert noop["timing_projection"] == "STUTTER"
+
+
+def test_explicit_noop_controller_binding_fails_if_runtime_update_is_injected(tmp_path: Path):
+    root = _copy_sources(tmp_path)
+    env_path = root / "amc_py/rl/env.py"
+    source = env_path.read_text(encoding="utf-8")
+    needle = "                updates = {}\n                candidate_budgets = dict(budget_before)\n            elif action.is_constraint_guided_pair:"
+    replacement = "                updates = {}\n                self._engine.apply_budget_updates({\"T00\": 1}, source=self.budget_update_source)\n                candidate_budgets = dict(budget_before)\n            elif action.is_constraint_guided_pair:"
+    assert needle in source
+    env_path.write_text(source.replace(needle, replacement, 1), encoding="utf-8")
+    binding = bind_controller_runtime(root)
+    assert binding["status"] == "UNRESOLVED"
+    noop = binding["explicit_noop_runtime_binding"]
+    assert noop["status"] == "FAIL"
+    assert noop["apply_budget_updates_skipped"] is False
+    assert noop["failure"]["code"] == "EXPLICIT_NOOP_RUNTIME_STUTTER_BINDING_FAILED"
 
 def test_real_source_binders_and_observation_pass():
     event = bind_event_runtime(ROOT)

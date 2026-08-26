@@ -73,7 +73,9 @@ function New-SeedConfig {
     original_reward_mode = "interval_lo_quality_predictive_v4_medium"
     formal_reward_mode = "mendes"
   }
-  $Payload | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Path -Encoding UTF8
+  $Json = ($Payload | ConvertTo-Json -Depth 12) + [Environment]::NewLine
+  $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($Path, $Json, $Utf8NoBom)
 }
 
 function Invoke-OneSeed {

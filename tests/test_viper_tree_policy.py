@@ -138,3 +138,21 @@ def test_action_definition() -> None:
     defn = policy.action_definition(0)
     assert defn is not None
     assert defn["action_id"] == 0
+
+
+def test_tree_policy_all_invalid_defensively_returns_explicit_noop() -> None:
+    base = _policy()
+    policy = TreeBudgetPolicy(
+        classifier=base.classifier,
+        metadata={"state_dim": 1, "action_dim": 4, "method": "bc", "tree_id": "t-noop"},
+        feature_names=base.feature_names,
+        action_definitions=[
+            {"action_id": 0}, {"action_id": 1}, {"action_id": 2},
+            {"action_id": 3, "is_noop": True},
+        ],
+    )
+    action_id, info = policy.select_action_id((1.0,), (False, False, False, False))
+    assert action_id == 3
+    assert info["tree_no_valid_action"] is True
+    assert info["tree_fallback_used"] is True
+    assert info["tree_defensive_fallback_to_explicit_noop"] is True

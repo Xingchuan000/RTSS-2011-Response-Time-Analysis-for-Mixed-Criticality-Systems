@@ -48,14 +48,21 @@ def select_first_valid(ranking: Sequence[int], valid_mask: Sequence[bool], *, ac
 
 
 def select_by_semantics(ranking: Sequence[int], valid_mask: Sequence[bool], *, action_dim: int,
-                        selection_semantics: str = "ranked_first_valid") -> int | None:
+                        selection_semantics: str = "ranked_first_valid",
+                        explicit_noop_action_id: int | None = None) -> int | None:
     if len(valid_mask) != action_dim:
         raise ValueError("mask length 必须等于 action_dim")
     if len(ranking) != action_dim or tuple(sorted(ranking)) != tuple(range(action_dim)):
         raise ValueError("ranking 不完整或含越界 action；这属于 artifact invalid")
     raw_top1 = int(ranking[0])
+    if explicit_noop_action_id is not None and not (0 <= explicit_noop_action_id < action_dim):
+        raise ValueError("explicit_noop_action_id 越界")
     if selection_semantics == "ranked_first_valid":
-        return select_first_valid(ranking, valid_mask, action_dim=action_dim)
+        first = select_first_valid(ranking, valid_mask, action_dim=action_dim)
+        # V7 A8: if the mask contract is malformed and even the total explicit
+        # noop is reported invalid, fail operationally to the same action id
+        # rather than reintroducing legacy implicit ``None`` semantics.
+        return explicit_noop_action_id if first is None and explicit_noop_action_id is not None else first
     if selection_semantics == "raw_top1":
         return raw_top1
     if selection_semantics == "top1_valid_else_noop":
@@ -126,6 +133,18 @@ def build_parametric_mask_fallback_certificate(
                 "failure": {"code": "UNSUPPORTED_POLICY_SELECTION_SEMANTICS"}}
     explicit_noop = bool(mask_contract.get("explicit_noop", False))
     noop_ids = tuple(int(value) for value in mask_contract.get("explicit_noop_action_ids", ()))
+    # V7 A6/A7: an explicit noop is a normal ranked candidate.  Certification
+    # must therefore use ranked first-valid semantics; top1-only variants can
+    # skip a valid explicit noop that appears before later budget actions.
+    if explicit_noop and selection_semantics != "ranked_first_valid":
+        return {
+            "status": "FAIL",
+            "route": "MODEL_CONFORMANCE_FAILED",
+            "failure": {
+                "code": "EXPLICIT_NOOP_REQUIRES_RANKED_FIRST_VALID",
+                "selection_semantics": selection_semantics,
+            },
+        }
     if explicit_noop:
         if len(noop_ids) != 1 or mask_contract.get("explicit_noop_always_valid") is not True:
             return {"status": "FAIL", "route": "MODEL_CONFORMANCE_FAILED",
@@ -133,6 +152,15 @@ def build_parametric_mask_fallback_certificate(
         if noop_ids[0] not in expected_actions:
             return {"status": "FAIL", "route": "MODEL_CONFORMANCE_FAILED",
                     "failure": {"code": "EXPLICIT_NOOP_ACTION_ID_INVALID"}}
+        if (
+            int(mask_contract.get("defensive_fallback_action_id", -1)) != noop_ids[0]
+            or mask_contract.get("defensive_fallback_same_explicit_noop") is not True
+        ):
+            return {
+                "status": "FAIL",
+                "route": "MODEL_CONFORMANCE_FAILED",
+                "failure": {"code": "EXPLICIT_NOOP_DEFENSIVE_FALLBACK_UNRESOLVED"},
+            }
 
     for leaf_id, ranking_value in sorted(rankings.items()):
         ranking = tuple(int(value) for value in ranking_value)
@@ -188,6 +216,9 @@ def build_parametric_mask_fallback_certificate(
         ),
         "explicit_noop_action_ids": list(noop_ids),
         "explicit_noop_mask_total": explicit_noop,
+        "defensive_fallback_action_id": noop_ids[0] if explicit_noop else None,
+        "defensive_fallback_same_explicit_noop": explicit_noop,
+        "fallback_unreachable_under_total_explicit_noop_mask": explicit_noop,
         "universal_over_runtime_masks": True,
         "mask_contract_hash": sha256_object(dict(mask_contract)),
     }

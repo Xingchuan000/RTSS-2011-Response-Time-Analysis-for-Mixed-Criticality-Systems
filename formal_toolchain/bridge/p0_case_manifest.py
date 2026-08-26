@@ -12,11 +12,17 @@ from formal_toolchain.core.hashing import sha256_object
 
 PRIMITIVE_CASE = "PRIMITIVE_CASE"
 COMPOSITE_CASE = "COMPOSITE_CASE"
+class CaseSourceKind:
+    PLANT_RUNTIME_BRANCH = "PLANT_RUNTIME_BRANCH"
+    CONTROLLER_SYNCHRONOUS = "CONTROLLER_SYNCHRONOUS"
+
 CASE_KINDS = {
     "ARRIVAL_BATCH_NO_SWITCH": COMPOSITE_CASE,
     "ARRIVAL_BATCH_SWITCH_S0": COMPOSITE_CASE,
     "BOOT_TO_PRECLOSED_0": COMPOSITE_CASE,
 }
+
+_CONTROLLER_CASES = frozenset({"CONTROLLER_NO_ACTION", "CONTROLLER_SELECTED_ACTION"})
 
 
 _ROWS = (
@@ -47,11 +53,30 @@ def p0_case_manifest() -> dict[str, dict[str, Any]]:
     """返回不可变语义清单的拷贝，并附带 deterministic manifest hash。"""
     return {case_id: {"case_id": case_id, "template_id": template_id,
                       "transition_class": transition_class,
+                      "source_kind": (
+                          CaseSourceKind.CONTROLLER_SYNCHRONOUS
+                          if case_id in _CONTROLLER_CASES
+                          else CaseSourceKind.PLANT_RUNTIME_BRANCH
+                      ),
                       "projected_event_kind": event_kind,
                       "required_relation_components": list(components),
                       "theorem_dependencies": list(theorems),
                       "case_kind": CASE_KINDS.get(case_id, PRIMITIVE_CASE)}
             for case_id, template_id, transition_class, event_kind, components, theorems in _ROWS}
+
+
+def plant_p0_cases() -> tuple[dict[str, Any], ...]:
+    return tuple(
+        row for row in p0_case_manifest().values()
+        if row["source_kind"] == CaseSourceKind.PLANT_RUNTIME_BRANCH
+    )
+
+
+def controller_p0_cases() -> tuple[dict[str, Any], ...]:
+    return tuple(
+        row for row in p0_case_manifest().values()
+        if row["source_kind"] == CaseSourceKind.CONTROLLER_SYNCHRONOUS
+    )
 
 
 def p0_case_manifest_hash() -> str:

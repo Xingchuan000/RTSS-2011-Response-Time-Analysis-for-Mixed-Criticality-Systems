@@ -24,7 +24,11 @@ from .state_relation import (
     p0_state_relation_schema_hash,
     relation_holds,
 )
-from .transition_cases import TransitionCaseProof, check_handler_coverage
+from .transition_cases import (
+    REQUIRED_PLANT_P0_CASE_IDS,
+    TransitionCaseProof,
+    check_handler_coverage,
+)
 
 
 def build_bounded_closed_prefix_regression(*, base_relation_certificate: Mapping[str, Any],
@@ -77,7 +81,7 @@ def build_bounded_closed_prefix_regression(*, base_relation_certificate: Mapping
     if not bridge_context_hash or not isinstance(theorem_hash, str) or len(theorem_hash) != 64:
         return {"status": "UNRESOLVED", "failure": "BRIDGE_THEOREM_CONTEXT_REQUIRED"}
     required_prerequisites = ("base_relation", "same_timestamp", "positive_time",
-                              "controller_postclosure", "event_projection")
+                              "controller_transition", "controller_postclosure", "event_projection")
     if (not isinstance(prerequisite_certificates, Mapping)
             or any(not isinstance(prerequisite_certificates.get(name), Mapping)
                    or not verify_obligation_certificate(prerequisite_certificates[name])
@@ -195,7 +199,7 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
                               **_: Any) -> dict[str, Any]:
     """Authorize N5 only from parameterized induction and local contracts."""
     from .state_relation import parameterized_state_relation_schema_hash
-    required_prereqs = ("base_relation", "same_timestamp", "positive_time", "controller_postclosure", "event_projection")
+    required_prereqs = ("base_relation", "same_timestamp", "positive_time", "controller_transition", "controller_postclosure", "event_projection")
     if base_relation_certificate.get("obligation_status") != "PASS" or not verify_obligation_certificate(base_relation_certificate):
         return {"status": "UNRESOLVED", "failure": "PRECLOSED0_BASE_RELATION_REQUIRED"}
     if not source_hash or branch_map.get("status") != "PASS" or branch_map.get("source_hash") != source_hash:
@@ -218,12 +222,12 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
     if not certs or any(c.get("obligation_status") != "PASS" or not verify_obligation_certificate(c) for c in certs):
         return {"status": "UNRESOLVED", "failure": "TRANSITION_CASE_CERTIFICATES_REQUIRED"}
     rows = [c.get("witness", c) for c in certs]
-    required_cases = set(__import__("formal_toolchain.bridge.transition_cases", fromlist=["REQUIRED_P0_CASE_IDS"]).REQUIRED_P0_CASE_IDS)
+    required_cases = set(REQUIRED_PLANT_P0_CASE_IDS)
     present_cases = {r.get("case_id") for r in rows}
     if not {"RESCHEDULE_KEEP_SAME", "RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH"} <= present_cases:
         return {"status": "UNRESOLVED", "failure": "RESCHEDULE_CASE_PARTITION_INCOMPLETE"}
     if present_cases != required_cases:
-        return {"status": "UNRESOLVED", "failure": "CASEWISE_PROOF_INCOMPLETE"}
+        return {"status": "UNRESOLVED", "failure": "PLANT_CASEWISE_PROOF_INCOMPLETE"}
     branches = branch_map.get("paths", [])
     branch_ids = [b.get("path_id") for b in branches]
     case_branches = [r.get("source_branch_id") for r in rows]
@@ -270,6 +274,9 @@ def closed_prefix_certificate(*, base_relation_certificate: Mapping[str, Any],
         "bounded_regression_hash": (bounded_regression or {}).get("artifact_hash"),
         "handler_decomposition_hash": handler_decomposition_certificate.get("artifact_hash"),
         "arrival_fold_certificate_hash": handler_decomposition_certificate.get("handlers", {}).get("arrival_batch", {}).get("fold_certificate_hash"),
+        "controller_transition_certificate": dict(
+            prerequisite_certificates["controller_transition"]
+        ),
     }
     return obligation_certificate(obligation_id="CLOSED_PREFIX_REFINEMENT", status="PASS", context_hash=bridge_context_hash,
         inputs={"source_hash": source_hash, "theorem_statement_hash": theorem_statement.get("statement_hash"), "theorem_proof_receipt_hash": theorem_proof_receipt["receipt_hash"], "parameterized_relation_schema_hash": schema},

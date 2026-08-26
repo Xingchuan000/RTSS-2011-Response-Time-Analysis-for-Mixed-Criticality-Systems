@@ -47,6 +47,40 @@ from formal_toolchain.verifier.structural_checks import (
 )
 
 
+def recompute_controller_transition_certificate(
+    *,
+    source_root: Path,
+    verified_action_binding: Mapping[str, Any],
+    verified_policy_binding: Mapping[str, Any],
+    verified_controller_postclosure: Mapping[str, Any],
+    context_hash: str,
+) -> dict[str, Any]:
+    """Rebuild the controller certificate from current source in the verifier."""
+    from formal_toolchain.binding.action_binding import bind_action_runtime
+    from formal_toolchain.binding.controller_binding import bind_controller_runtime
+    from formal_toolchain.bridge.controller_transition import (
+        build_controller_transition_certificate,
+    )
+
+    action_dim = int(verified_action_binding["action_dim"])
+    explicit_noop = bool(verified_action_binding["explicit_noop"])
+    action_space_type = str(verified_action_binding["action_space_type"])
+    action_binding = bind_action_runtime(
+        Path(source_root),
+        action_space_type=action_space_type,
+        action_dim=action_dim,
+        explicit_noop=explicit_noop,
+    )
+    controller_binding = bind_controller_runtime(Path(source_root))
+    return build_controller_transition_certificate(
+        controller_binding=controller_binding,
+        action_binding=action_binding,
+        deployed_policy_binding=verified_policy_binding,
+        controller_postclosure_certificate=verified_controller_postclosure,
+        context_hash=context_hash,
+    )
+
+
 STRUCTURAL_IDS = frozenset({
     "ARTIFACT_MANIFEST", "COMPONENT_CONTEXT_INTEGRITY", "DIRECT_PREDECESSOR_HASHES",
     "STATUS_EVIDENCE", "OUTER_BUNDLE_ROOT", "INDEPENDENT_BUNDLE_VERIFICATION",
@@ -563,7 +597,7 @@ def _build_phase_k_objects(*, inputs: Any, fresh_certificates: Mapping[str, Mapp
         "HI_EXECUTION_CONTRACT", "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION",
         "DEADLINE_OBSERVATION", "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE",
         "CONTROLLER_POSTCLOSURE", "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION",
-        "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
+        "CERTIFIED_ENVELOPE", "DEPLOYED_POLICY_PRESERVATION", "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
         "EFFECTIVE_EVENT_FRONTIER_RELATION",
     )
     upstream = {name: fresh_certificates[name] for name in upstream_names
@@ -581,7 +615,7 @@ def _build_phase_k_objects(*, inputs: Any, fresh_certificates: Mapping[str, Mapp
         "HI_EXECUTION_CONTRACT", "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION",
         "DEADLINE_OBSERVATION", "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE",
         "CONTROLLER_POSTCLOSURE", "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION",
-        "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
+        "CERTIFIED_ENVELOPE", "DEPLOYED_POLICY_PRESERVATION", "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
         "EFFECTIVE_EVENT_FRONTIER_RELATION",
     )
     missing_upstream = [name for name in required_upstream if name not in fresh_certificates]
@@ -698,7 +732,8 @@ def _fresh_bridge_proofs(*, inputs: Any, fresh_certificates: Mapping[str, Mappin
         "HI_EXECUTION_CONTRACT", "REMOVAL_COMPLETENESS", "HI_NONTRUNCATION",
         "DEADLINE_OBSERVATION", "EFFECTIVE_EVENT_ORDER", "BATCH_CLOSURE",
         "CONTROLLER_POSTCLOSURE", "TIME_PROGRESS", "WINDOW_MODE_NORMALIZATION",
-        "CERTIFIED_ENVELOPE", "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
+        "CERTIFIED_ENVELOPE", "DEPLOYED_POLICY_PRESERVATION",
+        "REFERENCE_TASKSET", "REFERENCE_TRANSITION_SYSTEM_IDENTITY",
         "EFFECTIVE_EVENT_FRONTIER_RELATION",
     )
     missing_upstream = [name for name in required_upstream if name not in fresh_certificates]
@@ -1169,6 +1204,7 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
                                                            "REFERENCE_MODEL_CONFORMANCE",
                                                            "REFERENCE_TASKSET_SCHEDULABLE",
                                                            "EFFECTIVE_EVENT_FRONTIER_RELATION",
+                                                           "CLOSED_PREFIX_REFINEMENT",
                                                            "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC",
                                                            "PROTECTED_PREFIX_MATHEMATICAL_CONFORMANCE",
                                                            "SELECTED_REFERENCE_HI_SAFETY"}

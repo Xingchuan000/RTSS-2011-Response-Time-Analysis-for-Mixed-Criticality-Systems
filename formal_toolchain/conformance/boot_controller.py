@@ -52,7 +52,22 @@ def check_closure_controller_contract(*, phase_edges: Mapping[str, list[str]] | 
     required = {"sequence_allocation_deterministic", "finite_token_height",
                 "ready_nonempty_advances_tick",
                 "ready_empty_jumps_next_event", "zero_time_stutter_forbidden",
-                "active_release_budget_immutable"}
+                "active_release_budget_immutable",
+                "explicit_noop_budget_identity", "explicit_noop_macro_stutter",
+                "explicit_noop_effective_frontier_stutter",
+                "explicit_noop_released_jobs_immutable",
+                "explicit_noop_fallback_equivalent",
+                "explicit_noop_plant_progress_separated",
+                "selected_active_unchanged", "selected_ready_unchanged",
+                "selected_running_unchanged", "selected_released_job_fields_unchanged",
+                "selected_released_job_snapshot_unchanged",
+                "selected_released_job_service_unchanged",
+                "selected_released_job_demand_unchanged",
+                "selected_released_job_classification_unchanged",
+                "selected_completion_miss_unchanged",
+                "selected_service_unchanged", "selected_mode_unchanged",
+                "selected_effective_event_frontier_unchanged",
+                "selected_plant_progression_separated", "selected_timing_stutter"}
     if not required <= set(fields):
         return {"status": "UNRESOLVED", "route": "MODEL_CONFORMANCE_FAILED",
                 "failure": {"code": "CLOSURE_CONTROLLER_FACTS_INCOMPLETE",
@@ -66,6 +81,7 @@ def check_closure_controller_contract(*, phase_edges: Mapping[str, list[str]] | 
         raise ValueError("controller 不得修改 runtime state")
     if any(fields.get(name, False) for name in ("changes_active", "changes_ready", "changes_running", "changes_service")):
         raise ValueError("controller 不得改变 processor service state")
-    return {"status": "PASS", "schema_version": "closure_controller_v1",
+    return {"status": "PASS", "schema_version": "closure_controller_v2_explicit_noop",
             "phase_dag_acyclic": True, "controller_invisible": True,
-            "post_closure": True, "zero_time_stutter": False, "time_progress": True}
+            "post_closure": True, "zero_time_stutter": False,
+            "explicit_noop_zero_time_stutter": True, "time_progress": True}

@@ -15,6 +15,7 @@ from amc_py.viper.integer_tree import (
     load_integer_tree_json,
     save_integer_tree_json,
 )
+from amc_py.viper.tree_policy import IntegerTreeBudgetPolicy
 
 
 def _model():
@@ -50,3 +51,24 @@ def test_integer_tree_rejects_dimension_and_bad_state() -> None:
         evaluate_integer_tree(model, (1, 2))
     with pytest.raises(ValueError):
         evaluate_integer_tree(model, (True,))
+
+
+def test_integer_tree_policy_all_invalid_defensively_returns_explicit_noop() -> None:
+    _, model = _model()
+    config = FixedPointConfig(scale=1000, output_max=1000)
+    policy = IntegerTreeBudgetPolicy(
+        model=model,
+        metadata={"state_dim": 1, "action_dim": 4},
+        feature_names=("x",),
+        action_definitions=[
+            {"action_id": 0}, {"action_id": 1}, {"action_id": 2},
+            {"action_id": 3, "is_noop": True},
+        ],
+        fixed_point_config=config,
+    )
+    action_id, info = policy.select_action_id((0.1,), (False, False, False, False))
+    assert action_id == 3
+    assert info["tree_no_valid_action"] is True
+    assert info["tree_fallback_used"] is True
+    assert info["tree_selected_rank"] is None
+    assert info["tree_defensive_fallback_to_explicit_noop"] is True

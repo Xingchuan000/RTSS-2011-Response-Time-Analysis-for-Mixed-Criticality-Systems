@@ -435,8 +435,9 @@ def test_verifier_invokes_fresh_phase_k_generation(tmp_path: Path, monkeypatch: 
         "CONTROLLER_POSTCLOSURE": artifact("CONTROLLER_POSTCLOSURE"),
         "TIME_PROGRESS": artifact("TIME_PROGRESS"),
         "WINDOW_MODE_NORMALIZATION": artifact("WINDOW_MODE_NORMALIZATION"),
-        "CERTIFIED_ENVELOPE": {"obligation_id": "CERTIFIED_ENVELOPE", "obligation_status": "PASS"},
-        "PROTECTED_HI_SAFETY_COROLLARY": corollary,
+            "CERTIFIED_ENVELOPE": {"obligation_id": "CERTIFIED_ENVELOPE", "obligation_status": "PASS"},
+            "DEPLOYED_POLICY_PRESERVATION": candidate_deployed,
+            "PROTECTED_HI_SAFETY_COROLLARY": corollary,
         "RELEASE_FIXED_REMOVAL_MAPPING": candidate_release_mapping,
         "REFERENCE_TASKSET": {"obligation_id": "REFERENCE_TASKSET", "obligation_status": "PASS", "artifact_hash": "0" * 64},
         "REFERENCE_TRANSITION_SYSTEM_IDENTITY": {

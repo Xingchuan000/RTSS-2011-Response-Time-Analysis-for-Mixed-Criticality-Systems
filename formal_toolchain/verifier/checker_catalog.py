@@ -252,11 +252,18 @@ def _explicit_noop_witness(actions: tuple[Any, ...], action_table: Mapping[str, 
         raise ValueError("EXPLICIT_NOOP_IDENTITY_UNRESOLVED")
     if not mask_total:
         raise ValueError("EXPLICIT_NOOP_MASK_NOT_TOTAL")
+    fallback_same_noop = bool(
+        mask_contract.get("defensive_fallback_same_explicit_noop") is True
+        and int(mask_contract.get("defensive_fallback_action_id", -1)) == noop_id
+    )
+    if not fallback_same_noop:
+        raise ValueError("EXPLICIT_NOOP_DEFENSIVE_FALLBACK_UNRESOLVED")
     return {"present": True, "action_id": noop_id, "transition_kind": "IDENTITY",
             "changed_tasks": [], "domain_total": True,
             "candidate_envelope_preserved": True,
             "identity_transition_digest": transition["transition_digest"],
-            "mask_total": True}
+            "mask_total": True,
+            "defensive_fallback_same_noop": True}
 
 
 def _domain(raw_inputs: Any):
@@ -411,9 +418,15 @@ def _policy_samples(raw_inputs: Any, tree, fixed_data: Mapping[str, Any], action
                    "mask": tuple(runtime_mask), "reasons": tuple(runtime_reasons)}
         quantized = tuple(replay_quantize(value, fixed_data)[0] for value in runtime["observation"])
         replay = evaluate_integer_tree(tree, quantized)
-        selection_semantics = str(adapter.export_mask_contract().get("selection", "ranked_first_valid"))
-        selected = select_by_semantics(replay.action_ranking, runtime["mask"], action_dim=len(actions),
-                                       selection_semantics=selection_semantics)
+        mask_contract = adapter.export_mask_contract()
+        selection_semantics = str(mask_contract.get("selection", "ranked_first_valid"))
+        noop_ids = tuple(int(value) for value in mask_contract.get("explicit_noop_action_ids", ()))
+        explicit_noop_action_id = noop_ids[0] if mask_contract.get("explicit_noop") and len(noop_ids) == 1 else None
+        selected = select_by_semantics(
+            replay.action_ranking, runtime["mask"], action_dim=len(actions),
+            selection_semantics=selection_semantics,
+            explicit_noop_action_id=explicit_noop_action_id,
+        )
         after = adapter.apply_action(runtime_state, selected)
         executable.append({
             "status": "PASS",
@@ -431,8 +444,11 @@ def _policy_samples(raw_inputs: Any, tree, fixed_data: Mapping[str, Any], action
         reasons.append(list(runtime["reasons"]))
         ranking_map = {int(leaf.node_id): tuple(int(action_id) for action_id in leaf.action_ranking) for leaf in tree.leaves}
         for leaf_id, ranking in ranking_map.items():
-            first = select_by_semantics(ranking, runtime["mask"], action_dim=len(actions),
-                                        selection_semantics=selection_semantics)
+            first = select_by_semantics(
+                ranking, runtime["mask"], action_dim=len(actions),
+                selection_semantics=selection_semantics,
+                explicit_noop_action_id=explicit_noop_action_id,
+            )
             for action in actions:
                 selected_cases.append({
                     "leaf_id": int(leaf_id),

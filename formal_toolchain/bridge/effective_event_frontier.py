@@ -39,3 +39,74 @@ def effective_frontier(queue_snapshot, runtime_snapshot):
         batch = project_arrival_batch(evts, time=t)
         projected.append(batch)
     return tuple(sorted(projected))
+
+
+def _controller_frontier_events(value):
+    if isinstance(value, dict) and "frontier" in value:
+        return tuple(value["frontier"])
+    if hasattr(value, "effective_event_frontier"):
+        return tuple(value.effective_event_frontier)
+    return tuple(value)
+
+
+def _controller_logical_event_key(event):
+    def scalar(value):
+        return value.value if hasattr(value, "value") else value
+
+    if isinstance(event, dict):
+        get = event.get
+        kind = scalar(get("kind"))
+        job_key = get("job_key")
+        batch_jobs = get("batch_jobs", ())
+        return (
+            scalar(get("time", 0)),
+            scalar(get("phase_rank", 0)),
+            kind,
+            tuple(job_key) if job_key is not None else None,
+            tuple(tuple(item) for item in batch_jobs),
+        )
+    return (
+        scalar(getattr(event, "time", 0)),
+        scalar(getattr(event, "phase_rank", 0)),
+        scalar(getattr(event, "kind", None)),
+        tuple(getattr(event, "job_key")) if getattr(event, "job_key", None) is not None else None,
+        tuple(tuple(item) for item in getattr(event, "batch_jobs", ())),
+    )
+
+
+def compare_controller_reschedule_frontier(*, before, after):
+    """Compare logical ``EffQ`` frontiers while ignoring raw token identity."""
+
+    before_keys = tuple(sorted(_controller_logical_event_key(event)
+                               for event in _controller_frontier_events(before)))
+    after_keys = tuple(sorted(_controller_logical_event_key(event)
+                              for event in _controller_frontier_events(after)))
+    def by_kind(kind):
+        return tuple(item for item in before_keys if item[2] == kind), tuple(item for item in after_keys if item[2] == kind)
+    removals_before, removals_after = by_kind("REM")
+    arrivals_before, arrivals_after = by_kind("ARR_BATCH")
+    deadlines_before, deadlines_after = by_kind("DDL")
+    unchanged = before_keys == after_keys
+    result = {
+        "status": "PASS" if unchanged else "FAIL",
+        "before_keys": before_keys,
+        "after_keys": after_keys,
+        "effective_frontier_unchanged": unchanged,
+        "logical_removal_key_unchanged": tuple(item[3] for item in removals_before) == tuple(item[3] for item in removals_after),
+        "logical_removal_kind_unchanged": tuple(item[2] for item in removals_before) == tuple(item[2] for item in removals_after),
+        "logical_removal_time_unchanged": tuple(item[0] for item in removals_before) == tuple(item[0] for item in removals_after),
+        "arrival_frontier_unchanged": arrivals_before == arrivals_after,
+        "deadline_frontier_unchanged": deadlines_before == deadlines_after,
+        "raw_token_ids_ignored": True,
+    }
+    result["status"] = "PASS" if all(
+        result[field] is True for field in (
+            "effective_frontier_unchanged",
+            "logical_removal_key_unchanged",
+            "logical_removal_kind_unchanged",
+            "logical_removal_time_unchanged",
+            "arrival_frontier_unchanged",
+            "deadline_frontier_unchanged",
+        )
+    ) else "FAIL"
+    return result

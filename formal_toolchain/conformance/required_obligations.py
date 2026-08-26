@@ -193,39 +193,118 @@ def check_deadline_boundary_order(runtime: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def check_controller_invisibility(runtime: Mapping[str, Any]) -> dict[str, Any]:
+    """Compiler-side source candidate for N3.
+
+    The fresh verifier additionally gates this candidate with the five support
+    certificates from the obligation registry.  The source binding here is
+    therefore deliberately conditional on the certified PreClosed boundary for
+    running-key and effective-frontier preservation.
+    """
     controller = _mapping(runtime.get("controller_binding"))
     from formal_toolchain.bridge.event_projection import project_event
     from formal_toolchain.bridge.state_relation import P0Event
 
     projected = project_event(P0Event(0, "CONTROLLER"))
-    ok = controller.get("status") == "PASS" and projected is None
+    selected = _mapping(controller.get("selected_action_runtime_binding"))
+    selected_unconditional = (
+        "payload_prevalidated", "no_partial_mutation", "time_unchanged", "mode_unchanged",
+        "active_jobs_unchanged", "ready_jobs_unchanged", "released_job_fields_unchanged",
+        "released_job_snapshot_unchanged", "released_job_service_unchanged",
+        "released_job_demand_unchanged", "released_job_classification_unchanged",
+        "completion_miss_unchanged", "service_unchanged", "plant_progression_separated",
+    )
+    selected_source_ok = all((
+        selected.get("status") == "PASS",
+        selected.get("timing_projection") == "STUTTER_IF_PRECLOSED",
+        selected.get("source") == "amc_py/rl/env.py:AmcBudgetEnv.step",
+        selected.get("source_kind") == "CONTROLLER_SYNCHRONOUS",
+        selected.get("source_binding") == "self._engine.apply_budget_updates",
+        selected.get("zero_time") is True,
+        selected.get("requires_preclosed_boundary") is True,
+        selected.get("running_job_unchanged_if_preclosed") is True,
+        selected.get("effective_event_frontier_unchanged_if_preclosed") is True,
+        all(selected.get(field) is True for field in selected_unconditional),
+    ))
+    noop = _mapping(controller.get("explicit_noop_runtime_binding"))
+    noop_ok = all((
+        noop.get("status") == "PASS",
+        noop.get("timing_projection") == "STUTTER",
+        noop.get("budget_identity") is True,
+        noop.get("running_job_unchanged") is True,
+        noop.get("effective_event_frontier_unchanged") is True,
+        noop.get("released_job_fields_unchanged") is True,
+        noop.get("mode_unchanged") is True,
+        noop.get("time_unchanged") is True,
+        noop.get("explicit_and_fallback_same_timing_semantics") is True,
+        noop.get("plant_progress_separated") is True,
+    ))
+    ok = controller.get("status") == "PASS" and projected is None and selected_source_ok and noop_ok
     return {
         "status": "PASS" if ok else "FAIL",
         "route": None if ok else "MODEL_CONFORMANCE_FAILED",
-        "failure": None if ok else {"code": "CONTROLLER_NOT_REFERENCE_INVISIBLE"},
+        "failure": None if ok else {"code": "CONTROLLER_N3_SOURCE_CANDIDATE_FAILED"},
         "controller_binding": dict(controller),
+        "explicit_noop_runtime_binding": dict(noop),
+        "selected_action_runtime_binding": dict(selected),
+        "selected_action_stutter_conditional_on_preclosed": selected_source_ok,
         "projected_event": None if projected is None else projected.kind,
     }
 
 
 def check_controller_postclosure(runtime: Mapping[str, Any]) -> dict[str, Any]:
+    """Compiler-side postclosure candidate.
+
+    Fresh verification additionally requires a verified CONTROLLER_INVISIBILITY
+    predecessor.  This function only checks the source-level conditional frame
+    and the explicit-noop branch used to construct the candidate artifact.
+    """
     controller = _mapping(runtime.get("controller_binding"))
     fields = _mapping(runtime.get("controller_fields"))
     required_effects = {"_advance_time", "apply_updates", "_reschedule"}
     observed = set(controller.get("required_effects", []))
-    forbidden_change = any(fields.get(name) is not False for name in ("changes_active", "changes_ready", "changes_mode", "changes_current_service"))
+    selected = _mapping(controller.get("selected_action_runtime_binding"))
+    selected_source_ok = all((
+        selected.get("status") == "PASS",
+        selected.get("timing_projection") == "STUTTER_IF_PRECLOSED",
+        selected.get("requires_preclosed_boundary") is True,
+        selected.get("running_job_unchanged_if_preclosed") is True,
+        selected.get("effective_event_frontier_unchanged_if_preclosed") is True,
+        selected.get("payload_prevalidated") is True,
+        selected.get("no_partial_mutation") is True,
+        selected.get("zero_time") is True,
+        selected.get("time_unchanged") is True,
+        selected.get("mode_unchanged") is True,
+        selected.get("active_jobs_unchanged") is True,
+        selected.get("ready_jobs_unchanged") is True,
+        selected.get("released_job_fields_unchanged") is True,
+        selected.get("service_unchanged") is True,
+        selected.get("plant_progression_separated") is True,
+    ))
+    noop_binding = _mapping(controller.get("explicit_noop_runtime_binding"))
+    noop_required = (
+        "explicit_noop_budget_identity",
+        "explicit_noop_macro_stutter",
+        "explicit_noop_effective_frontier_stutter",
+        "explicit_noop_released_jobs_immutable",
+        "explicit_noop_fallback_equivalent",
+        "explicit_noop_plant_progress_separated",
+    )
     ok = (
         controller.get("status") == "PASS"
         and required_effects <= observed
-        and not forbidden_change
         and fields.get("active_release_budget_immutable") is True
+        and selected_source_ok
+        and noop_binding.get("status") == "PASS"
+        and noop_binding.get("timing_projection") == "STUTTER"
+        and all(fields.get(name) is True for name in noop_required)
     )
     return {
         "status": "PASS" if ok else "FAIL",
         "route": None if ok else "MODEL_CONFORMANCE_FAILED",
-        "failure": None if ok else {"code": "CONTROLLER_POSTCLOSURE_FAILED"},
+        "failure": None if ok else {"code": "CONTROLLER_POSTCLOSURE_SOURCE_CANDIDATE_FAILED"},
         "controller_binding": dict(controller),
         "controller_fields": dict(fields),
+        "selected_action_stutter_conditional_on_preclosed": selected_source_ok,
     }
 
 

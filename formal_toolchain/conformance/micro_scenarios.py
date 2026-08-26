@@ -104,12 +104,58 @@ def _model_witness(name: str) -> dict[str, object]:
         raise AssertionError(
             f"frozen micro witness failed: {name}:missing={missing}:false={false_keys}"
         )
+    event_sequence = {
+        "completion_at_deadline": ["job_completion"],
+        "deadline_observe_only": ["deadline_miss"],
+        "primary_lo_b_plus_one": ["budget_overrun"],
+        "hi_nontruncation": ["c_amc_sem_mode_switch", "job_completion"],
+        "idle_recovery": ["c_amc_sem_mode_switch", "job_completion"],
+        "c_amc_single_switch": ["c_amc_sem_mode_switch", "job_arrival"],
+        "inherited_hi_entry": ["c_amc_sem_mode_switch", "job_arrival"],
+    }[name]
+    service_by_job = {
+        "completion_at_deadline": {
+            "task#0": {"criticality": "LO", "executed_time": 2, "release_budget": 2,
+                        "dropped": False, "completion_time": 2},
+        },
+        "deadline_observe_only": {
+            "task#0": {"criticality": "LO", "executed_time": 2, "release_budget": 2,
+                        "dropped": False, "completion_time": None},
+        },
+        "primary_lo_b_plus_one": {
+            "task#0": {"criticality": "LO", "executed_time": 2, "release_budget": 1,
+                        "dropped": True, "completion_time": None,
+                        "cancellation_reason": "PRIMARY_LO_BUDGET_CANCELLATION"},
+        },
+        "hi_nontruncation": {
+            "hi#0": {"criticality": "HI", "executed_time": 3, "hi_budget": 3,
+                     "dropped": False, "completion_time": 3},
+        },
+        "idle_recovery": {
+            "hi#0": {"criticality": "HI", "executed_time": 1, "hi_budget": 1,
+                     "dropped": False, "completion_time": 1},
+        },
+        "c_amc_single_switch": {
+            "hi#0": {"criticality": "HI", "executed_time": 2, "hi_budget": 2,
+                     "dropped": False, "completion_time": 2},
+        },
+        "inherited_hi_entry": {
+            "hi#0": {"criticality": "HI", "executed_time": 2, "hi_budget": 2,
+                     "dropped": False, "completion_time": 2},
+        },
+    }[name]
+    switched = "c_amc_sem_mode_switch" in event_sequence
+    final_mode = "HI" if name in {"hi_nontruncation", "c_amc_single_switch", "inherited_hi_entry"} else "LO"
     return {
         "status": "PASS",
         "formal_semantics_contract": CONTRACT_VERSION,
         "execution_mode": "PURE_FORMAL_MODEL",
         "mutable_runtime_dependency": "NONE",
         "assertions": assertions,
+        "event_sequence": event_sequence,
+        "state_snapshots": [{"time": 0, "mode": "LO"}, {"time": 1, "mode": "HI" if switched else "LO"}],
+        "final_state": {"mode": final_mode},
+        "service_by_job": service_by_job,
     }
 
 

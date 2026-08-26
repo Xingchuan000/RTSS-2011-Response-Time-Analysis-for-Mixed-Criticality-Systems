@@ -127,6 +127,18 @@ def check_deployed_policy_preservation(
     explicit_noop_ids = tuple(
         int(value) for value in mask_contract.get("explicit_noop_action_ids", ())
     )
+    # Defence in depth for V7 A6/A7.  The mask/fallback certificate normally
+    # rejects this earlier, but preservation must not certify an explicit-noop
+    # deployment under a top1-only selection rule if called independently.
+    if explicit_noop and selection_semantics != "ranked_first_valid":
+        return {
+            "status": "FAIL",
+            "route": "MODEL_CONFORMANCE_FAILED",
+            "failure": {
+                "code": "EXPLICIT_NOOP_REQUIRES_RANKED_FIRST_VALID",
+                "selection_semantics": selection_semantics,
+            },
+        }
     if explicit_noop and (
         len(explicit_noop_ids) != 1
         or mask_contract.get("explicit_noop_always_valid") is not True
@@ -135,6 +147,15 @@ def check_deployed_policy_preservation(
             "status": "FAIL",
             "route": "MODEL_CONFORMANCE_FAILED",
             "failure": {"code": "EXPLICIT_NOOP_MASK_NOT_TOTAL"},
+        }
+    if explicit_noop and (
+        mask_contract.get("defensive_fallback_same_explicit_noop") is not True
+        or int(mask_contract.get("defensive_fallback_action_id", -1)) != explicit_noop_ids[0]
+    ):
+        return {
+            "status": "FAIL",
+            "route": "MODEL_CONFORMANCE_FAILED",
+            "failure": {"code": "EXPLICIT_NOOP_DEFENSIVE_FALLBACK_UNRESOLVED"},
         }
 
     names = [str(task.name) for task in tasks]

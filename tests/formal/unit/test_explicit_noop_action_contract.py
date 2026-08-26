@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from amc_py.budget_runtime import BudgetState
+from formal_toolchain.adapters.amc_real_runtime_adapter import AMCRealRuntimeAdapter
 from formal_toolchain.policy.mask_fallback import (
     build_parametric_mask_fallback_certificate,
     select_first_valid,
@@ -63,6 +67,35 @@ def test_explicit_noop_is_total_identity_and_always_valid() -> None:
         assert formal_valid_action_mask(actions=actions, budgets=budgets, **_evaluator_kwargs())[24]
 
 
+def test_real_runtime_adapter_does_not_reject_verified_explicit_noop() -> None:
+    noop = SimpleNamespace(
+        action_id=24,
+        is_noop=True,
+        is_constraint_guided_pair=False,
+    )
+    actions = tuple(
+        SimpleNamespace(action_id=index, is_noop=False)
+        for index in range(24)
+    ) + (noop,)
+    budgets = {"T00": 50}
+    environment = SimpleNamespace(
+        _engine=SimpleNamespace(
+            runtime_budgets=BudgetState(
+                budgets=dict(budgets),
+                initial_budgets=dict(budgets),
+            )
+        ),
+        _actions=actions,
+        _initial_budgets=dict(budgets),
+        ordered_tasks=(),
+    )
+    adapter = AMCRealRuntimeAdapter(environment, action_space=actions)
+
+    assert adapter.apply_action(
+        {"environment": environment}, action_id=24
+    ) == budgets
+
+
 def test_tampered_noop_targets_are_rejected() -> None:
     noop = dict(build_budget_action_space(TASKS, include_explicit_noop=True)[24])
     noop["increase_idx"] = 0
@@ -84,12 +117,16 @@ def test_explicit_noop_selection_is_action_24_not_implicit_none() -> None:
         "explicit_noop": True,
         "explicit_noop_action_ids": [24],
         "explicit_noop_always_valid": True,
+        "defensive_fallback_action_id": 24,
+        "defensive_fallback_same_explicit_noop": True,
     }
     certificate = build_parametric_mask_fallback_certificate(
         rankings={1: ranking}, action_dim=25, mask_contract=contract
     )
     assert certificate["status"] == "PASS"
     assert certificate["implicit_noop"] is False
+    assert certificate["defensive_fallback_action_id"] == 24
+    assert certificate["defensive_fallback_same_explicit_noop"] is True
     assert certificate["leaves"][0]["regions"][-1]["selected_action"] == 24
     regions = selected_action_regions_v2(
         {1: []}, {1: ranking}, explicit_noop_action_id=24
@@ -108,6 +145,8 @@ def test_invalid_explicit_noop_contract_fails_closed() -> None:
             "explicit_noop": True,
             "explicit_noop_action_ids": [24],
             "explicit_noop_always_valid": False,
+            "defensive_fallback_action_id": 24,
+            "defensive_fallback_same_explicit_noop": True,
         },
     )
     assert result["status"] == "FAIL"

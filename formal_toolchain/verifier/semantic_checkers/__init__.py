@@ -265,14 +265,53 @@ def verify_deadline_boundary_order(**kwargs):
 def verify_controller_invisibility(**kwargs):
     raw, error = _raw_inputs(kwargs, "CONTROLLER_INVISIBILITY")
     if error: return error
+    predecessors = kwargs.get("verified_predecessors")
+    predecessors = predecessors if isinstance(predecessors, Mapping) else {}
+    required = (
+        "CONTROLLER_WRITE_SET", "CONTROLLER_BOUNDARY", "CONTROLLER_PATH_UNIQUENESS",
+        "UPDATE_PAYLOAD_TOTALITY", "TOKEN_REFRESH_PROJECTION",
+    )
+    if any(_mapping(predecessors.get(name)).get("obligation_status") != "PASS" for name in required):
+        return _missing("CONTROLLER_INVISIBILITY", "CONTROLLER_N3_SUPPORT_CERTIFICATE_NOT_PASS")
+    boundary_witness = _mapping(_mapping(predecessors.get("CONTROLLER_BOUNDARY")).get("witness"))
+    token_witness = _mapping(_mapping(predecessors.get("TOKEN_REFRESH_PROJECTION")).get("witness"))
+    if (boundary_witness.get("preclosed_scheduler_consistent") is not True
+            or token_witness.get("effective_frontier_preserved_if_preclosed") is not True):
+        return _missing("CONTROLLER_INVISIBILITY", "CONTROLLER_N3_SUPPORT_WITNESS_INCOMPLETE")
     result = check_controller_invisibility(_p0_runtime(raw))
+    result = dict(result)
+    if result.get("status") == "PASS":
+        result["witness"] = {
+            "selected_action_n3_resolved": True,
+            "preclosed_scheduler_consistent": True,
+            "effective_frontier_preserved": True,
+            "source_candidate": result,
+            "support_certificate_hashes": {
+                name: _mapping(predecessors.get(name)).get("artifact_hash") for name in required
+            },
+        }
     return _finish("CONTROLLER_INVISIBILITY", result, expected_context_hash=kwargs.get("expected_context_hash"), candidate_evidence=kwargs.get("candidate_evidence"))
 
 
 def verify_controller_postclosure(**kwargs):
     raw, error = _raw_inputs(kwargs, "CONTROLLER_POSTCLOSURE")
     if error: return error
+    predecessors = kwargs.get("verified_predecessors")
+    predecessors = predecessors if isinstance(predecessors, Mapping) else {}
+    invisibility = _mapping(predecessors.get("CONTROLLER_INVISIBILITY"))
+    if invisibility.get("obligation_status") != "PASS":
+        return _missing("CONTROLLER_POSTCLOSURE", "CONTROLLER_INVISIBILITY_PREDECESSOR_NOT_PASS")
+    invisibility_witness = _mapping(invisibility.get("witness"))
+    if invisibility_witness.get("selected_action_n3_resolved") is not True:
+        return _missing("CONTROLLER_POSTCLOSURE", "CONTROLLER_INVISIBILITY_WITNESS_INCOMPLETE")
     result = check_controller_postclosure(_p0_runtime(raw))
+    result = dict(result)
+    if result.get("status") == "PASS":
+        result["witness"] = {
+            "controller_invisibility_hash": invisibility.get("artifact_hash"),
+            "controller_invisibility_consumed": True,
+            "source_candidate": result,
+        }
     return _finish("CONTROLLER_POSTCLOSURE", result, expected_context_hash=kwargs.get("expected_context_hash"), candidate_evidence=kwargs.get("candidate_evidence"))
 
 

@@ -89,19 +89,68 @@ def build_positive_time_service_certificate(*, context_hash: str, case_proofs: l
         failure=failure)
 
 
-def build_controller_postclosure_certificate(*, context_hash: str, case_proofs: list[Mapping[str, Any]],
-                                              controller_binding: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def build_controller_postclosure_certificate(*, context_hash: str,
+                                              controller_transition_certificate: Mapping[str, Any] | None = None,
+                                              controller_binding: Mapping[str, Any] | None = None,
+                                              case_proofs: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
     required = {"CONTROLLER_NO_ACTION", "CONTROLLER_SELECTED_ACTION"}
-    present = {p.get("inputs", {}).get("case_id") for p in case_proofs}
+    witness = (
+        controller_transition_certificate.get("witness", {})
+        if isinstance(controller_transition_certificate, Mapping)
+        else {}
+    )
+    present = set(witness.get("case_ids", ()))
+    cases = witness.get("cases", {}) if isinstance(witness, Mapping) else {}
+    selected = cases.get("CONTROLLER_SELECTED_ACTION", {}) if isinstance(cases, Mapping) else {}
+    noop = cases.get("CONTROLLER_NO_ACTION", {}) if isinstance(cases, Mapping) else {}
+    selected_required = (
+        "payload_prevalidated", "no_partial_mutation", "zero_time", "time_unchanged",
+        "mode_unchanged", "active_jobs_unchanged", "ready_jobs_unchanged",
+        "running_job_unchanged", "released_job_fields_unchanged", "service_unchanged",
+        "released_job_snapshot_unchanged", "released_job_service_unchanged",
+        "released_job_demand_unchanged", "released_job_classification_unchanged",
+        "completion_miss_unchanged",
+        "effective_event_frontier_unchanged",
+    )
+    selected_ok = (
+        isinstance(selected, Mapping)
+        and selected.get("status") == "PASS"
+        and selected.get("source") == "amc_py/rl/env.py:AmcBudgetEnv.step"
+        and selected.get("source_kind") == "CONTROLLER_SYNCHRONOUS"
+        and selected.get("source_binding") == "self._engine.apply_budget_updates"
+        and selected.get("timing_projection") == "STUTTER"
+        and selected.get("plant_progression") is False
+        and all(selected.get(field) is True for field in selected_required)
+    )
+    noop_ok = (
+        isinstance(noop, Mapping)
+        and noop.get("status") == "PASS"
+        and noop.get("timing_projection") == "STUTTER"
+        and noop.get("plant_progression") is False
+    )
     theorem = _theory("CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT")
-    status = "PASS" if required <= present and controller_binding and controller_binding.get("status") == "PASS" else "UNRESOLVED"
-    failure = None if status == "PASS" else {"code": "CONTROLLER_CASE_MISSING"}
-    predecessors = {p["inputs"]["case_id"]: p["artifact_hash"] for p in case_proofs
-                    if p.get("inputs", {}).get("case_id") in required}
+    complete = required <= present
+    status = "PASS" if (
+        isinstance(controller_transition_certificate, Mapping)
+        and controller_transition_certificate.get("obligation_status") == "PASS"
+        and complete
+        and selected_ok
+        and noop_ok
+    ) else "UNRESOLVED"
+    failure = None if status == "PASS" else {"code": "CONTROLLER_TRANSITION_CERTIFICATE_REQUIRED"}
+    certificate_hash = (
+        controller_transition_certificate.get("artifact_hash")
+        if isinstance(controller_transition_certificate, Mapping)
+        else None
+    )
     return obligation_certificate(
         obligation_id="CONTROLLER_POSTCLOSURE", status=status, context_hash=context_hash,
-        inputs={"theorem": theorem, "controller_binding_hash": None if controller_binding is None else controller_binding.get("binding_hash")}, witness={"case_hashes": predecessors, "theorem": theorem},
-        direct_predecessor_hashes=predecessors, checker_id=__name__, checker_version="phase-k-v1",
+        inputs={"theorem": theorem, "controller_transition_certificate_hash": certificate_hash},
+        witness={"case_ids": sorted(present), "cases": {"CONTROLLER_SELECTED_ACTION": dict(selected), "CONTROLLER_NO_ACTION": dict(noop)}, "theorem": theorem},
+        direct_predecessor_hashes=(
+            {"controller_transition": certificate_hash}
+            if isinstance(certificate_hash, str) else {}
+        ), checker_id=__name__, checker_version="phase-k-v2",
         failure=failure)
 
 
@@ -161,7 +210,8 @@ def build_bridge_prerequisite_certificates(*, context_hash: str, case_proofs: li
                                            bounds: P0ModelBounds | None = None,
                                            coverage_certificate: Mapping[str, Any] | None = None,
                                            decomposition_certificate: Mapping[str, Any] | None = None,
-                                           controller_binding: Mapping[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+                                           controller_binding: Mapping[str, Any] | None = None,
+                                           controller_transition_certificate: Mapping[str, Any] | None = None) -> dict[str, dict[str, Any]]:
     base = build_base_relation_certificate(context_hash=context_hash, concrete=concrete_base,
                                            reference=reference_base, bounds=bounds)
     event = build_event_projection_certificate(context_hash=context_hash)
@@ -171,7 +221,11 @@ def build_bridge_prerequisite_certificates(*, context_hash: str, case_proofs: li
                                                     decomposition_certificate=decomposition_certificate)
     positive = build_positive_time_service_certificate(context_hash=context_hash, case_proofs=case_proofs,
                                                        coverage_certificate=coverage_certificate)
-    controller = build_controller_postclosure_certificate(context_hash=context_hash, case_proofs=case_proofs,
-                                                          controller_binding=controller_binding)
+    controller = build_controller_postclosure_certificate(
+        context_hash=context_hash,
+        controller_binding=controller_binding,
+        controller_transition_certificate=controller_transition_certificate,
+    )
     return {"base_relation": base, "same_timestamp": same, "positive_time": positive,
+            "controller_transition": dict(controller_transition_certificate or {}),
             "controller_postclosure": controller, "event_projection": event}

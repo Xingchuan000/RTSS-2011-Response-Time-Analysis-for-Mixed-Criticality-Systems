@@ -7,7 +7,9 @@ from typing import Any, Mapping
 
 from formal_toolchain.core.artifact import verify_obligation_certificate
 from formal_toolchain.core.hashing import sha256_object
-from formal_toolchain.bridge.transition_cases import REQUIRED_P0_CASE_IDS
+from formal_toolchain.bridge.transition_cases import REQUIRED_PLANT_P0_CASE_IDS
+
+REQUIRED_P0_CASE_IDS = REQUIRED_PLANT_P0_CASE_IDS
 from formal_toolchain.bridge.state_relation import parameterized_state_relation_schema_hash, validate_n6_relation_interface
 from formal_toolchain.bridge.prefix_refinement import CLOSED_PREFIX_REFINEMENT_WITNESS_SCHEMA_VERSION
 
@@ -52,6 +54,9 @@ def _verified_closed_prefix_witness(
         "pointwise_closed_prefix_relation": candidate_witness.get(
             "pointwise_closed_prefix_relation"
         ),
+        "controller_transition_certificate": dict(
+            candidate_witness.get("controller_transition_certificate", {})
+        ),
     }
 
 
@@ -90,7 +95,8 @@ def _verify_cases(candidate: Mapping[str, Any], obligation_id: str,
                 "code": "BRIDGE_WITNESS_MISSING"}
     if obligation_id == "CLOSED_PREFIX_REFINEMENT":
         return _verify_universal_closed_prefix(candidate, bridge_context_hash, raw_inputs=raw_inputs,
-                                               reference_taskset=reference_taskset, certified_envelope=certified_envelope)
+                                               reference_taskset=reference_taskset, certified_envelope=certified_envelope,
+                                               predecessors=predecessors)
     if witness.get("hi_bad_prefix_reflected") is True:
         return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
                 "code": "LEGACY_BOOLEAN_BAD_PREFIX_WITNESS_REJECTED"}
@@ -225,7 +231,8 @@ def _verify_cases(candidate: Mapping[str, Any], obligation_id: str,
 def _verify_universal_closed_prefix(candidate: Mapping[str, Any], bridge_context_hash: str,
                                     *, raw_inputs: Any = None,
                                     reference_taskset: Mapping[str, Any] | None = None,
-                                    certified_envelope: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                                    certified_envelope: Mapping[str, Any] | None = None,
+                                    predecessors: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
     witness = candidate.get("witness", {})
     witness_schema = witness.get("schema_version")
     if witness_schema == "closed_prefix_refinement_v1":
@@ -251,6 +258,64 @@ def _verify_universal_closed_prefix(candidate: Mapping[str, Any], bridge_context
         return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "CLOSED_PREFIX_THEOREM_BACKEND_FAILED", "failure": str(exc)}
     if receipt.get("status") != "PASS" or receipt.get("receipt_hash") != receipt_hash:
         return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID", "code": "CLOSED_PREFIX_THEOREM_RECEIPT_MISMATCH"}
+    claimed_controller = witness.get("controller_transition_certificate")
+    if not isinstance(claimed_controller, Mapping):
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED",
+                "code": "CONTROLLER_TRANSITION_CERTIFICATE_REQUIRED"}
+    if raw_inputs is None:
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED",
+                "code": "BRIDGE_REPLAY_INPUTS_MISSING"}
+    certified_policy_hash = (
+        certified_envelope.get("deployed_preservation_certificate_hash")
+        if isinstance(certified_envelope, Mapping) else None
+    )
+    if not _is_hash(certified_policy_hash):
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED",
+                "code": "DEPLOYED_POLICY_BINDING_REQUIRED"}
+    target = raw_inputs.target
+    runtime_config = getattr(target, "runtime_config", None)
+    verified_action_binding = {
+        "status": "PASS",
+        "action_dim": len(target.action_definitions),
+        "explicit_noop": any(
+            isinstance(row, Mapping) and row.get("is_noop") is True
+            for row in target.action_definitions
+        ),
+        "action_space_type": (
+            runtime_config.get("action_space", "single")
+            if isinstance(runtime_config, Mapping)
+            else getattr(runtime_config, "action_space", "single")
+        ),
+    }
+    from formal_toolchain.verifier.recompute import (
+        recompute_controller_transition_certificate,
+    )
+    verified_postclosure = (predecessors or {}).get("CONTROLLER_POSTCLOSURE", {})
+    if not isinstance(verified_postclosure, Mapping) or verified_postclosure.get("obligation_status") != "PASS":
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED",
+                "code": "VERIFIED_CONTROLLER_POSTCLOSURE_REQUIRED"}
+    recomputed_controller = recompute_controller_transition_certificate(
+        source_root=Path(raw_inputs.source_root),
+        verified_action_binding=verified_action_binding,
+        verified_policy_binding={
+            "status": "PASS",
+            "artifact_hash": certified_policy_hash,
+        },
+        verified_controller_postclosure=verified_postclosure,
+        context_hash=bridge_context_hash,
+    )
+    if recomputed_controller.get("obligation_status") != "PASS":
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED",
+                "code": "FRESH_CONTROLLER_TRANSITION_UNRESOLVED"}
+    if sha256_object(recomputed_controller) != sha256_object(dict(claimed_controller)):
+        return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                "code": "CONTROLLER_TRANSITION_CERTIFICATE_MISMATCH"}
+    cases = claimed_controller.get("witness", {}).get("cases", {})
+    for case_id in ("CONTROLLER_NO_ACTION", "CONTROLLER_SELECTED_ACTION"):
+        case = cases.get(case_id, {}) if isinstance(cases, Mapping) else {}
+        if case.get("source_kind") != "CONTROLLER_SYNCHRONOUS":
+            return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
+                    "code": "CONTROLLER_SOURCE_KIND_INVALID"}
     try:
         validate_n6_relation_interface(witness.get("n6_relation_interface", {}))
     except ValueError as exc:

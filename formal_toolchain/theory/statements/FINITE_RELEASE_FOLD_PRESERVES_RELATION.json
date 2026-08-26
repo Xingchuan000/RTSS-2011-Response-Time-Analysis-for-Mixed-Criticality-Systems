@@ -14,7 +14,7 @@
     "backend": "finite-release-fold-v1",
     "hash_mode": "canonical_json_v1",
     "path": "proofs/FINITE_RELEASE_FOLD_PRESERVES_RELATION.proof.json",
-    "sha256": "13102235ea2d203bf9cedd427cbf8a80b36ef195e04bb7e975465c2d4ad79ba9"
+    "sha256": "2124251c3f47ef260e3902708d6f51ed4e6198e7bea3824ec3754f0b6edf38c8"
   },
   "source_reference": "Phase K parameterized arrival release fold",
   "statement_hash": "f8b51e24f2692a1094bb67a381a7d9c3cff0c31241e7a5b9ae815ac028759504",

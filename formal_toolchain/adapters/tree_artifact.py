@@ -24,7 +24,7 @@ def _read(path: Path) -> Any:
 
 
 def inspect_tree_artifact(artifact_dir: Path, *, expected_state_dim: int = 128,
-                          expected_action_dim: int = 24, expected_seed: int | None = None) -> dict[str, Any]:
+                          expected_action_dim: int | None = None, expected_seed: int | None = None) -> dict[str, Any]:
     """返回确定性的 inventory；任何缺失或结构矛盾都会明确失败。"""
     artifact_dir = artifact_dir.resolve()
     missing = [name for name in REQUIRED_FILES if not (artifact_dir / name).is_file()]
@@ -56,26 +56,67 @@ def inspect_tree_artifact(artifact_dir: Path, *, expected_state_dim: int = 128,
     action_table = actions.get("actions", actions) if isinstance(actions, dict) else actions
     if not isinstance(feature_names, list) or len(feature_names) != expected_state_dim:
         raise ValueError(f"feature count 必须为 {expected_state_dim}")
-    if not isinstance(action_table, list) or len(action_table) != expected_action_dim:
-        raise ValueError(f"action count 必须为 {expected_action_dim}")
+    if not isinstance(action_table, list):
+        raise ValueError("action_definitions 必须为 list")
+    if len(action_table) <= 0:
+        raise ValueError("action_definitions 不允许为空")
+    resolved_action_dim = (
+        len(action_table)
+        if expected_action_dim is None
+        else int(expected_action_dim)
+    )
+    if len(action_table) != resolved_action_dim:
+        raise ValueError(
+            "action_definitions 数量与 expected_action_dim 不一致: "
+            f"artifact={len(action_table)}, expected={resolved_action_dim}"
+        )
+    noop_ids = [
+        index for index, action in enumerate(action_table)
+        if isinstance(action, dict) and action.get("is_noop") is True
+    ]
+    explicit_noop_declared = (
+        isinstance(metadata, dict) and metadata.get("explicit_noop") is True
+    ) or bool(noop_ids)
+    if explicit_noop_declared and len(noop_ids) != 1:
+        raise ValueError("explicit-noop artifact 必须存在且仅存在一个 noop action")
     rankings = tree.get("rankings", tree.get("leaf_rankings")) if isinstance(tree, dict) else None
+    expected_ids = set(range(resolved_action_dim))
+
+    def check_ranking(ranking: Any, message: str) -> None:
+        if not isinstance(ranking, list):
+            raise ValueError(f"{message} 必须为 list")
+        try:
+            ranking_ids = [int(action_id) for action_id in ranking]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{message} 必须只包含整数 action-id") from exc
+        if len(ranking_ids) != resolved_action_dim:
+            raise ValueError(
+                f"{message} 长度错误: got={len(ranking_ids)}, expected={resolved_action_dim}"
+            )
+        if set(ranking_ids) != expected_ids:
+            raise ValueError(
+                f"{message} 必须是完整 action-id 排列: "
+                f"expected=0..{resolved_action_dim - 1}"
+            )
+        if len(set(ranking_ids)) != len(ranking_ids):
+            raise ValueError(f"{message} 中存在重复 action-id")
+
     if rankings is not None:
         for ranking in rankings.values() if isinstance(rankings, dict) else rankings:
-            if len(ranking) != expected_action_dim or len(set(ranking)) != expected_action_dim or any(not 0 <= int(a) < expected_action_dim for a in ranking):
-                raise ValueError("每个 leaf ranking 必须是 0..23 的完整排列")
+            check_ranking(ranking, "每个 leaf ranking")
     leaves = tree.get("leaves") if isinstance(tree, dict) else None
     if isinstance(leaves, list):
         for leaf in leaves:
             ranking = leaf.get("action_ranking") if isinstance(leaf, dict) else None
-            if ranking is not None and (len(ranking) != expected_action_dim or len(set(ranking)) != expected_action_dim or any(not 0 <= int(a) < expected_action_dim for a in ranking)):
-                raise ValueError("每个 leaf action_ranking 必须是完整排列")
+            if ranking is not None:
+                check_ranking(ranking, "每个 leaf action_ranking")
     seed = metadata.get("taskset_seed") if isinstance(metadata, dict) else None
     if expected_seed is not None and seed != expected_seed:
         raise ValueError(f"metadata taskset_seed 必须为 {expected_seed}，实际为 {seed!r}")
     state_dim = tree.get("state_dim") if isinstance(tree, dict) else None
     action_dim = tree.get("action_dim") if isinstance(tree, dict) else None
-    if state_dim != expected_state_dim or action_dim != expected_action_dim:
-        raise ValueError(f"tree state/action dimension 必须为 {expected_state_dim}/{expected_action_dim}，实际为 {state_dim}/{action_dim}")
+    if state_dim != expected_state_dim or action_dim != resolved_action_dim:
+        raise ValueError(f"tree state/action dimension 必须为 {expected_state_dim}/{resolved_action_dim}，实际为 {state_dim}/{action_dim}")
     tree_fp_hash = tree.get("fixed_point_config_hash") if isinstance(tree, dict) else None
     fixed_data = fixed.get("config", fixed) if isinstance(fixed, dict) else fixed
     if not isinstance(fixed_data, dict):
@@ -84,7 +125,7 @@ def inspect_tree_artifact(artifact_dir: Path, *, expected_state_dim: int = 128,
     if tree_fp_hash != expected_fp_hash:
         raise ValueError("tree fixed-point semantic hash 与 fixed_point_config.json 不一致")
     return {"artifact_dir_name": artifact_dir.name, "files": hashes,
-            "state_dim": state_dim, "action_dim": action_dim,
+            "state_dim": state_dim, "action_dim": resolved_action_dim,
             "feature_count": len(feature_names), "action_count": len(action_table),
             "feature_names": list(feature_names), "action_definitions": list(action_table),
             "metadata_taskset_seed": seed, "fixed_point_config_hash": expected_fp_hash,

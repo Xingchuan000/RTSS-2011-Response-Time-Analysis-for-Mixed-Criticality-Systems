@@ -85,6 +85,16 @@ def test_apply_updates_updates_multiple_tasks() -> None:
     assert state.budgets["l"] == 3
 
 
+def test_apply_updates_validates_all_before_writing() -> None:
+    """批量更新失败时不得留下部分预算写入。"""
+
+    state = BudgetState.from_tasks(_tasks())
+    before = dict(state.budgets)
+    with pytest.raises(KeyError, match="missing runtime budget"):
+        state.apply_updates({"h": 4, "unknown": 3})
+    assert state.budgets == before
+
+
 def test_budget_update_dataclass_holds_time_and_updates() -> None:
     """BudgetUpdate 应正确保存更新时间和更新字典。"""
 

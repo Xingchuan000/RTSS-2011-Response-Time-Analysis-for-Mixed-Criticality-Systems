@@ -21,6 +21,7 @@ FROZEN_EVENT_MODELS = "formal_toolchain/semantics/frozen_c_amc_sem_event_models.
 FROZEN_RUNTIME_WRAPPER = "formal_toolchain/semantics/frozen_c_amc_sem_runtime_wrapper.py"
 FROZEN_ACTION_RUNTIME = "formal_toolchain/semantics/frozen_c_amc_sem_action_runtime.py"
 FROZEN_OBSERVATION_RUNTIME = "formal_toolchain/semantics/frozen_c_amc_sem_observation.py"
+FROZEN_BUDGET_RUNTIME = "formal_toolchain/semantics/frozen_c_amc_sem_budget_runtime.py"
 CONTRACT_VERSION = "c_amc_sem_p0_frozen_runtime_v3_explicit_noop"
 
 
@@ -44,6 +45,10 @@ def frozen_observation_runtime_path(source_root: str | Path) -> Path:
     return Path(source_root) / FROZEN_OBSERVATION_RUNTIME
 
 
+def frozen_budget_runtime_path(source_root: str | Path) -> Path:
+    return Path(source_root) / FROZEN_BUDGET_RUNTIME
+
+
 def frozen_contract_files() -> tuple[str, ...]:
     return (
         FROZEN_EVENT_RUNTIME,
@@ -51,6 +56,7 @@ def frozen_contract_files() -> tuple[str, ...]:
         FROZEN_RUNTIME_WRAPPER,
         FROZEN_ACTION_RUNTIME,
         FROZEN_OBSERVATION_RUNTIME,
+        FROZEN_BUDGET_RUNTIME,
     )
 
 

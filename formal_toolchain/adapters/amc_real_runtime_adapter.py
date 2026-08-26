@@ -142,6 +142,12 @@ class AMCRealRuntimeAdapter:
         after.update(updates)
         if is_noop and after != before:
             raise RuntimeError("REAL_RUNTIME_NOOP_CHANGED_BUDGETS")
+        # An explicit NoOp is a total identity transition.  The environment's
+        # generic candidate-update diagnostic intentionally rejects an empty
+        # update as ``no_effective_budget_change`` for ordinary actions, so it
+        # must not be applied to an already verified identity action.
+        if is_noop:
+            return before
         diagnosis = environment.diagnose_candidate_budget_update(new_budgets=after)
         if not diagnosis.accepted:
             raise RuntimeError("REAL_RUNTIME_ACTION_REJECTED_BY_ENVIRONMENT")
@@ -172,7 +178,9 @@ class AMCRealRuntimeAdapter:
             "explicit_noop": bool(self.noop_action_ids),
             "explicit_noop_action_ids": list(self.noop_action_ids),
             "explicit_noop_always_valid": bool(self.noop_action_ids),
-            "implicit_noop_when_all_invalid": True,
+            "implicit_noop_when_all_invalid": not bool(self.noop_action_ids),
+            "defensive_fallback_action_id": self.noop_action_ids[0] if self.noop_action_ids else None,
+            "defensive_fallback_same_explicit_noop": bool(self.noop_action_ids),
             "check_safety": bool(getattr(self.environment, "check_safety", False)),
             "safety_checker_type": None if checker is None else type(checker).__qualname__,
             "candidate_reject_helper": "AmcBudgetEnv._budget_candidate_reject_reason",

@@ -22,6 +22,28 @@ from amc_py.viper.fixed_point import (
 from amc_py.viper.integer_tree import IntegerTreeModel, _validate_integer_tree_model, evaluate_integer_tree
 
 
+def _explicit_noop_action_id(action_definitions: list[dict[str, object]]) -> int | None:
+    """Return the unique explicit-noop action id encoded by the artifact.
+
+    V7 treats ``a_noop`` as a real member of the deployed action alphabet.  The
+    normal path still selects it through ranked-first-valid.  This helper is
+    used only by the defensive all-invalid fallback required by A8; legacy
+    artifacts without an explicit noop keep the historical ``None`` fallback.
+    """
+
+    noop_ids: list[int] = []
+    for index, definition in enumerate(action_definitions):
+        if not bool(definition.get("is_noop", False)):
+            continue
+        action_id = int(definition.get("action_id", index))
+        if action_id != index:
+            raise ValueError("explicit noop action_id 必须与 action_definitions 下标一致")
+        noop_ids.append(action_id)
+    if len(noop_ids) > 1:
+        raise ValueError("action_definitions 最多只能包含一个 explicit noop")
+    return noop_ids[0] if noop_ids else None
+
+
 class TreePolicyProtocol(Protocol):
     """legacy sklearn policy 与整数部署 policy 的共同调用协议。"""
 
@@ -198,6 +220,19 @@ class TreeBudgetPolicy:
                 if include_decision_trace:
                     info.update(trace)
                 return int(candidate), info
+        explicit_noop_action_id = _explicit_noop_action_id(self.action_definitions)
+        if explicit_noop_action_id is not None:
+            info = {
+                "tree_raw_top1_action_id": raw_top1,
+                "tree_raw_top1_invalid": bool(raw_invalid),
+                "tree_fallback_used": True,
+                "tree_no_valid_action": True,
+                "tree_selected_action_id": explicit_noop_action_id,
+                "tree_defensive_fallback_to_explicit_noop": True,
+            }
+            if include_decision_trace:
+                info.update(trace)
+            return explicit_noop_action_id, info
         info = {
             "tree_raw_top1_action_id": raw_top1,
             "tree_raw_top1_invalid": bool(raw_invalid),
@@ -338,6 +373,18 @@ class IntegerTreeBudgetPolicy:
                 if trace is not None:
                     base.update(trace)
                 return candidate, base
+        explicit_noop_action_id = _explicit_noop_action_id(self.action_definitions)
+        if explicit_noop_action_id is not None:
+            base.update({
+                "tree_fallback_used": True,
+                "tree_no_valid_action": True,
+                "tree_selected_action_id": explicit_noop_action_id,
+                "tree_selected_rank": None,
+                "tree_defensive_fallback_to_explicit_noop": True,
+            })
+            if trace is not None:
+                base.update(trace)
+            return explicit_noop_action_id, base
         base.update({"tree_no_valid_action": True, "tree_selected_action_id": None, "tree_selected_rank": None})
         if trace is not None:
             base.update(trace)

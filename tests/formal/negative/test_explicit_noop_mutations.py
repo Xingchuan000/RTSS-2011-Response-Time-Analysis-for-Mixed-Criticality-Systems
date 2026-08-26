@@ -67,7 +67,45 @@ def test_ranking_missing_action_24_fails_closed() -> None:
         rankings={0: ranking}, action_dim=25,
         mask_contract={"shared_with_step": True, "selection": "ranked_first_valid",
                        "explicit_noop": True, "explicit_noop_action_ids": [24],
-                       "explicit_noop_always_valid": True},
+                       "explicit_noop_always_valid": True,
+                       "defensive_fallback_action_id": 24,
+                       "defensive_fallback_same_explicit_noop": True},
     )
     assert result["status"] == "FAIL"
     assert result["failure"]["code"] == "RANKING_NOT_COMPLETE"
+
+
+def test_explicit_noop_rejects_top1_only_selection_semantics() -> None:
+    result = build_parametric_mask_fallback_certificate(
+        rankings={0: tuple(range(25))},
+        action_dim=25,
+        mask_contract={
+            "shared_with_step": True,
+            "selection": "top1_valid_else_noop",
+            "explicit_noop": True,
+            "explicit_noop_action_ids": [24],
+            "explicit_noop_always_valid": True,
+            "defensive_fallback_action_id": 24,
+            "defensive_fallback_same_explicit_noop": True,
+        },
+    )
+    assert result["status"] == "FAIL"
+    assert result["failure"]["code"] == "EXPLICIT_NOOP_REQUIRES_RANKED_FIRST_VALID"
+
+
+def test_explicit_noop_rejects_different_defensive_fallback_id() -> None:
+    result = build_parametric_mask_fallback_certificate(
+        rankings={0: tuple(range(25))},
+        action_dim=25,
+        mask_contract={
+            "shared_with_step": True,
+            "selection": "ranked_first_valid",
+            "explicit_noop": True,
+            "explicit_noop_action_ids": [24],
+            "explicit_noop_always_valid": True,
+            "defensive_fallback_action_id": 23,
+            "defensive_fallback_same_explicit_noop": True,
+        },
+    )
+    assert result["status"] == "FAIL"
+    assert result["failure"]["code"] == "EXPLICIT_NOOP_DEFENSIVE_FALLBACK_UNRESOLVED"
