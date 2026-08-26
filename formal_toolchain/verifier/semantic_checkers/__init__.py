@@ -281,11 +281,12 @@ def verify_controller_invisibility(**kwargs):
     result = check_controller_invisibility(_p0_runtime(raw))
     result = dict(result)
     if result.get("status") == "PASS":
+        source_candidate = dict(result)
         result["witness"] = {
             "selected_action_n3_resolved": True,
             "preclosed_scheduler_consistent": True,
             "effective_frontier_preserved": True,
-            "source_candidate": result,
+            "source_candidate": source_candidate,
             "support_certificate_hashes": {
                 name: _mapping(predecessors.get(name)).get("artifact_hash") for name in required
             },
@@ -307,10 +308,11 @@ def verify_controller_postclosure(**kwargs):
     result = check_controller_postclosure(_p0_runtime(raw))
     result = dict(result)
     if result.get("status") == "PASS":
+        source_candidate = dict(result)
         result["witness"] = {
             "controller_invisibility_hash": invisibility.get("artifact_hash"),
             "controller_invisibility_consumed": True,
-            "source_candidate": result,
+            "source_candidate": source_candidate,
         }
     return _finish("CONTROLLER_POSTCLOSURE", result, expected_context_hash=kwargs.get("expected_context_hash"), candidate_evidence=kwargs.get("candidate_evidence"))
 

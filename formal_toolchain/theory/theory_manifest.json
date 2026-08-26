@@ -20,14 +20,14 @@
     "EVENT_HANDLER_MICROSTEP_DECOMPOSITION",
     "FINITE_RELEASE_FOLD_PRESERVES_RELATION"
   ],
-  "library_version": "p0-theory-r11",
+  "library_version": "p0-theory-r12",
   "proof_schema_compatible": [
     "proof_request_v2",
     "common_certificate_v1",
     "common_certificate_v2"
   ],
   "proof_schema_version": "common_certificate_v2",
-  "registry_fingerprint": "6d5f20f72cd538b57af6114a919029fa0f36afb471865b5aff3ba789ab79552d",
+  "registry_fingerprint": "08223804a84a3b9e8623ab3329352f3992231c1fda0d80c2a23d7edbc60bd434",
   "route_derived_obligations": {
     "protected_prefix": [
       "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED",
