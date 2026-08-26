@@ -141,7 +141,6 @@ def test_leaf_audit_records_raw_top1_specific_reject_reason():
     fields = _build_leaf_audit_fields(
         step_index=0,
         state_vector=(0.0,),
-        feature_names=("x",),
         tree_policy=policy,
         tree_info={
             "tree_leaf_id": 1,

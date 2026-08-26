@@ -17,40 +17,12 @@ from formal_toolchain.core.formal_checks import calculate_raw_evidence, proof_sa
 from formal_toolchain.core.hashing import sha256_object, sha256_proof_object
 from formal_toolchain.core.contexts import expected_context_for_obligation
 from formal_toolchain.core.registry import load_registry, build_claim_closure
-from formal_toolchain.core.request_schema import validate_clean_proof_request
 
 
 def _write(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-
-def _compile_phase_k_candidate(*, computed: Mapping[str, Any], built: Mapping[str, Mapping[str, Any]],
-                               request_path: Path) -> tuple[dict[str, Mapping[str, Any]], str | None]:
-    """Phase K 由 fresh verifier 统一生成；compiler 只保留 fail-closed 诊断。"""
-
-    request = validate_clean_proof_request(
-        json.loads(Path(request_path).read_text(encoding="utf-8"))
-    )
-    workspace = Path(request_path).resolve().parent.parent
-    formal_inputs = workspace / str(request.get("formal_inputs_dir", ""))
-    case_map_path = formal_inputs / "phase_k_case_map.json"
-    if not case_map_path.is_file():
-        return {}, "PHASE_K_CASE_MAP_MISSING"
-    reference_raw = computed.get("evidence", {}).get("REFERENCE")
-    if not isinstance(reference_raw, Mapping) or not isinstance(reference_raw.get("taskset"), Mapping):
-        return {}, "REFERENCE_TASKSET_CANDIDATE_MISSING"
-    release_mapping = computed.get("evidence", {}).get("RELEASE_FIXED_REMOVAL_MAPPING")
-    if not isinstance(release_mapping, Mapping):
-        return {}, "RELEASE_MAPPING_CANDIDATE_MISSING"
-    contexts = computed.get("contexts", {})
-    bridge_context_hash = contexts.get("bridge_context", {}).get("hash")
-    source_manifest_hash = computed.get("context_body", {}).get("source_manifest", {}).get("semantic_hash")
-    if not isinstance(bridge_context_hash, str) or not isinstance(source_manifest_hash, str):
-        return {}, "BRIDGE_CONTEXT_INPUT_MISSING"
-    # 不再在 compiler 中拼装 bridge proof object；这里只保留“有资格进入
-    # fresh verifier”的输入诊断，实际 proof object 由 verifier 现场生成。
-    return {}, "FRESH_VERIFIER_REQUIRED"
 
 
 def compile_request(request_path: Path, out_dir: Path, *, source_root: Path | None = None) -> dict[str, Any]:

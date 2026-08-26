@@ -906,21 +906,6 @@ def _require_integer_pointer(path: Path, pointer: str) -> int:
     return current
 
 
-def _limiting_lo_task_name(selected: dict[str, Any]) -> str | None:
-    raw = selected.get("limiting_lo_task")
-    if isinstance(raw, dict):
-        raw = raw.get("task_id", raw.get("task", raw.get("name")))
-    if raw not in (None, ""):
-        return str(raw)
-    components = selected.get("lo_interference_components", ())
-    if isinstance(components, list):
-        for item in components:
-            if isinstance(item, dict):
-                task = item.get("task_id", item.get("task", item.get("name")))
-                if task not in (None, ""):
-                    return str(task)
-    return None
-
 
 def _iter_envelope_coordinates(
     value: Any,

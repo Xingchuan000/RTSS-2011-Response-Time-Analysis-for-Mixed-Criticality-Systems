@@ -46,7 +46,6 @@ from formal_toolchain.policy.mask_fallback import (
     build_mask_fallback_certificate,
     build_parametric_mask_fallback_certificate,
     select_first_valid,
-    select_by_semantics,
 )
 from formal_toolchain.policy.quantization import deterministic_samples, replay_quantize, verify_against_production
 from formal_toolchain.policy.selected_regions import selected_action_regions, selected_action_regions_v2
@@ -275,22 +274,6 @@ def _domain(raw_inputs: Any):
     )
 
 
-def _candidate_envelope(raw_inputs: Any, *, context_hash: str | None) -> dict[str, Any]:
-    target = _target(raw_inputs)
-    actions = _actions(raw_inputs)
-    domain = _domain(raw_inputs)
-    if context_hash is None:
-        raise ValueError("CANDIDATE_CONTEXT_MISSING")
-    domain["context_hash"] = context_hash
-    adapter = _runtime_adapter(raw_inputs)
-    return synthesize_candidate_envelope(
-        domain,
-        actions,
-        target.ordered_tasks,
-        context_hash=context_hash,
-        runtime_adapter=adapter,
-    )
-
 
 def _fresh_structural_envelope_pipeline(
     raw_inputs: Any,
@@ -390,86 +373,6 @@ def _leaf_guards(tree) -> dict[int, tuple[dict[str, Any], ...]]:
     walk(tree.root_node_id, [])
     return guards
 
-
-def _policy_samples(raw_inputs: Any, tree, fixed_data: Mapping[str, Any], actions, domain: Mapping[str, Any]):
-    target = _target(raw_inputs)
-    adapter = _runtime_adapter(raw_inputs)
-    names = [str(task.name) for task in target.ordered_tasks]
-    policy_states = [
-        {name: int(domain["tasks"][name]["initial"]) for name in names},
-        {name: int(domain["tasks"][name]["runtime_deploy_cap"]) for name in names},
-    ]
-    selected_cases: list[dict[str, Any]] = []
-    rankings: list[list[int]] = []
-    masks: list[list[bool]] = []
-    reasons: list[list[str]] = []
-    executable: list[dict[str, Any]] = []
-    for budgets in policy_states:
-        state = {
-            "budgets": budgets,
-            "initial_budgets": {name: int(domain["tasks"][name]["initial"]) for name in names},
-            "floors": {name: int(domain["tasks"][name]["runtime_floor"]) for name in names},
-            "caps": {name: int(domain["tasks"][name]["runtime_deploy_cap"]) for name in names},
-            "config": target.runtime_config,
-        }
-        runtime_state = adapter.build_runtime_state_from_budget_vector(budgets)
-        runtime_mask, runtime_reasons = adapter.valid_action_mask(runtime_state)
-        runtime = {"observation": tuple(adapter.extract_observation(runtime_state)),
-                   "mask": tuple(runtime_mask), "reasons": tuple(runtime_reasons)}
-        quantized = tuple(replay_quantize(value, fixed_data)[0] for value in runtime["observation"])
-        replay = evaluate_integer_tree(tree, quantized)
-        mask_contract = adapter.export_mask_contract()
-        selection_semantics = str(mask_contract.get("selection", "ranked_first_valid"))
-        noop_ids = tuple(int(value) for value in mask_contract.get("explicit_noop_action_ids", ()))
-        explicit_noop_action_id = noop_ids[0] if mask_contract.get("explicit_noop") and len(noop_ids) == 1 else None
-        selected = select_by_semantics(
-            replay.action_ranking, runtime["mask"], action_dim=len(actions),
-            selection_semantics=selection_semantics,
-            explicit_noop_action_id=explicit_noop_action_id,
-        )
-        after = adapter.apply_action(runtime_state, selected)
-        executable.append({
-            "status": "PASS",
-            "quantized": quantized,
-            "leaf_id": int(replay.leaf_id),
-            "ranking": tuple(int(action_id) for action_id in replay.action_ranking),
-            "selected_action": selected,
-            "mask": tuple(runtime["mask"]),
-            "mask_reasons": tuple(runtime["reasons"]),
-            "implicit_noop": selected is None,
-            "budget_after": after,
-        })
-        rankings.append([int(action_id) for action_id in replay.action_ranking])
-        masks.append(list(runtime["mask"]))
-        reasons.append(list(runtime["reasons"]))
-        ranking_map = {int(leaf.node_id): tuple(int(action_id) for action_id in leaf.action_ranking) for leaf in tree.leaves}
-        for leaf_id, ranking in ranking_map.items():
-            first = select_by_semantics(
-                ranking, runtime["mask"], action_dim=len(actions),
-                selection_semantics=selection_semantics,
-                explicit_noop_action_id=explicit_noop_action_id,
-            )
-            for action in actions:
-                selected_cases.append({
-                    "leaf_id": int(leaf_id),
-                    "rank_position": int(ranking.index(int(action.action_id))),
-                    "action_id": int(action.action_id),
-                    "valid": first == action.action_id,
-                    "mask": list(runtime["mask"]),
-                    "mask_reasons": list(runtime["reasons"]),
-                    "ranking": list(ranking),
-                    "runtime_state": state,
-                    "action_definitions": list(_inventory(raw_inputs)["action_definitions"]),
-                })
-    return {
-        "status": "PASS",
-        "selected_cases": selected_cases,
-        "policy_states": policy_states,
-        "rankings": rankings,
-        "masks": masks,
-        "reasons": reasons,
-        "executable": executable,
-    }
 
 
 def _explicit_unresolved(obligation_id: str) -> Checker:
@@ -848,26 +751,6 @@ def _verify_effective_runtime_config_obligation(*, raw_inputs=None, candidate_ev
     return _finish("EFFECTIVE_RUNTIME_CONFIG", result, expected_context_hash=expected_context_hash,
                    candidate_evidence=candidate_evidence)
 
-
-def _reference_taskset_witness(raw_inputs: Any, certified_envelope: Mapping[str, Any],
-                               fresh_reference: Any | None) -> dict[str, Any]:
-    if fresh_reference is not None:
-        return {"reference_taskset": fresh_reference.to_dict() if hasattr(fresh_reference, "to_dict") else fresh_reference}
-    envelope_hash = sha256_object(dict(certified_envelope))
-    from formal_toolchain.reference.task_mapping import build_reference_taskset
-    budget_by_task = {
-        str(name): {**dict(row), "b_bar": int(certified_envelope["upper"][name]),
-                    "certified_envelope_hash": envelope_hash}
-        for name, row in raw_inputs.target.provenance["budget_by_task"].items()
-    }
-    reference = build_reference_taskset(
-        raw_inputs.target.ordered_tasks, budget_by_task,
-        xf=raw_inputs.target.runtime_config.c_amc_sem_lo_degradation_ratio,
-        certified_envelope=certified_envelope,
-        semantic_context_hash=str(raw_inputs.contexts["semantic_context"]["hash"]),
-        effective_runtime_config_hash=sha256_object(export_formal_target_config(raw_inputs.target)),
-    )
-    return {"reference_taskset": reference.to_dict()}
 
 
 def _verify_reference_taskset_obligation(*, raw_inputs=None, candidate_evidence=None,

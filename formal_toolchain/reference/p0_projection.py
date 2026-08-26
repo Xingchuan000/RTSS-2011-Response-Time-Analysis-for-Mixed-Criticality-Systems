@@ -44,9 +44,6 @@ def _category_int(release_class: str) -> int:
     return mapping.get(release_class, 0)
 
 
-def _encode_job_key_as_int(key: tuple[str, int] | None) -> int:
-    return _encode_job_key(key)
-
 
 def project_executable_reference_state(
     *,

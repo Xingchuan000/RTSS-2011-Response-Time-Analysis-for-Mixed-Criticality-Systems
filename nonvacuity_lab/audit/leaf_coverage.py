@@ -63,8 +63,7 @@ def aggregate_hout_events(paths: Iterable[Path]) -> dict[LeafKey, dict[str, Any]
     return rows
 
 
-def audit_all_leaves(*, seed_root: Path, hout_root: Path, source_root: Path) -> list[dict[str, Any]]:
-    del source_root  # Kept in the public signature for CLI compatibility.
+def audit_all_leaves(*, seed_root: Path, hout_root: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     hout_paths = sorted(Path(hout_root).rglob("*.json")) + sorted(Path(hout_root).rglob("*.jsonl"))
     hout_by_leaf = aggregate_hout_events(hout_paths)

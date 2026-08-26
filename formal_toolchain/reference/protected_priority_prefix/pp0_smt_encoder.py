@@ -160,12 +160,6 @@ def _idle_jump_source_binding() -> dict[str, Any]:
     }
 
 
-def _parse_template(expression: str) -> ast.AST:
-    # Existing arithmetic templates may already be SMT prefix expressions.
-    if expression.strip().startswith("("):
-        return ast.Name(id="__RAW_SMT__", ctx=ast.Load())
-    return ast.parse(expression, mode="eval").body
-
 
 def _collect_functions(expression: str) -> dict[str, int]:
     if expression.strip().startswith("("):

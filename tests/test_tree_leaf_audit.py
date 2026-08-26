@@ -48,7 +48,6 @@ def test_build_leaf_audit_fields_basic() -> None:
     fields = _build_leaf_audit_fields(
         step_index=0,
         state_vector=state_vector,
-        feature_names=policy.feature_names,
         tree_policy=policy,
         tree_info=tree_info,
         selected_action_id=2,
@@ -82,7 +81,6 @@ def test_build_leaf_audit_fields_basic() -> None:
     fields_all = _build_leaf_audit_fields(
         step_index=0,
         state_vector=state_vector,
-        feature_names=policy.feature_names,
         tree_policy=policy,
         tree_info=tree_info,
         selected_action_id=2,
@@ -97,7 +95,6 @@ def test_build_leaf_audit_fields_basic() -> None:
     fields_none = _build_leaf_audit_fields(
         step_index=0,
         state_vector=state_vector,
-        feature_names=policy.feature_names,
         tree_policy=policy,
         tree_info=tree_info,
         selected_action_id=2,
@@ -128,7 +125,6 @@ def test_build_leaf_audit_fields_with_teacher() -> None:
     fields = _build_leaf_audit_fields(
         step_index=0,
         state_vector=state_vector,
-        feature_names=policy.feature_names,
         tree_policy=policy,
         tree_info=tree_info,
         selected_action_id=0,
@@ -161,7 +157,6 @@ def test_build_leaf_audit_fields_action_definitions() -> None:
     fields = _build_leaf_audit_fields(
         step_index=0,
         state_vector=state_vector,
-        feature_names=policy.feature_names,
         tree_policy=policy,
         tree_info=tree_info,
         selected_action_id=1,
@@ -197,7 +192,6 @@ def test_build_leaf_audit_fields_all_json_serializable() -> None:
         fields = _build_leaf_audit_fields(
             step_index=0,
             state_vector=state_vector,
-            feature_names=policy.feature_names,
             tree_policy=policy,
             tree_info=tree_info,
             selected_action_id=0,

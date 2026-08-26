@@ -181,13 +181,6 @@ def _task_budget_overrides(prefix: str, bounds: P0ModelBounds) -> dict[str, str]
             for slot in range(bounds.task_slots)}
 
 
-def _queue_relation_constraints(bounds: P0ModelBounds) -> list[str]:
-    del bounds
-    return [f"(= c_{field} r_{field})" for field in (
-        "queue_min_time", "queue_min_kind", "queue_min_job_key", "queue_min_token",
-        "queue_next_release_time", "queue_next_deadline_time", "queue_event_count",
-        "queue_token_epoch")]
-
 
 def compile_bound_path_effect(row: Mapping[str, Any], *, bounds: P0ModelBounds | None = None) -> str:
     """把真实路径的有限 effect IR 编译成 concrete ``c_*_post`` 方程。

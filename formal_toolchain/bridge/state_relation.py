@@ -110,9 +110,6 @@ def frontiers_isomorphic(concrete_frontier, reference_frontier) -> bool:
     return c_keys == r_keys
 
 
-def _mapped(job_map: Mapping, key):
-    return job_map.get(key)
-
 
 def normalize_terminal_kind(kind: str) -> str:
     if kind in {"PRIMARY_LO_BUDGET_CANCELLATION", "ACTIVE_LO_DROPPED_ON_MODE_SWITCH", "LO_RELEASE_DROPPED_IN_HI_MODE", "COMPLETED"}:

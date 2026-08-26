@@ -43,14 +43,6 @@ def build_phase_k_static_guard_bindings(runtime_config: Any | None) -> dict[str,
     return {name: read(name) for name in _PHASE_K_STATIC_GUARD_DEFAULTS}
 
 
-def _static_bool_formula(bindings: Mapping[str, bool], name: str) -> str:
-    if name not in bindings:
-        raise ValueError(f"PHASE_K_STATIC_GUARD_BINDING_REQUIRED:{name}")
-    value = bindings[name]
-    if not isinstance(value, bool):
-        raise ValueError(f"PHASE_K_STATIC_GUARD_NOT_BOOL:{name}")
-    return "true" if value else "false"
-
 
 def _guard_formula(source: str, *, static_guard_bindings: Mapping[str, bool] | None = None) -> str:
     """把一个真实源码 predicate 映射到有限 P0 的符号输入。
@@ -140,13 +132,6 @@ class CompiledSourceGuard:
         self.formula = formula
         self.consumed_guard_hashes = consumed_guard_hashes
 
-
-def _compile_source_guard(row: Mapping[str, Any]) -> str:
-    """兼容旧调用方；正式证明入口使用 ``compile_source_guards``。"""
-    guards = row.get("guard_ir")
-    if not isinstance(guards, list):
-        raise ValueError("SOURCE_GUARD_IR_REQUIRED")
-    return compile_source_guards(guards).formula
 
 
 def compile_and_prove_all_transition_cases(branch_map: Mapping[str, Any], *,

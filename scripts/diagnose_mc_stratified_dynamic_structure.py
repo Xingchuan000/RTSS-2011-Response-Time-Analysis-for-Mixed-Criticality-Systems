@@ -115,16 +115,6 @@ def _as_float(value: Any, default: float = 0.0) -> float:
     return number if math.isfinite(number) else default
 
 
-def _as_bool(value: Any, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "y", "on", "pass", "accepted"}:
-        return True
-    if text in {"0", "false", "no", "n", "off", "fail", "rejected"}:
-        return False
-    return default
-
 
 def normalize_period_family(value: Any) -> str:
     """Normalize the two declared period families without guessing others."""

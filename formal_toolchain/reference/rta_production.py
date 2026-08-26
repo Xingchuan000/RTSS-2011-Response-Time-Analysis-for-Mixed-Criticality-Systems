@@ -49,9 +49,6 @@ def _task_row_payload(task: ReferenceTask, row: dict[str, Any]) -> dict[str, Any
     }
 
 
-def _lo_interference(task: ReferenceTask, higher: Sequence[ReferenceTask], r: int) -> int:
-    return sum(ceil_div_nonnegative(r, j.period) * j.c_lo for j in higher)
-
 
 def lo_postfixed(task: ReferenceTask, higher: Sequence[ReferenceTask], *, max_iter: int = 100000) -> dict[str, Any]:
     """Compute the LO recurrence witness."""

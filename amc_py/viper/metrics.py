@@ -78,7 +78,6 @@ def _build_leaf_audit_fields(
     *,
     step_index: int,
     state_vector: tuple[float, ...],
-    feature_names: tuple[str, ...],
     tree_policy: TreePolicyProtocol,
     tree_info: dict[str, object],
     selected_action_id: int | None,
@@ -93,7 +92,6 @@ def _build_leaf_audit_fields(
     参数：
     - step_index: 当前步序号（从 0 开始）。
     - state_vector: 当前状态向量。
-    - feature_names: 特征名元组。
     - tree_policy: TreeBudgetPolicy 实例。
     - tree_info: select_action_id 返回的 info 字典（已包含 trace 信息）。
     - selected_action_id: 实际选中的动作编号。
@@ -348,7 +346,6 @@ def evaluate_tree_policy_once(
             audit_fields = _build_leaf_audit_fields(
                 step_index=step_count - 1,
                 state_vector=state_vector,
-                feature_names=tree_policy.feature_names,
                 tree_policy=tree_policy,
                 tree_info=info,
                 selected_action_id=action_id,

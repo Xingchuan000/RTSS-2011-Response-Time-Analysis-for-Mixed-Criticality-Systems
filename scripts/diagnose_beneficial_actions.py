@@ -215,9 +215,7 @@ def _is_pareto_beneficial(candidate_info: dict, noop_info: dict) -> bool:
     return bool(no_worse and strictly_better)
 
 
-# --- inserted helpers ---
-
-def _find_explicit_noop_action_id(env, valid_mask: list[bool]) -> int | None:
+def _find_explicit_noop_action_id(valid_mask: list[bool]) -> int | None:
     """Return the explicit noop action id when available.
 
     In the current AMC action-space implementation, include_explicit_noop appends
@@ -286,7 +284,7 @@ def _run_seed(args: argparse.Namespace, seed: int) -> list[dict[str, object]]:
     while not done:
         decision_time = int(obs.time)
         valid_mask = list(env.valid_action_mask())
-        noop_action_id = _find_explicit_noop_action_id(env, valid_mask)
+        noop_action_id = _find_explicit_noop_action_id(valid_mask)
         valid_actions = [
             idx
             for idx, is_valid in enumerate(valid_mask)

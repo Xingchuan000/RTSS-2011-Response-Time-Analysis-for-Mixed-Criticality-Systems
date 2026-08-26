@@ -86,13 +86,6 @@ def _coerce_seed_col(df: pd.DataFrame, seed_col: str) -> pd.DataFrame:
     return out
 
 
-def _rename_with_suffix_except_seed(df: pd.DataFrame, seed_col: str, suffix: str) -> pd.DataFrame:
-    mapping = {}
-    for c in df.columns:
-        if c != seed_col:
-            mapping[c] = f"{c}{suffix}"
-    return df.rename(columns=mapping)
-
 
 def _merge_sources(
     manifest: pd.DataFrame,

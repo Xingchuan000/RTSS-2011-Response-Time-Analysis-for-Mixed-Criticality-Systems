@@ -9,14 +9,12 @@ factory、预算有限域以及现有独立 checker 的实际返回值决定。c
 from __future__ import annotations
 
 import json
-from itertools import product
 from pathlib import Path
 from typing import Any, Mapping
 
 from amc_py.models import Criticality
 from amc_py.rl.actions import build_budget_action_space
 from amc_py.viper.fixed_point import fixed_point_config_from_dict, fixed_point_config_hash, quantize_value
-from amc_py.viper.integer_tree import evaluate_integer_tree
 
 from formal_toolchain.adapters.amc_taskset import export_taskset
 from formal_toolchain.adapters.runtime_config import export_formal_target_config
@@ -51,11 +49,9 @@ from formal_toolchain.policy.executable_policy import replay_deployed_policy
 from formal_toolchain.policy.mask_fallback import (
     build_mask_fallback_certificate,
     build_parametric_mask_fallback_certificate,
-    select_first_valid,
 )
 from formal_toolchain.policy.quantization import (
     deterministic_samples,
-    replay_quantize,
     verify_against_production,
 )
 from formal_toolchain.policy.selected_regions import selected_action_regions_v2
@@ -272,59 +268,6 @@ def _leaf_guards(tree: Any) -> dict[int, list[dict[str, Any]]]:
     walk(tree.root_node_id, [])
     return guards
 
-
-def _make_selected_cases(target: Any, tree: Any, fixed_data: Mapping[str, Any],
-                         actions: tuple[Any, ...], domain: Mapping[str, Any],
-                         inventory: Mapping[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """枚举有限 budget domain，并记录每个 leaf/rank 的实际 mask/fallback。"""
-
-    names = [str(task.name) for task in target.ordered_tasks]
-    domains = [tuple(int(value) for value in domain["tasks"][name]["finite_integer_domain"])
-               for name in names]
-    rankings = {int(leaf.node_id): tuple(int(action_id) for action_id in leaf.action_ranking)
-                for leaf in tree.leaves}
-    selected: list[dict[str, Any]] = []
-    selected_ids: set[int] = set()
-    fallback = False
-    noop = False
-    for values in product(*domains):
-        budgets = dict(zip(names, values))
-        adapter = target.runtime_adapter
-        if adapter is None:
-            raise ValueError("FORMAL_RUNTIME_ADAPTER_MISSING")
-        runtime_state = adapter.build_runtime_state_from_budget_vector(budgets)
-        observation = adapter.extract_observation(runtime_state)
-        runtime_mask, runtime_reasons = adapter.valid_action_mask(runtime_state)
-        runtime = {"observation": tuple(observation), "mask": tuple(runtime_mask), "reasons": tuple(runtime_reasons)}
-        quantized = tuple(replay_quantize(value, fixed_data)[0]
-                          for value in runtime["observation"])
-        leaf_id = int(evaluate_integer_tree(tree, quantized).leaf_id)
-        # 对每个 leaf 都保留一条 region witness。这样 verifier 可以检查
-        # artifact 的所有 ranking，而不是只检查 runtime 当前恰好选到的 leaf。
-        for leaf_id_for_region, ranking in rankings.items():
-            first = select_first_valid(ranking, runtime["mask"], action_dim=len(actions))
-            if first is not None:
-                selected_ids.add(first)
-                if ranking.index(first) > 0:
-                    fallback = True
-            else:
-                noop = True
-            for rank_position, action in enumerate(actions):
-                selected.append({
-                    "leaf_id": leaf_id_for_region,
-                    "rank_position": rank_position,
-                    "action_id": int(action.action_id),
-                    "valid": first == action.action_id,
-                    "mask": list(runtime["mask"]),
-                    "mask_reasons": list(runtime["reasons"]),
-                    "ranking": list(ranking),
-                    "runtime_state": runtime_state,
-                    "action_definitions": proof_safe(list(inventory["action_definitions"])),
-                    "actual_tree_leaf_id": leaf_id,
-                })
-    return selected, {"fallback_success": fallback, "implicit_noop": noop,
-                      "selected_action_ids": sorted(selected_ids),
-                      "state_count": len(list(product(*domains)))}
 
 
 def calculate_raw_evidence(request_path: Path, *, source_root: Path | None = None,

@@ -36,48 +36,6 @@ def _function_node(source: str, qualified_name: str) -> ast.FunctionDef | ast.As
     return None
 
 
-def _has_none_base_return(source: str, qualified_name: str) -> bool:
-    node = _function_node(source, qualified_name)
-    if node is None:
-        return False
-    for item in ast.walk(node):
-        if isinstance(item, ast.Return) and isinstance(item.value, ast.Tuple) and len(item.value.elts) == 2:
-            left, right = item.value.elts
-            if isinstance(left, ast.Constant) and left.value is None and isinstance(right, ast.Name) and right.id == "base":
-                return True
-    return False
-
-
-def _legacy_noop_branch_returns_none_base(source: str) -> bool:
-    node = _function_node(source, "IntegerTreeBudgetPolicy.select_action_id")
-    if node is None:
-        return False
-    for item in ast.walk(node):
-        if not isinstance(item, ast.If):
-            continue
-        has_target_compare = False
-        for sub in ast.walk(item.test):
-            if (
-                isinstance(sub, ast.Compare)
-                and isinstance(sub.left, ast.Name)
-                and sub.left.id == "selection_semantics"
-                and len(sub.ops) == 1
-                and isinstance(sub.ops[0], ast.Eq)
-                and len(sub.comparators) == 1
-                and isinstance(sub.comparators[0], ast.Constant)
-                and sub.comparators[0].value == ("top" + "1_or_noop")
-            ):
-                has_target_compare = True
-                break
-        if not has_target_compare:
-            continue
-        for sub in ast.walk(item):
-            if isinstance(sub, ast.Return) and isinstance(sub.value, ast.Tuple) and len(sub.value.elts) == 2:
-                left, right = sub.value.elts
-                if isinstance(left, ast.Constant) and left.value is None and isinstance(right, ast.Name) and right.id == "base":
-                    return True
-        return False
-    return False
 
 
 def _detect_selection_semantics(source: str) -> str | None:

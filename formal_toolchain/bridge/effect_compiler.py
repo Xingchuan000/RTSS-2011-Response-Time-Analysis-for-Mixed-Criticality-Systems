@@ -18,29 +18,6 @@ _PHASE_K_STATIC_EFFECT_DEFAULTS: dict[str, bool] = {
 }
 
 
-def _runtime_config_value(runtime_config: Any | None, name: str, default: Any) -> Any:
-    """Read one immutable runtime-config value from object or exported mapping.
-
-    Formal replay normally receives the target runtime config object, while
-    some validation paths use the exported ``effective_runtime_config.json``
-    shape.  Both are accepted so the static effect binding is deterministic in
-    candidate compilation and fresh verification.
-    """
-    if runtime_config is None:
-        return default
-    if isinstance(runtime_config, Mapping):
-        fields = runtime_config.get("fields")
-        if isinstance(fields, Mapping) and name in fields:
-            field = fields[name]
-            if isinstance(field, Mapping) and "value" in field:
-                return field["value"]
-            return field
-        value = runtime_config.get(name, default)
-        if isinstance(value, Mapping) and "value" in value:
-            return value["value"]
-        return value
-    return getattr(runtime_config, name, default)
-
 
 def build_phase_k_static_effect_bindings(runtime_config: Any | None) -> dict[str, bool]:
     """Bind experiment-only helper calls to immutable proof-request config.

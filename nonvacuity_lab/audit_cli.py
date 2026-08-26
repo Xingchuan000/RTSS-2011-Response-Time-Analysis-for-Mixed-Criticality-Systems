@@ -37,11 +37,7 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"{label} 不存在或不是目录: {path}")
 
     args.out.mkdir(parents=True, exist_ok=False)
-    leaf_rows = audit_all_leaves(
-        seed_root=seed_root,
-        hout_root=hout_root,
-        source_root=source_root,
-    )
+    leaf_rows = audit_all_leaves(seed_root=seed_root, hout_root=hout_root)
     rta_rows = scan_rta_slack([proof_root])
     bundle_rows = build_bundle_inventory(proof_root)
 

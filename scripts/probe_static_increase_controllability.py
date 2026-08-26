@@ -37,6 +37,25 @@ from amc_py.task_level_diagnostics import summarize_task_level_cancellations
 from scripts.scan_qos_pressure_tasksets import parse_int_list, parse_int_list_or_half_open_range
 
 
+def _to_float(value: Any, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return float(value) != 0.0
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "t"}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
 
@@ -214,22 +233,6 @@ def _build_task_aggregate(
         for row in rows:
             rows_by_index[int(row["task_index"])].append(row)
 
-    def _to_float(value: Any, default: float = 0.0) -> float:
-        try:
-            if value is None:
-                return default
-            return float(value)
-        except Exception:
-            return default
-
-    def _to_bool(value: Any) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return float(value) != 0.0
-        if value is None:
-            return False
-        return str(value).strip().lower() in {"1", "true", "yes", "y", "t"}
 
     merged: list[dict[str, Any]] = []
     for idx, task in enumerate(ordered_tasks):
@@ -303,22 +306,6 @@ def _valid_increase_sources(task_agg: list[dict[str, Any]], top_k: int) -> list[
        cancellation pressure + positive increase headroom.
     """
 
-    def _to_float(value: Any, default: float = 0.0) -> float:
-        try:
-            if value is None:
-                return default
-            return float(value)
-        except Exception:
-            return default
-
-    def _to_bool(value: Any) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return float(value) != 0.0
-        if value is None:
-            return False
-        return str(value).strip().lower() in {"1", "true", "yes", "y", "t"}
 
     def _base_ok(row: dict[str, Any]) -> bool:
         is_lo = bool(row.get("is_lo", False)) or "lo" in str(row.get("task_name", "")).lower()

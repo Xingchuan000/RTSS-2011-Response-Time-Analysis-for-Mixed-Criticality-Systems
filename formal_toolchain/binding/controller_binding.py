@@ -219,41 +219,6 @@ def _analyze_frozen_wrapper_noop(source: str) -> dict[str, Any]:
     }
 
 
-def _analyze_frozen_wrapper_selected_action(source: str) -> dict[str, Any]:
-    """Bind the synchronous normal-action branch separately from plant run_until."""
-    function = _top_level_function(source, "simulate_ordered_taskset_with_agent")
-    if function is None:
-        return {"status": "FAIL", "failure": {"code": "FROZEN_CONTROLLER_WRAPPER_NOT_FOUND"}}
-    guards = [
-        node for node in ast.walk(function)
-        if isinstance(node, ast.If)
-        and ast.unparse(node.test) == "action is None or bool(getattr(action, 'is_noop', False))"
-    ]
-    if len(guards) != 1:
-        return {"status": "FAIL", "failure": {"code": "SELECTED_ACTION_BRANCH_NOT_UNIQUE"}}
-    guard = guards[0]
-    calls = _calls(list(guard.orelse))
-    branch_source = _statement_sources(list(guard.orelse))
-    apply_calls = [call for call in calls if call == "engine.apply_budget_updates"]
-    plant_calls = [call for call in calls if "run_until" in call]
-    ok = len(apply_calls) == 1 and not plant_calls
-    return {
-        "status": "PASS" if ok else "FAIL",
-        "failure": None if ok else {"code": "SELECTED_ACTION_RUNTIME_BINDING_FAILED"},
-        "source_kind": "CONTROLLER_SYNCHRONOUS",
-        "source_binding": "engine.apply_budget_updates",
-        "synchronous_budget_update_call": len(apply_calls) == 1,
-        "plant_progression_in_branch": bool(plant_calls),
-        "plant_progression_separated": not plant_calls,
-        "timing_projection": "STUTTER" if ok else "UNRESOLVED",
-        "zero_time": True,
-        "branch_source": list(branch_source),
-        "branch_binding_hash": sha256_object({
-            "guard": ast.dump(guard, include_attributes=False),
-            "branch_source": branch_source,
-        }),
-    }
-
 
 def _analyze_env_selected_action(source: str) -> dict[str, Any]:
     """Bind the normal single-action branch of the deployed environment.

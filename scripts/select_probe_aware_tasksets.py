@@ -33,9 +33,6 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _bool(s: pd.Series) -> pd.Series:
-    return s.astype(str).str.lower().isin(["true", "1", "yes", "y"])
-
 
 def main() -> None:
     args = parse_args()
