@@ -110,23 +110,72 @@ def _atomic_budget_binding(source: str) -> dict[str, Any]:
     if function is None:
         return {"status": "FAIL", "failure": {"code": "FROZEN_BUDGET_APPLY_NOT_FOUND"}}
 
-    normalized = _assignment(function, "normalized", "{str(name): int(value) for name, value in updates.items()}")
+    normalized_assign = next(
+        (
+            node
+            for node in function.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "normalized" for target in node.targets)
+            and isinstance(node.value, ast.DictComp)
+        ),
+        None,
+    )
+    normalized_key_name: str | None = None
+    normalized_value_name: str | None = None
+    normalized_source_exact = False
+    if normalized_assign is not None:
+        comp = normalized_assign.value
+        assert isinstance(comp, ast.DictComp)
+        if len(comp.generators) == 1:
+            generator = comp.generators[0]
+            if (
+                isinstance(generator.target, ast.Tuple)
+                and len(generator.target.elts) == 2
+                and all(isinstance(item, ast.Name) for item in generator.target.elts)
+                and ast.unparse(generator.iter) == "updates.items()"
+            ):
+                normalized_key_name = generator.target.elts[0].id
+                normalized_value_name = generator.target.elts[1].id
+                normalized_source_exact = (
+                    ast.unparse(comp.key) == f"str({normalized_key_name})"
+                    and ast.unparse(comp.value) == f"int({normalized_value_name})"
+                )
+
     commit = _exact_call(function, "self.budgets.update")
     set_budget_calls = [call for call in _calls(function) if ast.unparse(call.func) == "self.set_budget"]
     loops = [node for node in ast.walk(function) if isinstance(node, ast.For)]
-    validation_loop = next((node for node in loops if ast.unparse(node.target) in {"name, value", "(name, value)"}), None)
+    validation_loop = next(
+        (
+            node
+            for node in loops
+            if normalized_key_name is not None
+            and normalized_value_name is not None
+            and ast.unparse(node.target).replace("(", "").replace(")", "")
+            == f"{normalized_key_name}, {normalized_value_name}"
+            and ast.unparse(node.iter) == "normalized.items()"
+        ),
+        None,
+    )
     normalized_validation = (
-        validation_loop is not None
-        and any(isinstance(node, ast.Compare) and ast.unparse(node) == "value <= 0"
-                for node in ast.walk(validation_loop))
-        and any(isinstance(node, ast.Compare) and ast.unparse(node) == "name not in self.budgets"
-                for node in ast.walk(validation_loop))
+        normalized_source_exact
+        and validation_loop is not None
+        and any(
+            isinstance(node, ast.Compare)
+            and ast.unparse(node) == f"{normalized_value_name} <= 0"
+            for node in ast.walk(validation_loop)
+        )
+        and any(
+            isinstance(node, ast.Compare)
+            and ast.unparse(node) == f"{normalized_key_name} not in self.budgets"
+            for node in ast.walk(validation_loop)
+        )
     )
     commit_after_validation = (
-        normalized is not None
+        normalized_source_exact
         and validation_loop is not None
         and commit is not None
         and getattr(commit, "lineno", 0) > getattr(validation_loop, "end_lineno", 0)
+        and len(commit.args) == 1
         and ast.unparse(commit.args[0]) == "normalized"
         and not set_budget_calls
     )
@@ -134,13 +183,13 @@ def _atomic_budget_binding(source: str) -> dict[str, Any]:
     return {
         "status": "PASS" if ok else "FAIL",
         "failure": None if ok else {"code": "ATOMIC_BUDGET_COMMIT_BINDING_FAILED"},
-        "normalize_all": normalized is not None,
+        "normalize_all": normalized_source_exact,
         "validate_all_before_commit": commit_after_validation,
         "commit_call": "self.budgets.update(normalized)" if commit_after_validation else None,
         "partial_mutation_free": commit_after_validation,
         "binding_hash": sha256_object({
             "source": ast.dump(function, include_attributes=False),
-            "normalized": normalized is not None,
+            "normalized": normalized_source_exact,
             "validation_loop": ast.dump(validation_loop, include_attributes=False)
             if validation_loop is not None else None,
         }),
