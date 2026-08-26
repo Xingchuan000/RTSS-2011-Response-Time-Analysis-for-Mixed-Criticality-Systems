@@ -96,16 +96,32 @@ def derive_controller_fields(
         and noop.get("timing_projection") == "STUTTER"
     )
     selected = controller_binding.get("selected_action_runtime_binding", {})
-    selected_stutter = (
+    selected_stutter_if_preclosed = (
         isinstance(selected, Mapping)
         and selected.get("status") == "PASS"
-        and selected.get("timing_projection") == "STUTTER"
+        and selected.get("timing_projection") == "STUTTER_IF_PRECLOSED"
+        and selected.get("requires_preclosed_boundary") is True
     )
-    selected_active_unchanged = selected_stutter and selected.get("active_jobs_unchanged") is True
-    selected_ready_unchanged = selected_stutter and selected.get("ready_jobs_unchanged") is True
-    selected_running_unchanged = selected_stutter and selected.get("running_job_unchanged") is True
-    selected_service_unchanged = selected_stutter and selected.get("service_unchanged") is True
-    selected_mode_unchanged = selected_stutter and selected.get("mode_unchanged") is True
+    selected_active_unchanged = (
+        selected_stutter_if_preclosed and selected.get("active_jobs_unchanged") is True
+    )
+    selected_ready_unchanged = (
+        selected_stutter_if_preclosed and selected.get("ready_jobs_unchanged") is True
+    )
+    selected_running_unchanged_if_preclosed = (
+        selected_stutter_if_preclosed
+        and selected.get("running_job_unchanged_if_preclosed") is True
+    )
+    selected_service_unchanged = (
+        selected_stutter_if_preclosed and selected.get("service_unchanged") is True
+    )
+    selected_mode_unchanged = (
+        selected_stutter_if_preclosed and selected.get("mode_unchanged") is True
+    )
+    selected_frontier_unchanged_if_preclosed = (
+        selected_stutter_if_preclosed
+        and selected.get("effective_event_frontier_unchanged_if_preclosed") is True
+    )
     return {
         "witnesses": [controller_binding, event_binding, recovery_binding, initial_state, boot],
         "binding": controller_binding,
@@ -143,37 +159,38 @@ def derive_controller_fields(
         and noop.get("plant_progress_separated") is True,
         "selected_active_unchanged": selected_active_unchanged,
         "selected_ready_unchanged": selected_ready_unchanged,
-        "selected_running_unchanged": selected_running_unchanged,
+        "selected_requires_preclosed_boundary": selected_stutter_if_preclosed,
+        "selected_running_unchanged_if_preclosed": selected_running_unchanged_if_preclosed,
         "selected_service_unchanged": selected_service_unchanged,
         "selected_mode_unchanged": selected_mode_unchanged,
         "selected_released_job_fields_unchanged": (
-            selected_stutter and selected.get("released_job_fields_unchanged") is True
+            selected_stutter_if_preclosed and selected.get("released_job_fields_unchanged") is True
         ),
         "selected_released_job_snapshot_unchanged": (
-            selected_stutter and selected.get("released_job_snapshot_unchanged") is True
+            selected_stutter_if_preclosed and selected.get("released_job_snapshot_unchanged") is True
         ),
         "selected_released_job_service_unchanged": (
-            selected_stutter and selected.get("released_job_service_unchanged") is True
+            selected_stutter_if_preclosed and selected.get("released_job_service_unchanged") is True
         ),
         "selected_released_job_demand_unchanged": (
-            selected_stutter and selected.get("released_job_demand_unchanged") is True
+            selected_stutter_if_preclosed and selected.get("released_job_demand_unchanged") is True
         ),
         "selected_released_job_classification_unchanged": (
-            selected_stutter and selected.get("released_job_classification_unchanged") is True
+            selected_stutter_if_preclosed and selected.get("released_job_classification_unchanged") is True
         ),
         "selected_completion_miss_unchanged": (
-            selected_stutter and selected.get("completion_miss_unchanged") is True
+            selected_stutter_if_preclosed and selected.get("completion_miss_unchanged") is True
         ),
-        "selected_effective_event_frontier_unchanged": (
-            selected_stutter and selected.get("effective_event_frontier_unchanged") is True
+        "selected_effective_event_frontier_unchanged_if_preclosed": (
+            selected_frontier_unchanged_if_preclosed
         ),
         "selected_plant_progression_separated": (
-            selected_stutter and selected.get("plant_progression_separated") is True
+            selected_stutter_if_preclosed and selected.get("plant_progression_separated") is True
         ),
-        "selected_timing_stutter": selected_stutter,
+        "selected_timing_stutter_if_preclosed": selected_stutter_if_preclosed,
         "changes_active": not selected_active_unchanged,
         "changes_ready": not selected_ready_unchanged,
-        "changes_running": not selected_running_unchanged,
+        "changes_running_if_preclosed": not selected_running_unchanged_if_preclosed,
         "changes_current_service": not selected_service_unchanged,
         "changes_mode": not selected_mode_unchanged,
         "changes_service": not selected_service_unchanged,
