@@ -155,6 +155,7 @@ def build_first_bad_window(
             "sparse_but_complete_relative_release_demand_universal_domain",
             "known_phase_unroll_avoids_dead_transition_branches",
             "controller_formula_only_on_gcd-compatible_relative_ticks",
+            "first_bad_window_uses_exact_deployed_p5_not_induction_summary",
         ),
     )
 

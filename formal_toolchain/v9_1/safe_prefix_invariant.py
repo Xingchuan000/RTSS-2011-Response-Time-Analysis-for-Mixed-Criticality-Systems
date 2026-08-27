@@ -10,7 +10,7 @@ from .boot_state import encode_canonical_boot_state
 from .environment_encoder import SymbolicEnvironment
 from .invariant_templates import build_psi, named_psi_clauses
 from .symbolic_state import BoundModel, SymbolicKernelState, declare_state
-from .transition_encoder import encode_phase_step, encode_step
+from .transition_encoder import encode_p5_invariant_summary, encode_phase_step, encode_step
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,9 +65,17 @@ class SafePrefixInvariant:
         )
 
     def phase_inductiveness_counterexample(
-        self, env: SymbolicEnvironment, phase: int, *, prefix: str = "ind.phase"
+        self, env: SymbolicEnvironment, phase: int, *, prefix: str = "ind.phase",
+        use_p5_summary: bool = False,
     ) -> z3.BoolRef:
-        """Phase-local form of the same safe-prefix induction obligation."""
+        """Phase-local safe-prefix induction obligation.
+
+        ``use_p5_summary`` is valid only for P5 after the verifier has discharged
+        the independent P5 summary-soundness obligations.  The summary relation
+        is a superset of the exact deployed controller transition, so UNSAT under
+        the summary implies exact P5 preservation while avoiding irrelevant tree
+        and floating-point arithmetic inside this invariant theorem.
+        """
 
         phase = int(phase)
         if not 0 <= phase <= 7:
@@ -79,13 +87,18 @@ class SafePrefixInvariant:
             env.phase.origin_time == state.t,
             self.formula(state),
             state.hi_miss_ledger == 0,
-            encode_phase_step(state, next_state, self.model, env, phase=phase),
+            (
+                encode_p5_invariant_summary(state, next_state, self.model)
+                if phase == 5 and use_p5_summary
+                else encode_phase_step(state, next_state, self.model, env, phase=phase)
+            ),
             next_state.hi_miss_ledger == 0,
             z3.Not(self.formula(next_state)),
         )
 
     def phase_inductiveness_clause_counterexamples(
-        self, env: SymbolicEnvironment, phase: int, *, prefix: str = "ind.phase.diag"
+        self, env: SymbolicEnvironment, phase: int, *, prefix: str = "ind.phase.diag",
+        use_p5_summary: bool = False,
     ) -> dict[str, z3.BoolRef]:
         """Return one post-state Psi-clause counterexample per named clause.
 
@@ -105,7 +118,11 @@ class SafePrefixInvariant:
             env.phase.origin_time == state.t,
             self.formula(state),
             state.hi_miss_ledger == 0,
-            encode_phase_step(state, next_state, self.model, env, phase=phase),
+            (
+                encode_p5_invariant_summary(state, next_state, self.model)
+                if phase == 5 and use_p5_summary
+                else encode_phase_step(state, next_state, self.model, env, phase=phase)
+            ),
             next_state.hi_miss_ledger == 0,
         )
         return {

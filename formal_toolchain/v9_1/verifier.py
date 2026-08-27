@@ -25,6 +25,7 @@ from formal_toolchain.v9_1.constants import (
 )
 from formal_toolchain.v9_1.environment_encoder import declare_environment
 from formal_toolchain.v9_1.formula_solver import FormulaReceipt, solve_formula
+from formal_toolchain.v9_1.p5_summary import build_p5_summary_soundness_obligations
 from formal_toolchain.v9_1.readiness import blocker_rows, proof_pipeline_ready
 from formal_toolchain.v9_1.safe_prefix_invariant import SafePrefixInvariant
 from formal_toolchain.v9_1.symbolic_state import BoundModel
@@ -243,7 +244,36 @@ def verify_bundle_v9_1(
         "FIRST_HI_BAD_PREFIX_REFLECTION": "PASS",
     })
 
-    # 2) Safe-prefix invariant: initial and conditional inductiveness.
+    # 2) P5 controller-summary soundness.  Safe-prefix induction does not need
+    # observation/tree arithmetic once these compositional obligations prove that
+    # every exact FirstValid update is contained in the bounded-budget/history
+    # summary relation.  FirstBadWindow still uses the exact deployed P5 encoder.
+    _write_progress(out, "P5_CONTROLLER_SUMMARY_SOUNDNESS", timeout_ms=int(timeout_ms))
+    p5_summary_receipts: list[dict[str, Any]] = []
+    for obligation in build_p5_summary_soundness_obligations(model, prefix="verify.p5.summary"):
+        receipt = solve_formula(
+            obligation.obligation_id, obligation.counterexample, timeout_ms=timeout_ms
+        )
+        row = receipt.as_dict()
+        row["explanation"] = obligation.explanation
+        p5_summary_receipts.append(row)
+        if receipt.result != "UNSAT":
+            statuses["P5_CONTROLLER_SUMMARY_SOUNDNESS"] = _receipt_status(receipt)
+            receipts["p5_controller_summary_soundness"] = p5_summary_receipts
+            summary = _fail_summary(
+                request, statuses,
+                code=f"P5_CONTROLLER_SUMMARY_{receipt.result}:{obligation.obligation_id}",
+            )
+            summary["binding_root_hash"] = recomputed["binding_root_hash"]
+            summary["window_encoder_version"] = ENCODER_VERSION
+            _write(out / "proof_receipts.json", receipts)
+            _write(out / "proof_summary.json", summary)
+            return summary
+    receipts["p5_controller_summary_soundness"] = p5_summary_receipts
+    statuses["P5_CONTROLLER_SUMMARY_SOUNDNESS"] = "PASS"
+    _write(out / "proof_receipts.partial.json", receipts)
+
+    # 3) Safe-prefix invariant: initial and conditional inductiveness.
     invariant = SafePrefixInvariant(model)
     _write_progress(out, "SAFE_PREFIX_INITIAL", timeout_ms=int(timeout_ms))
     initial = solve_formula(
@@ -288,7 +318,8 @@ def verify_bundle_v9_1(
         inductive = solve_formula(
             f"SAFE_PREFIX_INDUCTIVE_P{phase}",
             invariant.phase_inductiveness_counterexample(
-                ind_env, phase, prefix="verify.ind"
+                ind_env, phase, prefix="verify.ind",
+                use_p5_summary=(phase == 5),
             ),
             timeout_ms=timeout_ms,
             capture_model=True,
@@ -309,7 +340,8 @@ def verify_bundle_v9_1(
                 f"verify.ind.p{phase}.diag.env", model, release_count=1
             )
             for clause_name, formula in invariant.phase_inductiveness_clause_counterexamples(
-                diag_env, phase, prefix="verify.ind.diag"
+                diag_env, phase, prefix="verify.ind.diag",
+                use_p5_summary=(phase == 5),
             ).items():
                 clause_receipt = solve_formula(
                     f"SAFE_PREFIX_INDUCTIVE_P{phase}_CLAUSE_{clause_name}",
@@ -334,7 +366,7 @@ def verify_bundle_v9_1(
         return summary
     statuses["SAFE_PREFIX_INVARIANT_CONDITIONAL_INDUCTIVENESS"] = "PASS"
 
-    # 3) Finite two-slot carry-in adequacy meta-theorems.
+    # 4) Finite two-slot carry-in adequacy meta-theorems.
     _write_progress(out, "CARRY_IN_ADEQUACY", timeout_ms=int(timeout_ms))
     carry_receipts: list[dict[str, Any]] = []
     for obligation in build_two_slot_carry_in_obligations(model, prefix="verify.carry"):
@@ -356,7 +388,7 @@ def verify_bundle_v9_1(
     receipts["carry_in"] = carry_receipts
     _write(out / "proof_receipts.partial.json", receipts)
 
-    # 4) Per-HI first-bad finite windows, regenerated here.  Candidate-provided
+    # 5) Per-HI first-bad finite windows, regenerated here.  Candidate-provided
     # SMT files are not opened or parsed anywhere in this route.  SAT windows
     # are classified immediately so a large encoding is never retained merely
     # to classify it after every other HI task has been solved.

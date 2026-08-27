@@ -315,6 +315,41 @@ def _copy_history(z: SymbolicKernelState, zp: SymbolicKernelState) -> list[z3.Bo
     return clauses
 
 
+def encode_p5_invariant_summary(
+    z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel
+) -> z3.BoolRef:
+    """Sound over-approximation of P5 used only for Psi inductiveness.
+
+    The exact deployed controller remains encoded by :func:`encode_p5_controller`
+    in every FirstBadWindow.  For invariant preservation, observation/tree details
+    are irrelevant once separate machine obligations establish that FirstValid can
+    only choose a mask-valid candidate and every such candidate obeys controller
+    budget bounds.  Enabled P5 therefore permits *any* bounded post budget and any
+    post history in the conservative history domain; disabled P5 is exact identity.
+    Proving Psi under this superset is stronger than proving it under the exact P5.
+    """
+
+    enabled = (z.t % model.agent_period) == 0
+    clauses = _phase(z, zp, 5, 6) + _frame_state(
+        z, zp, model, mutable=frozenset({"budgets", "history"})
+    )
+    history_identity = z3.And(*_copy_history(z, zp))
+    clauses.append(z3.Implies(enabled, z3.And(*_history_domain(zp, model))))
+    clauses.append(z3.Implies(z3.Not(enabled), history_identity))
+    for task in model.tasks:
+        clauses.append(z3.Implies(
+            enabled,
+            z3.And(
+                zp.budgets[task.name] >= task.budget_floor,
+                zp.budgets[task.name] <= task.budget_upper,
+            ),
+        ))
+        clauses.append(z3.Implies(
+            z3.Not(enabled), zp.budgets[task.name] == z.budgets[task.name]
+        ))
+    return z3.And(*clauses)
+
+
 def encode_p5_controller(z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
     decision = encode_controller_decision(z, model)
     clauses = _phase(z, zp, 5, 6) + _frame_state(z, zp, model, mutable=frozenset({"budgets", "history"}))

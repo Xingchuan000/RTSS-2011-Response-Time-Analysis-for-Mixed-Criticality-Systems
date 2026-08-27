@@ -36,5 +36,8 @@ def test_active_v9_verifier_has_no_rta_terminal():
     for legacy in ("FULL_ALL_TASK_REFERENCE_RTA", "RAW_PREFIX_ALL_TASK_RTA", "PROTECTED_PREFIX_ALL_TASK_RTA"):
         assert legacy not in text
     assert "WINDOW_ENCODING_UNRESOLVED" in text
-    assert "V9_1_TRUSTED_PROOF_REGENERATION_UNBOUND" in text
+    assert "V9_1_TRUSTED_PROOF_REGENERATION_UNBOUND" not in text
+    assert "build_first_bad_window" in text
+    assert "solve_formula" in text
+    assert '"candidate_assertions_trusted": False' in text
     assert "replay_unsat" not in text
