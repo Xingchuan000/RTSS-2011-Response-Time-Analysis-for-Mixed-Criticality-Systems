@@ -76,7 +76,8 @@ def declare_environment(
     release_times: dict[tuple[str, int], int] = {}
     constraints: list[z3.BoolRef] = list(periodic_phase_constraints(phase, model, model.agent_period))
     for task in model.tasks:
-        upper = task.c_hi if task.criticality == "HI" else task.c_lo
+        lower = task.actual_demand_min
+        upper = task.actual_demand_upper
         if allowed_ticks_by_task is None:
             ticks = range(release_count)
         else:
@@ -89,7 +90,7 @@ def declare_environment(
             value = z3.Int(f"{prefix}.A.{task.name}.{tick}")
             demands[key] = value
             release_times[key] = tick
-            constraints.append(z3.And(value >= 1, value <= upper))
+            constraints.append(z3.And(value >= lower, value <= upper))
     return SymbolicEnvironment(demands, tuple(constraints), release_times, phase, int(release_count))
 
 

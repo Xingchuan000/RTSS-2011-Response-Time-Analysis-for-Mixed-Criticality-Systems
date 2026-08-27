@@ -149,6 +149,38 @@ def _p3_snapshot_counterexample(model: BoundModel) -> z3.BoolRef:
     )
 
 
+
+def _release_effective_demand_counterexample(model: BoundModel) -> z3.BoolRef:
+    """Refute any mismatch between frozen raw demand and P3 effective demand."""
+
+    z = declare_state("conf.demand.z", model)
+    zp = declare_state("conf.demand.zp", model)
+    env = declare_environment("conf.demand.env", model, release_count=1)
+    inv = SafePrefixInvariant(model)
+    bad: list[z3.BoolRef] = []
+    for task in model.tasks:
+        due = z3.And(z.t % task.period == 0, z.eta[task.name] == task.period)
+        slot = 0 if task.criticality == "HI" else 1
+        post = zp.jobs[(task.name, slot)]
+        demand = env.actual_demands[(task.name, 0)]
+        if task.criticality == "HI":
+            expected = demand
+        else:
+            degraded = int(task.degraded_cost or task.c_lo)
+            expected = z3.If(
+                z.mode_hi,
+                z3.If(demand < degraded, demand, degraded),
+                z3.If(demand < z.budgets[task.name] + 1, demand, z.budgets[task.name] + 1),
+            )
+        bad.append(z3.And(due, post.effective_demand != expected))
+    return z3.And(
+        *env.constraints,
+        env.phase.origin_time == z.t,
+        inv.formula(z),
+        encode_p3_arrival_freeze(z, zp, model, env),
+        z3.Or(*bad),
+    )
+
 def _p7_time_service_counterexample(model: BoundModel) -> z3.BoolRef:
     z = declare_state("conf.p7.z", model)
     zp = declare_state("conf.p7.zp", model)
@@ -204,6 +236,8 @@ def prove_universal_conformance(
         ("V9_1_PHASE_ORDER_TOTALITY", _phase_order_counterexample(model)),
         ("V9_1_P2_OBSERVE_ONLY", _p2_observe_only_counterexample(model)),
         ("V9_1_P3_RELEASE_SNAPSHOT", _p3_snapshot_counterexample(model)),
+        ("V9_1_RELEASE_EFFECTIVE_DEMAND_CORRESPONDENCE",
+         _release_effective_demand_counterexample(model)),
         ("V9_1_P7_TIME_AND_SERVICE", _p7_time_service_counterexample(model)),
         ("V9_1_FIRST_HI_MISS_REFLECTION", _hi_miss_reflection_counterexample(model)),
     )

@@ -32,6 +32,8 @@ class TaskBound:
     degraded_cost: int | None = None
     normalization_min_cost: int = 0
     normalization_max_cost: int | None = None
+    actual_demand_min: int = 1
+    actual_demand_max: int | None = None
 
     def __post_init__(self) -> None:
         if self.period <= 0 or self.deadline <= 0:
@@ -47,6 +49,13 @@ class TaskBound:
             raise ValueError("task budget bounds are invalid")
         if self.normalization_max_cost is not None and self.normalization_max_cost <= self.normalization_min_cost:
             raise ValueError("task normalization bounds are invalid")
+        actual_upper = self.actual_demand_max if self.actual_demand_max is not None else (
+            self.c_hi if self.criticality == "HI" else self.c_lo
+        )
+        if self.actual_demand_min < 1 or actual_upper < self.actual_demand_min:
+            raise ValueError("task actual-demand bounds are invalid")
+        if self.criticality == "HI" and actual_upper > self.c_hi:
+            raise ValueError("HI actual demand cannot exceed C_HI")
 
     @property
     def budget_upper(self) -> int:
@@ -57,6 +66,18 @@ class TaskBound:
         if self.normalization_max_cost is not None:
             return self.normalization_max_cost
         return self.c_hi if self.criticality == "HI" else max(self.c_lo, self.deadline)
+
+    @property
+    def actual_demand_upper(self) -> int:
+        if self.actual_demand_max is not None:
+            return self.actual_demand_max
+        return self.c_hi if self.criticality == "HI" else self.c_lo
+
+    @property
+    def history_cost_upper(self) -> int:
+        # Initial EMA/max history is C_LO, while later concrete samples can be
+        # as large as the raw executed-demand envelope.
+        return max(self.c_lo, self.actual_demand_upper)
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +147,10 @@ class BoundModel:
         normalization = numeric.get("normalization_bounds")
         if not isinstance(normalization, Mapping):
             raise ValueError("bindings do not contain frozen normalization bounds")
+        environment = bindings.get("environment_binding", {})
+        demand_rows = environment.get("raw_actual_demand_bounds_by_task")
+        if not isinstance(demand_rows, Mapping):
+            raise ValueError("bindings do not contain frozen actual-demand bounds")
         tasks = tuple(
             TaskBound(
                 name=str(row["name"]),
@@ -145,6 +170,8 @@ class BoundModel:
                 ),
                 normalization_min_cost=int(normalization[str(row["name"])]["min_cost"]),
                 normalization_max_cost=int(normalization[str(row["name"])]["max_cost"]),
+                actual_demand_min=int(demand_rows[str(row["name"])]["min"]),
+                actual_demand_max=int(demand_rows[str(row["name"])]["max"]),
             )
             for row in rows
         )
@@ -337,8 +364,8 @@ def well_formed(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
                     z3.Implies(job.present, job.release_index >= 0),
                     z3.Implies(job.present, job.release_time >= 0),
                     z3.Implies(job.present, job.absolute_deadline == job.release_time + task.deadline),
-                    z3.Implies(job.present, job.actual_demand >= 1),
-                    z3.Implies(job.present, job.actual_demand <= (task.c_hi if task.criticality == "HI" else task.c_lo)),
+                    z3.Implies(job.present, job.actual_demand >= task.actual_demand_min),
+                    z3.Implies(job.present, job.actual_demand <= task.actual_demand_upper),
                 ))
             clauses.extend((
                 z3.Implies(job.present, job.budget_at_release >= task.budget_floor),

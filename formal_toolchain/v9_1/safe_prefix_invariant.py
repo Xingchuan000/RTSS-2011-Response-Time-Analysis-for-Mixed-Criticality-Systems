@@ -6,10 +6,11 @@ from dataclasses import dataclass
 
 import z3
 
+from .boot_state import encode_canonical_boot_state
 from .environment_encoder import SymbolicEnvironment
-from .invariant_templates import build_psi
+from .invariant_templates import build_psi, named_psi_clauses
 from .symbolic_state import BoundModel, SymbolicKernelState, declare_state
-from .transition_encoder import encode_step
+from .transition_encoder import encode_phase_step, encode_step
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,28 +22,21 @@ class SafePrefixInvariant:
         return build_psi(state, self.model)
 
     def initial_constraints(self, state: SymbolicKernelState) -> tuple[z3.BoolRef, ...]:
-        clauses: list[z3.BoolRef] = [state.t == 0, state.p == 0, z3.Not(state.mode_hi),
-                                     state.hi_miss_ledger == 0,
-                                     state.frontier.selected_slot == -1,
-                                     z3.Not(state.frontier.running)]
-        for task in self.model.tasks:
-            clauses.extend((state.budgets[task.name] == task.initial_budget,
-                            state.eta[task.name] == task.period))
-        for job in state.jobs.values():
-            clauses.extend((z3.Not(job.present), z3.Not(job.removed),
-                            job.executed_service == 0))
-        clauses.extend(value == 0 for value in state.chi.recent_cost.values())
-        for task in self.model.tasks:
-            # RuntimeFeatureState.init_task initializes ema_cost to C_LO and
-            # overrun_ema to zero; max-cost-k falls back to recent execution.
-            clauses.extend((state.chi.ema_cost[task.name] == task.c_lo,
-                            state.chi.overrun_ema[task.name] == 0,
-                            state.chi.max_cost_k[task.name] == task.c_lo))
-        for window in (state.chi.mode_change_window, state.chi.lo_cancel_window,
-                       state.chi.hi_overrun_window, state.chi.lo_overrun_window,
-                       state.chi.job_start_window):
-            clauses.extend(value == 0 for value in window)
-        return tuple(clauses)
+        return encode_canonical_boot_state(state, self.model)
+
+
+    def named_clauses(self, state: SymbolicKernelState) -> dict[str, z3.BoolRef]:
+        return named_psi_clauses(state, self.model)
+
+    def initial_clause_counterexamples(
+        self, *, prefix: str = "initial.diag"
+    ) -> dict[str, z3.BoolRef]:
+        state = declare_state(prefix, self.model)
+        boot = self.initial_constraints(state)
+        return {
+            name: z3.And(*boot, z3.Not(clause))
+            for name, clause in self.named_clauses(state).items()
+        }
 
     def initial_counterexample(self, *, prefix: str = "initial") -> z3.BoolRef:
         state = declare_state(prefix, self.model)
@@ -51,17 +45,45 @@ class SafePrefixInvariant:
     def conditional_inductiveness_counterexample(
         self, env: SymbolicEnvironment, *, prefix: str = "ind"
     ) -> z3.BoolRef:
+        """Counterexample to safe-prefix-only inductiveness.
+
+        The theorem is intentionally conditioned on NoPriorHIMiss(z) and on no
+        HI miss being present after the step.  Post-miss states are outside the
+        induction domain and must not create irrelevant proof failures.
+        """
+
         state = declare_state(f"{prefix}.z", self.model)
         next_state = declare_state(f"{prefix}.zp", self.model)
-        no_new_miss = next_state.hi_miss_ledger == state.hi_miss_ledger
         return z3.And(
             *env.constraints,
             env.phase.origin_time == state.t,
             self.formula(state),
+            state.hi_miss_ledger == 0,
             encode_step(state, next_state, self.model, env),
-            no_new_miss,
+            next_state.hi_miss_ledger == 0,
             z3.Not(self.formula(next_state)),
         )
+
+    def phase_inductiveness_counterexample(
+        self, env: SymbolicEnvironment, phase: int, *, prefix: str = "ind.phase"
+    ) -> z3.BoolRef:
+        """Phase-local form of the same safe-prefix induction obligation."""
+
+        phase = int(phase)
+        if not 0 <= phase <= 7:
+            raise ValueError("V9_1_PHASE_OUT_OF_RANGE")
+        state = declare_state(f"{prefix}.p{phase}.z", self.model)
+        next_state = declare_state(f"{prefix}.p{phase}.zp", self.model)
+        return z3.And(
+            *env.constraints,
+            env.phase.origin_time == state.t,
+            self.formula(state),
+            state.hi_miss_ledger == 0,
+            encode_phase_step(state, next_state, self.model, env, phase=phase),
+            next_state.hi_miss_ledger == 0,
+            z3.Not(self.formula(next_state)),
+        )
+
 
 
 __all__ = ["SafePrefixInvariant"]

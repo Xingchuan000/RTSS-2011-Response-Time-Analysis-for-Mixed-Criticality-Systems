@@ -56,9 +56,8 @@ def job_field_consistency(state: SymbolicKernelState, model: BoundModel) -> z3.B
             clauses.extend((
                 z3.Implies(job.present, job.release_time == job.release_index * task.period),
                 z3.Implies(job.present, job.absolute_deadline == job.release_time + task.deadline),
-                z3.Implies(job.present, job.actual_demand <=
-                           (task.c_hi if task.criticality == "HI" else task.c_lo)),
-                z3.Implies(job.present, job.actual_demand >= 1),
+                z3.Implies(job.present, job.actual_demand <= task.actual_demand_upper),
+                z3.Implies(job.present, job.actual_demand >= task.actual_demand_min),
                 z3.Implies(job.present, job.tie_break == job.release_index),
             ))
             if task.criticality == "HI":
@@ -116,7 +115,7 @@ def frontier_consistency(state: SymbolicKernelState, model: BoundModel) -> z3.Bo
 def history_bounds(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
     clauses: list[z3.BoolRef] = []
     for task in model.tasks:
-        upper = task.c_hi if task.criticality == "HI" else task.c_lo
+        upper = task.history_cost_upper
         clauses.extend((
             state.chi.recent_cost[task.name] >= 0,
             state.chi.recent_cost[task.name] <= upper,
@@ -151,21 +150,27 @@ def carry_in_consistency(state: SymbolicKernelState, model: BoundModel) -> z3.Bo
     return z3.And(*clauses)
 
 
+def named_psi_clauses(
+    state: SymbolicKernelState, model: BoundModel
+) -> dict[str, z3.BoolRef]:
+    return {
+        "state_well_formedness": state_well_formedness(state, model),
+        "budget_bounds": budget_bounds(state, model),
+        "exact_periodic_eta": exact_periodic_eta(state, model),
+        "job_field_consistency": job_field_consistency(state, model),
+        "no_prior_hi_miss_consistency": no_prior_hi_miss_consistency(state, model),
+        "settled_job_consistency": settled_job_consistency(state, model),
+        "frontier_consistency": frontier_consistency(state, model),
+        "history_bounds": history_bounds(state, model),
+        "carry_in_consistency": carry_in_consistency(state, model),
+    }
+
+
 def build_psi(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
-    return z3.And(
-        state_well_formedness(state, model),
-        budget_bounds(state, model),
-        exact_periodic_eta(state, model),
-        job_field_consistency(state, model),
-        no_prior_hi_miss_consistency(state, model),
-        settled_job_consistency(state, model),
-        frontier_consistency(state, model),
-        history_bounds(state, model),
-        carry_in_consistency(state, model),
-    )
+    return z3.And(*named_psi_clauses(state, model).values())
 
 
 __all__ = ["build_psi", "budget_bounds", "carry_in_consistency", "exact_periodic_eta",
            "frontier_consistency", "history_bounds", "job_field_consistency",
-           "no_prior_hi_miss_consistency", "settled_job_consistency",
-           "state_well_formedness"]
+           "named_psi_clauses", "no_prior_hi_miss_consistency",
+           "settled_job_consistency", "state_well_formedness"]

@@ -178,24 +178,49 @@ def _exact_integer_linear_constraints(adapter: Any, task_names: list[str]) -> li
     return rows
 
 
-def _environment_domain(taskset: dict[str, Any]) -> dict[str, Any]:
+def _environment_domain(
+    taskset: dict[str, Any],
+    raw_bounds_by_task: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    rows_by_name = dict(raw_bounds_by_task or {})
+    task_names = {str(row["name"]) for row in taskset["ordered_tasks"]}
+    if rows_by_name and set(rows_by_name) != task_names:
+        raise ValueError("V9_1_ACTUAL_DEMAND_BOUND_TASKSET_MISMATCH")
+
     tasks = []
     for row in taskset["ordered_tasks"]:
+        name = str(row["name"])
         criticality = str(row["criticality"])
         c_lo = int(row["code_c_lo"])
         c_hi = int(row["code_c_hi"])
+        custom = rows_by_name.get(name)
+        if custom is None:
+            lower = 1
+            upper = c_hi if criticality == "HI" else c_lo
+            bound_kind = "AMC_TASK_DEMAND_PROFILE"
+            support = "TASK_BOUND"
+        else:
+            lower = int(custom["min"])
+            upper = int(custom["max"])
+            bound_kind = str(custom.get("kind", "RAW_EXECUTION_COST_INTEGER_ENVELOPE"))
+            support = str(custom.get("support", "DECLARED_INTEGER_RANGE"))
+        if lower < 1 or upper < lower:
+            raise ValueError(f"V9_1_ACTUAL_DEMAND_BOUND_INVALID:{name}")
+        if criticality == "HI" and upper > c_hi:
+            raise ValueError(f"V9_1_HI_ACTUAL_DEMAND_EXCEEDS_C_HI:{name}")
+        actual_demand = {
+            "min": lower, "max": upper, "kind": bound_kind, "support": support,
+        }
         if criticality == "HI":
-            actual_demand = {"min": 1, "max": c_hi}
             classification = {
                 "kind": "DERIVED_FROM_ACTUAL_DEMAND_AT_RELEASE",
                 "normal_iff": f"1 <= A <= {c_lo}",
                 "abnormal_iff": f"{c_lo} < A <= {c_hi}",
             }
         else:
-            actual_demand = {"min": 1, "max": c_lo}
             classification = {"kind": "LO_ONLY", "value": "LO"}
         tasks.append({
-            "task": row["name"],
+            "task": name,
             "criticality": criticality,
             "period": int(row["period"]),
             "deadline": int(row["deadline"]),
@@ -310,7 +335,9 @@ def build_bindings(request_path: Path, *, source_root: Path) -> dict[str, Any]:
         )
         if lhs_abs_bound >= 2**53:
             raise ValueError("V9_1_P5_SAFETY_LHS_EXCEEDS_EXACT_BINARY64_INTEGER_RANGE")
-    env_domain = _environment_domain(taskset)
+    env_domain = _environment_domain(
+        taskset, target.provenance.get("actual_demand_bounds_by_task")
+    )
     demand_semantics = _demand_semantics(runtime_config)
     source_hashes = _source_hashes(source_root)
     agent_period = int(_field(runtime_config, "agent_period"))
@@ -339,12 +366,27 @@ def build_bindings(request_path: Path, *, source_root: Path) -> dict[str, Any]:
         "only_time_step": "P7",
         "status": "PROVED_BY_FINITE_PHASE_ORDER",
     }
+    history_domain_by_task = {
+        row["task"]: {
+            "cost_min": 0,
+            "cost_max": max(
+                int(next(task_row["code_c_lo"] for task_row in taskset["ordered_tasks"]
+                         if str(task_row["name"]) == str(row["task"]))),
+                int(row["actual_demand_domain"]["max"]),
+            ),
+            "semantics": "OVERAPPROX_OF_INITIAL_C_LO_AND_RUNTIME_EXECUTION_SAMPLES",
+        }
+        for row in env_domain["tasks"]
+    }
+
     numeric = {
         "schema_version": "numeric_observation_binding_v9_1",
         "feature_names": list(target.feature_names),
         "observation_mode": "v11_full_10d",
         "raw_feature_equations_binding": "EXECUTABLE_SOURCE_BOUND",
         "feature_history_update_binding": "EXECUTABLE_SOURCE_BOUND",
+        "history_domain_by_task": history_domain_by_task,
+        "history_domain_hash": sha256_object(history_domain_by_task),
         "normalization_binding": "FROZEN_EXACT_PER_TASK_INTERVAL",
         "normalization_bounds": normalization_bounds,
         "normalization_bounds_hash": sha256_object(normalization_bounds),
@@ -444,6 +486,9 @@ def build_bindings(request_path: Path, *, source_root: Path) -> dict[str, Any]:
         "release_domain_hash": sha256_object([row["release_domain"] for row in env_domain["tasks"]]),
         "classification_domain_hash": sha256_object([row["classification_domain"] for row in env_domain["tasks"]]),
         "demand_domain_hash": sha256_object([row["actual_demand_domain"] for row in env_domain["tasks"]]),
+        "raw_actual_demand_bounds_by_task": {
+            row["task"]: dict(row["actual_demand_domain"]) for row in env_domain["tasks"]
+        },
         "demand_bound_semantics_hash": sha256_object(demand_semantics),
         "demand_semantics": demand_semantics,
     }

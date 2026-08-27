@@ -255,32 +255,61 @@ def verify_bundle_v9_1(
     _write(out / "proof_receipts.partial.json", receipts)
     statuses["SAFE_PREFIX_INVARIANT_INITIAL"] = _receipt_status(initial)
     if initial.result != "UNSAT":
+        diagnostics: list[dict[str, Any]] = []
+        if initial.result == "SAT":
+            for clause_name, formula in invariant.initial_clause_counterexamples(
+                prefix="verify.initial.diag"
+            ).items():
+                clause_receipt = solve_formula(
+                    f"SAFE_PREFIX_INITIAL_CLAUSE_{clause_name}",
+                    formula, timeout_ms=timeout_ms, capture_model=True,
+                )
+                if clause_receipt.result == "SAT":
+                    diagnostics.append({
+                        "clause": clause_name,
+                        **clause_receipt.as_dict(include_model=True),
+                    })
+        receipts["safe_prefix_initial_diagnostics"] = diagnostics
         summary = _fail_summary(
             request, statuses,
             code=f"SAFE_PREFIX_INITIAL_{initial.result}",
         )
+        if diagnostics:
+            summary["violated_invariant_clauses"] = [row["clause"] for row in diagnostics]
         _write(out / "proof_receipts.json", receipts)
         _write(out / "proof_summary.json", summary)
         return summary
 
     _write_progress(out, "SAFE_PREFIX_CONDITIONAL_INDUCTIVENESS", timeout_ms=int(timeout_ms))
-    ind_env = declare_environment("verify.ind.env", model, release_count=1)
-    inductive = solve_formula(
-        "SAFE_PREFIX_INVARIANT_CONDITIONAL_INDUCTIVENESS_COUNTEREXAMPLE",
-        invariant.conditional_inductiveness_counterexample(ind_env, prefix="verify.ind"),
-        timeout_ms=timeout_ms,
-    )
-    receipts["safe_prefix_conditional_inductiveness"] = inductive.as_dict()
+    phase_receipts: list[dict[str, Any]] = []
+    failed_phase: tuple[int, FormulaReceipt] | None = None
+    for phase in range(8):
+        ind_env = declare_environment(f"verify.ind.p{phase}.env", model, release_count=1)
+        inductive = solve_formula(
+            f"SAFE_PREFIX_INDUCTIVE_P{phase}",
+            invariant.phase_inductiveness_counterexample(
+                ind_env, phase, prefix="verify.ind"
+            ),
+            timeout_ms=timeout_ms,
+        )
+        phase_receipts.append(inductive.as_dict())
+        statuses[f"SAFE_PREFIX_INDUCTIVE_P{phase}"] = _receipt_status(inductive)
+        if inductive.result != "UNSAT":
+            failed_phase = (phase, inductive)
+            break
+    receipts["safe_prefix_conditional_inductiveness_by_phase"] = phase_receipts
     _write(out / "proof_receipts.partial.json", receipts)
-    statuses["SAFE_PREFIX_INVARIANT_CONDITIONAL_INDUCTIVENESS"] = _receipt_status(inductive)
-    if inductive.result != "UNSAT":
+    if failed_phase is not None:
+        phase, inductive = failed_phase
+        statuses["SAFE_PREFIX_INVARIANT_CONDITIONAL_INDUCTIVENESS"] = _receipt_status(inductive)
         summary = _fail_summary(
             request, statuses,
-            code=f"SAFE_PREFIX_CONDITIONAL_INDUCTIVENESS_{inductive.result}",
+            code=f"SAFE_PREFIX_INDUCTIVE_P{phase}_{inductive.result}",
         )
         _write(out / "proof_receipts.json", receipts)
         _write(out / "proof_summary.json", summary)
         return summary
+    statuses["SAFE_PREFIX_INVARIANT_CONDITIONAL_INDUCTIVENESS"] = "PASS"
 
     # 3) Finite two-slot carry-in adequacy meta-theorems.
     _write_progress(out, "CARRY_IN_ADEQUACY", timeout_ms=int(timeout_ms))

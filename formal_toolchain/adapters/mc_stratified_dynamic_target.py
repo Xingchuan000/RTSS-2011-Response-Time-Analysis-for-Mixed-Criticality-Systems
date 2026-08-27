@@ -77,6 +77,36 @@ def _budget_metadata(bundle: Any, floor_ratio: float) -> dict[str, dict[str, int
     return result
 
 
+
+
+def _actual_demand_metadata(bundle: Any) -> dict[str, dict[str, Any]]:
+    """Freeze a sound raw execution-cost envelope for every deployed task.
+
+    The scenario chooses either the normal or stress integer interval.  The
+    formal environment intentionally quantifies the convex integer envelope of
+    both supports; this is an over-approximation of the Markov scenario and is
+    therefore suitable for an UNSAT safety proof.  HI scenario values are
+    clamped by the production resolver to C_HI.
+    """
+
+    task_by_name = {str(task.name): task for task in bundle.ordered_tasks}
+    rows: dict[str, dict[str, Any]] = {}
+    for meta in bundle.metadata["task_meta"]:
+        task = task_by_name[str(meta.name)]
+        lower = min(int(meta.normal_cost_min), int(meta.stress_cost_min))
+        upper = max(int(meta.normal_cost_max), int(meta.stress_cost_max))
+        if meta.criticality.value == "HI":
+            upper = min(upper, int(task.c_hi))
+        if lower < 1 or upper < lower:
+            raise ValueError(f"DYNAMIC_ACTUAL_DEMAND_ENVELOPE_INVALID:{meta.name}")
+        rows[str(meta.name)] = {
+            "min": lower,
+            "max": upper,
+            "kind": "RAW_EXECUTION_COST_INTEGER_ENVELOPE",
+            "support": "NORMAL_OR_STRESS_RANGE_OVERAPPROX",
+        }
+    return rows
+
 def build_target(
     *,
     seed: int,
@@ -172,6 +202,7 @@ def build_target(
     runtime_view = SimpleNamespace(**effective)
     environment_view = SimpleNamespace(**effective)
     budget = _budget_metadata(bundle, float(runtime_values_in["budget_floor_ratio"]))
+    actual_demand_bounds = _actual_demand_metadata(bundle)
     adapter = AMCRealRuntimeAdapter(
         environment,
         action_space=tuple(environment._actions),
@@ -196,6 +227,7 @@ def build_target(
             "taskset_attempts": int(bundle.taskset_attempts),
             "taskset_fingerprint_short": str(bundle.taskset_fingerprint),
             "budget_by_task": budget,
+            "actual_demand_bounds_by_task": actual_demand_bounds,
             "feature_metadata": {"feature_names": list(feature_names)},
             "original_reward_mode": original_reward_mode,
             "formal_reward_mode": formal_reward_mode,
@@ -204,4 +236,4 @@ def build_target(
     )
 
 
-__all__ = ["build_target"]
+__all__ = ["_actual_demand_metadata", "build_target"]

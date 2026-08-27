@@ -275,7 +275,7 @@ def _history_domain(state: SymbolicKernelState, model: BoundModel) -> list[z3.Bo
 
     clauses: list[z3.BoolRef] = []
     for task in model.tasks:
-        upper = task.c_hi if task.criticality == "HI" else task.c_lo
+        upper = task.history_cost_upper
         clauses.extend((
             state.chi.recent_cost[task.name] >= 0,
             state.chi.recent_cost[task.name] <= upper,
