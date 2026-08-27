@@ -1043,6 +1043,7 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
                 raw_inputs=inputs,
                 reference_taskset=(fresh_reference.to_dict() if fresh_reference is not None else {}),
                 certified_envelope=envelope_state.certified_envelope,
+                verified_deployed_policy=fresh.get("DEPLOYED_POLICY_PRESERVATION"),
             )
             status = checked.get("status", "UNRESOLVED")
             failure = None if status == "PASS" else {

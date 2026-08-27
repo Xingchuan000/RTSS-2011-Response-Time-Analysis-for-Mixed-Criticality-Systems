@@ -29,6 +29,34 @@ def _verify_hash_map(value: Any) -> bool:
     )
 
 
+def _verified_controller_policy_binding_hash(
+    certified_envelope: Mapping[str, Any] | None,
+    verified_deployed_policy: Mapping[str, Any] | None,
+) -> str:
+    """Return the proof-layer hash used by the controller certificate.
+
+    The certified envelope retains a hash of the semantic preservation payload,
+    while ``compile_phase_k`` binds the verifier-issued
+    DEPLOYED_POLICY_PRESERVATION obligation certificate.  These identities are
+    intentionally distinct and must not be substituted for one another.
+    """
+    envelope_policy_evidence_hash = (
+        certified_envelope.get("deployed_preservation_certificate_hash")
+        if isinstance(certified_envelope, Mapping) else None
+    )
+    if not _is_hash(envelope_policy_evidence_hash):
+        raise ValueError("DEPLOYED_POLICY_BINDING_REQUIRED")
+    if (
+        not isinstance(verified_deployed_policy, Mapping)
+        or verified_deployed_policy.get("obligation_id") != "DEPLOYED_POLICY_PRESERVATION"
+        or verified_deployed_policy.get("obligation_status") != "PASS"
+        or not verify_obligation_certificate(verified_deployed_policy)
+        or not _is_hash(verified_deployed_policy.get("artifact_hash"))
+    ):
+        raise ValueError("VERIFIED_DEPLOYED_POLICY_CERTIFICATE_REQUIRED")
+    return str(verified_deployed_policy["artifact_hash"])
+
+
 def _verified_closed_prefix_witness(
     *, candidate_witness: Mapping[str, Any], receipt_hash: str, replay_hash: str,
 ) -> dict[str, Any]:
@@ -85,7 +113,8 @@ def _verify_cases(candidate: Mapping[str, Any], obligation_id: str,
                   reference_taskset: Mapping[str, Any] | None = None,
                   certified_envelope: Mapping[str, Any] | None = None,
                   contexts: Mapping[str, Mapping[str, Any]] | None = None,
-                  predecessors: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
+                  predecessors: Mapping[str, Mapping[str, Any]] | None = None,
+                  verified_deployed_policy: Mapping[str, Any] | None = None) -> dict[str, Any]:
     failure = _base(candidate, obligation_id, bridge_context_hash)
     if failure:
         return failure
@@ -96,7 +125,8 @@ def _verify_cases(candidate: Mapping[str, Any], obligation_id: str,
     if obligation_id == "CLOSED_PREFIX_REFINEMENT":
         return _verify_universal_closed_prefix(candidate, bridge_context_hash, raw_inputs=raw_inputs,
                                                reference_taskset=reference_taskset, certified_envelope=certified_envelope,
-                                               predecessors=predecessors)
+                                               predecessors=predecessors,
+                                               verified_deployed_policy=verified_deployed_policy)
     if witness.get("hi_bad_prefix_reflected") is True:
         return {"status": "FAIL", "route": "PROOF_BUNDLE_INVALID",
                 "code": "LEGACY_BOOLEAN_BAD_PREFIX_WITNESS_REJECTED"}
@@ -232,7 +262,8 @@ def _verify_universal_closed_prefix(candidate: Mapping[str, Any], bridge_context
                                     *, raw_inputs: Any = None,
                                     reference_taskset: Mapping[str, Any] | None = None,
                                     certified_envelope: Mapping[str, Any] | None = None,
-                                    predecessors: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
+                                    predecessors: Mapping[str, Mapping[str, Any]] | None = None,
+                                    verified_deployed_policy: Mapping[str, Any] | None = None) -> dict[str, Any]:
     witness = candidate.get("witness", {})
     witness_schema = witness.get("schema_version")
     if witness_schema == "closed_prefix_refinement_v1":
@@ -265,13 +296,14 @@ def _verify_universal_closed_prefix(candidate: Mapping[str, Any], bridge_context
     if raw_inputs is None:
         return {"status": "UNRESOLVED", "route": "UNRESOLVED",
                 "code": "BRIDGE_REPLAY_INPUTS_MISSING"}
-    certified_policy_hash = (
-        certified_envelope.get("deployed_preservation_certificate_hash")
-        if isinstance(certified_envelope, Mapping) else None
-    )
-    if not _is_hash(certified_policy_hash):
-        return {"status": "UNRESOLVED", "route": "UNRESOLVED",
-                "code": "DEPLOYED_POLICY_BINDING_REQUIRED"}
+    # ``compile_phase_k`` binds the verifier-issued policy certificate, not
+    # the certified-envelope hash of the pre-envelope semantic payload.
+    try:
+        verified_policy_artifact_hash = _verified_controller_policy_binding_hash(
+            certified_envelope, verified_deployed_policy
+        )
+    except ValueError as exc:
+        return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": str(exc)}
     target = raw_inputs.target
     runtime_config = getattr(target, "runtime_config", None)
     verified_action_binding = {
@@ -299,7 +331,7 @@ def _verify_universal_closed_prefix(candidate: Mapping[str, Any], bridge_context
         verified_action_binding=verified_action_binding,
         verified_policy_binding={
             "status": "PASS",
-            "artifact_hash": certified_policy_hash,
+            "artifact_hash": verified_policy_artifact_hash,
         },
         verified_controller_postclosure=verified_postclosure,
         context_hash=bridge_context_hash,
