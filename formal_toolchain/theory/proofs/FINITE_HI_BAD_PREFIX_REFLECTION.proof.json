@@ -45,7 +45,7 @@
     "formal_toolchain/bridge/event_projection.py": "122786952059a08fb36f6bc0d0bb3c3cc847b65303d7e37bd6cfd1e539a2fb1e",
     "formal_toolchain/bridge/prefix_refinement.py": "0d398a0c399afff83e8fe4648981640b06e4dc565751d013b768eca834f158c7",
     "formal_toolchain/bridge/state_relation.py": "783a3c5067f2b9e3370f06dd7982629f7442d57344ff27564e524384fc136d6a",
-    "formal_toolchain/bridge/transition_cases.py": "b8aaa9fe3f39f8193e54b499044014461759e0b9b22393794ed03f7f8124a7cb",
+    "formal_toolchain/bridge/transition_cases.py": "da10b042b2ccd3c66db3ce6f71e8baf71646a93942039ab6cb470180866a153a",
     "formal_toolchain/reference/executable_semantics.py": "f26667f2034a1af965e8b2888d3ae8bedb246eabcf2c87ee74a83ea7a22810b4",
     "formal_toolchain/reference/p0_projection.py": "970d387fcd6e3a080c8f2e6bc36e20ab2c84cab3c179ae2f6ab7feb18f439407",
     "formal_toolchain/reference/p0_transition_contract.py": "f3f70143a7d352dd5c4d5d568de59fcaf7c769ca1011e452044be005ac56bcfa",

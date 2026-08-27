@@ -80,6 +80,7 @@ def compile_reschedule_family_effect(*, case_id: str, branch_binding,
     overridden = {"running", "running_job_key", "affected_job_running"}
     if case_id == "PREEMPTION_DISPATCH":
         overridden.update({
+            "ready",
             "affected_job_key", "affected_job_active", "affected_job_ready",
             "affected_job_priority", "affected_job_release",
             "affected_job_deadline", "affected_job_category",
@@ -87,6 +88,12 @@ def compile_reschedule_family_effect(*, case_id: str, branch_binding,
             "affected_job_service", "affected_job_hi_complete",
             "affected_job_hi_miss",
         })
+        # ``ready`` is a derived scheduler projection rather than a mutable
+        # runtime container.  Dispatch moves the selected active job from the
+        # ready projection into ``running`` while the previously running job
+        # (when preempted) remains active/ready.  Therefore all per-slot ready
+        # flags must be recomputed together with the aggregate ready count.
+        overridden.update(f"job_{slot}_ready" for slot in range(bounds.job_slots))
     if case_id in {"RESCHEDULE_TO_IDLE", "PREEMPTION_DISPATCH"}:
         overridden.add("queue_token_epoch")
     if case_id == "PREEMPTION_DISPATCH":
@@ -112,11 +119,12 @@ def compile_reschedule_family_effect(*, case_id: str, branch_binding,
         semantic.add("TOKEN_INVALIDATION")
         queue_equations.append("(= c_queue_token_epoch_post (+ c_queue_token_epoch 1))")
     else:
-        equations.extend(("(= c_running_post 1)",
+        equations.extend(("(= c_ready_post (- c_active 1))",
+                          "(= c_running_post 1)",
                           "(= c_running_job_key_post selected_job_key)",
                           "(= c_affected_job_key_post selected_job_key)",
                           "(= c_affected_job_active_post 1)",
-                          "(= c_affected_job_ready_post 1)",
+                          "(= c_affected_job_ready_post 0)",
                           "(= c_affected_job_running_post 1)",
                           "(= c_queue_token_epoch_post (+ c_queue_token_epoch 1))",
                           "(= c_queue_event_count_post (+ c_queue_event_count 2))"))
@@ -131,7 +139,11 @@ def compile_reschedule_family_effect(*, case_id: str, branch_binding,
         for slot in range(bounds.job_slots):
             selected = f"(and (= c_job_{slot}_present 1) (= c_job_{slot}_key selected_job_key))"
             equations.append(f"(= c_job_{slot}_running_post (ite {selected} 1 0))")
-        modified.update(("running_key", "effective_event_frontier"))
+            equations.append(
+                f"(= c_job_{slot}_ready_post "
+                f"(ite {selected} 0 (ite (= c_job_{slot}_present 1) 1 0)))"
+            )
+        modified.update(("ready_order", "running_key", "effective_event_frontier"))
         semantic.update(("TOKEN_INVALIDATION", "QUEUE_PUSH"))
         queue_equations.extend(("(= c_queue_token_epoch_post (+ c_queue_token_epoch 1))",
                                 "(= c_queue_event_count_post (+ c_queue_event_count 2))"))

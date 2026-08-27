@@ -121,7 +121,7 @@ ALLOWED_MODIFIED_COMPONENTS = {
     "DEADLINE_OBSERVATION_NO_MISS": {"time"}, "ONE_SERVICE_TICK": {"time", "active_service", "remaining_to_removal", "effective_event_frontier"},
     "RESCHEDULE_KEEP_SAME": set(),
     "RESCHEDULE_TO_IDLE": {"running_key", "effective_event_frontier"},
-    "PREEMPTION_DISPATCH": {"running_key", "effective_event_frontier"}, "IDLE_RECOVERY": {"mode"},
+    "PREEMPTION_DISPATCH": {"ready_order", "running_key", "effective_event_frontier"}, "IDLE_RECOVERY": {"mode"},
     "CONTROLLER_SELECTED_ACTION": {"future_budget_ghost", "running_key", "effective_event_frontier"},
     # Both paths are source-level over-approximations.  CONTROLLER_NO_ACTION
     # contains the common apply_updates call, but its template fixes

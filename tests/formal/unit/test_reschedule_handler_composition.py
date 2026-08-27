@@ -3,6 +3,8 @@ import pytest
 from pathlib import Path
 
 from formal_toolchain.bridge.effect_compiler import compile_reschedule_family_effect
+from formal_toolchain.bridge.case_templates import compile_case_template
+from formal_toolchain.bridge.transition_cases import prove_smt2_case
 from formal_toolchain.bridge.handler_decomposition import (
     prove_handler_reschedule_unreachability,
 )
@@ -24,8 +26,12 @@ def test_reschedule_effects_are_compiled_into_scheduler_state_and_frontier():
         case_id="PREEMPTION_DISPATCH", branch_binding=bindings["PREEMPTION_DISPATCH"], bounds=bounds)
     assert "(= c_running_post 0)" in idle.to_smt()
     assert "(= c_running_job_key_post selected_job_key)" in dispatch.to_smt()
+    assert "(= c_ready_post (- c_active 1))" in dispatch.to_smt()
+    assert "(= c_affected_job_ready_post 0)" in dispatch.to_smt()
+    assert "c_job_0_ready_post (ite" in dispatch.to_smt()
     assert "c_queue_token_epoch_post" in idle.to_smt()
     assert "c_queue_event_count_post (+ c_queue_event_count 2)" in dispatch.to_smt()
+    assert "ready_order" in dispatch.modified_components
     assert keep.modified_components == ()
 
 
@@ -37,3 +43,29 @@ def test_handler_context_excluded_reschedule_alternatives_are_unsat():
         "completion_to_idle": "UNSAT",
         "controller_force_keep": "UNSAT",
     }
+
+
+def test_preemption_dispatch_preserves_concrete_reference_ready_projection():
+    bindings = bind_reschedule_branch_families(ROOT)
+    bounds = _legacy_test_bounds()
+    template = compile_case_template("PREEMPTION_DISPATCH", bounds=bounds)
+    dispatch = compile_reschedule_family_effect(
+        case_id="PREEMPTION_DISPATCH",
+        branch_binding=bindings["PREEMPTION_DISPATCH"],
+        bounds=bounds,
+    )
+    proof = prove_smt2_case(
+        case_id="PREEMPTION_DISPATCH",
+        source_branch_id="reschedule/dispatch",
+        declarations=template.declarations,
+        precondition=template.precondition,
+        preservation=template.preservation,
+        concrete_delta=dispatch.to_smt(),
+        projected_reference_delta=template.reference_delta,
+        bound_source_hash="0" * 64,
+        bounds=bounds,
+    )
+    assert proof.concrete_feasibility == "SAT"
+    assert proof.reference_totality == "PASS"
+    assert proof.relation_preservation == "PASS"
+    assert proof.z3_proof_result == "PASS"
