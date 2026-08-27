@@ -277,6 +277,12 @@ def build_bindings(request_path: Path, *, source_root: Path) -> dict[str, Any]:
     processor_overhead = _field(runtime_config, "processor_overhead") if "processor_overhead" in runtime_config["fields"] else 0
     if int(processor_overhead) != 0:
         raise ValueError("P0_ZERO_CONTROLLER_OVERHEAD_REQUIRES_PROCESSOR_OVERHEAD_ZERO")
+    if str(_field(runtime_config, "semantics")) != "C_AMC_SEM":
+        raise ValueError("V9_1_REQUIRES_C_AMC_SEM_RUNTIME_SEMANTICS")
+    if bool(_field(runtime_config, "c_amc_sem_primary_on_switch_time")) is not True:
+        raise ValueError("V9_1_REQUIRES_PRIMARY_ON_SWITCH_TIME_TRUE")
+    if bool(_field(runtime_config, "drop_lo_jobs_on_hi_switch")) is not False:
+        raise ValueError("V9_1_REQUIRES_C_AMC_SEM_ACTIVE_LO_CONTINUATION")
     if str(_field(runtime_config, "observation_mode")) != "v11_full_10d":
         raise ValueError("V9.1 currently binds only observation_mode=v11_full_10d")
 
@@ -351,6 +357,11 @@ def build_bindings(request_path: Path, *, source_root: Path) -> dict[str, Any]:
         "time_advance": "only P7 advances t by exactly one integer service quantum and resets p=0",
         "release_snapshot_boundary": "P3 freezes B_rel,A,class,release_entry_mode before P4/P5",
         "mode_switch_boundary": "P4 LO->HI iff P3 release batch contains abnormal HI",
+        "runtime_semantics": "C_AMC_SEM",
+        "primary_on_switch_time": True,
+        "drop_lo_jobs_on_hi_switch": False,
+        "same_batch_lo_release_semantics": "LO releases at the switch timestamp use the pre-P4 LO primary snapshot",
+        "active_lo_on_switch_semantics": "existing LO work is not bulk-dropped by P4; release-fixed effective demand remains authoritative",
         "controller_boundary": "P5 after P4 and before final dispatch",
         "controller_trigger_predicate": f"CtrlEnabled(z) iff p=5 and t mod {agent_period}=0",
         "deadline_observe_boundary": "P2 observe-only; incomplete HI job is never removed by deadline observation",

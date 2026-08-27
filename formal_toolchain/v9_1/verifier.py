@@ -291,8 +291,9 @@ def verify_bundle_v9_1(
                 ind_env, phase, prefix="verify.ind"
             ),
             timeout_ms=timeout_ms,
+            capture_model=True,
         )
-        phase_receipts.append(inductive.as_dict())
+        phase_receipts.append(inductive.as_dict(include_model=inductive.result == "SAT"))
         statuses[f"SAFE_PREFIX_INDUCTIVE_P{phase}"] = _receipt_status(inductive)
         if inductive.result != "UNSAT":
             failed_phase = (phase, inductive)
@@ -302,10 +303,32 @@ def verify_bundle_v9_1(
     if failed_phase is not None:
         phase, inductive = failed_phase
         statuses["SAFE_PREFIX_INVARIANT_CONDITIONAL_INDUCTIVENESS"] = _receipt_status(inductive)
+        diagnostics: list[dict[str, Any]] = []
+        if inductive.result == "SAT":
+            diag_env = declare_environment(
+                f"verify.ind.p{phase}.diag.env", model, release_count=1
+            )
+            for clause_name, formula in invariant.phase_inductiveness_clause_counterexamples(
+                diag_env, phase, prefix="verify.ind.diag"
+            ).items():
+                clause_receipt = solve_formula(
+                    f"SAFE_PREFIX_INDUCTIVE_P{phase}_CLAUSE_{clause_name}",
+                    formula, timeout_ms=timeout_ms, capture_model=True,
+                )
+                if clause_receipt.result == "SAT":
+                    diagnostics.append({
+                        "clause": clause_name,
+                        **clause_receipt.as_dict(include_model=True),
+                    })
+        receipts["safe_prefix_inductiveness_diagnostics"] = diagnostics
         summary = _fail_summary(
             request, statuses,
             code=f"SAFE_PREFIX_INDUCTIVE_P{phase}_{inductive.result}",
         )
+        summary["binding_root_hash"] = recomputed["binding_root_hash"]
+        summary["window_encoder_version"] = ENCODER_VERSION
+        if diagnostics:
+            summary["violated_invariant_clauses"] = [row["clause"] for row in diagnostics]
         _write(out / "proof_receipts.json", receipts)
         _write(out / "proof_summary.json", summary)
         return summary

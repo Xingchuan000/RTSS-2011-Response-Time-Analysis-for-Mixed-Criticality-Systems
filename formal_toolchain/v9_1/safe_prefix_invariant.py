@@ -84,6 +84,34 @@ class SafePrefixInvariant:
             z3.Not(self.formula(next_state)),
         )
 
+    def phase_inductiveness_clause_counterexamples(
+        self, env: SymbolicEnvironment, phase: int, *, prefix: str = "ind.phase.diag"
+    ) -> dict[str, z3.BoolRef]:
+        """Return one post-state Psi-clause counterexample per named clause.
+
+        These formulas are diagnostics only: the trusted theorem remains the
+        conjunction checked by :meth:`phase_inductiveness_counterexample`.
+        Keeping the same safe-prefix precondition and exact phase transition
+        lets a SAT result identify which invariant component actually failed.
+        """
+
+        phase = int(phase)
+        if not 0 <= phase <= 7:
+            raise ValueError("V9_1_PHASE_OUT_OF_RANGE")
+        state = declare_state(f"{prefix}.p{phase}.z", self.model)
+        next_state = declare_state(f"{prefix}.p{phase}.zp", self.model)
+        base = z3.And(
+            *env.constraints,
+            env.phase.origin_time == state.t,
+            self.formula(state),
+            state.hi_miss_ledger == 0,
+            encode_phase_step(state, next_state, self.model, env, phase=phase),
+            next_state.hi_miss_ledger == 0,
+        )
+        return {
+            name: z3.And(base, z3.Not(clause))
+            for name, clause in self.named_clauses(next_state).items()
+        }
 
 
 __all__ = ["SafePrefixInvariant"]

@@ -61,7 +61,34 @@ def job_field_consistency(state: SymbolicKernelState, model: BoundModel) -> z3.B
                 z3.Implies(job.present, job.tie_break == job.release_index),
             ))
             if task.criticality == "HI":
-                clauses.append(z3.Implies(job.present, job.effective_demand == job.actual_demand))
+                clauses.extend((
+                    z3.Implies(job.present, job.budget_at_release >= task.budget_floor),
+                    z3.Implies(job.present, job.budget_at_release <= task.budget_upper),
+                    z3.Implies(job.present, job.effective_demand == job.actual_demand),
+                ))
+            else:
+                degraded = int(task.degraded_cost or task.c_lo)
+                normal_snapshot = z3.And(
+                    job.budget_at_release >= task.budget_floor,
+                    job.budget_at_release <= task.budget_upper,
+                )
+                degraded_snapshot = job.budget_at_release == degraded
+                expected_effective = z3.If(
+                    job.release_entry_mode_hi,
+                    z3.If(job.actual_demand < degraded, job.actual_demand, degraded),
+                    z3.If(
+                        job.actual_demand < job.budget_at_release + 1,
+                        job.actual_demand,
+                        job.budget_at_release + 1,
+                    ),
+                )
+                clauses.extend((
+                    z3.Implies(
+                        job.present,
+                        z3.If(job.release_entry_mode_hi, degraded_snapshot, normal_snapshot),
+                    ),
+                    z3.Implies(job.present, job.effective_demand == expected_effective),
+                ))
     return z3.And(*clauses)
 
 

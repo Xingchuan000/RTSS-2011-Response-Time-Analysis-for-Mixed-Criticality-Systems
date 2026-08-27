@@ -367,9 +367,14 @@ def well_formed(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
                     z3.Implies(job.present, job.actual_demand >= task.actual_demand_min),
                     z3.Implies(job.present, job.actual_demand <= task.actual_demand_upper),
                 ))
+            # ``budget_floor``/``budget_upper`` bound the mutable controller
+            # budget B_i, not every frozen release snapshot.  In C-AMC-sem a
+            # LO job released while the system is already in HI mode legally
+            # snapshots C_deg, which can be below the controller action floor
+            # (e.g. XF=0.5 with a 0.9*C_LO action floor).  The exact snapshot
+            # relation belongs to ``job_field_consistency`` in Psi; structural
+            # well-formedness must not reject that deployed degraded release.
             clauses.extend((
-                z3.Implies(job.present, job.budget_at_release >= task.budget_floor),
-                z3.Implies(job.present, job.budget_at_release <= task.budget_upper),
                 z3.Implies(job.present, job.effective_demand >= 1),
                 job.executed_service >= 0,
                 z3.Implies(job.present, job.executed_service <= job.effective_demand),
