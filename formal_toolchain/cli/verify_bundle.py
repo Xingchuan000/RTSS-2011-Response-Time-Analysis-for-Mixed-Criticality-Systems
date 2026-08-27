@@ -1,34 +1,39 @@
-"""fresh-process verifier CLI。"""
+"""V9.1 fresh-process verifier CLI."""
 
 import argparse
 import json
 from pathlib import Path
 
-from formal_toolchain.verifier.recompute import verify_bundle
+from formal_toolchain.v9_1.constants import (
+    RESULT_CONCRETE_COUNTEREXAMPLE, RESULT_INVALID, RESULT_PROVED, RESULT_UNRESOLVED,
+)
+from formal_toolchain.v9_1.verifier import verify_bundle_v9_1
 
-
-EXIT_CODES = {"DEPLOYED_TREE_PROVED": 0, "MODEL_CONFORMANCE_FAILED": 10,
-              "POLICY_CONTRACT_VIOLATION": 11, "REFERENCE_CERTIFICATE_FAILED": 12,
-              "CONCRETE_TIMING_COUNTEREXAMPLE": 13, "REFERENCE_COUNTEREXAMPLE": 14,
-              "UNRESOLVED": 20, "PROOF_BUNDLE_INVALID": 30}
+EXIT_CODES = {
+    RESULT_PROVED: 0,
+    RESULT_CONCRETE_COUNTEREXAMPLE: 13,
+    RESULT_UNRESOLVED: 20,
+    RESULT_INVALID: 30,
+}
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="独立验证 candidate proof bundle")
+    parser = argparse.ArgumentParser(description="independently verify a V9.1 candidate proof bundle")
     parser.add_argument("--request", required=True, type=Path)
     parser.add_argument("--bundle", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--source-root", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
-        summary = verify_bundle(args.request, args.bundle, args.out, source_root=args.source_root)
-    except Exception as exc:
-        print(json.dumps({"workflow_status": "FAILED", "result_status": "PROOF_BUNDLE_INVALID",
-                          "failure_route": "PROOF_BUNDLE_INVALID", "failure_code": "INTERNAL_VERIFY_ERROR",
+        summary = verify_bundle_v9_1(args.request, args.bundle, args.out, source_root=args.source_root)
+    except (OSError, ValueError, KeyError) as exc:
+        print(json.dumps({"workflow_status": "FAILED", "result_status": RESULT_INVALID,
+                          "failure_route": RESULT_INVALID, "failure_code": "V9_1_VERIFIER_INPUT_ERROR",
                           "failure_message": str(exc)}, ensure_ascii=False))
-        return 70
+        return 30
     print(json.dumps(summary, ensure_ascii=False))
-    return EXIT_CODES.get(str(summary.get("result_status")), 70)
+    return EXIT_CODES.get(str(summary.get("result_status")), 30)
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

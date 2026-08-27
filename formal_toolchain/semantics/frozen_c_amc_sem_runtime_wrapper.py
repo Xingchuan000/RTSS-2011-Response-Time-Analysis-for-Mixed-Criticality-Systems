@@ -334,31 +334,21 @@ def simulate_ordered_taskset_with_agent(
             },
         )
         action = agent.select_action(observation)
+        if action is None:
+            raise RuntimeError("V9_1_FORBIDS_IMPLICIT_NOOP")
 
-        # 统一 noop 语义（阶段 1）：
-        # 1) `action is None`：隐式 noop，通常表示“当前 agent 不给预算动作”；
-        # 2) `action.is_noop=True`：显式 noop，表示“agent 主动选择动作空间中的 noop 动作”。
-        #
-        # 这两类 noop 在运行时都必须满足同一执行约束：
-        # - 不进行预算安全检查（因为没有候选预算变更）；
-        # - 不调用 `apply_budget_updates`（避免制造伪更新事件）；
-        # - `updates` 固定为空字典，`budget_before == budget_after`。
-        #
-        # 但统计口径上要区分“显式/隐式”：
-        # - `noop_actions`：两类 noop 都计入；
-        # - `is_explicit_noop`：仅显式 noop 为 True，供后续 rate 分析使用。
-        if action is None or bool(getattr(action, "is_noop", False)):
+        # V9.1 只允许动作字母表中的显式 noop。它是普通 ranked candidate，
+        # 恒合法且预算更新为恒等映射；不存在 all-invalid 隐式 fallback。
+        if bool(getattr(action, "is_noop", False)):
             budget_snapshot = dict(engine.runtime_budgets.budgets)
             noop_actions += 1
             action_log.append(
                 {
                     "time": current_tick,
-                    # 隐式 noop 不算“显式决策被接受”；显式 noop 记为 accepted=True。
-                    # 这样可以保留“agent 确实给了一个合法动作（noop）”这一事实。
-                    "accepted": action is not None,
+                    "accepted": True,
                     "noop": True,
-                    "is_explicit_noop": action is not None,
-                    "action_id": None if action is None else action.action_id,
+                    "is_explicit_noop": True,
+                    "action_id": action.action_id,
                     "updates": {},
                     # 对 noop 来说，候选预算与执行后预算都应与决策前一致。
                     "budget_before": budget_snapshot,

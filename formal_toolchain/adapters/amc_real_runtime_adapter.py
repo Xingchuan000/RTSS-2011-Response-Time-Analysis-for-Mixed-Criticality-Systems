@@ -40,14 +40,11 @@ class AMCRealRuntimeAdapter:
             for row in self.action_space
             if bool(row.is_noop if hasattr(row, "is_noop") else row.get("is_noop", False))
         )
-        if len(self.noop_action_ids) > 1:
-            raise ValueError("MULTIPLE_EXPLICIT_NOOP_ACTIONS_NOT_CERTIFIED")
-        if selection_semantics not in {
-            "ranked_first_valid", "raw_top1", "top1_valid_else_noop",
-            "all_invalid_force_top1",
-        }:
-            raise ValueError("UNSUPPORTED_SELECTION_SEMANTICS")
-        self.selection_semantics = str(selection_semantics)
+        if len(self.noop_action_ids) != 1:
+            raise ValueError("V9_1_REQUIRES_EXACTLY_ONE_EXPLICIT_NOOP")
+        if selection_semantics != "ranked_first_valid":
+            raise ValueError("V9_1_REQUIRES_RANKED_FIRST_VALID")
+        self.selection_semantics = "ranked_first_valid"
         self.disabled_guards = tuple(str(value) for value in disabled_guards)
         self.rounding_mode = str(rounding_mode)
         self.min_budget_delta = int(min_budget_delta)
@@ -175,12 +172,9 @@ class AMCRealRuntimeAdapter:
             "action_ids": [int(row.action_id) if hasattr(row, "action_id") else int(row["action_id"]) for row in self.action_space],
             "shared_with_step": callable(getattr(self.environment, "formal_valid_action_mask", None))
             and callable(getattr(self.environment, "evaluate_budget_candidate", None)),
-            "explicit_noop": bool(self.noop_action_ids),
+            "explicit_noop": True,
             "explicit_noop_action_ids": list(self.noop_action_ids),
-            "explicit_noop_always_valid": bool(self.noop_action_ids),
-            "implicit_noop_when_all_invalid": not bool(self.noop_action_ids),
-            "defensive_fallback_action_id": self.noop_action_ids[0] if self.noop_action_ids else None,
-            "defensive_fallback_same_explicit_noop": bool(self.noop_action_ids),
+            "explicit_noop_always_valid": True,
             "check_safety": bool(getattr(self.environment, "check_safety", False)),
             "safety_checker_type": None if checker is None else type(checker).__qualname__,
             "candidate_reject_helper": "AmcBudgetEnv._budget_candidate_reject_reason",

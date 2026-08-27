@@ -1,56 +1,36 @@
-"""Phase L/M 顶层单命令入口。"""
+"""Top-level V9.1 proof command."""
 
 import argparse
 import json
 from pathlib import Path
 
 from formal_toolchain.workflow.prove_seed import prove_seed
-from formal_toolchain.workflow.prove_seed_v8 import prove_seed_v8
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="导入、编译、独立验证并报告一个 seed folder")
+    parser = argparse.ArgumentParser(description="prove one seed with the V9.1 policy-constrained safe-prefix route")
     parser.add_argument("--seed-dir", required=True, type=Path)
     parser.add_argument("--tree-variant", default="best_overall",
                         choices=("best_overall", "best_balanced", "best_performance"))
-    parser.add_argument("--code-root", type=Path, default=Path.cwd(),
-                        help="源码根目录；默认使用当前工作区")
-    parser.add_argument("--out", type=Path,
-                        help="输出目录；默认写入 seed-dir/.formal_proof_<route>")
+    parser.add_argument("--code-root", type=Path, default=Path.cwd())
+    parser.add_argument("--out", type=Path, help="default: seed-dir/.formal_proof_v9_1")
     parser.add_argument("--target-recipe", type=Path)
-    parser.add_argument("--proof-route", choices=("protected_prefix", "raw_protected_prefix", "strict_full", "v8_auto"),
-                        default="protected_prefix")
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument(
-        "--refresh-phase-k-map",
-        action="store_true",
-        help="Regenerate the Phase K path map from the current --code-root while freezing the request.",
-    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    output_dir = args.out or (args.seed_dir / f".formal_proof_{args.proof_route}")
-    if args.proof_route == "v8_auto":
-        code, result = prove_seed_v8(
-            seed_dir=args.seed_dir, tree_variant=args.tree_variant, code_root=args.code_root,
-            out=output_dir, target_recipe=args.target_recipe, overwrite=args.overwrite,
-            refresh_phase_k_map=args.refresh_phase_k_map,
-        )
-    else:
-        code, result = prove_seed(
-            seed_dir=args.seed_dir,
-            tree_variant=args.tree_variant,
-            code_root=args.code_root,
-            out=output_dir,
-            target_recipe=args.target_recipe,
-            overwrite=args.overwrite,
-            refresh_phase_k_map=args.refresh_phase_k_map,
-            proof_route=args.proof_route,
-        )
+    output_dir = args.out or (args.seed_dir / ".formal_proof_v9_1")
+    code, result = prove_seed(
+        seed_dir=args.seed_dir,
+        tree_variant=args.tree_variant,
+        code_root=args.code_root,
+        out=output_dir,
+        target_recipe=args.target_recipe,
+        overwrite=args.overwrite,
+    )
     if args.json:
         print(json.dumps(result, ensure_ascii=False))
     else:
-        print(f"{result.get('workflow_status', 'FAILED')}: "
-              f"{result.get('result_status', 'PROOF_BUNDLE_INVALID')}")
+        print(f"{result.get('workflow_status', 'FAILED')}: {result.get('result_status', 'PROOF_BUNDLE_INVALID')}")
     return code
 
 

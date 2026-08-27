@@ -1,4 +1,4 @@
-"""Phase L/M 顶层单命令工作流。"""
+"""Single-route V9.1 seed proof workflow."""
 
 from __future__ import annotations
 
@@ -8,180 +8,138 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from formal_toolchain.workflow.seed_workspace import freeze_seed_workspace
-from formal_toolchain.workflow.subprocess_runner import run_cli
 from formal_toolchain.core.errors import FormalWorkflowError
+from formal_toolchain.v9_1.constants import (
+    PRIMARY_CLAIM, PROOF_ROUTE, RESULT_INVALID, RESULT_PROVED, RESULT_UNRESOLVED, SCOPE,
+)
+from formal_toolchain.workflow.seed_workspace_v9_1 import freeze_seed_workspace_v9_1
+from formal_toolchain.workflow.subprocess_runner import run_cli
 
-
-EXIT_CODES = {"DEPLOYED_TREE_PROVED": 0, "MODEL_CONFORMANCE_FAILED": 10,
-              "POLICY_CONTRACT_VIOLATION": 11, "REFERENCE_CERTIFICATE_FAILED": 12,
-              "CONCRETE_TIMING_COUNTEREXAMPLE": 13, "REFERENCE_COUNTEREXAMPLE": 14,
-              "UNRESOLVED": 20, "PROOF_BUNDLE_INVALID": 30}
+EXIT_CODES = {RESULT_PROVED: 0, RESULT_UNRESOLVED: 20, RESULT_INVALID: 30,
+              "CONCRETE_HI_COUNTEREXAMPLE_VERIFIED": 13}
 
 
 def _write(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _dependency_preflight(source_root: Path) -> dict[str, Any] | None:
-    """前置依赖检查：依赖缺失或不满足 lock 版本约束时直接拒绝。"""
-    lock_path = source_root / "formal_toolchain" / "specs" / "proof_dependency_lock.json"
-    if not lock_path.is_file():
-        return {"code": "DEPENDENCY_LOCK_FILE_MISSING", "message": f"lock file not found: {lock_path}"}
-    lock = json.loads(lock_path.read_text(encoding="utf-8"))
-    from formal_toolchain.adapters.runtime_manifest import build_dependency_manifest, check_dependency_policy
-    manifest = build_dependency_manifest()
-    result = check_dependency_policy(manifest, lock=lock)
-    if result.get("status") != "PASS":
-        return result
-    return None
-
-
 def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
-               target_recipe: Path | None = None, overwrite: bool = False,
-               refresh_phase_k_map: bool = False,
-               proof_route: str = "protected_prefix",
-               dependency_manifest_override: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
-    """执行 discovery→preflight→compile→fresh verify→report。
+               target_recipe: Path | None = None, overwrite: bool = False) -> tuple[int, dict[str, Any]]:
+    """Freeze -> preflight -> compile -> fresh verify -> report for V9.1 only."""
 
-    dependency_manifest_override: 测试用注入 dependency manifest，绕过真实环境检查。
-    """
-    if dependency_manifest_override is None:
-        preflight = _dependency_preflight(code_root)
-        if preflight is not None:
-            return 30, {"workflow_status": "FAILED", "result_status": "PROOF_BUNDLE_INVALID",
-                         "failure_route": "PROOF_BUNDLE_INVALID",
-                         "failure_code": preflight.get("code", "DEPENDENCY_LOCK_INCOMPLETE"),
-                         "failure_message": str(preflight.get("message", preflight))}
-    else:
-        from formal_toolchain.adapters.runtime_manifest import check_dependency_policy
-        lock_path = code_root / "formal_toolchain" / "specs" / "proof_dependency_lock.json"
-        lock = json.loads(lock_path.read_text(encoding="utf-8")) if lock_path.is_file() else None
-        result = check_dependency_policy(dependency_manifest_override, lock=lock)
-        if result.get("status") != "PASS":
-            return 30, {"workflow_status": "FAILED", "result_status": "PROOF_BUNDLE_INVALID",
-                         "failure_route": "PROOF_BUNDLE_INVALID",
-                         "failure_code": result.get("code", "DEPENDENCY_LOCK_INCOMPLETE"),
-                         "failure_message": str(result)}
-
+    code_root = Path(code_root).resolve()
     out = Path(out).resolve()
     lock = out.parent / f".{out.name}.lock"
     try:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
-        return 2, {"workflow_status": "FAILED", "result_status": "PROOF_BUNDLE_INVALID",
-                   "failure_code": "WORKSPACE_LOCKED"}
+        return 30, {"workflow_status": "FAILED", "result_status": RESULT_INVALID,
+                    "failure_code": "WORKSPACE_LOCKED", "proof_route": PROOF_ROUTE}
     try:
         if out.exists():
             if not overwrite:
-                return 2, {"workflow_status": "FAILED", "result_status": "PROOF_BUNDLE_INVALID",
-                           "failure_code": "OUTPUT_EXISTS"}
+                return 30, {"workflow_status": "FAILED", "result_status": RESULT_INVALID,
+                            "failure_code": "OUTPUT_EXISTS", "proof_route": PROOF_ROUTE}
             shutil.rmtree(out)
         staging = out.parent / f".{out.name}.staging"
         if staging.exists():
             shutil.rmtree(staging)
-        imported = freeze_seed_workspace(seed_dir, tree_variant, staging,
-                                         code_root=code_root, target_recipe=target_recipe,
-                                         overwrite=False,
-                                         refresh_phase_k_map=refresh_phase_k_map,
-                                         proof_route=proof_route)
+
+        imported = freeze_seed_workspace_v9_1(
+            seed_dir, tree_variant, staging, code_root=code_root,
+            target_recipe=target_recipe, overwrite=False,
+        )
         request = Path(imported["request"])
-        manifest: dict[str, Any] = {"schema_version": "workflow_manifest_v1", "commands": []}
-        inspect = run_cli("formal_toolchain.cli.inspect_target", ["--request", str(request), "--out", str(staging / "preflight")], cwd=Path(code_root), log_dir=staging / "logs")
-        manifest["commands"].append(inspect)
+        commands: list[dict[str, Any]] = []
+
+        inspect = run_cli(
+            "formal_toolchain.cli.inspect_target",
+            ["--request", str(request), "--source-root", str(code_root), "--out", str(staging / "preflight")],
+            cwd=code_root, log_dir=staging / "logs",
+        )
+        commands.append(inspect)
         if inspect["returncode"] != 0:
-            summary = {"workflow_status": "FAILED", "result_status": "MODEL_CONFORMANCE_FAILED",
-                       "failure_route": "MODEL_CONFORMANCE_FAILED", "failure_code": "PREFLIGHT_FAILED",
-                       "exit_code": 10}
+            summary = {"workflow_status": "FAILED", "result_status": RESULT_UNRESOLVED,
+                       "failure_code": "V9_1_PREFLIGHT_FAILED", "proof_route": PROOF_ROUTE,
+                       "scope": SCOPE, "primary_claim": PRIMARY_CLAIM}
         else:
-            compile_out = staging / "candidate"
-            compile_run = run_cli("formal_toolchain.cli.compile_seed", ["--request", str(request), "--out", str(compile_out), "--source-root", str(code_root.resolve())], cwd=Path(code_root), log_dir=staging / "logs")
-            manifest["commands"].append(compile_run)
+            compile_run = run_cli(
+                "formal_toolchain.cli.compile_seed",
+                ["--request", str(request), "--out", str(staging / "candidate"),
+                 "--source-root", str(code_root)], cwd=code_root, log_dir=staging / "logs",
+            )
+            commands.append(compile_run)
             if compile_run["returncode"] != 0:
-                summary = {"workflow_status": "FAILED", "result_status": "PROOF_BUNDLE_INVALID",
-                           "failure_route": "PROOF_BUNDLE_INVALID", "failure_code": "COMPILER_FAILED",
-                           "exit_code": 30}
+                summary = {"workflow_status": "FAILED", "result_status": RESULT_INVALID,
+                           "failure_code": "V9_1_COMPILER_FAILED", "proof_route": PROOF_ROUTE,
+                           "scope": SCOPE, "primary_claim": PRIMARY_CLAIM}
             else:
-                verify_out = staging / "verified"
-                verify_run = run_cli("formal_toolchain.cli.verify_bundle", ["--request", str(request), "--bundle", str(compile_out), "--out", str(verify_out), "--source-root", str(code_root.resolve())], cwd=Path(code_root), log_dir=staging / "logs")
-                manifest["commands"].append(verify_run)
-                if not (verify_out / "proof_summary.json").is_file():
-                    summary = {"workflow_status": "FAILED", "result_status": "PROOF_BUNDLE_INVALID",
-                               "failure_route": "PROOF_BUNDLE_INVALID", "failure_code": "VERIFIER_SUMMARY_MISSING",
-                               "exit_code": 30}
+                verify_run = run_cli(
+                    "formal_toolchain.cli.verify_bundle",
+                    ["--request", str(request), "--bundle", str(staging / "candidate"),
+                     "--out", str(staging / "verified"), "--source-root", str(code_root)],
+                    cwd=code_root, log_dir=staging / "logs",
+                )
+                commands.append(verify_run)
+                summary_path = staging / "verified/proof_summary.json"
+                if not summary_path.is_file():
+                    summary = {"workflow_status": "FAILED", "result_status": RESULT_INVALID,
+                               "failure_code": "V9_1_VERIFIER_SUMMARY_MISSING", "proof_route": PROOF_ROUTE,
+                               "scope": SCOPE, "primary_claim": PRIMARY_CLAIM}
                 else:
-                    summary = json.loads((verify_out / "proof_summary.json").read_text(encoding="utf-8"))
-                    report_run = run_cli("formal_toolchain.cli.render_report", ["--verified", str(verify_out), "--out", str(staging / "human_readable_report.md")], cwd=Path(code_root), log_dir=staging / "logs")
-                    manifest["commands"].append(report_run)
-                    if report_run["returncode"] != 0:
-                        (staging / "logs" / "internal_error.log").write_text("report renderer failed\n", encoding="utf-8")
-                        summary = {**summary, "workflow_status": "FAILED", "internal_error": "REPORT_RENDER_FAILED"}
-        _write(staging / "workflow_manifest.json", manifest)
-        final_status = str(summary.get("result_status", "PROOF_BUNDLE_INVALID"))
-        request_data = json.loads(request.read_text(encoding="utf-8"))
-        target_kind = request_data.get("target_kind")
-        proof_result = {"workflow_schema_version": "prove_seed_workflow_v1",
-                        "taskset_seed": request_data.get("taskset_seed"),
-                        "proof_route": request_data.get("proof_route", {"schema_version": "proof_route_config_v1", "route": "strict_full"}),
-                        "proof_route_schema_version": request_data.get("proof_route", {}).get("schema_version", "proof_route_config_v1"),
-                        "target_id": request_data.get("target_id"),
-                        "target_kind": target_kind,
-                        "tree_variant": tree_variant, "profile": "P0",
-                        "phase_k_map_refreshed": bool(imported.get("phase_k_map_refreshed", refresh_phase_k_map)),
-                        "primary_claim": "DEPLOYED_HI_SAFETY",
-                        "workflow_status": summary.get("workflow_status", "FAILED"),
-                        "result_status": final_status,
-                        "failure_route": summary.get("failure_route"),
-                        "failure_code": summary.get("failure_code"),
-                        "violated_obligation_id": summary.get("violated_obligation_id"),
-                        "failure_message": summary.get("failure_message"),
-                        "verified_summary": "verified/proof_summary.json" if (staging / "verified/proof_summary.json").is_file() else None,
-                        "outer_bundle_root": summary.get("outer_bundle_root"),
-                        "fixture_claim_result": summary.get("fixture_claim_result", final_status),
-                        "fixture_id": summary.get("fixture_id", summary.get("target_id")),
-                        "fixture_kind": summary.get("fixture_kind", summary.get("target_kind")),
-                        "real_seed_evaluation": "DEFERRED" if target_kind == "SYNTHETIC_P0"
-                        else "COMPLETED" if target_kind is not None else "UNRESOLVED",
-                        "exit_code": 70 if summary.get("internal_error") else EXIT_CODES.get(final_status, 70)}
+                    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                    report_run = run_cli(
+                        "formal_toolchain.cli.render_report",
+                        ["--verified", str(staging / "verified"), "--out", str(staging / "human_readable_report.md")],
+                        cwd=code_root, log_dir=staging / "logs",
+                    )
+                    commands.append(report_run)
+
+        _write(staging / "workflow_manifest.json", {
+            "schema_version": "v9_1_workflow_manifest_v1", "proof_route": PROOF_ROUTE, "commands": commands,
+        })
+        result_status = str(summary.get("result_status", RESULT_INVALID))
+        proof_result = {
+            "workflow_schema_version": "prove_seed_v9_1_workflow_v1",
+            "proof_route": PROOF_ROUTE,
+            "scope": SCOPE,
+            "primary_claim": PRIMARY_CLAIM,
+            "target_id": imported.get("target_id"),
+            "target_kind": imported.get("target_kind"),
+            "taskset_seed": json.loads(request.read_text(encoding="utf-8"))["taskset_seed"],
+            "tree_variant": tree_variant,
+            "workflow_status": summary.get("workflow_status", "FAILED"),
+            "result_status": result_status,
+            "failure_code": summary.get("failure_code"),
+            "failure_message": summary.get("failure_message"),
+            "verified_summary": "verified/proof_summary.json" if (staging / "verified/proof_summary.json").is_file() else None,
+            "exit_code": EXIT_CODES.get(result_status, 30),
+        }
         _write(staging / "proof_result.json", proof_result)
         if not (staging / "human_readable_report.md").is_file():
             (staging / "human_readable_report.md").write_text(
-                f"# Formal proof report\n\n- result_status: `{final_status}`\n", encoding="utf-8")
+                f"# V9.1 Formal Proof Report\n\n- result_status: `{result_status}`\n- failure_code: `{summary.get('failure_code')}`\n",
+                encoding="utf-8",
+            )
         staging.rename(out)
         return int(proof_result["exit_code"]), proof_result
-    except Exception as exc:
-        # 输入合同错误不是内部异常：保留一个最小 staging workspace，写出
-        # 可诊断的 fail-closed result；真正未映射异常仍使用 70 并保留 traceback
-        # 位置，不能被伪装成 UNRESOLVED。
-        if isinstance(exc, FileExistsError):
-            code, result_status, failure_code = 2, "PROOF_BUNDLE_INVALID", "OUTPUT_EXISTS"
-        elif isinstance(exc, FormalWorkflowError):
-            code, result_status, failure_code = exc.exit_code, exc.route, exc.code
-        elif isinstance(exc, ValueError):
-            code, result_status, failure_code = 20, "UNRESOLVED", "SEED_IMPORT_OR_PREFLIGHT_FAILED"
-        else:
-            code, result_status, failure_code = 70, "PROOF_BUNDLE_INVALID", "INTERNAL_WORKFLOW_ERROR"
-        if "staging" not in locals():
-            staging = out.parent / f".{out.name}.staging"
-        if not staging.exists():
+    except (FormalWorkflowError, OSError, ValueError, KeyError) as exc:
+        route = exc.route if isinstance(exc, FormalWorkflowError) else RESULT_UNRESOLVED
+        code = exc.code if isinstance(exc, FormalWorkflowError) else "V9_1_WORKFLOW_INPUT_ERROR"
+        failure = {
+            "workflow_schema_version": "prove_seed_v9_1_workflow_v1",
+            "proof_route": PROOF_ROUTE, "scope": SCOPE, "primary_claim": PRIMARY_CLAIM,
+            "workflow_status": "FAILED", "result_status": route,
+            "failure_code": code, "failure_message": str(exc),
+            "exit_code": EXIT_CODES.get(route, 20),
+        }
+        if "staging" in locals():
             staging.mkdir(parents=True, exist_ok=True)
-        (staging / "logs").mkdir(exist_ok=True)
-        (staging / "logs" / ("internal_error.log" if code == 70 else "seed_import_error.log")).write_text(str(exc), encoding="utf-8")
-        failure = {"workflow_schema_version": "prove_seed_workflow_v1",
-                   "profile": "P0", "primary_claim": "DEPLOYED_HI_SAFETY",
-                   "proof_route": {"schema_version": "proof_route_config_v1", "route": proof_route},
-                   "proof_route_schema_version": "proof_route_config_v1",
-                   "workflow_status": "FAILED", "result_status": result_status,
-                   "failure_route": result_status, "failure_code": failure_code,
-                   "failure_message": str(exc), "verified_summary": None,
-                   "outer_bundle_root": None, "exit_code": code}
-        _write(staging / "proof_result.json", failure)
-        (staging / "human_readable_report.md").write_text(
-            f"# Formal proof report\n\n- result_status: `{result_status}`\n- failure_code: `{failure_code}`\n",
-            encoding="utf-8")
-        if not out.exists():
-            staging.rename(out)
-        return code, failure
+            _write(staging / "proof_result.json", failure)
+            if not out.exists():
+                staging.rename(out)
+        return int(failure["exit_code"]), failure
     finally:
         os.close(fd)
         try:
