@@ -106,7 +106,9 @@ def encode_v11_full_10d_observation(
     hi_util = z3.RealVal(0)
     lo_util = z3.RealVal(0)
     for rank, task in enumerate(model.tasks):
-        bound_hi = max(task.c_lo, task.deadline) if task.criticality == "LO" else task.c_hi
+        norm_lo = z3.RealVal(task.normalization_min_cost)
+        norm_hi = z3.RealVal(task.normalization_upper)
+        norm_width = norm_hi - norm_lo
         budget = _real(state.budgets[task.name])
         recent = _real(state.chi.recent_cost[task.name])
         ema = _real(state.chi.ema_cost[task.name])
@@ -124,9 +126,16 @@ def encode_v11_full_10d_observation(
                       z3.RealVal("0.5") * overrun + z3.RealVal("0.2") * criticality +
                       z3.RealVal("0.1") * priority) / risk_scale)
         surplus = _clip(((budget - pred) / z3.If(budget > 1, budget, z3.RealVal(1)) + 1) / 2)
+        def normalize(value: z3.ArithRef) -> z3.ArithRef:
+            # Production _normalize is clip((value-lo)/(hi-lo)).  Bounds are
+            # frozen as exact binary64 integers in build_bindings; the public
+            # quantizer still keeps its one-cell over-approximation around
+            # binary64/Decimal conversion boundaries.
+            return _clip((value - norm_lo) / norm_width)
+
         values = (
-            _clip(budget / bound_hi), _clip(recent / bound_hi), _clip(ema / bound_hi),
-            _clip(maxk / bound_hi), overrun, risk, surplus, criticality, _clip(priority), util,
+            normalize(budget), normalize(recent), normalize(ema),
+            normalize(maxk), overrun, risk, surplus, criticality, _clip(priority), util,
         )
         raw.extend(values)
         total_util += budget / task.period

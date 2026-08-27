@@ -30,6 +30,8 @@ class TaskBound:
     budget_floor: int = 1
     action_hard_upper: int | None = None
     degraded_cost: int | None = None
+    normalization_min_cost: int = 0
+    normalization_max_cost: int | None = None
 
     def __post_init__(self) -> None:
         if self.period <= 0 or self.deadline <= 0:
@@ -43,10 +45,18 @@ class TaskBound:
             raise ValueError("task degraded cost is invalid")
         if not (self.budget_floor <= self.initial_budget <= upper):
             raise ValueError("task budget bounds are invalid")
+        if self.normalization_max_cost is not None and self.normalization_max_cost <= self.normalization_min_cost:
+            raise ValueError("task normalization bounds are invalid")
 
     @property
     def budget_upper(self) -> int:
         return self.action_hard_upper if self.action_hard_upper is not None else self.c_hi
+
+    @property
+    def normalization_upper(self) -> int:
+        if self.normalization_max_cost is not None:
+            return self.normalization_max_cost
+        return self.c_hi if self.criticality == "HI" else max(self.c_lo, self.deadline)
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +122,10 @@ class BoundModel:
         rows = bindings.get("taskset", {}).get("ordered_tasks", ())
         if not isinstance(rows, (list, tuple)) or not rows:
             raise ValueError("bindings do not contain canonical taskset rows")
+        numeric = bindings.get("numeric_observation_binding", {})
+        normalization = numeric.get("normalization_bounds")
+        if not isinstance(normalization, Mapping):
+            raise ValueError("bindings do not contain frozen normalization bounds")
         tasks = tuple(
             TaskBound(
                 name=str(row["name"]),
@@ -129,6 +143,8 @@ class BoundModel:
                         str(row["name"]), row["code_c_lo"]
                     )
                 ),
+                normalization_min_cost=int(normalization[str(row["name"])]["min_cost"]),
+                normalization_max_cost=int(normalization[str(row["name"])]["max_cost"]),
             )
             for row in rows
         )
@@ -137,7 +153,6 @@ class BoundModel:
         noop_ids = [int(row["action_id"]) for row in alphabet if row.get("is_noop") is True]
         if len(noop_ids) != 1:
             raise ValueError("V9.1 requires exactly one explicit noop in bindings")
-        numeric = bindings.get("numeric_observation_binding", {})
         quant = numeric.get("quantization", {})
         feature_config = dict(numeric.get("feature_config", {}))
         action_cfg = dict(action.get("execution_config", {}))

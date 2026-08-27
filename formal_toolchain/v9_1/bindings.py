@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from formal_toolchain.adapters.tree_artifact import inspect_tree_artifact
 from formal_toolchain.core.hashing import sha256_file, sha256_object
 from formal_toolchain.policy.tree import validate_tree_and_leaf_partition
 from formal_toolchain.policy.tree_io import integer_tree_from_dict
+from amc_py.rl.observation import build_default_normalization_bounds
 from formal_toolchain.v9_1.constants import (
     CANONICAL_PHASES, KERNEL_STATE_FIELDS, PRIMARY_CLAIM, PROOF_ROUTE, REQUEST_SCHEMA, SCOPE,
 )
@@ -21,6 +23,20 @@ from formal_toolchain.v9_1.constants import (
 
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _canonical_binding_value(value: Any) -> Any:
+    """Convert finite Python floats to canonical decimal strings for proof objects."""
+
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("V9.1 bindings cannot contain NaN/Inf")
+        return format(value, ".17g")
+    if isinstance(value, dict):
+        return {str(key): _canonical_binding_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonical_binding_value(item) for item in value]
+    return value
 
 
 def load_request(request_path: Path) -> dict[str, Any]:
@@ -91,6 +107,35 @@ def _source_hashes(source_root: Path) -> dict[str, str]:
     return result
 
 
+
+
+def _freeze_normalization_bounds(environment: Any, ordered_tasks: Any) -> dict[str, dict[str, int]]:
+    """Freeze the exact per-task normalization intervals used by production v11.
+
+    The current V9.1 numeric proof models these bounds as exact binary64
+    integers.  This covers the deployed mc_stratified_dynamic workload and the
+    default observation bounds without admitting arbitrary non-integral float
+    intervals whose rounding relation is not yet encoded.
+    """
+
+    active = getattr(environment, "normalization_bounds", None)
+    if active is None:
+        active = build_default_normalization_bounds(ordered_tasks)
+    rows: dict[str, dict[str, int]] = {}
+    for task in ordered_tasks:
+        bound = active.get(task.name)
+        if bound is None:
+            raise ValueError(f"V9_1_P5_NORMALIZATION_BOUND_MISSING:{task.name}")
+        lo = float(bound.min_cost)
+        hi = float(bound.max_cost)
+        if not (math.isfinite(lo) and math.isfinite(hi) and hi > lo):
+            raise ValueError(f"V9_1_P5_NORMALIZATION_BOUND_INVALID:{task.name}")
+        if not (lo.is_integer() and hi.is_integer()):
+            raise ValueError(f"V9_1_P5_NONINTEGRAL_NORMALIZATION_BOUND_UNSUPPORTED:{task.name}")
+        if abs(lo) >= 2**53 or abs(hi) >= 2**53:
+            raise ValueError(f"V9_1_P5_NORMALIZATION_BOUND_EXCEEDS_EXACT_BINARY64_INTEGER_RANGE:{task.name}")
+        rows[str(task.name)] = {"min_cost": int(lo), "max_cost": int(hi)}
+    return rows
 
 
 def _exact_integer_linear_constraints(adapter: Any, task_names: list[str]) -> list[dict[str, Any]]:
@@ -250,12 +295,7 @@ def build_bindings(request_path: Path, *, source_root: Path) -> dict[str, Any]:
         raise ValueError("V9_1_P5_RESIDUAL_SAFETY_FALLBACK_MUST_BE_DISABLED")
     if str(environment.budget_rounding_mode) != "ceil_floor":
         raise ValueError("V9_1_P5_ONLY_CEIL_FLOOR_ROUNDING_IS_BOUND")
-    if environment.normalization_bounds is not None:
-        for task in target.ordered_tasks:
-            bound = environment.normalization_bounds.get(task.name)
-            expected_hi = task.c_hi if str(getattr(task.criticality, "value", task.criticality)) == "HI" else max(task.c_lo, task.deadline)
-            if bound is None or float(bound.min_cost) != 0.0 or float(bound.max_cost) != float(expected_hi):
-                raise ValueError("V9_1_P5_CUSTOM_NORMALIZATION_BOUNDS_UNSUPPORTED")
+    normalization_bounds = _freeze_normalization_bounds(environment, target.ordered_tasks)
 
     taskset = export_taskset(target.ordered_tasks, target.provenance.get("budget_by_task"))
     safety_rows = _exact_integer_linear_constraints(
@@ -305,7 +345,9 @@ def build_bindings(request_path: Path, *, source_root: Path) -> dict[str, Any]:
         "observation_mode": "v11_full_10d",
         "raw_feature_equations_binding": "EXECUTABLE_SOURCE_BOUND",
         "feature_history_update_binding": "EXECUTABLE_SOURCE_BOUND",
-        "normalization_binding": "EXECUTABLE_SOURCE_BOUND",
+        "normalization_binding": "FROZEN_EXACT_PER_TASK_INTERVAL",
+        "normalization_bounds": normalization_bounds,
+        "normalization_bounds_hash": sha256_object(normalization_bounds),
         "clipping": {"input_min": inventory["fixed_point_config"]["input_min"],
                      "input_max": inventory["fixed_point_config"]["input_max"]},
         "quantization": dict(inventory["fixed_point_config"]),
@@ -428,5 +470,6 @@ def build_bindings(request_path: Path, *, source_root: Path) -> dict[str, Any]:
         "source_manifest_semantic_hash": source_manifest["semantic_hash"],
         "formal_inputs_dir_hash": sha256_object(sorted(p.name for p in formal_inputs_dir.iterdir())),
     }
+    bindings = _canonical_binding_value(bindings)
     bindings["binding_root_hash"] = sha256_object(bindings)
     return bindings

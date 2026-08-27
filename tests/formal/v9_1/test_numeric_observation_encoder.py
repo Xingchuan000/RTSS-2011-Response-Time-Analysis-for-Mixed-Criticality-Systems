@@ -57,3 +57,22 @@ def test_v11_overrun_feature_uses_dedicated_overrun_ema_signal():
                state.chi.ema_cost["hi"] == 3,
                encoded.raw_features[4] != z3.RealVal("1/4"))
     assert solver.check() == z3.unsat
+
+
+def test_v11_normalization_uses_frozen_custom_interval_offset():
+    from formal_toolchain.v9_1.numeric_encoder import encode_v11_full_10d_observation
+
+    model = BoundModel(
+        (TaskBound("hi", 0, 10, 10, "HI", 1, 5, 3, 1, 5,
+                   normalization_min_cost=1, normalization_max_cost=5),),
+        5,
+        action_dim=2,
+        noop_id=1,
+        fixed_point_config=FixedPointConfig(scale=1000, output_max=1000),
+        max_jobs_per_task=1,
+    )
+    state = declare_state("custom_norm", model)
+    encoded = encode_v11_full_10d_observation(state, model)
+    solver = z3.Solver()
+    solver.add(state.budgets["hi"] == 3, encoded.raw_features[0] != z3.RealVal("1/2"))
+    assert solver.check() == z3.unsat
