@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import lcm
+from collections.abc import Collection
 from typing import Mapping
 
 import z3
@@ -50,7 +51,13 @@ def periodic_phase_constraints(
     )
 
 
-def declare_environment(prefix: str, model: BoundModel, *, release_count: int) -> SymbolicEnvironment:
+def declare_environment(
+    prefix: str,
+    model: BoundModel,
+    *,
+    release_count: int,
+    allowed_ticks_by_task: Mapping[str, Collection[int]] | None = None,
+) -> SymbolicEnvironment:
     """Declare independent actual demand for each task at each relative tick.
 
     ``release_count`` is retained as the public argument name for callers from
@@ -70,7 +77,14 @@ def declare_environment(prefix: str, model: BoundModel, *, release_count: int) -
     constraints: list[z3.BoolRef] = list(periodic_phase_constraints(phase, model, model.agent_period))
     for task in model.tasks:
         upper = task.c_hi if task.criticality == "HI" else task.c_lo
-        for tick in range(release_count):
+        if allowed_ticks_by_task is None:
+            ticks = range(release_count)
+        else:
+            raw_ticks = allowed_ticks_by_task.get(task.name, ())
+            ticks = tuple(sorted({int(tick) for tick in raw_ticks if 0 <= int(tick) < release_count}))
+            if not ticks:
+                raise ValueError(f"no admissible relative release ticks declared for {task.name}")
+        for tick in ticks:
             key = (task.name, tick)
             value = z3.Int(f"{prefix}.A.{task.name}.{tick}")
             demands[key] = value
@@ -91,10 +105,13 @@ def demand_for_time(
     release can silently fall outside the quantified demand domain.
     """
 
-    rows = [
-        (tick, env.actual_demands[(task.name, tick)])
-        for tick in range(env.horizon)
-    ]
+    rows = sorted(
+        (tick, demand)
+        for (name, tick), demand in env.actual_demands.items()
+        if name == task.name
+    )
+    if not rows:
+        raise ValueError(f"environment has no demand variables for task {task.name}")
     covered = z3.Or(*(absolute_time == env.phase.origin_time + tick for tick, _ in rows))
     value: z3.ArithRef = rows[-1][1]
     for tick, demand in reversed(rows[:-1]):

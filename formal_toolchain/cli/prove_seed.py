@@ -16,6 +16,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, help="default: seed-dir/.formal_proof_v9_1")
     parser.add_argument("--target-recipe", type=Path)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--solver-timeout-ms", type=int, default=120_000,
+                        help="fresh Z3 timeout per V9.1 proof obligation")
+    parser.add_argument("--max-boot-replay-ticks", type=int, default=2_000,
+                        help="maximum boot-prefix ticks used only for SAT witness classification")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     output_dir = args.out or (args.seed_dir / ".formal_proof_v9_1")
@@ -26,6 +30,8 @@ def main(argv: list[str] | None = None) -> int:
         out=output_dir,
         target_recipe=args.target_recipe,
         overwrite=args.overwrite,
+        solver_timeout_ms=args.solver_timeout_ms,
+        max_boot_replay_ticks=args.max_boot_replay_ticks,
     )
     if args.json:
         print(json.dumps(result, ensure_ascii=False))

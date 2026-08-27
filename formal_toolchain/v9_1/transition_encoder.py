@@ -386,6 +386,48 @@ def encode_p7_time_and_service(z: SymbolicKernelState, zp: SymbolicKernelState, 
     return z3.And(*clauses)
 
 
+
+def encode_phase_step(
+    z: SymbolicKernelState,
+    zp: SymbolicKernelState,
+    model: BoundModel,
+    env: SymbolicEnvironment,
+    *,
+    phase: int,
+    controller_may_fire: bool = True,
+) -> z3.BoolRef:
+    """Encode one statically known phase without constructing seven dead branches.
+
+    Finite first-bad windows start at P0 and follow the canonical P0..P7
+    sequence, so their phase is known from the unroll index.  Using this
+    dispatcher is logically identical to ``encode_step`` under ``z.p=phase``
+    but avoids rebuilding the full eight-way disjunction at every microstep.
+    ``controller_may_fire=False`` is permitted only when the caller has proved
+    the absolute-time congruence cannot satisfy the deployed controller period.
+    In that case P5 is exact identity on every state component except ``p``.
+    """
+
+    phase = int(phase)
+    if phase == 0:
+        return encode_p0_settle(z, zp, model)
+    if phase == 1:
+        return encode_p1_idle_recovery(z, zp, model)
+    if phase == 2:
+        return encode_p2_deadline_observe(z, zp, model)
+    if phase == 3:
+        return encode_p3_arrival_freeze(z, zp, model, env)
+    if phase == 4:
+        return encode_p4_mode_switch(z, zp, model)
+    if phase == 5:
+        if controller_may_fire:
+            return encode_p5_controller(z, zp, model)
+        return z3.And(*(_phase(z, zp, 5, 6) + _frame_state(z, zp, model)))
+    if phase == 6:
+        return encode_p6_dispatch(z, zp, model)
+    if phase == 7:
+        return encode_p7_time_and_service(z, zp, model)
+    raise ValueError(f"invalid V9.1 kernel phase: {phase}")
+
 def encode_step(
     z: SymbolicKernelState,
     zp: SymbolicKernelState,
@@ -409,5 +451,5 @@ def encode_step(
 __all__ = [
     "encode_p0_settle", "encode_p1_idle_recovery", "encode_p2_deadline_observe",
     "encode_p3_arrival_freeze", "encode_p4_mode_switch", "encode_p5_controller",
-    "encode_p6_dispatch", "encode_p7_time_and_service", "encode_step",
+    "encode_p6_dispatch", "encode_p7_time_and_service", "encode_phase_step", "encode_step",
 ]

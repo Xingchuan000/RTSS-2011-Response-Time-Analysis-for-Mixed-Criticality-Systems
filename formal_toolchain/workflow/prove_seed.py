@@ -25,9 +25,15 @@ def _write(path: Path, value: Any) -> None:
 
 
 def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
-               target_recipe: Path | None = None, overwrite: bool = False) -> tuple[int, dict[str, Any]]:
+               target_recipe: Path | None = None, overwrite: bool = False,
+               solver_timeout_ms: int = 120_000,
+               max_boot_replay_ticks: int = 2_000) -> tuple[int, dict[str, Any]]:
     """Freeze -> preflight -> compile -> fresh verify -> report for V9.1 only."""
 
+    if solver_timeout_ms <= 0:
+        raise ValueError("solver_timeout_ms must be positive")
+    if max_boot_replay_ticks < 0:
+        raise ValueError("max_boot_replay_ticks must be non-negative")
     code_root = Path(code_root).resolve()
     out = Path(out).resolve()
     lock = out.parent / f".{out.name}.lock"
@@ -78,15 +84,21 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
                 verify_run = run_cli(
                     "formal_toolchain.cli.verify_bundle",
                     ["--request", str(request), "--bundle", str(staging / "candidate"),
-                     "--out", str(staging / "verified"), "--source-root", str(code_root)],
+                     "--out", str(staging / "verified"), "--source-root", str(code_root),
+                     "--timeout-ms", str(int(solver_timeout_ms)),
+                     "--max-boot-replay-ticks", str(int(max_boot_replay_ticks))],
                     cwd=code_root, log_dir=staging / "logs",
                 )
                 commands.append(verify_run)
                 summary_path = staging / "verified/proof_summary.json"
                 if not summary_path.is_file():
-                    summary = {"workflow_status": "FAILED", "result_status": RESULT_INVALID,
-                               "failure_code": "V9_1_VERIFIER_SUMMARY_MISSING", "proof_route": PROOF_ROUTE,
-                               "scope": SCOPE, "primary_claim": PRIMARY_CLAIM}
+                    stderr_path = staging / "logs" / "verify_bundle.stderr.log"
+                    stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.is_file() else ""
+                    tail = "\n".join(stderr_text.rstrip().splitlines()[-12:]) or None
+                    summary = {"workflow_status": "FAILED", "result_status": RESULT_UNRESOLVED,
+                               "failure_code": "V9_1_VERIFIER_PROCESS_FAILED", "proof_route": PROOF_ROUTE,
+                               "scope": SCOPE, "primary_claim": PRIMARY_CLAIM,
+                               "failure_message": tail}
                 else:
                     summary = json.loads(summary_path.read_text(encoding="utf-8"))
                     report_run = run_cli(
@@ -97,7 +109,10 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
                     commands.append(report_run)
 
         _write(staging / "workflow_manifest.json", {
-            "schema_version": "v9_1_workflow_manifest_v1", "proof_route": PROOF_ROUTE, "commands": commands,
+            "schema_version": "v9_1_workflow_manifest_v1", "proof_route": PROOF_ROUTE,
+            "solver_timeout_ms": int(solver_timeout_ms),
+            "max_boot_replay_ticks": int(max_boot_replay_ticks),
+            "commands": commands,
         })
         result_status = str(summary.get("result_status", RESULT_INVALID))
         proof_result = {

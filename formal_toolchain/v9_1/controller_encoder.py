@@ -42,7 +42,7 @@ def encode_controller_decision(state: SymbolicKernelState, model: BoundModel) ->
         raise ValueError("V9_1_P5_ACTION_ALPHABET_UNBOUND")
 
     base = str(state.t)
-    enabled = z3.Mod(state.t, model.agent_period) == 0
+    enabled = (state.t % model.agent_period) == 0
     safety_margin = encode_safety_margin_min(state.budgets, model)
     observation = encode_v11_full_10d_observation(
         state,

@@ -23,9 +23,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bundle", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--source-root", required=True, type=Path)
+    parser.add_argument("--timeout-ms", type=int, default=120_000,
+                        help="fresh Z3 timeout per proof obligation")
+    parser.add_argument("--max-boot-replay-ticks", type=int, default=2_000,
+                        help="maximum boot-prefix ticks used only for SAT witness classification")
     args = parser.parse_args(argv)
     try:
-        summary = verify_bundle_v9_1(args.request, args.bundle, args.out, source_root=args.source_root)
+        summary = verify_bundle_v9_1(
+            args.request, args.bundle, args.out, source_root=args.source_root,
+            timeout_ms=args.timeout_ms, max_boot_replay_ticks=args.max_boot_replay_ticks,
+        )
     except (OSError, ValueError, KeyError) as exc:
         print(json.dumps({"workflow_status": "FAILED", "result_status": RESULT_INVALID,
                           "failure_route": RESULT_INVALID, "failure_code": "V9_1_VERIFIER_INPUT_ERROR",

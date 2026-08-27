@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from formal_toolchain.core.hashing import sha256_object
@@ -39,6 +40,23 @@ def _write(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+
+
+
+def _write_progress(out: Path, stage: str, **details: Any) -> None:
+    _write(out / "verifier_progress.json", {
+        "schema_version": "v9_1_verifier_progress_v1",
+        "stage": stage,
+        **details,
+    })
+
+
+def _estimated_symbols_per_state(model: BoundModel) -> int:
+    # t,p,mode + budgets/eta + 13 symbolic fields per job + frontier/ledger
+    # + four per-task history signals + five event-count windows.
+    task_count = len(model.tasks)
+    return (6 + 6 * task_count + 13 * task_count * model.max_jobs_per_task
+            + 5 * model.event_window)
 
 def _fail_summary(request: dict[str, Any], statuses: dict[str, str], *, code: str,
                   message: str | None = None, result: str = RESULT_UNRESOLVED) -> dict[str, Any]:
@@ -198,10 +216,12 @@ def verify_bundle_v9_1(
         return summary
 
     # 1) Source-bound universal frozen-runtime correspondence.
+    _write_progress(out, "UNIVERSAL_CONFORMANCE", timeout_ms=int(timeout_ms))
     conformance = prove_universal_conformance(
         model, source_root=source_root, timeout_ms=timeout_ms
     )
     receipts["universal_conformance"] = conformance.as_dict()
+    _write(out / "proof_receipts.partial.json", receipts)
     if conformance.status != "PASS":
         for name in (
             "POLICY_TIMING_KERNEL_STEP_CONFORMANCE",
@@ -225,12 +245,14 @@ def verify_bundle_v9_1(
 
     # 2) Safe-prefix invariant: initial and conditional inductiveness.
     invariant = SafePrefixInvariant(model)
+    _write_progress(out, "SAFE_PREFIX_INITIAL", timeout_ms=int(timeout_ms))
     initial = solve_formula(
         "SAFE_PREFIX_INVARIANT_INITIAL_COUNTEREXAMPLE",
         invariant.initial_counterexample(prefix="verify.initial"),
         timeout_ms=timeout_ms,
     )
     receipts["safe_prefix_initial"] = initial.as_dict()
+    _write(out / "proof_receipts.partial.json", receipts)
     statuses["SAFE_PREFIX_INVARIANT_INITIAL"] = _receipt_status(initial)
     if initial.result != "UNSAT":
         summary = _fail_summary(
@@ -241,6 +263,7 @@ def verify_bundle_v9_1(
         _write(out / "proof_summary.json", summary)
         return summary
 
+    _write_progress(out, "SAFE_PREFIX_CONDITIONAL_INDUCTIVENESS", timeout_ms=int(timeout_ms))
     ind_env = declare_environment("verify.ind.env", model, release_count=1)
     inductive = solve_formula(
         "SAFE_PREFIX_INVARIANT_CONDITIONAL_INDUCTIVENESS_COUNTEREXAMPLE",
@@ -248,6 +271,7 @@ def verify_bundle_v9_1(
         timeout_ms=timeout_ms,
     )
     receipts["safe_prefix_conditional_inductiveness"] = inductive.as_dict()
+    _write(out / "proof_receipts.partial.json", receipts)
     statuses["SAFE_PREFIX_INVARIANT_CONDITIONAL_INDUCTIVENESS"] = _receipt_status(inductive)
     if inductive.result != "UNSAT":
         summary = _fail_summary(
@@ -259,6 +283,7 @@ def verify_bundle_v9_1(
         return summary
 
     # 3) Finite two-slot carry-in adequacy meta-theorems.
+    _write_progress(out, "CARRY_IN_ADEQUACY", timeout_ms=int(timeout_ms))
     carry_receipts: list[dict[str, Any]] = []
     for obligation in build_two_slot_carry_in_obligations(model, prefix="verify.carry"):
         receipt = solve_formula(
@@ -277,14 +302,39 @@ def verify_bundle_v9_1(
             _write(out / "proof_summary.json", summary)
             return summary
     receipts["carry_in"] = carry_receipts
+    _write(out / "proof_receipts.partial.json", receipts)
 
     # 4) Per-HI first-bad finite windows, regenerated here.  Candidate-provided
-    # SMT files are not opened or parsed anywhere in this route.
+    # SMT files are not opened or parsed anywhere in this route.  SAT windows
+    # are classified immediately so a large encoding is never retained merely
+    # to classify it after every other HI task has been solved.
     window_receipts: list[dict[str, Any]] = []
-    sat_encodings: list[Any] = []
+    classifications: list[dict[str, Any]] = []
+    sat_tasks: list[str] = []
     unknown_tasks: list[str] = []
-    for task in model.hi_tasks:
+    if concrete_replayer is None:
+        concrete_replayer = DeployedRuntimeCounterexampleReplayer(
+            request["target_recipe"], model
+        )
+    symbols_per_state = _estimated_symbols_per_state(model)
+    for task_index, task in enumerate(model.hi_tasks):
+        state_count = int(task.deadline) * 8 + 4
+        _write_progress(
+            out, "BUILD_FIRST_BAD_WINDOW",
+            task=task.name, task_index=task_index, hi_task_count=len(model.hi_tasks),
+            deadline=int(task.deadline), state_count=state_count,
+            estimated_declared_state_symbols=state_count * symbols_per_state,
+        )
+        build_started = perf_counter()
         encoding = build_first_bad_window(model, invariant, task.name)
+        build_seconds = perf_counter() - build_started
+        _write_progress(
+            out, "SOLVE_FIRST_BAD_WINDOW",
+            task=task.name, task_index=task_index, hi_task_count=len(model.hi_tasks),
+            deadline=int(task.deadline), state_count=state_count,
+            estimated_declared_state_symbols=state_count * symbols_per_state,
+            build_seconds=round(build_seconds, 6), timeout_ms=int(timeout_ms),
+        )
         receipt = solve_formula(
             f"FIRST_BAD_WINDOW_{task.name}",
             encoding.formula,
@@ -295,14 +345,55 @@ def verify_bundle_v9_1(
         row.update({
             "task": task.name,
             "deadline": task.deadline,
+            "state_count": state_count,
+            "estimated_declared_state_symbols": state_count * symbols_per_state,
+            "build_seconds": round(build_seconds, 6),
             "source_obligations": list(encoding.source_obligations),
         })
         window_receipts.append(row)
+        receipts["hi_windows"] = window_receipts
+        _write(out / "proof_receipts.partial.json", receipts)
+
         if receipt.result == "SAT":
-            sat_encodings.append(encoding)
+            sat_tasks.append(task.name)
+            _write_progress(
+                out, "CLASSIFY_SAT_WINDOW", task=task.name, deadline=int(task.deadline),
+                max_boot_replay_ticks=int(max_boot_replay_ticks), timeout_ms=int(timeout_ms),
+            )
+            classification = classify_sat_window(
+                encoding, model, invariant,
+                concrete_replayer=concrete_replayer,
+                timeout_ms=timeout_ms,
+                max_boot_ticks=max_boot_replay_ticks,
+            )
+            classification_row = classification.as_dict()
+            classifications.append(classification_row)
+            receipts["sat_classification"] = classifications
+            _write(out / "proof_receipts.partial.json", receipts)
+            if classification.status == "PASS":
+                statuses["FINITE_WINDOW_ENCODING_SOUNDNESS"] = "PASS"
+                summary = _fail_summary(
+                    request, statuses,
+                    code="CONCRETE_HI_COUNTEREXAMPLE_VERIFIED",
+                    message=str(classification.details.get("target_task")),
+                    result=RESULT_CONCRETE_COUNTEREXAMPLE,
+                )
+                summary["binding_root_hash"] = recomputed["binding_root_hash"]
+                summary["counterexample_receipt_hash"] = sha256_object(classifications)
+                _write(out / "proof_receipts.json", receipts)
+                _write(out / "proof_summary.json", summary)
+                _write_progress(out, "COMPLETE", result_status=RESULT_CONCRETE_COUNTEREXAMPLE)
+                return summary
         elif receipt.result != "UNSAT":
             unknown_tasks.append(task.name)
+
+        # ``encoding`` can hold hundreds of thousands of symbolic states for a
+        # long deadline.  Do not retain it after its receipt/SAT classification.
+        del encoding
+
     receipts["hi_windows"] = window_receipts
+    if classifications:
+        receipts["sat_classification"] = classifications
 
     if unknown_tasks:
         statuses["FINITE_WINDOW_ENCODING_SOUNDNESS"] = "UNRESOLVED"
@@ -312,53 +403,21 @@ def verify_bundle_v9_1(
         )
         _write(out / "proof_receipts.json", receipts)
         _write(out / "proof_summary.json", summary)
+        _write_progress(out, "COMPLETE", result_status=RESULT_UNRESOLVED,
+                        unknown_tasks=unknown_tasks)
         return summary
 
-    if sat_encodings:
-        if concrete_replayer is None:
-            concrete_replayer = DeployedRuntimeCounterexampleReplayer(
-                request["target_recipe"], model
-            )
-        # SAT is not itself a concrete-unsafe certificate because history and
-        # arbitrary safe-prefix carry-in intentionally over-approximate the
-        # deployed runtime.  Re-solve each SAT window, prove its concrete z0
-        # boot-safe-prefix reachable, then require independent concrete replay.
+    if sat_tasks:
         statuses["FINITE_WINDOW_ENCODING_SOUNDNESS"] = "PASS"
-        classifications: list[dict[str, Any]] = []
-        verified_counterexample = None
-        for encoding in sat_encodings:
-            classification = classify_sat_window(
-                encoding, model, invariant,
-                concrete_replayer=concrete_replayer,
-                timeout_ms=timeout_ms,
-                max_boot_ticks=max_boot_replay_ticks,
-            )
-            row = classification.as_dict()
-            classifications.append(row)
-            if classification.status == "PASS":
-                verified_counterexample = classification
-                break
-        receipts["sat_classification"] = classifications
-        if verified_counterexample is not None:
-            summary = _fail_summary(
-                request, statuses,
-                code="CONCRETE_HI_COUNTEREXAMPLE_VERIFIED",
-                message=str(verified_counterexample.details.get("target_task")),
-                result=RESULT_CONCRETE_COUNTEREXAMPLE,
-            )
-            summary["binding_root_hash"] = recomputed["binding_root_hash"]
-            summary["counterexample_receipt_hash"] = sha256_object(classifications)
-            _write(out / "proof_receipts.json", receipts)
-            _write(out / "proof_summary.json", summary)
-            return summary
         summary = _fail_summary(
             request, statuses, code="SPURIOUS_OR_UNRESOLVED_COUNTEREXAMPLE",
-            message=",".join(encoding.target_task for encoding in sat_encodings),
+            message=",".join(sat_tasks),
         )
         summary["binding_root_hash"] = recomputed["binding_root_hash"]
         summary["counterexample_receipt_hash"] = sha256_object(classifications)
         _write(out / "proof_receipts.json", receipts)
         _write(out / "proof_summary.json", summary)
+        _write_progress(out, "COMPLETE", result_status=RESULT_UNRESOLVED, sat_tasks=sat_tasks)
         return summary
 
     statuses["FINITE_WINDOW_ENCODING_SOUNDNESS"] = "PASS"
@@ -370,4 +429,5 @@ def verify_bundle_v9_1(
     )
     _write(out / "proof_receipts.json", receipts)
     _write(out / "proof_summary.json", summary)
+    _write_progress(out, "COMPLETE", result_status=RESULT_PROVED)
     return summary

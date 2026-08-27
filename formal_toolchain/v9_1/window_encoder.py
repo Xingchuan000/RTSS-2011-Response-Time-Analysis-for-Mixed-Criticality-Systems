@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import gcd
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,7 @@ import z3
 from .environment_encoder import declare_environment, target_release_constraints
 from .safe_prefix_invariant import SafePrefixInvariant
 from .symbolic_state import BoundModel, SymbolicKernelState, declare_state
-from .transition_encoder import encode_step
+from .transition_encoder import encode_phase_step
 
 
 ENCODER_VERSION = "V9_1_KERNEL_ENCODER_V2_TWO_SLOT_CARRY_IN"
@@ -72,8 +73,22 @@ def build_first_bad_window(
         )
 
     deadline = int(task.deadline)
-    # Need a fresh demand variable for every relative integer timestamp 0..D.
-    env = declare_environment("window.env", model, release_count=deadline + 1)
+    # The origin is a target release, so origin % T_target == 0.  A release of
+    # task k can occur at relative tick r only if gcd(T_target,T_k) divides r.
+    # Declare demand variables only on those potentially reachable ticks; P3's
+    # coverage implication still prevents any due release from escaping the
+    # universally quantified demand domain.
+    allowed_ticks = {
+        row.name: tuple(
+            tick for tick in range(deadline + 1)
+            if tick % gcd(task.period, row.period) == 0
+        )
+        for row in model.tasks
+    }
+    env = declare_environment(
+        "window.env", model, release_count=deadline + 1,
+        allowed_ticks_by_task=allowed_ticks,
+    )
     # +4 includes the post-P2 (p=3) target state where the sticky miss ledger
     # has actually been updated.
     states = tuple(declare_state(f"window.z.{index}", model) for index in range(deadline * 8 + 4))
@@ -90,8 +105,15 @@ def build_first_bad_window(
     # The target is release-eligible at the arbitrary absolute origin.
     clauses.append(z0.eta[target_task] == task.period)
 
+    controller_stride = gcd(model.agent_period, task.period)
     for index in range(len(states) - 1):
-        clauses.append(encode_step(states[index], states[index + 1], model, env))
+        phase = index % 8
+        relative_tick = index // 8
+        controller_may_fire = (relative_tick % controller_stride == 0)
+        clauses.append(encode_phase_step(
+            states[index], states[index + 1], model, env,
+            phase=phase, controller_may_fire=controller_may_fire,
+        ))
 
     # Check the ledger *after* every earlier P2 observation.  This rules out an
     # earlier simultaneous or single HI miss, rather than checking the pre-P2
@@ -130,7 +152,9 @@ def build_first_bad_window(
             "single_exact_hi_slot_sound_under_D_le_T_and_no_prior_miss",
             "no_earlier_hi_miss_checked_after_each_deadline_observation",
             "target_deadline_post_observe_ledger_increment_encoded",
-            "per_relative_tick_actual_demand_universal_domain",
+            "sparse_but_complete_relative_release_demand_universal_domain",
+            "known_phase_unroll_avoids_dead_transition_branches",
+            "controller_formula_only_on_gcd-compatible_relative_ticks",
         ),
     )
 

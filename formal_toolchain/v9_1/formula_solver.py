@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+from time import perf_counter
 from typing import Any
 
 import z3
@@ -18,6 +19,9 @@ class FormulaReceipt:
     timeout_ms: int
     reason: str | None = None
     model: Any = None
+    formula_chars: int | None = None
+    canonicalization_seconds: float | None = None
+    solver_check_seconds: float | None = None
 
     def as_dict(self, *, include_model: bool = False) -> dict[str, Any]:
         row: dict[str, Any] = {
@@ -29,6 +33,12 @@ class FormulaReceipt:
         }
         if self.reason is not None:
             row["reason"] = self.reason
+        if self.formula_chars is not None:
+            row["formula_chars"] = int(self.formula_chars)
+        if self.canonicalization_seconds is not None:
+            row["canonicalization_seconds"] = round(float(self.canonicalization_seconds), 6)
+        if self.solver_check_seconds is not None:
+            row["solver_check_seconds"] = round(float(self.solver_check_seconds), 6)
         if include_model and self.model is not None:
             row["model"] = self.model
         return row
@@ -49,22 +59,33 @@ def solve_formula(
 ) -> FormulaReceipt:
     """Solve one regenerated formula in a fresh solver instance."""
 
+    started = perf_counter()
     text = canonical_formula_text(formula)
+    canonicalization_seconds = perf_counter() - started
     formula_hash = sha256(text.encode("utf-8")).hexdigest()
     solver = z3.Solver()
     solver.set(timeout=int(timeout_ms))
     solver.add(formula)
+    check_started = perf_counter()
     result = solver.check()
+    solver_check_seconds = perf_counter() - check_started
+    metrics = {
+        "formula_chars": len(text),
+        "canonicalization_seconds": canonicalization_seconds,
+        "solver_check_seconds": solver_check_seconds,
+    }
     if result == z3.unsat:
         return FormulaReceipt(
-            obligation_id, "UNSAT", formula_hash, z3.get_version_string(), int(timeout_ms)
+            obligation_id, "UNSAT", formula_hash, z3.get_version_string(), int(timeout_ms),
+            **metrics,
         )
     if result == z3.sat:
         model = None
         if capture_model:
             model = {str(decl): str(solver.model()[decl]) for decl in solver.model().decls()}
         return FormulaReceipt(
-            obligation_id, "SAT", formula_hash, z3.get_version_string(), int(timeout_ms), model=model
+            obligation_id, "SAT", formula_hash, z3.get_version_string(), int(timeout_ms),
+            model=model, **metrics,
         )
     return FormulaReceipt(
         obligation_id,
@@ -73,6 +94,7 @@ def solve_formula(
         z3.get_version_string(),
         int(timeout_ms),
         reason=solver.reason_unknown(),
+        **metrics,
     )
 
 

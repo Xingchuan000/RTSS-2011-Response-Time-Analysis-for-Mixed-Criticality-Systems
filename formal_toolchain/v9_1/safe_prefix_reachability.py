@@ -19,7 +19,7 @@ from .environment_encoder import declare_environment
 from .formula_solver import canonical_formula_text
 from .safe_prefix_invariant import SafePrefixInvariant
 from .symbolic_state import BoundModel, SymbolicKernelState, declare_state
-from .transition_encoder import encode_step
+from .transition_encoder import encode_phase_step
 from .window_encoder import WindowEncoding
 
 
@@ -161,7 +161,13 @@ def prove_boot_safe_prefix_reachability(
         invariant.formula(states[0]),
     ]
     for index in range(len(states) - 1):
-        clauses.append(encode_step(states[index], states[index + 1], model, boot_env))
+        phase = index % 8
+        absolute_tick = index // 8
+        clauses.append(encode_phase_step(
+            states[index], states[index + 1], model, boot_env,
+            phase=phase,
+            controller_may_fire=(absolute_tick % model.agent_period == 0),
+        ))
     # M is sticky, so final M=0 already implies no earlier HI miss.  Keep the
     # explicit per-P2 checks as a regression guard on that semantic fact.
     for tick in range(origin):
