@@ -248,15 +248,16 @@ def well_formed(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
                         eta >= 0, eta <= task.period))
         for slot in range(model.max_jobs_per_task):
             job = state.jobs[(task.name, slot)]
-            clauses.extend((job.release_index >= 0, job.release_time >= 0,
-                            job.absolute_deadline == job.release_time + task.deadline,
-                            job.budget_at_release >= task.budget_floor,
-                            job.budget_at_release <= task.budget_upper,
-                            job.actual_demand >= 1,
-                            job.actual_demand <= (task.c_hi if task.criticality == "HI" else task.c_lo),
-                            job.effective_demand >= 1,
+            clauses.extend((z3.Implies(job.present, job.release_index >= 0),
+                            z3.Implies(job.present, job.release_time >= 0),
+                            z3.Implies(job.present, job.absolute_deadline == job.release_time + task.deadline),
+                            z3.Implies(job.present, job.budget_at_release >= task.budget_floor),
+                            z3.Implies(job.present, job.budget_at_release <= task.budget_upper),
+                            z3.Implies(job.present, job.actual_demand >= 1),
+                            z3.Implies(job.present, job.actual_demand <= (task.c_hi if task.criticality == "HI" else task.c_lo)),
+                            z3.Implies(job.present, job.effective_demand >= 1),
                             job.executed_service >= 0,
-                            job.executed_service <= job.effective_demand,
+                            z3.Implies(job.present, job.executed_service <= job.effective_demand),
                             z3.Implies(job.removed, z3.Not(job.ready)),
                             z3.Implies(job.present, z3.Not(job.removed))))
     if model.action_dim:
