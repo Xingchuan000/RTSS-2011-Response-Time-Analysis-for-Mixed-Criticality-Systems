@@ -42,3 +42,18 @@ def test_unsupported_dynamic_action_does_not_become_noop():
     with pytest.raises(ValueError, match="ACTION_SEMANTICS_UNBOUND"):
         encode_action_mask(state.budgets, ({"is_residual_ranked": True, "is_noop": False},
                                             {"is_noop": True}), model)
+
+
+def test_v11_overrun_feature_uses_dedicated_overrun_ema_signal():
+    from formal_toolchain.v9_1.numeric_encoder import encode_v11_full_10d_observation
+
+    model = _model()
+    state = declare_state("obs", model)
+    encoded = encode_v11_full_10d_observation(state, model)
+    # Per-task feature index 4 is overrun_ema.  Changing ema_cost alone must not
+    # force that raw feature to change.
+    solver = z3.Solver()
+    solver.add(state.chi.overrun_ema["hi"] == z3.RealVal("1/4"),
+               state.chi.ema_cost["hi"] == 3,
+               encoded.raw_features[4] != z3.RealVal("1/4"))
+    assert solver.check() == z3.unsat

@@ -19,9 +19,18 @@ def budget_bounds(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
 
 
 def exact_periodic_eta(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
-    return z3.And(*(state.eta[task.name] == z3.If(state.t % task.period == 0,
-                                                  task.period, state.t % task.period)
-                    for task in model.tasks))
+    """Phase-aware release age for exact-periodic phase-zero releases."""
+
+    clauses = []
+    for task in model.tasks:
+        residue = state.t % task.period
+        expected = z3.If(
+            residue == 0,
+            z3.If(state.p <= 3, task.period, 0),
+            residue,
+        )
+        clauses.append(state.eta[task.name] == expected)
+    return z3.And(*clauses)
 
 
 def job_field_consistency(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
@@ -29,11 +38,29 @@ def job_field_consistency(state: SymbolicKernelState, model: BoundModel) -> z3.B
     for task in model.tasks:
         for slot in range(model.max_jobs_per_task):
             job = state.jobs[(task.name, slot)]
-            clauses.extend((z3.Implies(job.present, job.release_time == job.release_index * task.period),
-                            z3.Implies(job.present, job.absolute_deadline == job.release_time + task.deadline),
-                            z3.Implies(job.present, job.actual_demand <=
-                                       (task.c_hi if task.criticality == "HI" else task.c_lo)),
-                            z3.Implies(job.present, job.actual_demand >= 1)))
+            lo_aggregate = task.criticality == "LO" and slot == 0
+            unused = (task.criticality == "HI" and slot != 0) or (
+                task.criticality == "LO" and slot not in {0, 1}
+            )
+            if unused:
+                clauses.extend((z3.Not(job.present), z3.Not(job.ready)))
+                continue
+            if lo_aggregate:
+                clauses.extend((
+                    z3.Implies(job.present, job.release_index == -1),
+                    z3.Implies(job.present, job.release_time <= state.t),
+                    z3.Implies(job.present, job.tie_break == -1),
+                    z3.Implies(job.present, job.actual_demand == job.effective_demand),
+                ))
+                continue
+            clauses.extend((
+                z3.Implies(job.present, job.release_time == job.release_index * task.period),
+                z3.Implies(job.present, job.absolute_deadline == job.release_time + task.deadline),
+                z3.Implies(job.present, job.actual_demand <=
+                           (task.c_hi if task.criticality == "HI" else task.c_lo)),
+                z3.Implies(job.present, job.actual_demand >= 1),
+                z3.Implies(job.present, job.tie_break == job.release_index),
+            ))
             if task.criticality == "HI":
                 clauses.append(z3.Implies(job.present, job.effective_demand == job.actual_demand))
     return z3.And(*clauses)
@@ -42,31 +69,86 @@ def job_field_consistency(state: SymbolicKernelState, model: BoundModel) -> z3.B
 def no_prior_hi_miss_consistency(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
     clauses: list[z3.BoolRef] = []
     for task in model.hi_tasks:
-        for job in state.jobs.values():
-            if job.task_id != task.priority:
-                continue
-            clauses.append(z3.Implies(z3.And(state.hi_miss_ledger == 0, job.present),
-                                      job.absolute_deadline >= state.t))
+        for slot in range(model.max_jobs_per_task):
+            job = state.jobs[(task.name, slot)]
+            deadline_bound = z3.If(state.p <= 2, job.absolute_deadline >= state.t,
+                                   job.absolute_deadline > state.t)
+            clauses.append(z3.Implies(
+                z3.And(state.hi_miss_ledger == 0, job.present),
+                deadline_bound,
+            ))
+    return z3.And(*clauses)
+
+
+def settled_job_consistency(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
+    """After P0 no completed job remains present until the next time advance."""
+
+    clauses: list[z3.BoolRef] = []
+    for job in state.jobs.values():
+        clauses.append(z3.Implies(
+            z3.And(state.p >= 1, job.present),
+            job.executed_service < job.effective_demand,
+        ))
+    return z3.And(*clauses)
+
+
+def frontier_consistency(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
+    clauses: list[z3.BoolRef] = []
+    clauses.append(z3.Implies(
+        state.p <= 6,
+        z3.And(state.frontier.selected_slot == -1, z3.Not(state.frontier.running)),
+    ))
+    eligible_by_index: list[z3.BoolRef] = []
+    for index, job in enumerate(state.jobs.values()):
+        eligible = job.present & job.ready & (job.remaining > 0) & z3.Not(job.removed)
+        eligible_by_index.append(z3.And(state.frontier.selected_slot == index, eligible))
+    selected_eligible = z3.Or(*eligible_by_index) if eligible_by_index else z3.BoolVal(False)
+    clauses.append(z3.Implies(
+        state.p == 7,
+        z3.And(
+            state.frontier.running == (state.frontier.selected_slot >= 0),
+            z3.Implies(state.frontier.selected_slot >= 0, selected_eligible),
+        ),
+    ))
     return z3.And(*clauses)
 
 
 def history_bounds(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
-    values = []
-    for mapping in (state.chi.recent_cost, state.chi.ema_cost, state.chi.max_cost_k):
-        values.extend(value <= max(task.c_hi for task in model.tasks)
-                     for value in mapping.values())
-    for window in (state.chi.mode_change_window, state.chi.lo_cancel_window,
-                   state.chi.hi_overrun_window, state.chi.lo_overrun_window,
-                   state.chi.job_start_window):
-        values.extend((value >= 0, value <= 1) for value in window)
-    return z3.And(*(item for value in values for item in (value if isinstance(value, tuple) else (value,))))
+    clauses: list[z3.BoolRef] = []
+    for task in model.tasks:
+        upper = task.c_hi if task.criticality == "HI" else task.c_lo
+        clauses.extend((
+            state.chi.recent_cost[task.name] >= 0,
+            state.chi.recent_cost[task.name] <= upper,
+            state.chi.ema_cost[task.name] >= 0,
+            state.chi.ema_cost[task.name] <= upper,
+            state.chi.max_cost_k[task.name] >= 0,
+            state.chi.max_cost_k[task.name] <= upper,
+            state.chi.overrun_ema[task.name] >= 0,
+            state.chi.overrun_ema[task.name] <= 1,
+        ))
+    # Runtime windows store event counts, not booleans.  Non-negativity is the
+    # sound finite abstraction; observation itself clips the resulting rates.
+    for window in (
+        state.chi.mode_change_window, state.chi.lo_cancel_window,
+        state.chi.hi_overrun_window, state.chi.lo_overrun_window,
+        state.chi.job_start_window,
+    ):
+        clauses.extend(value >= 0 for value in window)
+    return z3.And(*clauses)
 
 
 def carry_in_consistency(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
-    # The finite slot representation is itself the carry-in boundary.  Adequacy
-    # (including saturation tails) is discharged independently by carry_in.py.
-    return z3.And(*(z3.Implies(job.present, job.release_time <= state.t)
-                    for job in state.jobs.values()))
+    clauses: list[z3.BoolRef] = []
+    for task in model.tasks:
+        if task.deadline > task.period:
+            # The two-slot theorem intentionally does not claim arbitrary
+            # overlapping HI jobs for D>T tasksets.
+            clauses.append(z3.BoolVal(False))
+        for slot in range(model.max_jobs_per_task):
+            job = state.jobs[(task.name, slot)]
+            clauses.append(z3.Implies(job.present, job.release_time <= state.t))
+    return z3.And(*clauses)
 
 
 def build_psi(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
@@ -76,11 +158,14 @@ def build_psi(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
         exact_periodic_eta(state, model),
         job_field_consistency(state, model),
         no_prior_hi_miss_consistency(state, model),
+        settled_job_consistency(state, model),
+        frontier_consistency(state, model),
         history_bounds(state, model),
         carry_in_consistency(state, model),
     )
 
 
 __all__ = ["build_psi", "budget_bounds", "carry_in_consistency", "exact_periodic_eta",
-           "history_bounds", "job_field_consistency", "no_prior_hi_miss_consistency",
+           "frontier_consistency", "history_bounds", "job_field_consistency",
+           "no_prior_hi_miss_consistency", "settled_job_consistency",
            "state_well_formedness"]

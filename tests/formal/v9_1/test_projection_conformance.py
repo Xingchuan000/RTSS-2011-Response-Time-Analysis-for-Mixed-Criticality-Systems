@@ -11,8 +11,10 @@ def test_concrete_timestamp_projects_in_canonical_order_and_pre_dispatch_stutter
     projected = project_timestamp_record(record)
     assert projected.phases == ("P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7")
     evidence = build_conformance_proof_objects((record,), tmp_path)
-    assert evidence["status"] == "PASS"
-    assert (tmp_path / "kernel_step_conformance.smt2").is_file()
+    assert evidence["status"] == "UNRESOLVED"
+    assert evidence["code"] == "V9_1_UNIVERSAL_CONFORMANCE_PROOF_UNBOUND"
+    assert evidence["proof_object_hashes"] == {}
+    assert not (tmp_path / "kernel_step_conformance.smt2").exists()
 
 
 def test_controller_preliminary_service_is_not_ignored():

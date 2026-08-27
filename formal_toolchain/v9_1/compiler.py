@@ -13,7 +13,7 @@ from formal_toolchain.v9_1.constants import PROOF_ROUTE, SCOPE
 from formal_toolchain.v9_1.encoding_contract import (
     REQUIRED_SOUNDNESS_CLAUSES, WINDOW_ENCODER_IMPLEMENTED, WINDOW_ENCODER_VERSION,
 )
-from formal_toolchain.v9_1.proof_objects import copy_proof_inputs
+from formal_toolchain.v9_1.readiness import blocker_rows
 
 
 def _write(path: Path, value: Any) -> None:
@@ -33,17 +33,15 @@ def compile_request_v9_1(request_path: Path, out: Path, *, source_root: Path) ->
 
     workspace_root = request_path.parent.parent
     formal_inputs_dir = (workspace_root / request["formal_inputs_dir"]).resolve()
-    proof_inputs = copy_proof_inputs(formal_inputs_dir, out)
-    gaps = []
-    if not WINDOW_ENCODER_IMPLEMENTED:
-        gaps.append({
-            "code": "WINDOW_ENCODING_UNRESOLVED",
-            "component": "formal_toolchain.v9_1 symbolic Policy-Timing Kernel / first-miss window encoder",
-            "required_encoder_version": WINDOW_ENCODER_VERSION,
-        })
-    if proof_inputs.get("status") != "COPIED":
-        gaps.append({"code": proof_inputs.get("failure_code", "V9_1_PROOF_INPUTS_MISSING"),
-                     "component": "safe-prefix/kernel/window proof objects"})
+    # V9.1 proof obligations belong to the trusted verifier boundary.  Never
+    # copy assertion-only SMT files from formal_inputs into a candidate bundle:
+    # an arbitrary ``(assert false)`` would otherwise be indistinguishable from
+    # a genuine refutation once the global encoder gate is opened.
+    proof_inputs = {
+        "status": "NOT_ACCEPTED_FROM_UNTRUSTED_INPUT",
+        "failure_code": "V9_1_TRUSTED_PROOF_REGENERATION_UNBOUND",
+    }
+    gaps = blocker_rows() if not WINDOW_ENCODER_IMPLEMENTED else []
 
     manifest = {
         "schema_version": "v9_1_candidate_bundle_v1",

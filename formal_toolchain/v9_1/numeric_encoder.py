@@ -106,18 +106,20 @@ def encode_v11_full_10d_observation(
     hi_util = z3.RealVal(0)
     lo_util = z3.RealVal(0)
     for rank, task in enumerate(model.tasks):
-        bound_hi = max(task.c_hi, task.deadline) if task.criticality == "LO" else task.c_hi
+        bound_hi = max(task.c_lo, task.deadline) if task.criticality == "LO" else task.c_hi
         budget = _real(state.budgets[task.name])
         recent = _real(state.chi.recent_cost[task.name])
         ema = _real(state.chi.ema_cost[task.name])
         maxk = _real(state.chi.max_cost_k[task.name])
-        overrun = _clip(_real(state.chi.ema_cost[task.name]) / max(1, task.c_hi))
+        # Production v11 uses the dedicated RuntimeFeatureState.overrun_ema
+        # signal directly; it is already an EMA of a 0/1 overrun event.
+        overrun = _clip(_real(state.chi.overrun_ema[task.name]))
         criticality = z3.RealVal(1 if task.criticality == "HI" else 0)
         priority = z3.RealVal(str(1.0 - rank / max(1, len(model.tasks) - 1)))
         util = _clip(budget / task.period)
-        max_weight = z3.RealVal(str(_config_value(cfg, "max_cost_weight", 0.7)))
+        max_weight = z3.RealVal(str(_config_value(model.feature_config, "max_cost_weight", 0.7)))
         pred = _max(recent, ema, max_weight * maxk)
-        risk_scale = z3.RealVal(str(_config_value(cfg, "risk_max_scale", 3.0)))
+        risk_scale = z3.RealVal(str(_config_value(model.feature_config, "risk_max_scale", 3.0)))
         risk = _clip((pred / z3.If(budget > 1, budget, z3.RealVal(1)) +
                       z3.RealVal("0.5") * overrun + z3.RealVal("0.2") * criticality +
                       z3.RealVal("0.1") * priority) / risk_scale)

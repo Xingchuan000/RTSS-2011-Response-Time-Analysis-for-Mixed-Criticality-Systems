@@ -1,0 +1,150 @@
+From b83f0eda7eed651ddc7eaad72b22dc5f27d430fe Mon Sep 17 00:00:00 2001
+From: Tianqi Zhou <105590895+Xingchuan000@users.noreply.github.com>
+Date: Thu, 27 Aug 2026 16:22:14 +0800
+Subject: [PATCH 09/10] V9.1 Task I: classify SAT windows only after
+ independent replay
+
+---
+ .../v9_1/counterexample_replay.py             | 49 +++++++++++++++++++
+ .../v9_1/safe_prefix_reachability.py          | 43 ++++++++++++++++
+ tests/formal/v9_1/test_sat_classification.py  | 22 +++++++++
+ 3 files changed, 114 insertions(+)
+ create mode 100644 formal_toolchain/v9_1/counterexample_replay.py
+ create mode 100644 formal_toolchain/v9_1/safe_prefix_reachability.py
+ create mode 100644 tests/formal/v9_1/test_sat_classification.py
+
+diff --git a/formal_toolchain/v9_1/counterexample_replay.py b/formal_toolchain/v9_1/counterexample_replay.py
+new file mode 100644
+index 0000000..f0c8593
+--- /dev/null
++++ b/formal_toolchain/v9_1/counterexample_replay.py
+@@ -0,0 +1,49 @@
++"""Concrete replay classifier for SAT symbolic windows."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from typing import Any, Mapping
++
++from .safe_prefix_reachability import ReachabilityResult, check_witness_boot_safe_prefix
++from .symbolic_state import BoundModel
++
++
++@dataclass(frozen=True, slots=True)
++class ReplayResult:
++    status: str
++    code: str
++    details: Mapping[str, Any]
++
++
++def replay_concrete_counterexample(
++    witness: Mapping[str, Any],
++    model: BoundModel,
++    *,
++    concrete_replayer: Any = None,
++    target_task: str,
++) -> ReplayResult:
++    reachability = check_witness_boot_safe_prefix(witness, model)
++    if reachability.status != "PASS":
++        return ReplayResult("UNRESOLVED", reachability.code, {"reason": reachability.reason})
++    demands = witness.get("exact_periodic_demand_prefix")
++    if not isinstance(demands, Mapping):
++        return ReplayResult("UNRESOLVED", "SPURIOUS_OR_UNRESOLVED_COUNTEREXAMPLE",
++                            {"reason": "concrete periodic demand prefix is missing"})
++    if concrete_replayer is None or not callable(getattr(concrete_replayer, "replay", None)):
++        return ReplayResult("UNRESOLVED", "SPURIOUS_OR_UNRESOLVED_COUNTEREXAMPLE",
++                            {"reason": "independent concrete replay is unavailable"})
++    replay = concrete_replayer.replay(
++        budgets=dict(witness["z0_budgets"]), demands=dict(demands), target_task=target_task,
++    )
++    if not isinstance(replay, Mapping):
++        return ReplayResult("UNRESOLVED", "SPURIOUS_OR_UNRESOLVED_COUNTEREXAMPLE",
++                            {"reason": "replayer returned no machine-readable result"})
++    if replay.get("target_first_hi_miss") is not True or replay.get("no_earlier_hi_miss") is not True:
++        return ReplayResult("UNRESOLVED", "SPURIOUS_OR_UNRESOLVED_COUNTEREXAMPLE",
++                            {"reason": "concrete replay did not reflect the symbolic first-bad theorem",
++                             "replay": dict(replay)})
++    return ReplayResult("PASS", "CONCRETE_HI_COUNTEREXAMPLE_VERIFIED", dict(replay))
++
++
++__all__ = ["ReplayResult", "replay_concrete_counterexample"]
+diff --git a/formal_toolchain/v9_1/safe_prefix_reachability.py b/formal_toolchain/v9_1/safe_prefix_reachability.py
+new file mode 100644
+index 0000000..d983221
+--- /dev/null
++++ b/formal_toolchain/v9_1/safe_prefix_reachability.py
+@@ -0,0 +1,43 @@
++"""Independent reachability checks for SAT first-bad-window witnesses."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from typing import Any, Mapping
++
++from .symbolic_state import BoundModel
++
++
++@dataclass(frozen=True, slots=True)
++class ReachabilityResult:
++    status: str
++    code: str
++    reason: str | None = None
++
++
++def check_witness_boot_safe_prefix(witness: Mapping[str, Any], model: BoundModel) -> ReachabilityResult:
++    """Check explicit boot-reachability evidence; never trust a status flag."""
++
++    if witness.get("z0_reachable_from_boot") is not True:
++        return ReachabilityResult("UNRESOLVED", "SPURIOUS_OR_UNRESOLVED_COUNTEREXAMPLE",
++                                  "boot reachability was not independently established")
++    if witness.get("z0_no_prior_hi_miss") is not True:
++        return ReachabilityResult("UNRESOLVED", "SPURIOUS_OR_UNRESOLVED_COUNTEREXAMPLE",
++                                  "witness z0 does not carry an independent M=0 proof")
++    budgets = witness.get("z0_budgets")
++    if not isinstance(budgets, Mapping) or set(budgets) != {task.name for task in model.tasks}:
++        return ReachabilityResult("UNRESOLVED", "SPURIOUS_OR_UNRESOLVED_COUNTEREXAMPLE",
++                                  "witness does not expose the complete z0 budget vector")
++    for task in model.tasks:
++        value = budgets.get(task.name)
++        if not isinstance(value, int) or not (task.budget_floor <= value <= task.budget_upper):
++            return ReachabilityResult("UNRESOLVED", "SPURIOUS_OR_UNRESOLVED_COUNTEREXAMPLE",
++                                      "witness z0 budget is outside the bound model")
++    prefix = witness.get("safe_prefix_trace")
++    if not isinstance(prefix, list) or not prefix:
++        return ReachabilityResult("UNRESOLVED", "SPURIOUS_OR_UNRESOLVED_COUNTEREXAMPLE",
++                                  "safe-prefix trace is missing")
++    return ReachabilityResult("PASS", "Z0_SAFE_PREFIX_REACHABLE")
++
++
++__all__ = ["ReachabilityResult", "check_witness_boot_safe_prefix"]
+diff --git a/tests/formal/v9_1/test_sat_classification.py b/tests/formal/v9_1/test_sat_classification.py
+new file mode 100644
+index 0000000..fb5eb95
+--- /dev/null
++++ b/tests/formal/v9_1/test_sat_classification.py
+@@ -0,0 +1,22 @@
++from formal_toolchain.v9_1.counterexample_replay import replay_concrete_counterexample
++from formal_toolchain.v9_1.safe_prefix_reachability import check_witness_boot_safe_prefix
++from formal_toolchain.v9_1.symbolic_state import BoundModel, TaskBound
++
++
++def _model():
++    return BoundModel((TaskBound("hi", 0, 3, 3, "HI", 1, 2, 1, 1, 2),), 2)
++
++
++def test_sat_without_boot_reachability_remains_unresolved():
++    result = check_witness_boot_safe_prefix({}, _model())
++    assert result.status == "UNRESOLVED"
++    assert result.code == "SPURIOUS_OR_UNRESOLVED_COUNTEREXAMPLE"
++
++
++def test_replay_requires_independent_concrete_replay():
++    witness = {"z0_reachable_from_boot": True, "z0_no_prior_hi_miss": True,
++               "z0_budgets": {"hi": 1}, "safe_prefix_trace": [{"time": 0}],
++               "exact_periodic_demand_prefix": {"hi:0": 2}}
++    result = replay_concrete_counterexample(witness, _model(), target_task="hi")
++    assert result.status == "UNRESOLVED"
++    assert result.code == "SPURIOUS_OR_UNRESOLVED_COUNTEREXAMPLE"
+-- 
+2.54.0 (Apple Git-157)
+

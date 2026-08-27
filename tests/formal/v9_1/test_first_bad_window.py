@@ -25,3 +25,14 @@ def test_window_formula_is_a_search_for_a_counterexample_not_a_pass_flag():
     solver = z3.Solver(); solver.add(encoding.formula)
     assert solver.check() in (z3.sat, z3.unsat, z3.unknown)
     assert "(= window.z.0.M 0)" in encoding.smt2()
+
+
+def test_window_refuses_silent_release_slot_underapproximation():
+    import pytest
+
+    model = BoundModel((
+        TaskBound("fast", 0, 1, 1, "HI", 1, 1, 1, 1, 1),
+        TaskBound("target", 1, 5, 5, "HI", 1, 2, 1, 1, 2),
+    ), 2, max_jobs_per_task=4)
+    with pytest.raises(ValueError, match="WINDOW_RELEASE_SLOT_CAPACITY_INSUFFICIENT"):
+        build_first_bad_window(model, SafePrefixInvariant(model), "target")

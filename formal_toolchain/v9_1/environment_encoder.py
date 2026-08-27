@@ -1,4 +1,10 @@
-"""Exact-periodic admissible environment encoding for V9.1."""
+"""Exact-periodic admissible environment encoding for V9.1.
+
+A first-bad window is relative to an arbitrary absolute periodic phase.  Demand
+variables are therefore indexed by *relative integer tick* rather than by a
+finite job slot: slot recycling cannot accidentally reuse one release's demand
+for another release.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +20,7 @@ from .symbolic_state import BoundModel, TaskBound
 @dataclass(frozen=True, slots=True)
 class PeriodicPhaseContext:
     absolute_time_residue: z3.ArithRef
+    origin_time: z3.ArithRef
     modulus: int
 
 
@@ -23,6 +30,7 @@ class SymbolicEnvironment:
     constraints: tuple[z3.BoolRef, ...]
     release_times: Mapping[tuple[str, int], int]
     phase: PeriodicPhaseContext
+    horizon: int
 
 
 def periodic_phase_constraints(
@@ -30,55 +38,81 @@ def periodic_phase_constraints(
     taskset: BoundModel | tuple[TaskBound, ...],
     agent_period: int,
 ) -> tuple[z3.BoolRef, ...]:
-    """Constrain the absolute residue without widening periodic releases.
-
-    The residue is retained because controller triggers depend on absolute time.
-    A caller additionally pins the target task residue to zero modulo its period
-    when constructing a target pre-release window.
-    """
-
     tasks = taskset.tasks if isinstance(taskset, BoundModel) else tuple(taskset)
     modulus = lcm(agent_period, *(task.period for task in tasks))
     if modulus != ctx.modulus:
         raise ValueError("periodic phase modulus does not match taskset LCM")
-    return (ctx.absolute_time_residue >= 0, ctx.absolute_time_residue < modulus)
+    return (
+        ctx.absolute_time_residue >= 0,
+        ctx.absolute_time_residue < modulus,
+        ctx.origin_time >= 0,
+        ctx.origin_time % modulus == ctx.absolute_time_residue,
+    )
 
 
 def declare_environment(prefix: str, model: BoundModel, *, release_count: int) -> SymbolicEnvironment:
-    """Declare independent fresh demand integers for every finite release."""
+    """Declare independent actual demand for each task at each relative tick.
+
+    ``release_count`` is retained as the public argument name for callers from
+    earlier V9.1 development, but its meaning is now the finite relative-time
+    horizon size.  A task consumes ``A[task,k]`` only when a periodic release is
+    due at ``origin_time + k``.
+    """
 
     if release_count <= 0:
         raise ValueError("release_count must be positive")
     modulus = lcm(model.agent_period, *(task.period for task in model.tasks))
     residue = z3.Int(f"{prefix}.absolute_time_residue")
-    phase = PeriodicPhaseContext(residue, modulus)
+    origin = z3.Int(f"{prefix}.origin_time")
+    phase = PeriodicPhaseContext(residue, origin, modulus)
     demands: dict[tuple[str, int], z3.ArithRef] = {}
     release_times: dict[tuple[str, int], int] = {}
     constraints: list[z3.BoolRef] = list(periodic_phase_constraints(phase, model, model.agent_period))
     for task in model.tasks:
-        for release_index in range(release_count):
-            key = (task.name, release_index)
-            value = z3.Int(f"{prefix}.A.{task.name}.{release_index}")
+        upper = task.c_hi if task.criticality == "HI" else task.c_lo
+        for tick in range(release_count):
+            key = (task.name, tick)
+            value = z3.Int(f"{prefix}.A.{task.name}.{tick}")
             demands[key] = value
-            release_times[key] = release_index * task.period
-            upper = task.c_hi if task.criticality == "HI" else task.c_lo
+            release_times[key] = tick
             constraints.append(z3.And(value >= 1, value <= upper))
-    return SymbolicEnvironment(demands, tuple(constraints), release_times, phase)
+    return SymbolicEnvironment(demands, tuple(constraints), release_times, phase, int(release_count))
+
+
+def demand_for_time(
+    env: SymbolicEnvironment,
+    task: TaskBound,
+    absolute_time: z3.ArithRef,
+) -> tuple[z3.ArithRef, z3.BoolRef]:
+    """Select the fresh demand associated with ``absolute_time``.
+
+    The second result proves that the timestamp is covered by the finite
+    environment prefix.  P3 requires it whenever a release is due, so no
+    release can silently fall outside the quantified demand domain.
+    """
+
+    rows = [
+        (tick, env.actual_demands[(task.name, tick)])
+        for tick in range(env.horizon)
+    ]
+    covered = z3.Or(*(absolute_time == env.phase.origin_time + tick for tick, _ in rows))
+    value: z3.ArithRef = rows[-1][1]
+    for tick, demand in reversed(rows[:-1]):
+        value = z3.If(absolute_time == env.phase.origin_time + tick, demand, value)
+    return value, covered
 
 
 def target_release_constraints(
     env: SymbolicEnvironment, task: TaskBound, *, release_index: int = 0
 ) -> tuple[z3.BoolRef, ...]:
-    """Pin a target pre-release origin to an exact periodic release phase."""
-
-    if (task.name, release_index) not in env.actual_demands:
+    if release_index != 0:
+        raise ValueError("V9.1 relative first-bad windows pin the target at relative release 0")
+    if (task.name, 0) not in env.actual_demands:
         raise KeyError("target release was not declared")
-    return (env.phase.absolute_time_residue % task.period == 0,)
+    return (env.phase.origin_time % task.period == 0,)
 
 
 def classify_from_actual_demand(actual_demand: z3.ArithRef, task: TaskBound) -> z3.BoolRef:
-    """HI abnormality is derived from A, never an independent symbolic Bool."""
-
     if task.criticality != "HI":
         return z3.BoolVal(False)
     return actual_demand > task.c_lo
@@ -86,5 +120,6 @@ def classify_from_actual_demand(actual_demand: z3.ArithRef, task: TaskBound) -> 
 
 __all__ = [
     "PeriodicPhaseContext", "SymbolicEnvironment", "classify_from_actual_demand",
-    "declare_environment", "periodic_phase_constraints", "target_release_constraints",
+    "declare_environment", "demand_for_time", "periodic_phase_constraints",
+    "target_release_constraints",
 ]

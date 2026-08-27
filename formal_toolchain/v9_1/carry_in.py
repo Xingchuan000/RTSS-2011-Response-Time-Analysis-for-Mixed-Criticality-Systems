@@ -1,100 +1,75 @@
-"""Finite, saturated carry-in abstraction for first-bad windows."""
+"""Machine-checkable two-slot carry-in adequacy obligations for V9.1."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
 
 import z3
 
-from .symbolic_state import BoundModel, TaskBound
+from .symbolic_state import BoundModel
 
 
 @dataclass(frozen=True, slots=True)
-class SymbolicCarryInJob:
-    present: z3.BoolRef
-    release_time: z3.ArithRef
-    remaining_work: z3.ArithRef
-    priority: int
-    completion_observable: z3.BoolRef
+class CarryInObligation:
+    obligation_id: str
+    counterexample: z3.BoolRef
+    explanation: str
 
 
-@dataclass(frozen=True, slots=True)
-class CarryInSummary:
-    explicit_jobs: Mapping[str, tuple[SymbolicCarryInJob, ...]]
-    saturated_tail: Mapping[str, z3.BoolRef]
-    window_length: int
+def build_two_slot_carry_in_obligations(model: BoundModel, *, prefix: str = "carry") -> tuple[CarryInObligation, ...]:
+    """Return closed counterexample formulas; every one must be UNSAT.
 
+    LO jobs of one task have identical fixed priority.  Because policy history is
+    conservatively abstracted at P5, their only safety-relevant effect is total
+    remaining processor work.  Slot 0 therefore aggregates all older LO work,
+    while slot 1 is the exact most recent periodic release.
+    """
 
-@dataclass(frozen=True, slots=True)
-class CarryInAdequacy:
-    status: str
-    code: str | None
-    constraints: tuple[z3.BoolRef, ...]
-
-
-def build_carry_in_summary(model: BoundModel, *, window_length: int, prefix: str = "carry") -> CarryInSummary:
-    if window_length <= 0:
-        raise ValueError("carry-in window length must be positive")
-    explicit: dict[str, tuple[SymbolicCarryInJob, ...]] = {}
-    tails: dict[str, z3.BoolRef] = {}
-    # One positive service quantum per tick gives the exact finite capacity D.
-    # We still expose a tail flag so older/more numerous jobs are never silently
-    # discarded by the abstraction.
+    obligations: list[CarryInObligation] = []
     for task in model.tasks:
-        explicit[task.name] = tuple(
-            SymbolicCarryInJob(
-                present=z3.Bool(f"{prefix}.{task.name}.{slot}.present"),
-                release_time=z3.Int(f"{prefix}.{task.name}.{slot}.release_time"),
-                remaining_work=z3.Int(f"{prefix}.{task.name}.{slot}.remaining"),
-                priority=task.priority,
-                completion_observable=z3.Bool(f"{prefix}.{task.name}.{slot}.completion_observable"),
-            )
-            for slot in range(window_length)
-        )
-        tails[task.name] = z3.Bool(f"{prefix}.{task.name}.saturated_tail")
-    return CarryInSummary(explicit, tails, window_length)
-
-
-def encode_carry_in_adequacy(summary: CarryInSummary, model: BoundModel) -> CarryInAdequacy:
-    if summary.window_length <= 0:
-        return CarryInAdequacy("UNRESOLVED", "CARRY_IN_SUMMARY_UNPROVED", ())
-    constraints: list[z3.BoolRef] = []
-    for task in model.tasks:
-        jobs = summary.explicit_jobs.get(task.name, ())
-        if len(jobs) < summary.window_length:
-            # A finite summary without a tail bit would be an unsound omission.
-            if task.name not in summary.saturated_tail:
-                return CarryInAdequacy("UNRESOLVED", "CARRY_IN_SUMMARY_UNPROVED", ())
-        for job in jobs:
-            constraints.extend((
-                z3.Implies(job.present, job.release_time <= 0),
-                z3.Implies(job.present, job.remaining_work >= 1),
-                z3.Implies(job.completion_observable,
-                           z3.And(job.present, job.remaining_work <= summary.window_length)),
+        if task.deadline > task.period:
+            obligations.append(CarryInObligation(
+                f"D_LE_T_{task.name}",
+                z3.BoolVal(True),
+                "two-slot V9.1 proof domain requires constrained deadlines",
             ))
-        # A saturated tail is an explicit abstraction case.  Its work is not
-        # allowed to masquerade as an observable completion inside this window.
-        tail = summary.saturated_tail.get(task.name)
-        if tail is None:
-            return CarryInAdequacy("UNRESOLVED", "CARRY_IN_SUMMARY_UNPROVED", ())
-        constraints.append(z3.Implies(tail, z3.Not(z3.Or(*(job.completion_observable for job in jobs)))))
-    return CarryInAdequacy("PASS", None, tuple(constraints))
+            continue
+        if task.criticality == "LO":
+            agg = z3.Int(f"{prefix}.{task.name}.aggregate")
+            exact = z3.Int(f"{prefix}.{task.name}.exact")
+            concrete_after = z3.If(
+                agg > 0,
+                agg - 1 + exact,
+                z3.If(exact > 0, exact - 1, 0),
+            )
+            folded = agg + exact
+            aggregate_after = z3.If(folded > 0, folded - 1, 0)
+            obligations.append(CarryInObligation(
+                f"LO_AGGREGATE_ONE_QUANTUM_WORK_PRESERVATION_{task.name}",
+                z3.And(agg >= 0, exact >= 0, concrete_after != aggregate_after),
+                "folding old same-priority LO jobs preserves remaining processor work",
+            ))
+        else:
+            release = z3.Int(f"{prefix}.{task.name}.release")
+            now = release + task.period
+            deadline = release + task.deadline
+            service = z3.Int(f"{prefix}.{task.name}.service")
+            demand = z3.Int(f"{prefix}.{task.name}.demand")
+            incomplete = service < demand
+            no_prior_miss = z3.Not(z3.And(deadline <= now, incomplete))
+            obligations.append(CarryInObligation(
+                f"HI_SINGLE_ACTIVE_JOB_{task.name}",
+                z3.And(
+                    release >= 0,
+                    service >= 0,
+                    demand >= 1,
+                    task.deadline <= task.period,
+                    incomplete,
+                    no_prior_miss,
+                ),
+                "an incomplete previous HI job at its next release contradicts NoPriorHIMiss when D<=T",
+            ))
+    return tuple(obligations)
 
 
-def check_carry_in_summary_soundness(summary: CarryInSummary, model: BoundModel) -> dict[str, object]:
-    adequacy = encode_carry_in_adequacy(summary, model)
-    return {
-        "status": adequacy.status,
-        "code": adequacy.code,
-        "window_length": summary.window_length,
-        "explicit_slots": {name: len(rows) for name, rows in summary.explicit_jobs.items()},
-        "saturation_flags": sorted(summary.saturated_tail),
-        "obligation": "CARRY_IN_SUMMARY_ADEQUACY",
-    }
-
-
-__all__ = [
-    "CarryInAdequacy", "CarryInSummary", "SymbolicCarryInJob",
-    "build_carry_in_summary", "check_carry_in_summary_soundness", "encode_carry_in_adequacy",
-]
+__all__ = ["CarryInObligation", "build_two_slot_carry_in_obligations"]

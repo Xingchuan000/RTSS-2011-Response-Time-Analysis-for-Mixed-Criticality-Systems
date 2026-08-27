@@ -1,0 +1,238 @@
+From dc49799f79d68c43b1a08b1cafb08af0d16a6919 Mon Sep 17 00:00:00 2001
+From: Tianqi Zhou <105590895+Xingchuan000@users.noreply.github.com>
+Date: Thu, 27 Aug 2026 16:16:50 +0800
+Subject: [PATCH 04/10] V9.1 Task D: define safe-prefix Psi and conditional
+ inductiveness
+
+---
+ formal_toolchain/v9_1/invariant_templates.py  | 86 +++++++++++++++++++
+ .../v9_1/safe_prefix_invariant.py             | 56 ++++++++++++
+ formal_toolchain/v9_1/symbolic_state.py       | 17 ++--
+ .../v9_1/test_safe_prefix_inductiveness.py    | 30 +++++++
+ 4 files changed, 181 insertions(+), 8 deletions(-)
+ create mode 100644 formal_toolchain/v9_1/invariant_templates.py
+ create mode 100644 formal_toolchain/v9_1/safe_prefix_invariant.py
+ create mode 100644 tests/formal/v9_1/test_safe_prefix_inductiveness.py
+
+diff --git a/formal_toolchain/v9_1/invariant_templates.py b/formal_toolchain/v9_1/invariant_templates.py
+new file mode 100644
+index 0000000..7444faf
+--- /dev/null
++++ b/formal_toolchain/v9_1/invariant_templates.py
+@@ -0,0 +1,86 @@
++"""Named, reviewable clauses of the V9.1 safe-prefix invariant."""
++
++from __future__ import annotations
++
++import z3
++
++from .symbolic_state import BoundModel, SymbolicKernelState
++
++
++def state_well_formedness(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
++    from .symbolic_state import well_formed
++    return well_formed(state, model)
++
++
++def budget_bounds(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
++    return z3.And(*(z3.And(state.budgets[task.name] >= task.budget_floor,
++                            state.budgets[task.name] <= task.budget_upper)
++                    for task in model.tasks))
++
++
++def exact_periodic_eta(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
++    return z3.And(*(state.eta[task.name] == z3.If(state.t % task.period == 0,
++                                                  task.period, state.t % task.period)
++                    for task in model.tasks))
++
++
++def job_field_consistency(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
++    clauses: list[z3.BoolRef] = []
++    for task in model.tasks:
++        for slot in range(model.max_jobs_per_task):
++            job = state.jobs[(task.name, slot)]
++            clauses.extend((z3.Implies(job.present, job.release_time == job.release_index * task.period),
++                            z3.Implies(job.present, job.absolute_deadline == job.release_time + task.deadline),
++                            z3.Implies(job.present, job.actual_demand <=
++                                       (task.c_hi if task.criticality == "HI" else task.c_lo)),
++                            z3.Implies(job.present, job.actual_demand >= 1)))
++            if task.criticality == "HI":
++                clauses.append(z3.Implies(job.present, job.effective_demand == job.actual_demand))
++    return z3.And(*clauses)
++
++
++def no_prior_hi_miss_consistency(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
++    clauses: list[z3.BoolRef] = []
++    for task in model.hi_tasks:
++        for job in state.jobs.values():
++            if job.task_id != task.priority:
++                continue
++            clauses.append(z3.Implies(z3.And(state.hi_miss_ledger == 0, job.present),
++                                      job.absolute_deadline >= state.t))
++    return z3.And(*clauses)
++
++
++def history_bounds(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
++    values = []
++    for mapping in (state.chi.recent_cost, state.chi.ema_cost, state.chi.max_cost_k):
++        values.extend(value <= max(task.c_hi for task in model.tasks)
++                     for value in mapping.values())
++    for window in (state.chi.mode_change_window, state.chi.lo_cancel_window,
++                   state.chi.hi_overrun_window, state.chi.lo_overrun_window,
++                   state.chi.job_start_window):
++        values.extend((value >= 0, value <= 1) for value in window)
++    return z3.And(*(item for value in values for item in (value if isinstance(value, tuple) else (value,))))
++
++
++def carry_in_consistency(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
++    # The finite slot representation is itself the carry-in boundary.  Adequacy
++    # (including saturation tails) is discharged independently by carry_in.py.
++    return z3.And(*(z3.Implies(job.present, job.release_time <= state.t)
++                    for job in state.jobs.values()))
++
++
++def build_psi(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
++    return z3.And(
++        state_well_formedness(state, model),
++        budget_bounds(state, model),
++        exact_periodic_eta(state, model),
++        job_field_consistency(state, model),
++        no_prior_hi_miss_consistency(state, model),
++        history_bounds(state, model),
++        carry_in_consistency(state, model),
++    )
++
++
++__all__ = ["build_psi", "budget_bounds", "carry_in_consistency", "exact_periodic_eta",
++           "history_bounds", "job_field_consistency", "no_prior_hi_miss_consistency",
++           "state_well_formedness"]
+diff --git a/formal_toolchain/v9_1/safe_prefix_invariant.py b/formal_toolchain/v9_1/safe_prefix_invariant.py
+new file mode 100644
+index 0000000..9835e48
+--- /dev/null
++++ b/formal_toolchain/v9_1/safe_prefix_invariant.py
+@@ -0,0 +1,56 @@
++"""Proof-object builders for the V9.1 safe-prefix invariant Psi."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++
++import z3
++
++from .environment_encoder import SymbolicEnvironment
++from .invariant_templates import build_psi
++from .symbolic_state import BoundModel, SymbolicKernelState, declare_state
++from .transition_encoder import encode_step
++
++
++@dataclass(frozen=True, slots=True)
++class SafePrefixInvariant:
++    model: BoundModel
++    template_name: str = "V9_1_SAFE_PREFIX_PSI_V1"
++
++    def formula(self, state: SymbolicKernelState) -> z3.BoolRef:
++        return build_psi(state, self.model)
++
++    def initial_constraints(self, state: SymbolicKernelState) -> tuple[z3.BoolRef, ...]:
++        clauses: list[z3.BoolRef] = [state.t == 0, state.p == 0, z3.Not(state.mode_hi),
++                                     state.hi_miss_ledger == 0,
++                                     state.frontier.selected_slot == -1,
++                                     z3.Not(state.frontier.running)]
++        for task in self.model.tasks:
++            clauses.extend((state.budgets[task.name] == task.initial_budget,
++                            state.eta[task.name] == task.period))
++        for job in state.jobs.values():
++            clauses.extend((z3.Not(job.present), z3.Not(job.removed),
++                            job.executed_service == 0))
++        for mapping in (state.chi.recent_cost, state.chi.ema_cost, state.chi.max_cost_k):
++            clauses.extend(value == 0 for value in mapping.values())
++        for window in (state.chi.mode_change_window, state.chi.lo_cancel_window,
++                       state.chi.hi_overrun_window, state.chi.lo_overrun_window,
++                       state.chi.job_start_window):
++            clauses.extend(value == 0 for value in window)
++        return tuple(clauses)
++
++    def initial_counterexample(self, *, prefix: str = "initial") -> z3.BoolRef:
++        state = declare_state(prefix, self.model)
++        return z3.And(*self.initial_constraints(state), z3.Not(self.formula(state)))
++
++    def conditional_inductiveness_counterexample(
++        self, env: SymbolicEnvironment, *, prefix: str = "ind"
++    ) -> z3.BoolRef:
++        state = declare_state(f"{prefix}.z", self.model)
++        next_state = declare_state(f"{prefix}.zp", self.model)
++        no_new_miss = next_state.hi_miss_ledger == state.hi_miss_ledger
++        return z3.And(self.formula(state), encode_step(state, next_state, self.model, env),
++                      no_new_miss, z3.Not(self.formula(next_state)))
++
++
++__all__ = ["SafePrefixInvariant"]
+diff --git a/formal_toolchain/v9_1/symbolic_state.py b/formal_toolchain/v9_1/symbolic_state.py
+index ada4c65..135eb6c 100644
+--- a/formal_toolchain/v9_1/symbolic_state.py
++++ b/formal_toolchain/v9_1/symbolic_state.py
+@@ -248,15 +248,16 @@ def well_formed(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
+                         eta >= 0, eta <= task.period))
+         for slot in range(model.max_jobs_per_task):
+             job = state.jobs[(task.name, slot)]
+-            clauses.extend((job.release_index >= 0, job.release_time >= 0,
+-                            job.absolute_deadline == job.release_time + task.deadline,
+-                            job.budget_at_release >= task.budget_floor,
+-                            job.budget_at_release <= task.budget_upper,
+-                            job.actual_demand >= 1,
+-                            job.actual_demand <= (task.c_hi if task.criticality == "HI" else task.c_lo),
+-                            job.effective_demand >= 1,
++            clauses.extend((z3.Implies(job.present, job.release_index >= 0),
++                            z3.Implies(job.present, job.release_time >= 0),
++                            z3.Implies(job.present, job.absolute_deadline == job.release_time + task.deadline),
++                            z3.Implies(job.present, job.budget_at_release >= task.budget_floor),
++                            z3.Implies(job.present, job.budget_at_release <= task.budget_upper),
++                            z3.Implies(job.present, job.actual_demand >= 1),
++                            z3.Implies(job.present, job.actual_demand <= (task.c_hi if task.criticality == "HI" else task.c_lo)),
++                            z3.Implies(job.present, job.effective_demand >= 1),
+                             job.executed_service >= 0,
+-                            job.executed_service <= job.effective_demand,
++                            z3.Implies(job.present, job.executed_service <= job.effective_demand),
+                             z3.Implies(job.removed, z3.Not(job.ready)),
+                             z3.Implies(job.present, z3.Not(job.removed))))
+     if model.action_dim:
+diff --git a/tests/formal/v9_1/test_safe_prefix_inductiveness.py b/tests/formal/v9_1/test_safe_prefix_inductiveness.py
+new file mode 100644
+index 0000000..2e55148
+--- /dev/null
++++ b/tests/formal/v9_1/test_safe_prefix_inductiveness.py
+@@ -0,0 +1,30 @@
++import z3
++from pathlib import Path
++
++from formal_toolchain.v9_1.environment_encoder import declare_environment
++from formal_toolchain.v9_1.safe_prefix_invariant import SafePrefixInvariant
++from formal_toolchain.v9_1.symbolic_state import BoundModel, TaskBound
++
++
++def _model():
++    return BoundModel((TaskBound("hi", 0, 4, 4, "HI", 1, 2, 1, 1, 2),), 3,
++                      max_jobs_per_task=2)
++
++
++def test_safe_prefix_initial_obligation_is_a_real_unsat_replay():
++    invariant = SafePrefixInvariant(_model())
++    solver = z3.Solver(); solver.add(invariant.initial_counterexample())
++    assert solver.check() == z3.unsat
++
++
++def test_conditional_inductiveness_is_not_vacuous_about_new_hi_miss():
++    model = _model()
++    invariant = SafePrefixInvariant(model)
++    env = declare_environment("e", model, release_count=2)
++    formula = invariant.conditional_inductiveness_counterexample(env)
++    assert "ind.z" in str(formula)
++    # The condition is explicitly conditional, rather than an unconditional
++    # claim that every transition preserves Psi at the miss boundary.
++    assert formula.sort().is_bool()
++    source = (Path(__file__).parents[3] / "formal_toolchain/v9_1/safe_prefix_invariant.py").read_text()
++    assert "no_new_miss = next_state.hi_miss_ledger == state.hi_miss_ledger" in source
+-- 
+2.54.0 (Apple Git-157)
+

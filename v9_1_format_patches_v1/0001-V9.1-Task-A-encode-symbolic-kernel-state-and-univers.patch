@@ -1,0 +1,484 @@
+From 5dc8e2d507409640e9d0d25f29a956172a2cbe9f Mon Sep 17 00:00:00 2001
+From: Tianqi Zhou <105590895+Xingchuan000@users.noreply.github.com>
+Date: Thu, 27 Aug 2026 16:10:11 +0800
+Subject: [PATCH 01/10] V9.1 Task A: encode symbolic kernel state and universal
+ periodic demand
+
+---
+ formal_toolchain/v9_1/environment_encoder.py  |  90 ++++++
+ formal_toolchain/v9_1/symbolic_state.py       | 277 ++++++++++++++++++
+ formal_toolchain/v9_1/symbolic_utils.py       |  21 ++
+ .../v9_1/test_environment_quantification.py   |  52 ++++
+ 4 files changed, 440 insertions(+)
+ create mode 100644 formal_toolchain/v9_1/environment_encoder.py
+ create mode 100644 formal_toolchain/v9_1/symbolic_state.py
+ create mode 100644 formal_toolchain/v9_1/symbolic_utils.py
+ create mode 100644 tests/formal/v9_1/test_environment_quantification.py
+
+diff --git a/formal_toolchain/v9_1/environment_encoder.py b/formal_toolchain/v9_1/environment_encoder.py
+new file mode 100644
+index 0000000..34e53bb
+--- /dev/null
++++ b/formal_toolchain/v9_1/environment_encoder.py
+@@ -0,0 +1,90 @@
++"""Exact-periodic admissible environment encoding for V9.1."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from math import lcm
++from typing import Mapping
++
++import z3
++
++from .symbolic_state import BoundModel, TaskBound
++
++
++@dataclass(frozen=True, slots=True)
++class PeriodicPhaseContext:
++    absolute_time_residue: z3.ArithRef
++    modulus: int
++
++
++@dataclass(frozen=True, slots=True)
++class SymbolicEnvironment:
++    actual_demands: Mapping[tuple[str, int], z3.ArithRef]
++    constraints: tuple[z3.BoolRef, ...]
++    release_times: Mapping[tuple[str, int], int]
++    phase: PeriodicPhaseContext
++
++
++def periodic_phase_constraints(
++    ctx: PeriodicPhaseContext,
++    taskset: BoundModel | tuple[TaskBound, ...],
++    agent_period: int,
++) -> tuple[z3.BoolRef, ...]:
++    """Constrain the absolute residue without widening periodic releases.
++
++    The residue is retained because controller triggers depend on absolute time.
++    A caller additionally pins the target task residue to zero modulo its period
++    when constructing a target pre-release window.
++    """
++
++    tasks = taskset.tasks if isinstance(taskset, BoundModel) else tuple(taskset)
++    modulus = lcm(agent_period, *(task.period for task in tasks))
++    if modulus != ctx.modulus:
++        raise ValueError("periodic phase modulus does not match taskset LCM")
++    return (ctx.absolute_time_residue >= 0, ctx.absolute_time_residue < modulus)
++
++
++def declare_environment(prefix: str, model: BoundModel, *, release_count: int) -> SymbolicEnvironment:
++    """Declare independent fresh demand integers for every finite release."""
++
++    if release_count <= 0:
++        raise ValueError("release_count must be positive")
++    modulus = lcm(model.agent_period, *(task.period for task in model.tasks))
++    residue = z3.Int(f"{prefix}.absolute_time_residue")
++    phase = PeriodicPhaseContext(residue, modulus)
++    demands: dict[tuple[str, int], z3.ArithRef] = {}
++    release_times: dict[tuple[str, int], int] = {}
++    constraints: list[z3.BoolRef] = list(periodic_phase_constraints(phase, model, model.agent_period))
++    for task in model.tasks:
++        for release_index in range(release_count):
++            key = (task.name, release_index)
++            value = z3.Int(f"{prefix}.A.{task.name}.{release_index}")
++            demands[key] = value
++            release_times[key] = release_index * task.period
++            upper = task.c_hi if task.criticality == "HI" else task.c_lo
++            constraints.append(z3.And(value >= 1, value <= upper))
++    return SymbolicEnvironment(demands, tuple(constraints), release_times, phase)
++
++
++def target_release_constraints(
++    env: SymbolicEnvironment, task: TaskBound, *, release_index: int = 0
++) -> tuple[z3.BoolRef, ...]:
++    """Pin a target pre-release origin to an exact periodic release phase."""
++
++    if (task.name, release_index) not in env.actual_demands:
++        raise KeyError("target release was not declared")
++    return (env.phase.absolute_time_residue % task.period == 0,)
++
++
++def classify_from_actual_demand(actual_demand: z3.ArithRef, task: TaskBound) -> z3.BoolRef:
++    """HI abnormality is derived from A, never an independent symbolic Bool."""
++
++    if task.criticality != "HI":
++        return z3.BoolVal(False)
++    return actual_demand > task.c_lo
++
++
++__all__ = [
++    "PeriodicPhaseContext", "SymbolicEnvironment", "classify_from_actual_demand",
++    "declare_environment", "periodic_phase_constraints", "target_release_constraints",
++]
+diff --git a/formal_toolchain/v9_1/symbolic_state.py b/formal_toolchain/v9_1/symbolic_state.py
+new file mode 100644
+index 0000000..ada4c65
+--- /dev/null
++++ b/formal_toolchain/v9_1/symbolic_state.py
+@@ -0,0 +1,277 @@
++"""Finite symbolic state for the V9.1 Policy--Timing Kernel.
++
++The state is deliberately finite only at the proof boundary: a caller chooses
++the number of job slots needed by a finite window.  It is not a protected-job
++filter and it never stores a fixed execution scenario.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++import re
++from typing import Any, Mapping
++
++import z3
++
++
++JobSlotKey = tuple[str, int]
++
++
++@dataclass(frozen=True, slots=True)
++class TaskBound:
++    name: str
++    priority: int
++    period: int
++    deadline: int
++    criticality: str
++    c_lo: int
++    c_hi: int
++    initial_budget: int
++    budget_floor: int = 1
++    action_hard_upper: int | None = None
++
++    def __post_init__(self) -> None:
++        if self.period <= 0 or self.deadline <= 0:
++            raise ValueError("task period/deadline must be positive")
++        if self.criticality not in {"HI", "LO"}:
++            raise ValueError("task criticality must be HI or LO")
++        if not (1 <= self.c_lo <= self.c_hi):
++            raise ValueError("task demand bounds are invalid")
++        upper = self.action_hard_upper if self.action_hard_upper is not None else self.c_hi
++        if not (self.budget_floor <= self.initial_budget <= upper):
++            raise ValueError("task budget bounds are invalid")
++
++    @property
++    def budget_upper(self) -> int:
++        return self.action_hard_upper if self.action_hard_upper is not None else self.c_hi
++
++
++@dataclass(frozen=True, slots=True)
++class BoundModel:
++    """All finite source bindings consumed by the symbolic encoders."""
++
++    tasks: tuple[TaskBound, ...]
++    agent_period: int
++    action_dim: int = 0
++    noop_id: int | None = None
++    feature_names: tuple[str, ...] = ()
++    fixed_point_config: Any = None
++    tree: Any = None
++    action_definitions: tuple[Mapping[str, Any], ...] = ()
++    history_k: int = 8
++    event_window: int = 10
++    max_jobs_per_task: int = 4
++
++    def __post_init__(self) -> None:
++        if not self.tasks:
++            raise ValueError("BoundModel requires at least one task")
++        if self.agent_period <= 0 or self.max_jobs_per_task <= 0:
++            raise ValueError("BoundModel finite dimensions must be positive")
++        names = [task.name for task in self.tasks]
++        if len(set(names)) != len(names):
++            raise ValueError("BoundModel task names must be unique")
++        if tuple(sorted(self.tasks, key=lambda task: task.priority)) != self.tasks:
++            raise ValueError("BoundModel.tasks must use canonical priority order")
++        if self.action_dim < 0:
++            raise ValueError("action_dim must be non-negative")
++        if self.action_dim and self.noop_id is None:
++            raise ValueError("an action model must identify its explicit noop")
++        if self.noop_id is not None and not (0 <= self.noop_id < self.action_dim):
++            raise ValueError("noop_id is outside the action alphabet")
++
++    @property
++    def task_by_name(self) -> dict[str, TaskBound]:
++        return {task.name: task for task in self.tasks}
++
++    @property
++    def hi_tasks(self) -> tuple[TaskBound, ...]:
++        return tuple(task for task in self.tasks if task.criticality == "HI")
++
++    @classmethod
++    def from_bindings(cls, bindings: Mapping[str, Any], *, max_jobs_per_task: int = 4) -> "BoundModel":
++        rows = bindings.get("taskset", {}).get("ordered_tasks", ())
++        if not isinstance(rows, (list, tuple)) or not rows:
++            raise ValueError("bindings do not contain canonical taskset rows")
++        tasks = tuple(
++            TaskBound(
++                name=str(row["name"]),
++                priority=int(row["priority_index"]),
++                period=int(row["period"]),
++                deadline=int(row["deadline"]),
++                criticality=str(row["criticality"]),
++                c_lo=int(row["code_c_lo"]),
++                c_hi=int(row["code_c_hi"]),
++                initial_budget=int(row["initial_runtime_budget"]),
++                budget_floor=int(row.get("budget_floor", 1)),
++                action_hard_upper=int(row.get("action_hard_upper", row["code_c_hi"])),
++            )
++            for row in rows
++        )
++        action = bindings.get("policy_action_binding", {})
++        alphabet = action.get("action_alphabet", ())
++        noop_ids = [int(row["action_id"]) for row in alphabet if row.get("is_noop") is True]
++        if len(noop_ids) != 1:
++            raise ValueError("V9.1 requires exactly one explicit noop in bindings")
++        numeric = bindings.get("numeric_observation_binding", {})
++        quant = numeric.get("quantization", {})
++        trigger = str(bindings.get("p0_event_order_binding", {}).get("controller_trigger_predicate", ""))
++        match = re.search(r"mod\s+(\d+)", trigger)
++        agent_period = int(match.group(1)) if match else int(bindings.get("agent_period", 1))
++        return cls(
++            tasks=tasks,
++            agent_period=agent_period,
++            action_dim=len(alphabet),
++            noop_id=noop_ids[0],
++            feature_names=tuple(str(value) for value in numeric.get("feature_names", ())),
++            fixed_point_config=quant,
++            action_definitions=tuple(dict(row) for row in alphabet),
++            max_jobs_per_task=max_jobs_per_task,
++        )
++
++
++@dataclass(frozen=True, slots=True)
++class SymbolicJob:
++    present: z3.BoolRef
++    task_id: int
++    release_index: z3.ArithRef
++    release_time: z3.ArithRef
++    absolute_deadline: z3.ArithRef
++    priority: int
++    tie_break: z3.ArithRef
++    release_entry_mode_hi: z3.BoolRef
++    classification_abnormal: z3.BoolRef
++    budget_at_release: z3.ArithRef
++    actual_demand: z3.ArithRef
++    effective_demand: z3.ArithRef
++    executed_service: z3.ArithRef
++    removed: z3.BoolRef
++    ready: z3.BoolRef
++
++    @property
++    def remaining(self) -> z3.ArithRef:
++        return z3.If(self.effective_demand > self.executed_service,
++                     self.effective_demand - self.executed_service, 0)
++
++
++@dataclass(frozen=True, slots=True)
++class SymbolicFrontier:
++    selected_slot: z3.IntNumRef | z3.ArithRef
++    running: z3.BoolRef
++
++
++@dataclass(frozen=True, slots=True)
++class SymbolicPolicyHistory:
++    recent_cost: dict[str, z3.ArithRef] = field(default_factory=dict)
++    ema_cost: dict[str, z3.ArithRef] = field(default_factory=dict)
++    max_cost_k: dict[str, z3.ArithRef] = field(default_factory=dict)
++    mode_change_window: tuple[z3.ArithRef, ...] = ()
++    lo_cancel_window: tuple[z3.ArithRef, ...] = ()
++    hi_overrun_window: tuple[z3.ArithRef, ...] = ()
++    lo_overrun_window: tuple[z3.ArithRef, ...] = ()
++    job_start_window: tuple[z3.ArithRef, ...] = ()
++
++
++@dataclass(frozen=True, slots=True)
++class SymbolicKernelState:
++    t: z3.ArithRef
++    p: z3.ArithRef
++    mode_hi: z3.BoolRef
++    budgets: dict[str, z3.ArithRef]
++    eta: dict[str, z3.ArithRef]
++    jobs: dict[JobSlotKey, SymbolicJob]
++    frontier: SymbolicFrontier
++    hi_miss_ledger: z3.ArithRef
++    chi: SymbolicPolicyHistory
++
++
++def _int(name: str) -> z3.ArithRef:
++    return z3.Int(name)
++
++
++def declare_state(prefix: str, model: BoundModel) -> SymbolicKernelState:
++    """Declare one complete finite state using the canonical kernel names."""
++
++    tasks = model.tasks
++    jobs: dict[JobSlotKey, SymbolicJob] = {}
++    for task_id, task in enumerate(tasks):
++        for slot in range(model.max_jobs_per_task):
++            key = (task.name, slot)
++            base = f"{prefix}.J.{task_id}.{slot}"
++            jobs[key] = SymbolicJob(
++                present=z3.Bool(f"{base}.present"),
++                task_id=task_id,
++                release_index=_int(f"{base}.release_index"),
++                release_time=_int(f"{base}.release_time"),
++                absolute_deadline=_int(f"{base}.deadline"),
++                priority=task.priority,
++                tie_break=_int(f"{base}.tie_break"),
++                release_entry_mode_hi=z3.Bool(f"{base}.entry_hi"),
++                classification_abnormal=z3.Bool(f"{base}.abnormal"),
++                budget_at_release=_int(f"{base}.B_rel"),
++                actual_demand=_int(f"{base}.A"),
++                effective_demand=_int(f"{base}.E"),
++                executed_service=_int(f"{base}.service"),
++                removed=z3.Bool(f"{base}.removed"),
++                ready=z3.Bool(f"{base}.ready"),
++            )
++    history = SymbolicPolicyHistory(
++        recent_cost={task.name: _int(f"{prefix}.chi.recent.{task.name}") for task in tasks},
++        ema_cost={task.name: _int(f"{prefix}.chi.ema.{task.name}") for task in tasks},
++        max_cost_k={task.name: _int(f"{prefix}.chi.maxk.{task.name}") for task in tasks},
++        mode_change_window=tuple(_int(f"{prefix}.chi.mode.{i}") for i in range(model.event_window)),
++        lo_cancel_window=tuple(_int(f"{prefix}.chi.locancel.{i}") for i in range(model.event_window)),
++        hi_overrun_window=tuple(_int(f"{prefix}.chi.hioverrun.{i}") for i in range(model.event_window)),
++        lo_overrun_window=tuple(_int(f"{prefix}.chi.looverrun.{i}") for i in range(model.event_window)),
++        job_start_window=tuple(_int(f"{prefix}.chi.starts.{i}") for i in range(model.event_window)),
++    )
++    return SymbolicKernelState(
++        t=_int(f"{prefix}.t"),
++        p=_int(f"{prefix}.p"),
++        mode_hi=z3.Bool(f"{prefix}.mode_hi"),
++        budgets={task.name: _int(f"{prefix}.B.{task.name}") for task in tasks},
++        eta={task.name: _int(f"{prefix}.eta.{task.name}") for task in tasks},
++        jobs=jobs,
++        frontier=SymbolicFrontier(_int(f"{prefix}.F.selected"), z3.Bool(f"{prefix}.F.running")),
++        hi_miss_ledger=_int(f"{prefix}.M"),
++        chi=history,
++    )
++
++
++def well_formed(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
++    """Return the structural state contract; no safety claim is hidden here."""
++
++    clauses: list[z3.BoolRef] = [state.t >= 0, z3.And(state.p >= 0, state.p <= 7), state.hi_miss_ledger >= 0]
++    for task in model.tasks:
++        budget = state.budgets[task.name]
++        eta = state.eta[task.name]
++        clauses.extend((budget >= task.budget_floor, budget <= task.budget_upper,
++                        eta >= 0, eta <= task.period))
++        for slot in range(model.max_jobs_per_task):
++            job = state.jobs[(task.name, slot)]
++            clauses.extend((job.release_index >= 0, job.release_time >= 0,
++                            job.absolute_deadline == job.release_time + task.deadline,
++                            job.budget_at_release >= task.budget_floor,
++                            job.budget_at_release <= task.budget_upper,
++                            job.actual_demand >= 1,
++                            job.actual_demand <= (task.c_hi if task.criticality == "HI" else task.c_lo),
++                            job.effective_demand >= 1,
++                            job.executed_service >= 0,
++                            job.executed_service <= job.effective_demand,
++                            z3.Implies(job.removed, z3.Not(job.ready)),
++                            z3.Implies(job.present, z3.Not(job.removed))))
++    if model.action_dim:
++        clauses.extend((state.frontier.selected_slot >= -1,
++                        state.frontier.selected_slot < len(state.jobs)))
++    for values in (
++        state.chi.recent_cost.values(), state.chi.ema_cost.values(), state.chi.max_cost_k.values(),
++        state.chi.mode_change_window, state.chi.lo_cancel_window,
++        state.chi.hi_overrun_window, state.chi.lo_overrun_window, state.chi.job_start_window,
++    ):
++        clauses.extend(value >= 0 for value in values)
++    return z3.And(*clauses)
++
++
++__all__ = [
++    "BoundModel", "JobSlotKey", "SymbolicFrontier", "SymbolicJob", "SymbolicKernelState",
++    "SymbolicPolicyHistory", "TaskBound", "declare_state", "well_formed",
++]
+diff --git a/formal_toolchain/v9_1/symbolic_utils.py b/formal_toolchain/v9_1/symbolic_utils.py
+new file mode 100644
+index 0000000..418fd88
+--- /dev/null
++++ b/formal_toolchain/v9_1/symbolic_utils.py
+@@ -0,0 +1,21 @@
++"""Small helpers shared by the V9.1 symbolic encoders."""
++
++from __future__ import annotations
++
++import z3
++
++
++def exactly_one(terms: list[z3.BoolRef] | tuple[z3.BoolRef, ...]) -> z3.BoolRef:
++    if not terms:
++        raise ValueError("exactly_one requires at least one term")
++    return z3.PbEq([(term, 1) for term in terms], 1)
++
++
++def ite_chain(choices: list[tuple[z3.BoolRef, z3.ExprRef]], default: z3.ExprRef) -> z3.ExprRef:
++    result = default
++    for condition, value in reversed(choices):
++        result = z3.If(condition, value, result)
++    return result
++
++
++__all__ = ["exactly_one", "ite_chain"]
+diff --git a/tests/formal/v9_1/test_environment_quantification.py b/tests/formal/v9_1/test_environment_quantification.py
+new file mode 100644
+index 0000000..61936da
+--- /dev/null
++++ b/tests/formal/v9_1/test_environment_quantification.py
+@@ -0,0 +1,52 @@
++import z3
++
++from formal_toolchain.v9_1.environment_encoder import (
++    classify_from_actual_demand,
++    declare_environment,
++    target_release_constraints,
++)
++from formal_toolchain.v9_1.symbolic_state import BoundModel, TaskBound, declare_state, well_formed
++
++
++def _model():
++    return BoundModel(
++        tasks=(
++            TaskBound("hi", 0, 10, 10, "HI", 2, 5, 2, 1, 5),
++            TaskBound("lo", 1, 15, 15, "LO", 3, 3, 3, 1, 3),
++        ),
++        agent_period=7,
++    )
++
++
++def test_every_release_has_an_independent_bounded_actual_demand():
++    env = declare_environment("e", _model(), release_count=3)
++    assert len(env.actual_demands) == 6
++    assert len({str(value) for value in env.actual_demands.values()}) == 6
++    solver = z3.Solver()
++    solver.add(*env.constraints)
++    solver.add(env.actual_demands[("hi", 0)] == 2)
++    solver.add(env.actual_demands[("hi", 1)] == 5)
++    assert solver.check() == z3.sat
++    assert str(classify_from_actual_demand(env.actual_demands[("hi", 0)], _model().tasks[0])) == "e.A.hi.0 > 2"
++
++
++def test_target_release_keeps_exact_periodic_phase_and_controller_residue():
++    model = _model()
++    env = declare_environment("e", model, release_count=1)
++    constraints = target_release_constraints(env, model.tasks[0])
++    solver = z3.Solver()
++    solver.add(*env.constraints, *constraints, env.phase.absolute_time_residue == 20)
++    assert solver.check() == z3.sat
++    solver.add(env.phase.absolute_time_residue == 21)
++    assert solver.check() == z3.unsat
++
++
++def test_symbolic_state_contains_all_jobs_and_well_formed_contract():
++    model = _model()
++    state = declare_state("z", model)
++    assert set(state.jobs) == {("hi", 0), ("hi", 1), ("hi", 2), ("hi", 3),
++                               ("lo", 0), ("lo", 1), ("lo", 2), ("lo", 3)}
++    solver = z3.Solver()
++    solver.add(well_formed(state, model))
++    solver.add(state.t == 0, state.p == 0, state.hi_miss_ledger == 0)
++    assert solver.check() == z3.sat
+-- 
+2.54.0 (Apple Git-157)
+

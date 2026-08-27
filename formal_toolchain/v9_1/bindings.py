@@ -71,6 +71,11 @@ def _source_hashes(source_root: Path) -> dict[str, str]:
         "observation_runtime": "amc_py/rl/observation.py",
         "observation_formal_schema": "formal_toolchain/semantics/frozen_c_amc_sem_observation.py",
         "feature_state": "amc_py/rl/feature_state.py",
+        "feature_config": "amc_py/rl/feature_config.py",
+        "rl_environment": "amc_py/rl/env.py",
+        "rl_actions": "amc_py/rl/actions.py",
+        "rl_action_execution": "amc_py/rl/action_execution.py",
+        "rl_safety": "amc_py/rl/safety.py",
         "fixed_point": "amc_py/viper/fixed_point.py",
         "integer_tree": "amc_py/viper/integer_tree.py",
         "runtime_adapter": "formal_toolchain/adapters/amc_real_runtime_adapter.py",
@@ -84,6 +89,48 @@ def _source_hashes(source_root: Path) -> dict[str, str]:
             raise ValueError(f"required V9.1 source binding missing: {relative}")
         result[key] = sha256_file(path)
     return result
+
+
+
+
+def _exact_integer_linear_constraints(adapter: Any, task_names: list[str]) -> list[dict[str, Any]]:
+    """Freeze the runtime safety checker as exact integer A@B<=rhs rows.
+
+    RuntimeBudgetSafetyChecker constructs every coefficient and rhs from integer
+    periods/deadlines/R_LO values.  Refuse any non-integral float here instead
+    of silently rounding a deployment guard.
+    """
+
+    environment = getattr(adapter, "environment", None)
+    if environment is None:
+        raise ValueError("V9_1_P5_RUNTIME_ENVIRONMENT_UNBOUND")
+    if not bool(getattr(environment, "check_safety", False)):
+        return []
+    checker = environment._ensure_checker()
+    rows = []
+    for task_name, constraint_name, rhs, coeff in checker._constraint_rows:
+        rhs_f = float(rhs)
+        if not rhs_f.is_integer():
+            raise ValueError("V9_1_P5_SAFETY_RHS_NOT_EXACT_INTEGER")
+        coeff_values = []
+        for value in coeff.tolist():
+            value_f = float(value)
+            if not value_f.is_integer():
+                raise ValueError("V9_1_P5_SAFETY_COEFFICIENT_NOT_EXACT_INTEGER")
+            coeff_values.append(int(value_f))
+        if len(coeff_values) != len(task_names):
+            raise ValueError("V9_1_P5_SAFETY_ROW_DIMENSION_MISMATCH")
+        if abs(int(rhs_f)) >= 2**53:
+            raise ValueError("V9_1_P5_SAFETY_RHS_EXCEEDS_EXACT_BINARY64_INTEGER_RANGE")
+        rows.append({
+            "task": str(task_name),
+            "constraint": str(constraint_name),
+            "rhs": int(rhs_f),
+            "coefficients": coeff_values,
+        })
+    if not rows:
+        raise ValueError("V9_1_P5_SAFETY_CHECKER_HAS_NO_ROWS")
+    return rows
 
 
 def _environment_domain(taskset: dict[str, Any]) -> dict[str, Any]:
@@ -194,8 +241,35 @@ def build_bindings(request_path: Path, *, source_root: Path) -> dict[str, Any]:
         raise ValueError("EXPLICIT_NOOP_NOT_PROVEN_ALWAYS_VALID")
     if list(mask_contract.get("explicit_noop_action_ids", [])) != [noop_id]:
         raise ValueError("EXPLICIT_NOOP_ID_MISMATCH")
+    environment = getattr(adapter, "environment", None)
+    if environment is None:
+        raise ValueError("V9_1_P5_RUNTIME_ENVIRONMENT_UNBOUND")
+    if any(bool(row.get("is_constraint_guided_pair")) or bool(row.get("is_residual_ranked")) for row in actions):
+        raise ValueError("V9_1_P5_DYNAMIC_ACTION_SPACE_UNSUPPORTED")
+    if bool(getattr(environment, "enable_residual_safety_fallback", False)):
+        raise ValueError("V9_1_P5_RESIDUAL_SAFETY_FALLBACK_MUST_BE_DISABLED")
+    if str(environment.budget_rounding_mode) != "ceil_floor":
+        raise ValueError("V9_1_P5_ONLY_CEIL_FLOOR_ROUNDING_IS_BOUND")
+    if environment.normalization_bounds is not None:
+        for task in target.ordered_tasks:
+            bound = environment.normalization_bounds.get(task.name)
+            expected_hi = task.c_hi if str(getattr(task.criticality, "value", task.criticality)) == "HI" else max(task.c_lo, task.deadline)
+            if bound is None or float(bound.min_cost) != 0.0 or float(bound.max_cost) != float(expected_hi):
+                raise ValueError("V9_1_P5_CUSTOM_NORMALIZATION_BOUNDS_UNSUPPORTED")
 
     taskset = export_taskset(target.ordered_tasks, target.provenance.get("budget_by_task"))
+    safety_rows = _exact_integer_linear_constraints(
+        adapter, [str(task.name) for task in target.ordered_tasks]
+    )
+    upper_by_name = {str(row["name"]): int(row["action_hard_upper"]) for row in taskset["ordered_tasks"]}
+    task_names = [str(task.name) for task in target.ordered_tasks]
+    for row in safety_rows:
+        lhs_abs_bound = sum(
+            abs(int(coeff)) * upper_by_name[name]
+            for coeff, name in zip(row["coefficients"], task_names)
+        )
+        if lhs_abs_bound >= 2**53:
+            raise ValueError("V9_1_P5_SAFETY_LHS_EXCEEDS_EXACT_BINARY64_INTEGER_RANGE")
     env_domain = _environment_domain(taskset)
     demand_semantics = _demand_semantics(runtime_config)
     source_hashes = _source_hashes(source_root)
@@ -236,10 +310,22 @@ def build_bindings(request_path: Path, *, source_root: Path) -> dict[str, Any]:
                      "input_max": inventory["fixed_point_config"]["input_max"]},
         "quantization": dict(inventory["fixed_point_config"]),
         "rounding": inventory["fixed_point_config"]["rounding_mode"],
+        "feature_config": {
+            "ema_alpha": float(environment.feature_config.ema_alpha),
+            "overrun_ema_alpha": float(environment.feature_config.overrun_ema_alpha),
+            "history_k": int(environment.feature_config.history_k),
+            "event_window": int(environment.feature_config.event_window),
+            "max_cost_weight": float(environment.feature_config.max_cost_weight),
+            "risk_max_scale": float(environment.feature_config.risk_max_scale),
+            "include_safety_margin": bool(environment.feature_config.include_safety_margin),
+        },
         "numeric_width_overflow": "Python integer after binary64 observation; fixed-point output explicitly bounded",
         "float_semantics": "CPython IEEE-754 binary64 for executable observation before Decimal(str(value)) quantization",
         "comparison_semantics": "integer tree left iff q <= threshold_int; right iff q > threshold_int",
-        "source_hashes": {k: source_hashes[k] for k in ("observation_runtime", "observation_formal_schema", "feature_state", "fixed_point", "integer_tree")},
+        "source_hashes": {k: source_hashes[k] for k in (
+            "observation_runtime", "observation_formal_schema", "feature_state", "feature_config",
+            "rl_environment", "rl_safety", "fixed_point", "integer_tree",
+        )},
         "fixed_point_config_hash": inventory["fixed_point_config_hash"],
         "tree_partition": tree_partition,
     }
@@ -256,7 +342,20 @@ def build_bindings(request_path: Path, *, source_root: Path) -> dict[str, Any]:
             "explicit_noop_always_valid", "check_safety", "candidate_reject_helper", "candidate_evaluator",
             "selection", "rounding_mode", "min_budget_delta",
         )},
-        "source_hashes": {k: source_hashes[k] for k in ("runtime_adapter", "action_runtime", "budget_runtime")},
+        "execution_config": {
+            "rounding_mode": str(environment.budget_rounding_mode),
+            "min_budget_delta": int(environment.min_budget_delta),
+            "forbid_decreasing_hi_budgets": bool(environment.forbid_decreasing_hi_budgets),
+            "enable_deploy_cap_mask": bool(environment.enable_deploy_cap_mask),
+            "deploy_cap_mask_ratio": float(environment.deploy_cap_mask_ratio),
+            "deploy_cap_mask_criticality": str(environment.deploy_cap_mask_criticality),
+            "check_safety": bool(environment.check_safety),
+            "safety_constraints": safety_rows,
+        },
+        "source_hashes": {k: source_hashes[k] for k in (
+            "runtime_adapter", "action_runtime", "budget_runtime", "rl_environment",
+            "rl_actions", "rl_action_execution", "rl_safety",
+        )},
     }
     kernel_schema = {
         "schema_version": "policy_timing_kernel_state_v9_1",
@@ -283,9 +382,21 @@ def build_bindings(request_path: Path, *, source_root: Path) -> dict[str, Any]:
         "tie_break_hash": sha256_object({"rule": event_binding["dispatch"], "source": source_hashes["event_runtime"]}),
         "runtime_config_hash": sha256_object(runtime_config),
     }
+    degraded_cost_by_task = {
+        str(row["name"]): max(
+            1,
+            min(
+                int(row["code_c_lo"]),
+                int(round(float(_field(runtime_config, "c_amc_sem_lo_degradation_ratio")) * int(row["code_c_lo"]))),
+            ),
+        )
+        for row in taskset["ordered_tasks"]
+        if str(row["criticality"]) == "LO"
+    }
     environment_binding = {
         "schema_version": "environment_binding_v9_1",
         "domain": env_domain,
+        "degraded_cost_by_task": degraded_cost_by_task,
         "release_model_hash": sha256_object({"release_model": env_domain["release_model"], "tasks": env_domain["tasks"]}),
         "initial_release_state_hash": sha256_object({row["task"]: 0 for row in env_domain["tasks"]}),
         "release_domain_hash": sha256_object([row["release_domain"] for row in env_domain["tasks"]]),
@@ -312,6 +423,7 @@ def build_bindings(request_path: Path, *, source_root: Path) -> dict[str, Any]:
             "tree_threshold_encoding_hash": sha256_object({
                 "nodes": tree_json["nodes"], "comparison": numeric["comparison_semantics"]}),
             "artifact_inventory_hash": sha256_object(inventory["files"]),
+            "integer_tree": tree_json,
         },
         "source_manifest_semantic_hash": source_manifest["semantic_hash"],
         "formal_inputs_dir_hash": sha256_object(sorted(p.name for p in formal_inputs_dir.iterdir())),

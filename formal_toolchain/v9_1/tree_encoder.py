@@ -36,15 +36,12 @@ def encode_tree_leaf_and_ranking(
         predicate = q[node.feature_index] <= node.threshold_int
         left_leaf, left_rank = visit(node.left_child)
         right_leaf, right_rank = visit(node.right_child)
-        constraints.append(z3.Implies(predicate, left_leaf == left_leaf))
         return z3.If(predicate, left_leaf, right_leaf), tuple(
             z3.If(predicate, left_rank[index], right_rank[index])
             for index in range(int(tree.action_dim))
         )
 
     leaf_id, ranking = visit(int(tree.root_node_id))
-    ranking_var = z3.Int(f"{prefix}.selected_raw_action")
-    constraints.append(z3.Or(*(ranking_var == item for item in ranking)))
     return TreeEncoding(leaf_id, ranking, tuple(constraints))
 
 

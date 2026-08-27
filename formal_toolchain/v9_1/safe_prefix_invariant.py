@@ -31,8 +31,13 @@ class SafePrefixInvariant:
         for job in state.jobs.values():
             clauses.extend((z3.Not(job.present), z3.Not(job.removed),
                             job.executed_service == 0))
-        for mapping in (state.chi.recent_cost, state.chi.ema_cost, state.chi.max_cost_k):
-            clauses.extend(value == 0 for value in mapping.values())
+        clauses.extend(value == 0 for value in state.chi.recent_cost.values())
+        for task in self.model.tasks:
+            # RuntimeFeatureState.init_task initializes ema_cost to C_LO and
+            # overrun_ema to zero; max-cost-k falls back to recent execution.
+            clauses.extend((state.chi.ema_cost[task.name] == task.c_lo,
+                            state.chi.overrun_ema[task.name] == 0,
+                            state.chi.max_cost_k[task.name] == task.c_lo))
         for window in (state.chi.mode_change_window, state.chi.lo_cancel_window,
                        state.chi.hi_overrun_window, state.chi.lo_overrun_window,
                        state.chi.job_start_window):
@@ -49,8 +54,14 @@ class SafePrefixInvariant:
         state = declare_state(f"{prefix}.z", self.model)
         next_state = declare_state(f"{prefix}.zp", self.model)
         no_new_miss = next_state.hi_miss_ledger == state.hi_miss_ledger
-        return z3.And(self.formula(state), encode_step(state, next_state, self.model, env),
-                      no_new_miss, z3.Not(self.formula(next_state)))
+        return z3.And(
+            *env.constraints,
+            env.phase.origin_time == state.t,
+            self.formula(state),
+            encode_step(state, next_state, self.model, env),
+            no_new_miss,
+            z3.Not(self.formula(next_state)),
+        )
 
 
 __all__ = ["SafePrefixInvariant"]
