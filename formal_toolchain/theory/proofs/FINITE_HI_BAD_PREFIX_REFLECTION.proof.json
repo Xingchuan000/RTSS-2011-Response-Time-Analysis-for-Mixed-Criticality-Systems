@@ -41,13 +41,13 @@
   "source_bindings": {
     "formal_toolchain/adapters/formal_runtime_snapshot.py": "e611ee8f322d3e36c6dad2a35ba113a1069884512f8a81421b4d742994cd7486",
     "formal_toolchain/bridge/bad_prefix.py": "42a90262eb499a81486cb7e078fa4159756e5ae781e52b100c58df34c134f5b5",
-    "formal_toolchain/bridge/case_templates.py": "d3d25538b4a4cf5f1bed711635e6e225bd6dbdc15fe691c7167d763915793819",
+    "formal_toolchain/bridge/case_templates.py": "da5c2c18dde21cc7191c1c848251558ae65c886fd193f87dd98f94c92116731b",
     "formal_toolchain/bridge/event_projection.py": "122786952059a08fb36f6bc0d0bb3c3cc847b65303d7e37bd6cfd1e539a2fb1e",
     "formal_toolchain/bridge/prefix_refinement.py": "0d398a0c399afff83e8fe4648981640b06e4dc565751d013b768eca834f158c7",
-    "formal_toolchain/bridge/state_relation.py": "1df1edcebb0fa1bf0e8a55b1ff4132f0114997a3e16283aa03a63a892763c4f2",
+    "formal_toolchain/bridge/state_relation.py": "783a3c5067f2b9e3370f06dd7982629f7442d57344ff27564e524384fc136d6a",
     "formal_toolchain/bridge/transition_cases.py": "b8aaa9fe3f39f8193e54b499044014461759e0b9b22393794ed03f7f8124a7cb",
     "formal_toolchain/reference/executable_semantics.py": "f26667f2034a1af965e8b2888d3ae8bedb246eabcf2c87ee74a83ea7a22810b4",
-    "formal_toolchain/reference/p0_projection.py": "4b4057d67c064cd82e79e0f37cdcdecd5e5d940c53ab548ca4435dc55d4ef21f",
+    "formal_toolchain/reference/p0_projection.py": "970d387fcd6e3a080c8f2e6bc36e20ab2c84cab3c179ae2f6ab7feb18f439407",
     "formal_toolchain/reference/p0_transition_contract.py": "f3f70143a7d352dd5c4d5d568de59fcaf7c769ca1011e452044be005ac56bcfa",
     "formal_toolchain/reference/transition_identity.py": "e2a9ae71a2ebd0d03d312a4c6e854ae6c0e3f3a5461c12abe94d3b7d2ef414eb"
   },

@@ -20,7 +20,7 @@
     "backend": "casewise-prefix-induction-v1",
     "hash_mode": "canonical_json_v1",
     "path": "proofs/CASEWISE_SIMULATION_IMPLIES_PREFIX_REFINEMENT.proof.json",
-    "sha256": "737b2155c70b01257f9a77f2b37f530fcacbcabe6abdeeadecd03543df6c4194"
+    "sha256": "618e833f258abcc16c63e73c2a92ae2dcafda78a6ca5b865eb1600c80c6ae456"
   },
   "source_reference": "This framework theorem interface, casewise simulation and prefix refinement",
   "statement_hash": "6c84fbe150d4fe80c63b14065955213f17e7cfb02f40837967896a92f2a46225",
