@@ -564,5 +564,6 @@ def check_selected_safety(**kwargs: Any):
         "route_id": "raw_protected_prefix",
         "source_safety_obligation": "REFERENCE_HI_SAFETY_FROM_RAW_PREFIX",
         "reference_taskset_fingerprint": state.full_reference_taskset.to_dict()["fingerprint"],
+        "reference_transition_system_id": "FIXED_EXECUTABLE_REFERENCE_P0_V3",
         "conclusion": "ALL_REFERENCE_HI_JOBS_MEET_DEADLINES",
     })

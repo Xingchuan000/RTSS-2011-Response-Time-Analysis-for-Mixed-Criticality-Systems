@@ -136,7 +136,10 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
     )
     controller_binding = bind_controller_runtime(root)
     from formal_toolchain.binding.action_binding import bind_action_runtime
-    from .controller_transition import build_controller_transition_certificate
+    from .controller_transition import (
+        build_controller_transition_certificate,
+        build_controller_transition_case_proofs,
+    )
     if action_binding is None:
         explicit_noop = bool(
             runtime_config.get("include_explicit_noop", False)
@@ -169,13 +172,31 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
         ),
         context_hash=bridge_context_hash,
     )
+    controller_case_proofs = build_controller_transition_case_proofs(
+        controller_transition_certificate=controller_transition,
+        bounds=bounds,
+        bridge_context_hash=bridge_context_hash,
+    )
+    if controller_case_proofs.get("status") != "PASS":
+        return {
+            "status": "UNRESOLVED",
+            "failure": "CONTROLLER_TRANSITION_CASE_PROOF_REQUIRED",
+            "transition_cases": compiled,
+            "controller_binding": controller_binding,
+            "controller_transition_certificate": controller_transition,
+            "controller_transition_case_proofs": controller_case_proofs,
+        }
     decomposition = build_handler_decomposition_certificate(
         root, context_hash=bridge_context_hash,
-        transition_case_certificates=compiled["proofs"])
+        transition_case_certificates=[
+            *compiled["proofs"],
+            *controller_case_proofs["proofs"],
+        ])
     if controller_binding.get("status") != "PASS" or decomposition.get("status") != "PASS" or controller_transition.get("obligation_status") != "PASS":
         return {"status": "UNRESOLVED", "failure": "COMPOSITE_HANDLER_DECOMPOSITION_REQUIRED",
                 "transition_cases": compiled, "controller_binding": controller_binding,
                 "controller_transition_certificate": controller_transition,
+                "controller_transition_case_proofs": controller_case_proofs,
                 "decomposition": decomposition}
     if decomposition.get("schema_version") != HANDLER_DECOMPOSITION_SCHEMA_VERSION:
         return {"status": "UNRESOLVED", "failure": "HANDLER_DECOMPOSITION_MATH_FIXED_REQUIRED", "transition_cases": compiled, "decomposition": decomposition}
@@ -331,6 +352,7 @@ def compile_phase_k(*, source_root: str | Path, branch_map: Mapping[str, Any],
             "transition_cases": compiled, "prerequisites": prereqs,
             "coverage": branch_map["coverage"], "controller_binding": controller_binding,
             "controller_transition_certificate": controller_transition,
+            "controller_transition_case_proofs": controller_case_proofs,
             "decomposition": decomposition,
             "closed_prefix": closed, "reference_extension": extension,
             "deadline_observation": deadline, "hi_nontruncation": nontruncation,

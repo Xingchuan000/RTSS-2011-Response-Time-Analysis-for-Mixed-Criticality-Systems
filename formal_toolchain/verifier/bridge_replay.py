@@ -21,6 +21,10 @@ class BridgeReplayInputs:
     reference_context_hash: str
     bridge_context_hash: str
     runtime_config: Any | None = None
+    # Optional because non-N5 bridge checks only need fresh plant replay.
+    # CLOSED_PREFIX_REFINEMENT supplies the independently recomputed controller
+    # certificate so handler composition can also be fresh-replayed.
+    controller_transition_certificate: Mapping[str, Any] | None = None
 
 
 def _unresolved(code: str, **witness: Any) -> dict[str, Any]:
@@ -136,6 +140,30 @@ def replay_all_transition_cases(inputs: BridgeReplayInputs) -> dict[str, Any]:
                             "batch_decomposition_receipt_hash")})})
     if any(row.get("z3_proof_result") != "PASS" for row in results):
         return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "FRESH_Z3_CASE_NOT_PASS", "cases": results}
+    base_result = {
+        "status": "PASS", "route": None, "code": None,
+        "source_manifest_hash": inputs.source_manifest_hash,
+        "branch_map_hash": sha256_object(branch_map), "cases": results,
+        "case_count": len(results), "solver": {"name": "z3", "timeout_ms": 30000},
+    }
+    if inputs.controller_transition_certificate is None:
+        return {**base_result, "handler_decomposition_replayed": False}
+
+    from formal_toolchain.bridge.controller_transition import (
+        build_controller_transition_case_proofs,
+    )
+    controller_case_proofs = build_controller_transition_case_proofs(
+        controller_transition_certificate=inputs.controller_transition_certificate,
+        bounds=bounds,
+        bridge_context_hash=inputs.bridge_context_hash,
+    )
+    if controller_case_proofs.get("status") != "PASS":
+        return {
+            "status": "UNRESOLVED", "route": "UNRESOLVED",
+            "code": "FRESH_CONTROLLER_TRANSITION_CASE_PROOF_FAILED",
+            "controller_transition_case_proofs": controller_case_proofs,
+        }
+
     from formal_toolchain.bridge.handler_decomposition import (
         HANDLER_DECOMPOSITION_SCHEMA_VERSION,
         build_handler_decomposition_certificate,
@@ -146,15 +174,19 @@ def replay_all_transition_cases(inputs: BridgeReplayInputs) -> dict[str, Any]:
                 "code": "FRESH_HANDLER_PROOF_ROWS_MISSING"}
     decomposition = build_handler_decomposition_certificate(
         inputs.source_root, context_hash=inputs.bridge_context_hash,
-        transition_case_certificates=handler_inputs)
+        transition_case_certificates=[
+            *handler_inputs,
+            *controller_case_proofs["proofs"],
+        ])
     if decomposition.get("status") != "PASS" or decomposition.get("schema_version") != HANDLER_DECOMPOSITION_SCHEMA_VERSION:
         return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "FRESH_HANDLER_DECOMPOSITION_FAILED", "handler_decomposition": decomposition}
-    return {"status": "PASS", "route": None, "code": None,
-            "source_manifest_hash": inputs.source_manifest_hash,
-            "branch_map_hash": sha256_object(branch_map), "cases": results,
-            "case_count": len(results), "solver": {"name": "z3", "timeout_ms": 30000},
-            "handler_decomposition": decomposition,
-            "handler_decomposition_hash": decomposition.get("artifact_hash")}
+    return {
+        **base_result,
+        "handler_decomposition_replayed": True,
+        "controller_transition_case_proofs": controller_case_proofs,
+        "handler_decomposition": decomposition,
+        "handler_decomposition_hash": decomposition.get("artifact_hash"),
+    }
 
 
 def compare_candidate_replay(candidate: Mapping[str, Any], replay: Mapping[str, Any]) -> dict[str, Any]:

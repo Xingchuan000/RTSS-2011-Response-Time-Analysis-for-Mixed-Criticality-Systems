@@ -345,7 +345,18 @@ def _verify_universal_closed_prefix(candidate: Mapping[str, Any], bridge_context
     case_map_path = Path(raw_inputs.workspace) / "request" / "inputs" / "formal_inputs" / "phase_k_case_map.json"
     if not case_map_path.is_file():
         return {"status": "UNRESOLVED", "route": "UNRESOLVED", "code": "PHASE_K_CASE_MAP_MISSING"}
-    replay = replay_all_transition_cases(BridgeReplayInputs(source_root=Path(raw_inputs.source_root), source_manifest_hash=str(raw_inputs.source_manifest.get("semantic_hash", "")), case_manifest=json.loads(case_map_path.read_text(encoding="utf-8")), reference_taskset=reference_taskset, certified_envelope=dict(certified_envelope or {}), semantic_context_hash=str(raw_inputs.contexts["semantic_context"]["hash"]), reference_context_hash=str(raw_inputs.contexts["reference_context"]["hash"]), bridge_context_hash=bridge_context_hash, runtime_config=raw_inputs.target.runtime_config))
+    replay = replay_all_transition_cases(BridgeReplayInputs(
+        source_root=Path(raw_inputs.source_root),
+        source_manifest_hash=str(raw_inputs.source_manifest.get("semantic_hash", "")),
+        case_manifest=json.loads(case_map_path.read_text(encoding="utf-8")),
+        reference_taskset=reference_taskset,
+        certified_envelope=dict(certified_envelope or {}),
+        semantic_context_hash=str(raw_inputs.contexts["semantic_context"]["hash"]),
+        reference_context_hash=str(raw_inputs.contexts["reference_context"]["hash"]),
+        bridge_context_hash=bridge_context_hash,
+        runtime_config=raw_inputs.target.runtime_config,
+        controller_transition_certificate=recomputed_controller,
+    ))
     if replay.get("status") != "PASS":
         return replay
     if witness.get("handler_decomposition_hash") != replay.get("handler_decomposition_hash"):

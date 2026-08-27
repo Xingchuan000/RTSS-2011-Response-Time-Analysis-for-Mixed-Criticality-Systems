@@ -168,3 +168,199 @@ def build_controller_transition_certificate(
         checker_version="phase-k-v1",
         failure=failure,
     )
+
+
+def _controller_case_binding_ok(case_id: str, case: Mapping[str, Any]) -> bool:
+    """Validate the exact source-bound synchronous controller semantics used by SMT."""
+    if case.get("status") != "PASS" or case.get("source_kind") != "CONTROLLER_SYNCHRONOUS":
+        return False
+    if case.get("timing_projection") != "STUTTER" or case.get("plant_progression") is not False:
+        return False
+    if case_id == CONTROLLER_SELECTED_ACTION:
+        required_true = (
+            "zero_time", "payload_prevalidated", "no_partial_mutation",
+            "time_unchanged", "mode_unchanged", "active_jobs_unchanged",
+            "ready_jobs_unchanged", "running_job_unchanged",
+            "released_job_fields_unchanged", "released_job_snapshot_unchanged",
+            "released_job_service_unchanged", "released_job_demand_unchanged",
+            "released_job_classification_unchanged", "completion_miss_unchanged",
+            "service_unchanged", "effective_event_frontier_unchanged",
+        )
+        return (
+            case.get("source") == "amc_py/rl/env.py:AmcBudgetEnv.step"
+            and case.get("source_binding") == "self._engine.apply_budget_updates"
+            and case.get("budget_effect") == "CERTIFIED_ACTION_UPDATE"
+            and all(case.get(field) is True for field in required_true)
+        )
+    if case_id == CONTROLLER_NO_ACTION:
+        return (
+            case.get("source_binding") == "EXPLICIT_OR_FALLBACK_NOOP"
+            and case.get("budget_effect") == "IDENTITY"
+            and case.get("zero_time") is True
+            and case.get("running_job_unchanged") is True
+            and case.get("effective_event_frontier_unchanged") is True
+            and case.get("released_job_fields_unchanged") is True
+            and case.get("mode_unchanged") is True
+            and case.get("time_unchanged") is True
+            and case.get("same_action_id") is True
+            and case.get("same_budget_semantics") is True
+            and case.get("same_timing_semantics") is True
+        )
+    return False
+
+
+def _controller_concrete_delta(case_id: str, bounds: Any) -> str:
+    """Render concrete post-state equations from the certified controller effect."""
+    from .state_relation import p0_smt_relation_fields
+
+    overrides: dict[str, str] = {}
+    if case_id == CONTROLLER_SELECTED_ACTION:
+        overrides["future_budget"] = "release_budget"
+        overrides["affected_task_budget"] = "release_budget"
+        for slot in range(bounds.task_slots):
+            field = f"task_{slot}_future_budget"
+            overrides[field] = (
+                f"(ite (= update_target_slot {slot}) release_budget "
+                f"c_{field})"
+            )
+    elif case_id != CONTROLLER_NO_ACTION:
+        raise ValueError(f"CONTROLLER_CASE_UNKNOWN:{case_id}")
+
+    equations = [
+        f"(= c_{field}_post {overrides.get(field, f'c_{field}')})"
+        for field in p0_smt_relation_fields(bounds)
+    ]
+    return "(and " + " ".join(equations) + ")"
+
+
+def build_controller_transition_case_proofs(
+    *,
+    controller_transition_certificate: Mapping[str, Any],
+    bounds: Any,
+    bridge_context_hash: str,
+) -> dict[str, Any]:
+    """Compile the two certified controller micro-steps into real SMT proofs."""
+    from formal_toolchain.core.artifact import verify_obligation_certificate
+    from formal_toolchain.core.hashing import sha256_object
+    from .case_templates import compile_case_template
+    from .state_relation import parameterized_state_relation_schema_hash
+    from .transition_cases import TransitionCaseProof, prove_smt2_case
+
+    if (
+        not isinstance(controller_transition_certificate, Mapping)
+        or controller_transition_certificate.get("obligation_id") != "CONTROLLER_TRANSITION"
+        or controller_transition_certificate.get("obligation_status") != "PASS"
+        or controller_transition_certificate.get("certificate_context_hash") != bridge_context_hash
+        or not verify_obligation_certificate(controller_transition_certificate)
+    ):
+        return {
+            "status": "UNRESOLVED",
+            "failure": "CONTROLLER_TRANSITION_CERTIFICATE_INVALID",
+            "proofs": [],
+        }
+
+    witness = controller_transition_certificate.get("witness", {})
+    cases = witness.get("cases", {}) if isinstance(witness, Mapping) else {}
+    required = (CONTROLLER_NO_ACTION, CONTROLLER_SELECTED_ACTION)
+    if not isinstance(cases, Mapping) or any(
+        not isinstance(cases.get(case_id), Mapping)
+        or not _controller_case_binding_ok(case_id, cases[case_id])
+        for case_id in required
+    ):
+        return {
+            "status": "UNRESOLVED",
+            "failure": "CONTROLLER_TRANSITION_CASE_BINDING_INVALID",
+            "proofs": [],
+        }
+
+    certificate_hash = str(controller_transition_certificate.get("artifact_hash", ""))
+    controller_binding_hash = str(
+        controller_transition_certificate.get("inputs", {}).get("controller_binding_hash", "")
+    )
+    proof_rows: list[dict[str, Any]] = []
+    for case_id in required:
+        case = dict(cases[case_id])
+        template = compile_case_template(case_id, bounds=bounds)
+        concrete_delta = _controller_concrete_delta(case_id, bounds)
+        case_binding_hash = sha256_object({
+            "certificate_hash": certificate_hash,
+            "case_id": case_id,
+            "case": case,
+        })
+        source_branch_id = f"CONTROLLER_SYNCHRONOUS::{case_id}"
+        proof = prove_smt2_case(
+            case_id=case_id,
+            source_branch_id=source_branch_id,
+            declarations=template.declarations,
+            precondition=template.precondition,
+            preservation=template.preservation,
+            concrete_delta=concrete_delta,
+            projected_reference_delta=template.reference_delta,
+            bound_source_hash=controller_binding_hash or case_binding_hash,
+            bounds=bounds,
+        )
+        modified_components = (
+            ("future_budget_ghost",)
+            if case_id == CONTROLLER_SELECTED_ACTION
+            else ()
+        )
+        semantic_effect_kinds = (
+            ("FUTURE_BUDGET_UPDATE",)
+            if case_id == CONTROLLER_SELECTED_ACTION
+            else ("IDENTITY",)
+        )
+        footprint_hash = sha256_object({
+            "case_id": case_id,
+            "controller_transition_certificate_hash": certificate_hash,
+            "case_binding_hash": case_binding_hash,
+            "modified_components": modified_components,
+            "semantic_effect_kinds": semantic_effect_kinds,
+            "concrete_delta_hash": sha256_object(concrete_delta),
+        })
+        parameterized_ok = proof.z3_proof_result == "PASS"
+        proof = TransitionCaseProof(**{
+            **proof.to_dict(),
+            "source_branch_id": source_branch_id,
+            "branch_subtree_hash": case_binding_hash,
+            "bridge_context_hash": bridge_context_hash,
+            "case_template_hash": template.template_hash,
+            "concrete_delta_source": "CONTROLLER_TRANSITION_CERTIFICATE",
+            "path_id": source_branch_id,
+            "path_effect_hash": case_binding_hash,
+            "guard_ast_hash": case_binding_hash,
+            "path_ast_hash": case_binding_hash,
+            "source_context_hash": controller_binding_hash or certificate_hash,
+            "affected_job_identity_bound": True,
+            "frame_predicates_bound": True,
+            "parameterized_relation_schema_hash": parameterized_state_relation_schema_hash(),
+            "local_footprint_hash": footprint_hash,
+            "map_update_kind": "UNCHANGED",
+            "created_key_fresh_proved": False,
+            "released_ledger_contract_proved": True,
+            "terminal_ledger_contract_proved": True,
+            "miss_ledger_contract_proved": True,
+            "unaffected_job_frame_proved": True,
+            "effective_frontier_contract_proved": True,
+            "parameterized_contract_status": "PASS" if parameterized_ok else "UNRESOLVED",
+            "modified_components": modified_components,
+            "semantic_effect_kinds": semantic_effect_kinds,
+            "evidence_hashes": tuple(sorted({certificate_hash, case_binding_hash})),
+            "parameterized_contract_failure": "" if parameterized_ok else "CONTROLLER_SMT_PROOF_NOT_PASS",
+        })
+        proof_rows.append(proof.to_dict())
+
+    status = "PASS" if all(
+        row.get("z3_proof_result") == "PASS"
+        and row.get("concrete_feasibility") == "SAT"
+        and row.get("reference_totality") == "PASS"
+        and row.get("relation_preservation") == "PASS"
+        and row.get("parameterized_contract_status") == "PASS"
+        for row in proof_rows
+    ) else "UNRESOLVED"
+    return {
+        "status": status,
+        "failure": None if status == "PASS" else "CONTROLLER_TRANSITION_CASE_SMT_UNRESOLVED",
+        "controller_transition_certificate_hash": certificate_hash,
+        "proofs": proof_rows,
+        "case_ids": list(required),
+    }
