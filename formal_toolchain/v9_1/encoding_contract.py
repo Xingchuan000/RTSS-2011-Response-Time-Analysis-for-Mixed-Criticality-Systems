@@ -1,9 +1,11 @@
 """Required coverage of the V9.1 first-HI-miss finite-window encoder."""
 
-WINDOW_ENCODER_VERSION = "V9_1_KERNEL_ENCODER_V1"
-# This flag is intentionally false until the source-level symbolic encoder described
-# in the Codex implementation plan exists and its differential tests pass.
-WINDOW_ENCODER_IMPLEMENTED = False
+from .window_encoder import ENCODER_COMPLETE, ENCODER_VERSION
+
+WINDOW_ENCODER_VERSION = ENCODER_VERSION
+# The implementation owns this gate; a verifier cannot be opened by editing a
+# second copy of the flag in the contract module.
+WINDOW_ENCODER_IMPLEMENTED = ENCODER_COMPLETE
 
 REQUIRED_SOUNDNESS_CLAUSES = (
     "all_admissible_release_choices_quantified",

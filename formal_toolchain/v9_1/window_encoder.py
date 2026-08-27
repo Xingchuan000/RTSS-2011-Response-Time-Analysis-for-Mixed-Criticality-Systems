@@ -15,9 +15,20 @@ from .transition_encoder import encode_step
 
 
 ENCODER_VERSION = "V9_1_KERNEL_ENCODER_V1"
-# This is changed only by Task J after all proof generators and replay checks
-# exist.  It intentionally remains false while the route is under construction.
-ENCODER_COMPLETE = False
+
+
+def _implementation_readiness() -> tuple[bool, tuple[str, ...]]:
+    """Derive the gate from implemented generators, never from a status flag.
+
+    The current repository still lacks a source-level real-seed replay provider;
+    that gap is intentionally part of the computed result.  Once that provider
+    and its fresh replay are present, this function is the only place that may
+    open the gate.
+    """
+    required = (build_first_bad_window, write_first_bad_window)
+    gaps = [] if all(callable(item) for item in required) else ["WINDOW_GENERATOR_MISSING"]
+    gaps.append("REAL_SEED_CONCRETE_REPLAY_PROVIDER_UNBOUND")
+    return not gaps, tuple(gaps)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,5 +107,10 @@ def write_first_bad_window(encoding: WindowEncoding, path: Path) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-__all__ = ["ENCODER_COMPLETE", "ENCODER_VERSION", "WindowEncoding",
+# Task J gate: automatic and fail-closed until every source-level obligation is
+# bound.  Do not replace this with a hand-maintained True constant.
+ENCODER_COMPLETE, ENCODER_READINESS_GAPS = _implementation_readiness()
+
+
+__all__ = ["ENCODER_COMPLETE", "ENCODER_READINESS_GAPS", "ENCODER_VERSION", "WindowEncoding",
            "build_first_bad_window", "write_first_bad_window"]
