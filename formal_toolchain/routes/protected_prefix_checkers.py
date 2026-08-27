@@ -297,6 +297,31 @@ def check_weak_forward_simulation(**kwargs: Any) -> dict[str, Any]:
     )
 
 
+def check_n4_route_boundary_alignment(**kwargs: Any) -> dict[str, Any]:
+    predecessors = kwargs.get("verified_predecessors", {})
+    required = {"CONTROLLER_BOUNDARY", "PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE"}
+    blocked = _require_pass_predecessors(predecessors, required)
+    if blocked is not None:
+        return blocked
+    runtime = _unwrap_proof_payload(predecessors["PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE"])
+    pp0 = runtime.get("pp0_witness", runtime)
+    ok = (
+        pp0.get("mode_transitions_zero_time") is True
+        and pp0.get("deadline_observe_only") is True
+    )
+    return _finish(
+        "PASS" if ok else "UNRESOLVED",
+        None if ok else "N4_REFERENCE_ROUTE_BOUNDARY_ALIGNMENT_UNPROVED",
+        {
+            "route_id": "protected_prefix",
+            "route_neutral_bridge": True,
+            "boundary": "N4 PreClosed/PostClosed timing projection == canonical reference Close(t)",
+            "runtime_schema_artifact_hash": predecessors["PROTECTED_PREFIX_RUNTIME_SCHEMA_CONFORMANCE"].get("artifact_hash"),
+            "controller_boundary_artifact_hash": predecessors["CONTROLLER_BOUNDARY"].get("artifact_hash"),
+        },
+    )
+
+
 def check_hi_bad_prefix_reflection(**kwargs: Any) -> dict[str, Any]:
     predecessors = kwargs.get("verified_predecessors", {})
     blocked = _require_pass_predecessors(
@@ -304,6 +329,7 @@ def check_hi_bad_prefix_reflection(**kwargs: Any) -> dict[str, Any]:
         {
             "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED",
             "PPP_L5_DEADLINE_BATCH_FOLD",
+            "N4_REFERENCE_ROUTE_BOUNDARY_ALIGNMENT",
         },
     )
     if blocked is not None:

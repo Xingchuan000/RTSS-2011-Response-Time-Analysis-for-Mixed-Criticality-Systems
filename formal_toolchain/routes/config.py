@@ -13,6 +13,7 @@ from typing import Any, Mapping
 
 class ProofRoute(str, Enum):
     PROTECTED_PREFIX = "protected_prefix"
+    RAW_PROTECTED_PREFIX = "raw_protected_prefix"
     STRICT_FULL = "strict_full"
 
 

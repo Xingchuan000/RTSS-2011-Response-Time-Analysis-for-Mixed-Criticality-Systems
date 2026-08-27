@@ -47,7 +47,7 @@ def build_finite_bad_prefix_contradiction(
 
     theorem_bound = theorem.get("theorem_id") == "FINITE_BAD_PREFIX_CONTRADICTION"
     safety_theorem_bound = safety_witness.get("conclusion") == "ALL_REFERENCE_HI_JOBS_MEET_DEADLINES"
-    selected_route_bound = safety_witness.get("route_id") in {"strict_full", "protected_prefix"}
+    selected_route_bound = safety_witness.get("route_id") in {"strict_full", "protected_prefix", "raw_protected_prefix"}
     reflection_theorem_bound = (
         reflection_witness.get("theorem_id")
         == "FINITE_HI_BAD_PREFIX_REFLECTION"

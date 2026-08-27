@@ -329,16 +329,21 @@ def build_fresh_verifier_state(
         analysis_taskset = prepared_route.analysis_taskset
         from formal_toolchain.reference.rta_production import (
             all_task_reference_rta, all_task_protected_prefix_rta,
+            all_task_raw_protected_prefix_rta,
         )
         from formal_toolchain.reference.rta_replay import replay_all_task_rta
-        selected_id = ("PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"
-                       if route_strategy.route_id == "protected_prefix"
-                       else "ALL_TASK_REFERENCE_RTA_ARITHMETIC")
-        rta_production = (all_task_protected_prefix_rta(analysis_taskset,
-                          certificate_context_hash=terminal_context["hash"])
-                          if route_strategy.route_id == "protected_prefix"
-                          else all_task_reference_rta(analysis_taskset,
-                          certificate_context_hash=terminal_context["hash"]))
+        if route_strategy.route_id == "protected_prefix":
+            selected_id = "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"
+            rta_production = all_task_protected_prefix_rta(
+                analysis_taskset, certificate_context_hash=terminal_context["hash"])
+        elif route_strategy.route_id == "raw_protected_prefix":
+            selected_id = "RAW_PREFIX_ALL_TASK_RTA_ARITHMETIC"
+            rta_production = all_task_raw_protected_prefix_rta(
+                analysis_taskset, certificate_context_hash=terminal_context["hash"])
+        else:
+            selected_id = "ALL_TASK_REFERENCE_RTA_ARITHMETIC"
+            rta_production = all_task_reference_rta(
+                analysis_taskset, certificate_context_hash=terminal_context["hash"])
         # Route context is the certificate boundary; taskset source context
         # remains the full reference derivation context.
         rta_production = dict(rta_production)
@@ -455,6 +460,7 @@ def _rta_replay(*, inputs: Any, certified_envelope: Mapping[str, Any] | None,
     try:
         from formal_toolchain.reference.rta_production import (
             all_task_reference_rta, all_task_protected_prefix_rta,
+            all_task_raw_protected_prefix_rta,
         )
         taskset = (fresh_state.analysis_taskset if fresh_state is not None
                    else fresh_reference or _fresh_reference_taskset(inputs, certified_envelope))
@@ -463,9 +469,12 @@ def _rta_replay(*, inputs: Any, certified_envelope: Mapping[str, Any] | None,
                          else "ALL_TASK_REFERENCE_RTA_ARITHMETIC")
         context_hash = (fresh_state.terminal_route_context.get("hash")
                         if fresh_state is not None and fresh_state.terminal_route_context else None)
-        production = (all_task_protected_prefix_rta(taskset, certificate_context_hash=context_hash)
-                      if route_id == "protected_prefix" else
-                      all_task_reference_rta(taskset, certificate_context_hash=context_hash))
+        if route_id == "protected_prefix":
+            production = all_task_protected_prefix_rta(taskset, certificate_context_hash=context_hash)
+        elif route_id == "raw_protected_prefix":
+            production = all_task_raw_protected_prefix_rta(taskset, certificate_context_hash=context_hash)
+        else:
+            production = all_task_reference_rta(taskset, certificate_context_hash=context_hash)
     except (KeyError, TypeError, ValueError) as exc:
         return {"status": "PROOF_BUNDLE_INVALID", "route": "PROOF_BUNDLE_INVALID",
                 "code": "FRESH_REFERENCE_TASKSET_INVALID", "message": str(exc)}
@@ -508,9 +517,9 @@ def _rta_replay(*, inputs: Any, certified_envelope: Mapping[str, Any] | None,
         replay=replay,
         taskset=taskset,
         theorem_id=(
-            "PREFIX_ALL_TASK_RTA_SOUNDNESS"
-            if route_id == "protected_prefix"
-            else "REFERENCE_ALL_TASK_RTA_SOUNDNESS"
+            "PREFIX_ALL_TASK_RTA_SOUNDNESS" if route_id == "protected_prefix" else
+            "RAW_PREFIX_ALL_TASK_RTA_SOUNDNESS" if route_id == "raw_protected_prefix" else
+            "REFERENCE_ALL_TASK_RTA_SOUNDNESS"
         ),
     )
     if soundness.get("status") != "PASS":
@@ -1162,7 +1171,8 @@ def verify_bundle(request_path: Path, bundle: Path, out_dir: Path, *, source_roo
                 failure = None
                 witness = checked.get("witness")
         if obligation_id in ("PROTECTED_HI_RTA_ARITHMETIC", "ALL_TASK_REFERENCE_RTA_ARITHMETIC",
-                             "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC"):
+                             "PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC",
+                             "RAW_PREFIX_ALL_TASK_RTA_ARITHMETIC"):
             replay = (_rta_replay(
                 inputs=inputs, certified_envelope=envelope_state.certified_envelope,
                 candidate=candidates, fresh_reference=fresh_reference, fresh_state=fresh_state)

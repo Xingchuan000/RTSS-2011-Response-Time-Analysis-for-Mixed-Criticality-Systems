@@ -33,3 +33,33 @@ def verify_construction_witness(result: ProtectedPrefixBuildResult, witness: Map
             and witness.get("cutoff_priority_index") == result.cutoff_priority_index
             and list(result.protected_task_names) == witness.get("protected_task_names")
             and list(result.tail_task_names) == witness.get("tail_task_names"))
+
+
+def build_raw_partition_certificate(result: Any, *, context_hash: str) -> dict[str, Any]:
+    return obligation_certificate(
+        obligation_id="RAW_PROTECTED_PRIORITY_PREFIX_PARTITION", status="PASS",
+        context_hash=context_hash,
+        inputs={"full_taskset_fingerprint": result.full_taskset_fingerprint},
+        witness=dict(result.partition_witness), checker_id=__name__,
+        checker_version="raw-protected-prefix-v8",
+    )
+
+
+def build_raw_inheritance_certificate(result: Any, *, context_hash: str) -> dict[str, Any]:
+    return obligation_certificate(
+        obligation_id="RAW_PREFIX_PARAMETER_INHERITANCE", status="PASS",
+        context_hash=context_hash,
+        inputs={"prefix_taskset_fingerprint": result.prefix_taskset.to_dict()["fingerprint"]},
+        witness=dict(result.inheritance_witness), checker_id=__name__,
+        checker_version="raw-protected-prefix-v8",
+    )
+
+
+def verify_raw_construction_witness(result: Any, witness: Mapping[str, Any]) -> bool:
+    return (
+        witness.get("full_fingerprint") == result.full_taskset_fingerprint
+        and witness.get("cutoff_task_name") == result.cutoff_task_name
+        and witness.get("cutoff_priority_index") == result.cutoff_priority_index
+        and list(result.protected_task_names) == witness.get("protected_task_names")
+        and list(result.tail_task_names) == witness.get("tail_task_names")
+    )

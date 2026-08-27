@@ -7,6 +7,7 @@ from typing import Any, Mapping
 from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.reference.rta_production import (
     all_task_protected_prefix_rta,
+    all_task_raw_protected_prefix_rta,
     all_task_reference_rta,
 )
 from formal_toolchain.reference.rta_replay import replay_all_task_rta
@@ -46,6 +47,8 @@ def build_rta_composite(reference_taskset: Any, *, route_id: str = "strict_full"
 
     if route_id == "protected_prefix":
         production = all_task_protected_prefix_rta(reference_taskset)
+    elif route_id == "raw_protected_prefix":
+        production = all_task_raw_protected_prefix_rta(reference_taskset)
     elif route_id == "strict_full":
         production = all_task_reference_rta(reference_taskset)
     else:

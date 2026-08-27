@@ -9,6 +9,7 @@ from typing import Any, Sequence
 from formal_toolchain.core.artifact import obligation_certificate
 from formal_toolchain.core.obligation_ids import (
     ALL_TASK_REFERENCE_RTA_ARITHMETIC, PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC,
+    RAW_PREFIX_ALL_TASK_RTA_ARITHMETIC,
 )
 
 from .arithmetic import ceil_div_nonnegative, floor_div_nonnegative
@@ -503,6 +504,14 @@ def all_task_protected_prefix_rta(taskset: ReferenceTaskset, *, certificate_cont
     return build_all_task_rta_certificate(
         taskset, obligation_id=PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC,
         route_id="protected_prefix", certificate_context_hash=certificate_context_hash,
+        checker_version=ALL_TASK_RTA_SCHEMA_VERSION)
+
+
+def all_task_raw_protected_prefix_rta(taskset: ReferenceTaskset, *, certificate_context_hash: str | None = None) -> dict[str, Any]:
+    """Run the unchanged all-task theorem arithmetic on the unsaturated V8 prefix."""
+    return build_all_task_rta_certificate(
+        taskset, obligation_id=RAW_PREFIX_ALL_TASK_RTA_ARITHMETIC,
+        route_id="raw_protected_prefix", certificate_context_hash=certificate_context_hash,
         checker_version=ALL_TASK_RTA_SCHEMA_VERSION)
 
 

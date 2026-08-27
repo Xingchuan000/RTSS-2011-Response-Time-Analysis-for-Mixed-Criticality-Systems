@@ -317,6 +317,7 @@ def test_theory_manifest_has_route_specific_structure():
     derived = manifest["route_derived_obligations"]["protected_prefix"]
     assert derived == [
         "PROTECTED_PREFIX_WEAK_FORWARD_SIMULATION_DERIVED",
+        "N4_REFERENCE_ROUTE_BOUNDARY_ALIGNMENT",
         "PROTECTED_PREFIX_HI_BAD_PREFIX_REFLECTION",
         "REFERENCE_HI_SAFETY_FROM_PROTECTED_PREFIX",
     ]

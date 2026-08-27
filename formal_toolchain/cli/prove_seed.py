@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from formal_toolchain.workflow.prove_seed import prove_seed
+from formal_toolchain.workflow.prove_seed_v8 import prove_seed_v8
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -17,7 +18,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path,
                         help="输出目录；默认写入 seed-dir/.formal_proof_<route>")
     parser.add_argument("--target-recipe", type=Path)
-    parser.add_argument("--proof-route", choices=("protected_prefix", "strict_full"),
+    parser.add_argument("--proof-route", choices=("protected_prefix", "raw_protected_prefix", "strict_full", "v8_auto"),
                         default="protected_prefix")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
@@ -28,16 +29,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     output_dir = args.out or (args.seed_dir / f".formal_proof_{args.proof_route}")
-    code, result = prove_seed(
-        seed_dir=args.seed_dir,
-        tree_variant=args.tree_variant,
-        code_root=args.code_root,
-        out=output_dir,
-        target_recipe=args.target_recipe,
-        overwrite=args.overwrite,
-        refresh_phase_k_map=args.refresh_phase_k_map,
-        proof_route=args.proof_route,
-    )
+    if args.proof_route == "v8_auto":
+        code, result = prove_seed_v8(
+            seed_dir=args.seed_dir, tree_variant=args.tree_variant, code_root=args.code_root,
+            out=output_dir, target_recipe=args.target_recipe, overwrite=args.overwrite,
+            refresh_phase_k_map=args.refresh_phase_k_map,
+        )
+    else:
+        code, result = prove_seed(
+            seed_dir=args.seed_dir,
+            tree_variant=args.tree_variant,
+            code_root=args.code_root,
+            out=output_dir,
+            target_recipe=args.target_recipe,
+            overwrite=args.overwrite,
+            refresh_phase_k_map=args.refresh_phase_k_map,
+            proof_route=args.proof_route,
+        )
     if args.json:
         print(json.dumps(result, ensure_ascii=False))
     else:

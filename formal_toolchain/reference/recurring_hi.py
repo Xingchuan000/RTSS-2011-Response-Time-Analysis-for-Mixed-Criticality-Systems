@@ -11,6 +11,7 @@ from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.core.obligation_ids import (
     ALL_TASK_REFERENCE_RTA_ARITHMETIC,
     PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC,
+    RAW_PREFIX_ALL_TASK_RTA_ARITHMETIC,
 )
 from .rta_production import all_task_reference_rta
 from .task_mapping import ReferenceTaskset
@@ -44,6 +45,7 @@ def build_recurring_hi_instances(taskset: ReferenceTaskset, *,
     expected_by_route = {
         "strict_full": ALL_TASK_REFERENCE_RTA_ARITHMETIC,
         "protected_prefix": PROTECTED_PREFIX_ALL_TASK_RTA_ARITHMETIC,
+        "raw_protected_prefix": RAW_PREFIX_ALL_TASK_RTA_ARITHMETIC,
     }
     expected_obligation_id = expected_by_route.get(route_id)
     if (expected_obligation_id is None
