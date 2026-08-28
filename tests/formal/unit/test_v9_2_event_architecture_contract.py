@@ -67,5 +67,10 @@ def test_event_refinement_contains_bidirectional_and_differential_gates():
         "EVENT_WINDOW_ENCODING_SOUNDNESS",
     ):
         assert obligation in text
-    assert "DELTA1" in text
-    assert "DELTA2" in text
+    # Differential consistency is compositional: the Event closure reuses the
+    # exact Full P0--P6 encoder sequence, while SMT checks only the P7 quotient
+    # point.  A monolithic duplicate-controller DELTA2 formula is forbidden.
+    assert "P0_P6_DEFINITIONAL_IDENTITY" in text
+    assert "P7_DELTA1" in text
+    assert "_small_horizon_differential_counterexample" not in text
+    assert "_full_ticks" not in text

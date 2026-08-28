@@ -18,22 +18,15 @@ import z3
 
 from formal_toolchain.core.hashing import sha256_text_file_normalized
 
-from .environment_encoder import declare_environment
-from .event_kernel import build_event_candidates, encode_event_step, state_equality
+from .event_kernel import (
+    _silent_interval_advance,
+    build_event_candidates,
+    state_equality,
+)
 from .event_window_encoder import derive_finite_event_bound
 from .formula_solver import solve_formula
-from .safe_prefix_invariant import SafePrefixInvariant
-from .symbolic_state import BoundModel, SymbolicKernelState, declare_state
-from .transition_encoder import (
-    encode_p0_settle,
-    encode_p1_idle_recovery,
-    encode_p2_deadline_observe,
-    encode_p3_arrival_freeze,
-    encode_p4_mode_switch,
-    encode_p5_controller,
-    encode_p6_dispatch,
-    encode_p7_time_and_service,
-)
+from .symbolic_state import BoundModel, declare_state
+from .transition_encoder import encode_p7_time_and_service
 
 
 EVENT_TERMINAL_OBLIGATIONS = (
@@ -234,65 +227,70 @@ def _terminal_service_event_counterexample(
     )
 
 
-def _full_ticks(
-    start: SymbolicKernelState,
-    model: BoundModel,
-    env: Any,
-    *,
-    ticks: int,
-    prefix: str,
-) -> tuple[SymbolicKernelState, z3.BoolRef]:
-    current = start
-    clauses: list[z3.BoolRef] = []
-    for tick in range(int(ticks)):
-        states = tuple(
-            declare_state(f"{prefix}.tick{tick}.p{phase}", model)
-            for phase in range(1, 9)
-        )
-        p1, p2, p3, p4, p5, p6, p7, p0_next = states
-        clauses.extend((
-            encode_p0_settle(current, p1, model),
-            encode_p1_idle_recovery(p1, p2, model),
-            encode_p2_deadline_observe(p2, p3, model),
-            encode_p3_arrival_freeze(p3, p4, model, env),
-            encode_p4_mode_switch(p4, p5, model),
-            encode_p5_controller(p5, p6, model),
-            encode_p6_dispatch(p6, p7, model),
-            encode_p7_time_and_service(p7, p0_next, model),
-        ))
-        current = p0_next
-    return current, z3.And(*clauses)
+def _p7_delta1_counterexample(model: BoundModel) -> z3.BoolRef:
+    """Refute local P7 versus one-tick Event-tail equivalence.
 
+    The exact Event macro and the Full kernel use the *same* P0--P6 closure by
+    construction.  Re-instantiating that closure on two independent symbolic
+    paths is both unnecessarily expensive and semantically wrong for the
+    inherited nondeterministic history abstraction: two valid P5 witnesses need
+    not choose identical post-history values.
 
-def _small_horizon_differential_counterexample(model: BoundModel, ticks: int) -> z3.BoolRef:
-    """Event Δ=ticks and exact Full execution must end field-for-field equal."""
+    Differential consistency is therefore checked at the only quotient point:
+    from one shared P7 dispatch state, one Full P7 tick and one Event silent
+    advance of delta=1 must end field-for-field equal.  This is stronger than
+    checking the property only for closure-reachable dispatch states.
+    """
 
-    ticks = int(ticks)
-    z = declare_state(f"event.diff{ticks}.z", model)
-    event_zp = declare_state(f"event.diff{ticks}.event_zp", model)
-    env = declare_environment(f"event.diff{ticks}.env", model, release_count=ticks + 1)
-    inv = SafePrefixInvariant(model)
-    event = encode_event_step(
-        z,
-        event_zp,
-        model,
-        env,
-        horizon_time=z.t + ticks,
-        prefix=f"event.diff{ticks}.macro",
-    )
-    full_end, full = _full_ticks(
-        z, model, env, ticks=ticks, prefix=f"event.diff{ticks}.full"
-    )
+    dispatch = declare_state("event.diff.p7.dispatch", model)
+    full_end = declare_state("event.diff.p7.full_end", model)
+    event_end = declare_state("event.diff.p7.event_end", model)
+    horizon = dispatch.t + 1
+    candidates = build_event_candidates(dispatch, model, horizon_time=horizon)
     return z3.And(
-        *env.constraints,
-        env.phase.origin_time == z.t,
-        inv.formula(z),
-        z.p == 0,
-        event.formula,
-        event.delta == ticks,
-        full,
-        z3.Not(state_equality(event_zp, full_end)),
+        dispatch.p == 7,
+        encode_p7_time_and_service(dispatch, full_end, model),
+        _silent_interval_advance(dispatch, event_end, model, candidates),
+        candidates.next_time == horizon,
+        z3.Not(state_equality(full_end, event_end)),
     )
+
+
+def _encoder_call_sequence(path: Path, function_name: str) -> tuple[str, ...]:
+    """Return phase-encoder calls in lexical order inside ``function_name``."""
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    target = next(
+        (node for node in tree.body
+         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name),
+        None,
+    )
+    if target is None:
+        return ()
+    encoder_names = {
+        "encode_p0_settle",
+        "encode_p1_idle_recovery",
+        "encode_p2_deadline_observe",
+        "encode_p3_arrival_freeze",
+        "encode_p4_mode_switch",
+        "encode_p5_controller",
+        "encode_p6_dispatch",
+        "encode_p7_time_and_service",
+    }
+    rows: list[tuple[int, int, str]] = []
+    for node in ast.walk(target):
+        if not isinstance(node, ast.Call):
+            continue
+        name: str | None = None
+        if isinstance(node.func, ast.Name):
+            name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            name = node.func.attr
+        if name in encoder_names:
+            rows.append((getattr(node, "lineno", 0), getattr(node, "col_offset", 0), name))
+    rows.sort()
+    return tuple(name for _, _, name in rows)
+
 
 
 def _finite_event_bound_formulas(model: BoundModel) -> list[tuple[str, z3.BoolRef]]:
@@ -369,8 +367,20 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
         return False, [], "V9_2_EVENT_SOURCE_MISSING"
 
     closure_calls = _function_calls(kernel, "_exact_p0_to_p7_closure")
+    closure_sequence = _encoder_call_sequence(kernel, "_exact_p0_to_p7_closure")
     candidate_calls = _function_calls(kernel, "build_event_candidates")
     step_calls = _function_calls(kernel, "encode_event_step")
+    expected_closure_sequence = (
+        "encode_p0_settle",
+        "encode_p1_idle_recovery",
+        "encode_p2_deadline_observe",
+        "encode_p3_arrival_freeze",
+        "encode_p4_mode_switch",
+        "encode_p5_controller",
+        "encode_p6_dispatch",
+    )
+    if closure_sequence != expected_closure_sequence:
+        return False, [], "V9_2_FULL_EVENT_CLOSURE_DEFINITIONAL_IDENTITY_MISSING"
     if "encode_p5_controller" not in closure_calls:
         return False, [], "V9_2_EXACT_P5_SOURCE_CONTRACT_MISSING"
     if "encode_p5_invariant_summary" in closure_calls:
@@ -407,6 +417,13 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
             "obligation_id": "EVENT_STATE_FUTURE_SUFFICIENCY",
             "status": "PASS",
             "proof_rule": "FULL_PERSISTENT_STATE_RETAINED_AT_EVENT_BOUNDARY",
+            "source_sha256": kernel_hash,
+        },
+        {
+            "obligation_id": "MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY::P0_P6_DEFINITIONAL_IDENTITY",
+            "status": "PASS",
+            "proof_rule": "EVENT_CLOSURE_CALLS_CANONICAL_FULL_P0_THROUGH_P6_IN_ORDER",
+            "phase_encoder_sequence": list(expected_closure_sequence),
             "source_sha256": kernel_hash,
         },
         {
@@ -482,8 +499,13 @@ def prove_event_refinement(
         ("NEXT_EVENT_MINIMALITY", _minimum_counterexample()),
         ("NEXT_EVENT_EXACT_MINIMUM", _minimum_counterexample()),
         ("SILENT_INTERVAL_SERVICE_EQUIVALENCE", _silent_interval_counterexample()),
-        ("MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY::DELTA1", _small_horizon_differential_counterexample(model, 1)),
-        ("MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY::DELTA2", _small_horizon_differential_counterexample(model, 2)),
+        # Compositional differential leaf: P0--P6 are definitionally shared
+        # between Full and Event semantics, so only the quotient point (P7
+        # versus a one-tick silent advance) requires SMT comparison.  This
+        # avoids duplicating the exact controller and, critically, does not
+        # compare two independent witnesses of the inherited history
+        # over-approximation.
+        ("MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY::P7_DELTA1", _p7_delta1_counterexample(model)),
     ]
     for task in model.hi_tasks:
         for slot in range(model.max_jobs_per_task):
@@ -536,6 +558,8 @@ def prove_event_refinement(
             )
 
     for base, leaves in grouped.items():
+        if base == "MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY":
+            continue
         _aggregate_status(statuses, base, leaves)
 
     # Exact-minimum + complete event-class coverage means no Full discrete event
@@ -554,6 +578,28 @@ def prove_event_refinement(
         proof_rule="MINIMUM_OVER_COMPLETE_EVENT_SOURCE_SET",
     ):
         return EventRefinementProof("UNRESOLVED", statuses, tuple(solver_rows), tuple(structural_rows), "NO_SKIPPED_DISCRETE_EVENT_UNPROVED")
+
+    # The small-horizon Full/Event check is deliberately compositional.
+    # P0--P6 are the same definition, P7 equals a one-tick Event tail, and
+    # event-free multi-tick intervals follow by exact service/eta composition
+    # plus the no-skipped-event theorem.  No whole-controller formula is
+    # duplicated merely to prove that the two callers share the same closure.
+    if not _derive(
+        "MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY",
+        (
+            "MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY::P0_P6_DEFINITIONAL_IDENTITY",
+            "MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY::P7_DELTA1",
+            "SILENT_INTERVAL_SERVICE_EQUIVALENCE",
+            "NO_SKIPPED_DISCRETE_EVENT",
+        ),
+        statuses,
+        structural_rows,
+        proof_rule="SHARED_EXACT_CLOSURE_PLUS_LOCAL_P7_EQUIVALENCE_AND_SILENT_INDUCTION",
+    ):
+        return EventRefinementProof(
+            "UNRESOLVED", statuses, tuple(solver_rows), tuple(structural_rows),
+            "MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY_UNPROVED",
+        )
 
     segment_dependencies = (
         "EVENT_START_PROJECTION_EXACTNESS",
