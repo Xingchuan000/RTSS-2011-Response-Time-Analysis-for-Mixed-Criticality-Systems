@@ -93,15 +93,24 @@ def _min_expr(values: Iterable[z3.ArithRef]) -> z3.ArithRef:
 
 
 def _minimum_counterexample() -> z3.BoolRef:
-    t = z3.Int("event.refine.min.t")
+    """Refute a mismatch between scalar exact-min constraints and reference min.
+
+    The Event kernel uses the same two-clause finite minimum definition:
+    ``nxt <= each candidate`` and ``nxt == at least one candidate``.  The
+    nested ITE is retained here only as a small independent reference term.
+    """
+
     rows = [z3.Int(f"event.refine.min.c{i}") for i in range(7)]
-    nxt = _min_expr(rows)
-    domain = z3.And(t >= 0, *(row > t for row in rows))
-    bad = z3.Or(
-        *(nxt > row for row in rows),
-        z3.And(*(nxt != row for row in rows)),
+    nxt = z3.Int("event.refine.min.scalar")
+    reference = _min_expr(rows)
+    scalar = z3.And(
+        *(nxt <= row for row in rows),
+        z3.Or(*(nxt == row for row in rows)),
     )
-    return z3.And(domain, bad)
+    return z3.Or(
+        z3.And(scalar, nxt != reference),
+        z3.And(nxt == reference, z3.Not(scalar)),
+    )
 
 
 def _periodic_counterexample(period: int, prefix: str) -> z3.BoolRef:
@@ -219,7 +228,9 @@ def _deadline_event_counterexample(
     dispatch = declare_state(f"{prefix}.dispatch", model)
     horizon = z3.Int(f"{prefix}.horizon")
     job = dispatch.jobs[key]
-    candidates = build_event_candidates(dispatch, model, horizon_time=horizon)
+    candidates = build_event_candidates(
+        dispatch, model, horizon_time=horizon, prefix=f"{prefix}.candidates"
+    )
     candidate = dict(candidates.hi_deadlines)[key]
     return z3.And(
         dispatch.t >= 0,
@@ -241,8 +252,11 @@ def _terminal_service_event_counterexample(
     job = dispatch.jobs[key]
     index = _slot_index(model, key)
     remaining = job.effective_demand - job.executed_service
-    candidates = build_event_candidates(dispatch, model, horizon_time=horizon)
+    candidates = build_event_candidates(
+        dispatch, model, horizon_time=horizon, prefix=f"{prefix}.candidates"
+    )
     return z3.And(
+        candidates.definition_formula,
         dispatch.t >= 0,
         dispatch.p == 7,
         dispatch.frontier.selected_slot == index,
@@ -274,7 +288,9 @@ def _p7_delta1_counterexample(model: BoundModel) -> z3.BoolRef:
     full_end = declare_state("event.diff.p7.full_end", model)
     event_end = declare_state("event.diff.p7.event_end", model)
     horizon = dispatch.t + 1
-    candidates = build_event_candidates(dispatch, model, horizon_time=horizon)
+    candidates = build_event_candidates(
+        dispatch, model, horizon_time=horizon, prefix="event.diff.p7.candidates"
+    )
     return z3.And(
         dispatch.p == 7,
         encode_p7_time_and_service(dispatch, full_end, model),
@@ -497,9 +513,15 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
     kernel_text = kernel.read_text(encoding="utf-8")
     if "encode_p5_invariant_summary" in kernel_text:
         return False, [], "V9_2_EVENT_P5_SUMMARY_FORBIDDEN"
-    if not {"_next_periodic_after", "_min_expr"} <= candidate_calls:
+    if not {"_next_periodic_after", "_exact_minimum_definition"} <= candidate_calls:
         return False, [], "V9_2_EVENT_CANDIDATE_SOURCE_CONTRACT_MISSING"
-    # V4 splits the exact silent relation into destination-free core plus a
+    if "_min_expr(" in kernel_text:
+        return False, [], "V9_2_EVENT_NESTED_MIN_REINTRODUCED"
+    if not all(token in kernel_text for token in (
+        ".candidate.completion", ".candidate.next_time", "definition_formula",
+    )):
+        return False, [], "V9_2_EVENT_SCALAR_MIN_CONTRACT_MISSING"
+    # V5 splits the exact silent relation into destination-free core plus a
     # single destination update so the terminal stutter branch can share it.
     if not {
         "_exact_p0_to_p7_closure",
@@ -534,8 +556,10 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
         return False, [], "V9_2_INCREMENTAL_DEPTH_STUTTER_ELIMINATION_CONTRACT_MISSING"
     if '"fresh_solver_per_depth": True' not in incremental_text:
         return False, [], "V9_2_FRESH_DEPTH_SOLVER_CONTRACT_MISSING"
-    if "START_MODE_LO" not in incremental_text or "CTRL_COUNT_" not in incremental_text:
+    if "CTRL_COUNT_" not in incremental_text or "SRC_RELEASE_ANY" not in incremental_text:
         return False, [], "V9_2_EXACT_DEPTH_CASE_PARTITION_CONTRACT_MISSING"
+    if "SRC_HI_DEADLINE_ANY" not in incremental_text or "SRC_COMPLETION" not in incremental_text:
+        return False, [], "V9_2_EXACT_EVENT_SOURCE_PARTITION_CONTRACT_MISSING"
     if "solver.push()" in incremental_text or "solver.pop()" in incremental_text:
         return False, [], "V9_2_FRESH_DEPTH_SOLVER_MUST_NOT_REUSE_PUSH_POP_CONTEXT"
     if "This is the only path allowed to report window UNSAT" not in incremental_text:
@@ -625,7 +649,8 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
                 "EACH_PREFIX_USES_ONLY_EXACT_ACTIVE_EVENT_STEP;_"
                 "TERMINAL_STUTTER_SUFFIX_IS_IDENTITY_AND_OMITTED;_"
                 "EACH_DEPTH_IS_SOLVED_IN_A_FRESH_EQUIVALENT_SOLVER_CONTEXT;_"
-                "UNKNOWN_RETRY_PARTITIONS_EXACTLY_BY_START_MODE_AND_CONTROLLER_COUNT;_"
+                "EVENT_CANDIDATE_MINIMA_USE_EXACT_SCALAR_SSA_DEFINITIONS;_"
+                "UNKNOWN_RETRY_PARTITIONS_EXACTLY_BY_CONTROLLER_COUNT_AND_PENULTIMATE_EVENT_SOURCE;_"
                 "UNSAT_REQUIRES_EVERY_CASE_AND_EVERY_DEPTH_UNSAT"
             ),
             "source_sha256": sha256_object({
@@ -651,7 +676,7 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
         {
             "obligation_id": "NO_SPURIOUS_EVENT_SOURCE",
             "status": "PASS",
-            "proof_rule": "CLOSED_EVENT_SOURCE_ENUMERATION",
+            "proof_rule": "CLOSED_EVENT_SOURCE_ENUMERATION_WITH_EXACT_SCALAR_MINIMUM",
             "event_sources": [
                 "periodic_release",
                 "HI_deadline_observation",

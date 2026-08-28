@@ -63,7 +63,12 @@ def test_event_macro_uses_exact_controller_pool_and_exact_event_minimum():
     ) <= {"budgets", "chi"}
     assert "encode_p5_invariant_summary" not in kernel.read_text(encoding="utf-8")
     assert "_next_periodic_after" in candidate_calls
-    assert "_min_expr" in candidate_calls
+    assert "_exact_minimum_definition" in candidate_calls
+    kernel_text = kernel.read_text(encoding="utf-8")
+    assert "_min_expr(" not in kernel_text
+    assert ".candidate.next_time" in kernel_text
+    assert ".candidate.completion" in kernel_text
+    assert "definition_formula" in kernel_text
     assert {
         "_exact_p0_to_p7_closure",
         "build_event_candidates",
@@ -149,7 +154,10 @@ def test_incremental_terminal_depth_solver_is_exact_and_fail_closed():
     assert "encoding.append_exact_event_step()" in solver
     assert '"fresh_solver_per_depth": True' in solver
     assert "solver.push()" not in solver and "solver.pop()" not in solver
-    assert "START_MODE_LO" in solver and "CTRL_COUNT_" in solver
+    assert "CTRL_COUNT_" in solver
+    assert "SRC_RELEASE_ANY" in solver
+    assert "SRC_HI_DEADLINE_ANY" in solver
+    assert "SRC_COMPLETION" in solver
     assert "This is the only path allowed to report window UNSAT" in solver
     assert '"terminal_stutter_used": False' in solver
     assert "encode_event_step(" in window

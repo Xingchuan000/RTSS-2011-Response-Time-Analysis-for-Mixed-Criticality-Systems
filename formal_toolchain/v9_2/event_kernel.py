@@ -35,7 +35,7 @@ from .transition_encoder import (
 )
 
 
-EVENT_KERNEL_VERSION = "V9_2_EXACT_EVENT_MACRO_V4_SSA_P5_SUPPORT_POOL"
+EVENT_KERNEL_VERSION = "V9_2_EXACT_EVENT_MACRO_V5_SCALARIZED_EVENT_MIN"
 
 
 def _job_fields(job: SymbolicJob) -> tuple[z3.ExprRef, ...]:
@@ -138,14 +138,25 @@ def _controller_effect_state_equality(
     return z3.And(*clauses)
 
 
-def _min_expr(values: Iterable[z3.ArithRef]) -> z3.ArithRef:
-    rows = list(values)
+def _exact_minimum_definition(
+    result: z3.ArithRef, values: Iterable[z3.ArithRef]
+) -> z3.BoolRef:
+    """Exact finite minimum without a nested ITE expression.
+
+    ``result <= value`` for every candidate plus equality to at least one
+    candidate uniquely defines the mathematical minimum.  This is an exact
+    existential/SSA factoring of the previous nested ``If`` minimum, not an
+    approximation.  Keeping the minimum as a scalar prevents the full nested
+    candidate term from being substituted into every service/eta/state update.
+    """
+
+    rows = tuple(values)
     if not rows:
         raise ValueError("event candidate set must be non-empty")
-    result = rows[0]
-    for value in rows[1:]:
-        result = z3.If(value < result, value, result)
-    return result
+    return z3.And(
+        *(result <= value for value in rows),
+        z3.Or(*(result == value for value in rows)),
+    )
 
 
 def _next_periodic_after(t: z3.ArithRef, period: int) -> z3.ArithRef:
@@ -313,6 +324,7 @@ class EventCandidateSet:
     completion: z3.ArithRef
     all_candidates: tuple[z3.ArithRef, ...]
     next_time: z3.ArithRef
+    definition_formula: z3.BoolRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,20 +399,16 @@ def build_event_candidates(
     model: BoundModel,
     *,
     horizon_time: z3.ArithRef,
+    prefix: str,
 ) -> EventCandidateSet:
     """Build the exact next-event candidate set after P6 dispatch.
 
     Candidate classes are exactly the discrete changes represented by the Full
-    P0--P7 kernel plus the proof query horizon:
-      * phase-zero periodic release,
-      * HI deadline observation,
-      * controller activation,
-      * selected-job completion/cap terminal service,
-      * target proof horizon.
-
-    The horizon is an observation boundary, not an environment event.  It is
-    required so the event window stops exactly at the target deadline even when
-    the target completed earlier.
+    P0--P7 kernel plus the proof query horizon.  The two finite minima
+    (selected-job completion and global next-event time) are represented by
+    fresh scalar SSA symbols constrained by ``_exact_minimum_definition``.
+    This is formula-equivalent to the previous nested-ITE minima but exposes
+    substantially better arithmetic propagation to SMT preprocessing.
     """
 
     t = dispatch_state.t
@@ -434,7 +442,11 @@ def build_event_candidates(
             t + (job.effective_demand - job.executed_service),
             horizon_time,
         ))
-    completion = _min_expr(completion_terms) if completion_terms else horizon_time
+    completion = z3.Int(f"{prefix}.candidate.completion")
+    completion_definition = (
+        _exact_minimum_definition(completion, completion_terms)
+        if completion_terms else completion == horizon_time
+    )
 
     all_candidates = (
         horizon_time,
@@ -443,7 +455,9 @@ def build_event_candidates(
         *(value for _, value in hi_deadlines),
         completion,
     )
-    next_time = _min_expr(all_candidates)
+    next_time = z3.Int(f"{prefix}.candidate.next_time")
+    next_time_definition = _exact_minimum_definition(next_time, all_candidates)
+    definition_formula = z3.And(completion_definition, next_time_definition)
     return EventCandidateSet(
         horizon=horizon_time,
         releases=releases,
@@ -452,6 +466,7 @@ def build_event_candidates(
         completion=completion,
         all_candidates=tuple(all_candidates),
         next_time=next_time,
+        definition_formula=definition_formula,
     )
 
 
@@ -465,6 +480,7 @@ def _silent_interval_core(
     next_time = candidates.next_time
     delta = next_time - dispatch_state.t
     clauses: list[z3.BoolRef] = [
+        candidates.definition_formula,
         delta >= 1,
         next_time <= candidates.horizon,
     ]
@@ -485,10 +501,8 @@ def _silent_interval_core(
         ))
 
     clauses.extend(selected_remaining_terms)
-    # Exact minimum: every candidate is at or after the chosen timestamp and
-    # the chosen timestamp equals at least one candidate source.
-    clauses.extend(candidates.next_time <= value for value in candidates.all_candidates)
-    clauses.append(z3.Or(*(candidates.next_time == value for value in candidates.all_candidates)))
+    # Exact-minimum constraints live once in ``definition_formula`` instead of
+    # re-expanding a nested minimum expression at every consumer.
     return z3.And(*clauses)
 
 
@@ -674,7 +688,9 @@ def encode_event_step(
         source, model, env, prefix=prefix, controller_pool=controller_pool
     )
     dispatch_state = phase_states[-1]
-    candidates = build_event_candidates(dispatch_state, model, horizon_time=horizon_time)
+    candidates = build_event_candidates(
+        dispatch_state, model, horizon_time=horizon_time, prefix=prefix
+    )
     delta = candidates.next_time - source.t
     silent_core = _silent_interval_core(dispatch_state, model, candidates)
     formula = z3.And(

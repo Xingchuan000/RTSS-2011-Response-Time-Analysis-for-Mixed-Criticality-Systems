@@ -38,7 +38,7 @@ from .transition_encoder import (
 )
 
 
-ENCODER_VERSION = "V9_2_EVENT_FIRST_BAD_WINDOW_V5_INCREMENTAL_TERMINAL_DEPTH"
+ENCODER_VERSION = "V9_2_EVENT_FIRST_BAD_WINDOW_V6_SCALAR_EVENT_MIN"
 ENCODER_COMPLETE = True
 ENCODER_READINESS_GAPS: tuple[str, ...] = ()
 
@@ -368,6 +368,7 @@ def _window_source_obligations(*, incremental: bool) -> tuple[str, ...]:
         "first_bad_event_window_uses_window_global_exact_p5_pool",
         "controller_pool_count_derived_from_agent_period_bound",
         "indexed_demand_lookup_is_exact_finite_formula_factoring",
+        "event_candidate_minima_are_exact_scalar_ssa_definitions",
         "phase_ssa_shares_only_canonical_frame_fields",
     ]
     if incremental:

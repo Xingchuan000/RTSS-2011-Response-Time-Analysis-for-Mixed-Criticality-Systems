@@ -15,9 +15,10 @@ For depth ``k`` the queried formula is exactly
 for every ``k`` from 0 through the already-proved finite Event bound.  A small
 redundant terminal bridge makes the already-implied final next-event time equal
 to the horizon explicit.  If a fresh whole-depth check is UNKNOWN, the same
-formula is retried under an exhaustive finite case partition over start mode and
-the number of controller activations strictly before the horizon.  The case
-partition is an exact Boolean disjunction, not an abstraction.
+formula is retried under an exhaustive finite case partition over the number
+of controller activations strictly before the horizon and, only for still-hard
+count cases, by the exact event-source class of the penultimate
+active macro.  These are exhaustive finite Boolean covers, not abstractions.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ from .event_window_encoder import (
 )
 
 
-SOLVER_STRATEGY = "EXACT_FRESH_TERMINAL_DEPTH_BMC_V2"
+SOLVER_STRATEGY = "EXACT_FRESH_DEPTH_SCALAR_MIN_SOURCE_SPLIT_BMC_V3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +81,7 @@ class IncrementalDepthReceipt:
             row["primary_result"] = self.primary_result
         if self.case_receipts:
             row["case_partition_used"] = True
-            row["case_partition_kind"] = "START_MODE_X_CONTROLLER_COUNT"
+            row["case_partition_kind"] = "CONTROLLER_COUNT_THEN_PENULTIMATE_EVENT_SOURCE"
             row["case_receipts"] = [item.as_dict() for item in self.case_receipts]
         else:
             row["case_partition_used"] = False
@@ -138,7 +139,7 @@ def _query_plan_hash(encoding: IncrementalEventWindowEncoding) -> str:
     """Hash the exact finite query plan without materializing a huge SMT text."""
 
     return sha256_object({
-        "schema": "v9_2_fresh_terminal_depth_query_plan_v2",
+        "schema": "v9_2_fresh_scalar_min_source_split_query_plan_v3",
         "solver_strategy": SOLVER_STRATEGY,
         "event_window_encoder_version": ENCODER_VERSION,
         "target_task": encoding.target_task,
@@ -151,7 +152,7 @@ def _query_plan_hash(encoding: IncrementalEventWindowEncoding) -> str:
         "terminal_relation": "exact_P0_P1_P2_target_first_bad",
         "terminal_stutter_used": False,
         "fresh_solver_per_depth": True,
-        "unknown_fallback_partition": "start_mode_x_controller_count",
+        "unknown_fallback_partition": "controller_count_then_penultimate_event_source_class",
     })
 
 
@@ -193,24 +194,19 @@ def _terminal_horizon_bridge(encoding: IncrementalEventWindowEncoding) -> z3.Boo
     )
 
 
-def _exact_case_partition(
+def _controller_count_partition(
     encoding: IncrementalEventWindowEncoding,
 ) -> tuple[tuple[str, z3.BoolRef], ...]:
-    """Exact finite partition used only after a whole-depth UNKNOWN.
+    """Exact partition by the controller activations strictly before horizon.
 
-    ``mode_hi`` is Boolean.  Controller instances are strictly ordered by one
-    positive agent period, so the instances before the horizon always form a
-    prefix.  Enumerating every prefix length 0..N and both start modes is
-    exhaustive and disjoint enough for UNSAT aggregation; no phase or behavior
-    is removed.
+    Controller instances are ordered by one positive agent period, hence the
+    in-window instances always form a prefix.  Unlike V2, start mode is not
+    duplicated here because the s313 receipts showed that it did not isolate
+    the hard arithmetic branch.
     """
 
-    mode_cases = (
-        ("START_MODE_LO", z3.Not(encoding.start_state.mode_hi)),
-        ("START_MODE_HI", encoding.start_state.mode_hi),
-    )
     instances = encoding.controller_pool.instances
-    count_cases: list[tuple[str, z3.BoolRef]] = []
+    rows: list[tuple[str, z3.BoolRef]] = []
     for count in range(0, len(instances) + 1):
         inside = [
             instance.activation_time < encoding.horizon_time
@@ -220,14 +216,47 @@ def _exact_case_partition(
             instance.activation_time >= encoding.horizon_time
             for instance in instances[count:]
         ]
-        count_cases.append((
+        rows.append((
             f"CTRL_COUNT_{count}",
             z3.And(*(inside + outside)) if (inside or outside) else z3.BoolVal(True),
         ))
-    return tuple(
-        (f"{mode_id}__{count_id}", z3.And(mode_formula, count_formula))
-        for mode_id, mode_formula in mode_cases
-        for count_id, count_formula in count_cases
+    return tuple(rows)
+
+
+def _penultimate_event_source_partition(
+    encoding: IncrementalEventWindowEncoding,
+) -> tuple[tuple[str, z3.BoolRef], ...]:
+    """Exact cover of the penultimate active macro's next-event witness.
+
+    At terminal depth >= 2, the last active macro reaches the query horizon,
+    while the preceding macro reaches a boundary strictly before the horizon.
+    The exact Event minimum definition guarantees that its ``next_time`` equals
+    at least one closed-world candidate source.  Grouping those witnesses by
+    source class is therefore an exhaustive (possibly overlapping) cover.
+    Overlap on simultaneous events is harmless for UNSAT aggregation.
+    """
+
+    if len(encoding.event_steps) < 2:
+        return ()
+    step = encoding.event_steps[-2]
+    candidates = step.candidates
+    nxt = candidates.next_time
+    release_values = [value for _, value in candidates.releases]
+    deadline_values = [value for _, value in candidates.hi_deadlines]
+    return (
+        ("SRC_HORIZON", nxt == candidates.horizon),
+        (
+            "SRC_RELEASE_ANY",
+            z3.Or(*(nxt == value for value in release_values))
+            if release_values else z3.BoolVal(False),
+        ),
+        ("SRC_CONTROLLER", nxt == candidates.controller),
+        (
+            "SRC_HI_DEADLINE_ANY",
+            z3.Or(*(nxt == value for value in deadline_values))
+            if deadline_values else z3.BoolVal(False),
+        ),
+        ("SRC_COMPLETION", nxt == candidates.completion),
     )
 
 
@@ -239,42 +268,78 @@ def _solve_unknown_by_exact_cases(
     progress: Callable[[dict[str, Any]], None] | None,
     depth: int,
 ) -> tuple[str, float, tuple[DepthCaseReceipt, ...], str | None]:
-    """Retry one UNKNOWN depth by an exhaustive exact finite case split."""
+    """Retry UNKNOWN via exact controller-count then event-source covers.
+
+    A controller-count case that is still UNKNOWN is refined by the
+    penultimate active macro's source class.  The source-class disjunction is
+    already implied by the exact minimum relation.  SAT in any leaf is SAT; a
+    count case is UNSAT only when every source class is UNSAT; any unresolved
+    leaf keeps the depth UNKNOWN.
+    """
 
     rows: list[DepthCaseReceipt] = []
     total = 0.0
-    unknown_cases: list[str] = []
-    for case_id, cube in _exact_case_partition(encoding):
+    unresolved: list[str] = []
+    source_partition = _penultimate_event_source_partition(encoding)
+
+    for count_id, count_cube in _controller_count_partition(encoding):
         if progress is not None:
-            progress({
-                "depth": depth,
-                "phase": "CASE_CHECK",
-                "case_id": case_id,
-            })
+            progress({"depth": depth, "phase": "CASE_CHECK", "case_id": count_id})
         result, elapsed, reason = _fresh_check(
-            (*assertions, cube), timeout_ms=timeout_ms
+            (*assertions, count_cube), timeout_ms=timeout_ms
         )
         total += elapsed
-        rows.append(DepthCaseReceipt(case_id, result, elapsed, reason=reason))
+        rows.append(DepthCaseReceipt(count_id, result, elapsed, reason=reason))
         if progress is not None:
             progress({
-                "depth": depth,
-                "phase": "CASE_RESULT",
-                "case_id": case_id,
-                "case_result": result,
-                "case_solver_check_seconds": round(elapsed, 6),
+                "depth": depth, "phase": "CASE_RESULT", "case_id": count_id,
+                "case_result": result, "case_solver_check_seconds": round(elapsed, 6),
             })
         if result == "SAT":
             return "SAT", total, tuple(rows), None
-        if result == "UNKNOWN":
-            unknown_cases.append(case_id)
+        if result == "UNSAT":
+            continue
 
-    if unknown_cases:
+        # Depth 0/1 has no nonterminal penultimate macro to split.  Preserve
+        # UNKNOWN rather than inventing a non-exhaustive fallback.
+        if not source_partition:
+            unresolved.append(count_id)
+            continue
+
+        count_unknown: list[str] = []
+        for source_id, source_cube in source_partition:
+            case_id = f"{count_id}__{source_id}"
+            if progress is not None:
+                progress({"depth": depth, "phase": "SOURCE_CASE_CHECK", "case_id": case_id})
+            leaf_result, leaf_elapsed, leaf_reason = _fresh_check(
+                (*assertions, count_cube, source_cube), timeout_ms=timeout_ms
+            )
+            total += leaf_elapsed
+            rows.append(DepthCaseReceipt(
+                case_id, leaf_result, leaf_elapsed, reason=leaf_reason
+            ))
+            if progress is not None:
+                progress({
+                    "depth": depth, "phase": "SOURCE_CASE_RESULT", "case_id": case_id,
+                    "case_result": leaf_result,
+                    "case_solver_check_seconds": round(leaf_elapsed, 6),
+                })
+            if leaf_result == "SAT":
+                return "SAT", total, tuple(rows), None
+            if leaf_result == "UNKNOWN":
+                count_unknown.append(case_id)
+
+        if count_unknown:
+            unresolved.extend(count_unknown)
+        # Otherwise all exact source classes were UNSAT, hence this controller
+        # count case is UNSAT even though its unsplit parent timed out.
+
+    if unresolved:
         return (
             "UNKNOWN",
             total,
             tuple(rows),
-            "EXACT_CASE_PARTITION_UNKNOWN:" + ",".join(unknown_cases),
+            "EXACT_SOURCE_PARTITION_UNKNOWN:" + ",".join(unresolved),
         )
     return "UNSAT", total, tuple(rows), None
 
