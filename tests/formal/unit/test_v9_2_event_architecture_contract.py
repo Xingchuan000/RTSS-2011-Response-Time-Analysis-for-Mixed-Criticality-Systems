@@ -147,7 +147,9 @@ def test_incremental_terminal_depth_solver_is_exact_and_fail_closed():
     window = (ROOT / "formal_toolchain/v9_2/event_window_encoder.py").read_text(encoding="utf-8")
     assert "for depth in range(0, max_depth + 1):" in solver
     assert "encoding.append_exact_event_step()" in solver
-    assert "solver.push()" in solver and "solver.pop()" in solver
+    assert '"fresh_solver_per_depth": True' in solver
+    assert "solver.push()" not in solver and "solver.pop()" not in solver
+    assert "START_MODE_LO" in solver and "CTRL_COUNT_" in solver
     assert "This is the only path allowed to report window UNSAT" in solver
     assert '"terminal_stutter_used": False' in solver
     assert "encode_event_step(" in window

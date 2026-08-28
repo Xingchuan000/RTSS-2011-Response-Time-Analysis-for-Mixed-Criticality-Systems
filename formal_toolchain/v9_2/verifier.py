@@ -34,7 +34,9 @@ from formal_toolchain.v9_2.event_refinement import prove_event_refinement
 from formal_toolchain.v9_2.event_window_encoder import (
     ENCODER_VERSION, build_incremental_event_first_bad_window, derive_finite_event_bound,
 )
-from formal_toolchain.v9_2.incremental_event_bmc import solve_incremental_event_window
+from formal_toolchain.v9_2.incremental_event_bmc import (
+    SOLVER_STRATEGY, solve_incremental_event_window,
+)
 
 
 def _read_json(path: Path) -> Any:
@@ -476,7 +478,7 @@ def verify_bundle_v9_2(
             estimated_declared_state_symbols=estimated_symbols,
             build_seconds=round(build_seconds, 6),
             timeout_ms=int(timeout_ms),
-            solver_strategy="EXACT_INCREMENTAL_TERMINAL_DEPTH_BMC_V1",
+            solver_strategy=SOLVER_STRATEGY,
         )
         def _incremental_progress(details: dict[str, Any]) -> None:
             _write_progress(
@@ -487,7 +489,7 @@ def verify_bundle_v9_2(
                 deadline=int(task.deadline),
                 finite_event_bound=event_bound.finite_event_bound,
                 timeout_ms=int(timeout_ms),
-                solver_strategy="EXACT_INCREMENTAL_TERMINAL_DEPTH_BMC_V1",
+                solver_strategy=SOLVER_STRATEGY,
                 **details,
             )
 

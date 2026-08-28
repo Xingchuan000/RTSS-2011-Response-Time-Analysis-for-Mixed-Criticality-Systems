@@ -523,7 +523,8 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
     if "encode_event_step" not in incremental_step_calls or "event_step_or_terminal_stutter" in incremental_step_calls:
         return False, [], "V9_2_INCREMENTAL_DEPTH_MUST_USE_EXACT_ACTIVE_EVENT_STEP"
     if not {
-        "append_exact_event_step", "build_terminal_bad_query", "push", "check", "pop"
+        "append_exact_event_step", "build_terminal_bad_query",
+        "_fresh_check", "_solve_unknown_by_exact_cases",
     } <= incremental_solver_calls:
         return False, [], "V9_2_INCREMENTAL_DEPTH_SOLVER_CONTRACT_MISSING"
     incremental_text = incremental.read_text(encoding="utf-8")
@@ -531,6 +532,12 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
         return False, [], "V9_2_INCREMENTAL_DEPTH_COVERAGE_NOT_EXHAUSTIVE"
     if "terminal_stutter_used\": False" not in incremental_text:
         return False, [], "V9_2_INCREMENTAL_DEPTH_STUTTER_ELIMINATION_CONTRACT_MISSING"
+    if '"fresh_solver_per_depth": True' not in incremental_text:
+        return False, [], "V9_2_FRESH_DEPTH_SOLVER_CONTRACT_MISSING"
+    if "START_MODE_LO" not in incremental_text or "CTRL_COUNT_" not in incremental_text:
+        return False, [], "V9_2_EXACT_DEPTH_CASE_PARTITION_CONTRACT_MISSING"
+    if "solver.push()" in incremental_text or "solver.pop()" in incremental_text:
+        return False, [], "V9_2_FRESH_DEPTH_SOLVER_MUST_NOT_REUSE_PUSH_POP_CONTEXT"
     if "This is the only path allowed to report window UNSAT" not in incremental_text:
         return False, [], "V9_2_INCREMENTAL_UNSAT_AGGREGATION_GUARD_MISSING"
     if "declare_sparse_successor" not in closure_calls:
@@ -617,7 +624,9 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
                 "FINITE_EVENT_BOUND_PARTITIONED_BY_EXACT_FIRST_HORIZON_DEPTH_0_TO_N;_"
                 "EACH_PREFIX_USES_ONLY_EXACT_ACTIVE_EVENT_STEP;_"
                 "TERMINAL_STUTTER_SUFFIX_IS_IDENTITY_AND_OMITTED;_"
-                "UNSAT_REQUIRES_EVERY_DEPTH_UNSAT"
+                "EACH_DEPTH_IS_SOLVED_IN_A_FRESH_EQUIVALENT_SOLVER_CONTEXT;_"
+                "UNKNOWN_RETRY_PARTITIONS_EXACTLY_BY_START_MODE_AND_CONTROLLER_COUNT;_"
+                "UNSAT_REQUIRES_EVERY_CASE_AND_EVERY_DEPTH_UNSAT"
             ),
             "source_sha256": sha256_object({
                 "window": window_hash, "incremental_solver": incremental_hash,
