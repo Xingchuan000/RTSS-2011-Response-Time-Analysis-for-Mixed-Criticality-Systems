@@ -36,7 +36,7 @@ from .transition_encoder import (
 )
 
 
-ENCODER_VERSION = "V9_2_EVENT_FIRST_BAD_WINDOW_V2_EXACT_P5_POOL"
+ENCODER_VERSION = "V9_2_EVENT_FIRST_BAD_WINDOW_V3_INDEXED_DEMAND_SSA"
 ENCODER_COMPLETE = True
 ENCODER_READINESS_GAPS: tuple[str, ...] = ()
 
@@ -314,6 +314,8 @@ def build_event_first_bad_window(
             "event_macro_composes_exact_p0_through_p6",
             "first_bad_event_window_uses_window_global_exact_p5_pool",
             "controller_pool_count_derived_from_agent_period_bound",
+            "indexed_demand_lookup_is_exact_finite_formula_factoring",
+            "phase_ssa_shares_only_canonical_frame_fields",
             "event_layer_added_abstractions_empty",
             "target_deadline_processed_exactly_through_p2",
             "finite_event_bound_is_structural_not_memory_selected",

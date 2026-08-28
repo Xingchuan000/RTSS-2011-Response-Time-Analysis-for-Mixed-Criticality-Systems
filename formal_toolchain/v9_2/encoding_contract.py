@@ -23,6 +23,8 @@ REQUIRED_SOUNDNESS_CLAUSES = (
     "controller_event_coverage",
     "exact_p5_at_controller_event",
     "exact_controller_pool_formula_factoring",
+    "indexed_demand_lookup_formula_factoring",
+    "phase_ssa_frame_elimination_formula_equivalence",
     "full_to_event_segment_simulation",
     "event_to_full_segment_realizability",
     "first_hi_bad_event_prefix_bi_reflection",

@@ -333,6 +333,110 @@ def declare_state(prefix: str, model: BoundModel) -> SymbolicKernelState:
     )
 
 
+def declare_sparse_successor(
+    prefix: str,
+    prior: SymbolicKernelState,
+    model: BoundModel,
+    *,
+    phase: int,
+    mutable: frozenset[str],
+) -> SymbolicKernelState:
+    """Declare only fields owned by one phase; structurally share all frames.
+
+    This is an exact SSA-style representation of a Full-kernel successor.
+    Unmodified components are the *same Z3 expressions* as in ``prior`` rather
+    than fresh variables later constrained equal.  Phase encoders therefore
+    keep their canonical semantics while the Event-window compiler avoids
+    thousands of redundant frame variables/equalities per macro.
+    """
+
+    def fresh_int(suffix: str) -> z3.ArithRef:
+        return _int(f"{prefix}.{suffix}")
+
+    def fresh_real(suffix: str) -> z3.ArithRef:
+        return _real(f"{prefix}.{suffix}")
+
+    def fresh_bool(suffix: str) -> z3.BoolRef:
+        return z3.Bool(f"{prefix}.{suffix}")
+
+    t = fresh_int("t") if "t" in mutable else prior.t
+    mode_hi = fresh_bool("mode_hi") if "mode" in mutable else prior.mode_hi
+    budgets = (
+        {task.name: fresh_int(f"B.{task.name}") for task in model.tasks}
+        if "budgets" in mutable else prior.budgets
+    )
+    eta = (
+        {task.name: fresh_int(f"eta.{task.name}") for task in model.tasks}
+        if "eta" in mutable else prior.eta
+    )
+
+    job_field_names = (
+        "present", "release_index", "release_time", "absolute_deadline",
+        "tie_break", "release_entry_mode_hi", "classification_abnormal",
+        "budget_at_release", "actual_demand", "effective_demand",
+        "executed_service", "removed", "ready",
+    )
+    bool_job_fields = {
+        "present", "release_entry_mode_hi", "classification_abnormal",
+        "removed", "ready",
+    }
+    jobs: dict[JobSlotKey, SymbolicJob] = {}
+    for task_id, task in enumerate(model.tasks):
+        for slot in range(model.max_jobs_per_task):
+            key = (task.name, slot)
+            old = prior.jobs[key]
+            base = f"J.{task_id}.{slot}"
+            values: dict[str, Any] = {}
+            for name in job_field_names:
+                owned = "jobs" in mutable or f"jobs.{name}" in mutable
+                if not owned:
+                    values[name] = getattr(old, name)
+                elif name in bool_job_fields:
+                    short = {
+                        "release_entry_mode_hi": "entry_hi",
+                        "classification_abnormal": "abnormal",
+                    }.get(name, name)
+                    values[name] = fresh_bool(f"{base}.{short}")
+                else:
+                    short = {
+                        "absolute_deadline": "deadline",
+                        "budget_at_release": "B_rel",
+                        "actual_demand": "A",
+                        "effective_demand": "E",
+                        "executed_service": "service",
+                    }.get(name, name)
+                    values[name] = fresh_int(f"{base}.{short}")
+            jobs[key] = SymbolicJob(
+                task_id=old.task_id, priority=old.priority, **values
+            )
+
+    frontier = (
+        SymbolicFrontier(fresh_int("F.selected"), fresh_bool("F.running"))
+        if "frontier" in mutable else prior.frontier
+    )
+    ledger = fresh_int("M") if "hi_miss_ledger" in mutable else prior.hi_miss_ledger
+
+    if "history" in mutable:
+        history = SymbolicPolicyHistory(
+            recent_cost={task.name: fresh_real(f"chi.recent.{task.name}") for task in model.tasks},
+            ema_cost={task.name: fresh_real(f"chi.ema.{task.name}") for task in model.tasks},
+            overrun_ema={task.name: fresh_real(f"chi.overrun_ema.{task.name}") for task in model.tasks},
+            max_cost_k={task.name: fresh_real(f"chi.maxk.{task.name}") for task in model.tasks},
+            mode_change_window=tuple(fresh_int(f"chi.mode.{i}") for i in range(model.event_window)),
+            lo_cancel_window=tuple(fresh_int(f"chi.locancel.{i}") for i in range(model.event_window)),
+            hi_overrun_window=tuple(fresh_int(f"chi.hioverrun.{i}") for i in range(model.event_window)),
+            lo_overrun_window=tuple(fresh_int(f"chi.looverrun.{i}") for i in range(model.event_window)),
+            job_start_window=tuple(fresh_int(f"chi.starts.{i}") for i in range(model.event_window)),
+        )
+    else:
+        history = prior.chi
+
+    return SymbolicKernelState(
+        t=t, p=z3.IntVal(int(phase)), mode_hi=mode_hi, budgets=budgets, eta=eta,
+        jobs=jobs, frontier=frontier, hi_miss_ledger=ledger, chi=history,
+    )
+
+
 def well_formed(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
     """Return the structural state contract; no safety claim is hidden here."""
 
@@ -396,5 +500,6 @@ def well_formed(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
 
 __all__ = [
     "BoundModel", "JobSlotKey", "SymbolicFrontier", "SymbolicJob", "SymbolicKernelState",
-    "SymbolicPolicyHistory", "TaskBound", "declare_state", "well_formed",
+    "SymbolicPolicyHistory", "TaskBound", "declare_sparse_successor",
+    "declare_state", "well_formed",
 ]

@@ -29,6 +29,7 @@ def test_event_macro_uses_exact_controller_pool_and_exact_event_minimum():
 
     assert "encode_p5_controller" in closure_calls
     assert "encode_p5_from_exact_pool" in closure_calls
+    assert "declare_sparse_successor" in closure_calls
     assert "encode_p5_controller" in pool_calls
     assert {"state_equality", "encode_p5_identity"} <= pooled_p5_calls
     assert "encode_p5_invariant_summary" not in kernel.read_text(encoding="utf-8")
@@ -81,3 +82,17 @@ def test_event_refinement_contains_bidirectional_and_differential_gates():
     assert "P7_DELTA1" in text
     assert "_small_horizon_differential_counterexample" not in text
     assert "_full_ticks" not in text
+
+
+def test_event_window_uses_indexed_exact_demand_lookup_and_ssa_frames():
+    environment = ROOT / "formal_toolchain/v9_2/environment_encoder.py"
+    transition = ROOT / "formal_toolchain/v9_2/transition_encoder.py"
+    symbolic = ROOT / "formal_toolchain/v9_2/symbolic_state.py"
+    env_text = environment.read_text(encoding="utf-8")
+    transition_text = transition.read_text(encoding="utf-8")
+    symbolic_text = symbolic.read_text(encoding="utf-8")
+    assert "A_lookup" in env_text
+    assert "lookup(relative)" in env_text
+    assert "declare_sparse_successor" in symbolic_text
+    assert "left.eq(right)" in transition_text
+    assert "encode_p5_invariant_summary" not in (ROOT / "formal_toolchain/v9_2/event_kernel.py").read_text(encoding="utf-8")

@@ -20,6 +20,17 @@ def _job_fields(job: SymbolicJob):
             job.executed_service, job.removed, job.ready)
 
 
+def _frame_eq(left: z3.ExprRef, right: z3.ExprRef) -> z3.BoolRef | None:
+    """Return an equality only when SSA sharing has not made it tautological."""
+    return None if left.eq(right) else left == right
+
+
+def _append_frame(clauses: list[z3.BoolRef], left: z3.ExprRef, right: z3.ExprRef) -> None:
+    equality = _frame_eq(left, right)
+    if equality is not None:
+        clauses.append(equality)
+
+
 def _frame_state(
     z: SymbolicKernelState,
     zp: SymbolicKernelState,
@@ -27,30 +38,24 @@ def _frame_state(
     *,
     mutable: frozenset[str] = frozenset(),
 ) -> list[z3.BoolRef]:
-    """Frame every state component not explicitly owned by the current phase.
-
-    Component names are intentionally semantic rather than positional.  A phase
-    must opt out only the fields it updates; all unrelated fields stay equal.
-    This prevents the previous ``copy-then-update`` contradiction while also
-    preventing unconstrained post-state fields.
-    """
+    """Frame state fields, omitting identities already shared by SSA states."""
 
     clauses: list[z3.BoolRef] = []
     if "t" not in mutable:
-        clauses.append(zp.t == z.t)
+        _append_frame(clauses, zp.t, z.t)
     if "mode" not in mutable:
-        clauses.append(zp.mode_hi == z.mode_hi)
+        _append_frame(clauses, zp.mode_hi, z.mode_hi)
     if "hi_miss_ledger" not in mutable:
-        clauses.append(zp.hi_miss_ledger == z.hi_miss_ledger)
+        _append_frame(clauses, zp.hi_miss_ledger, z.hi_miss_ledger)
     if "frontier" not in mutable:
-        clauses.extend((
-            zp.frontier.selected_slot == z.frontier.selected_slot,
-            zp.frontier.running == z.frontier.running,
-        ))
+        _append_frame(clauses, zp.frontier.selected_slot, z.frontier.selected_slot)
+        _append_frame(clauses, zp.frontier.running, z.frontier.running)
     if "budgets" not in mutable:
-        clauses.extend(zp.budgets[name] == z.budgets[name] for name in z.budgets)
+        for name in z.budgets:
+            _append_frame(clauses, zp.budgets[name], z.budgets[name])
     if "eta" not in mutable:
-        clauses.extend(zp.eta[name] == z.eta[name] for name in z.eta)
+        for name in z.eta:
+            _append_frame(clauses, zp.eta[name], z.eta[name])
 
     job_field_names = (
         "present", "release_index", "release_time", "absolute_deadline",
@@ -63,7 +68,7 @@ def _frame_state(
         for field_name in job_field_names:
             if f"jobs.{field_name}" in mutable or "jobs" in mutable:
                 continue
-            clauses.append(getattr(other, field_name) == getattr(job, field_name))
+            _append_frame(clauses, getattr(other, field_name), getattr(job, field_name))
 
     if "history" not in mutable:
         for left, right in (
@@ -72,7 +77,8 @@ def _frame_state(
             (zp.chi.overrun_ema, z.chi.overrun_ema),
             (zp.chi.max_cost_k, z.chi.max_cost_k),
         ):
-            clauses.extend(left[name] == right[name] for name in right)
+            for name in right:
+                _append_frame(clauses, left[name], right[name])
         for left_values, right_values in (
             (zp.chi.mode_change_window, z.chi.mode_change_window),
             (zp.chi.lo_cancel_window, z.chi.lo_cancel_window),
@@ -80,7 +86,8 @@ def _frame_state(
             (zp.chi.lo_overrun_window, z.chi.lo_overrun_window),
             (zp.chi.job_start_window, z.chi.job_start_window),
         ):
-            clauses.extend(left == right for left, right in zip(left_values, right_values))
+            for left, right in zip(left_values, right_values):
+                _append_frame(clauses, left, right)
     return clauses
 
 

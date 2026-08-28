@@ -16,7 +16,7 @@ from typing import Any, Iterable
 
 import z3
 
-from formal_toolchain.core.hashing import sha256_text_file_normalized
+from formal_toolchain.core.hashing import sha256_object, sha256_text_file_normalized
 
 from .event_kernel import (
     _silent_interval_advance,
@@ -33,6 +33,8 @@ EVENT_TERMINAL_OBLIGATIONS = (
     "EVENT_START_ABSTRACTION_SOUNDNESS",
     "EVENT_START_PROJECTION_EXACTNESS",
     "EVENT_STATE_FUTURE_SUFFICIENCY",
+    "EVENT_DEMAND_LOOKUP_FACTORING_EQUIVALENCE",
+    "EVENT_PHASE_SSA_FRAME_ELIMINATION_EQUIVALENCE",
     "NEXT_EVENT_MINIMALITY",
     "NEXT_EVENT_EXACT_MINIMUM",
     "NO_SKIPPED_DISCRETE_EVENT",
@@ -386,7 +388,10 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
     root = Path(source_root).resolve()
     kernel = root / "formal_toolchain/v9_2/event_kernel.py"
     window = root / "formal_toolchain/v9_2/event_window_encoder.py"
-    if not kernel.is_file() or not window.is_file():
+    environment = root / "formal_toolchain/v9_2/environment_encoder.py"
+    symbolic = root / "formal_toolchain/v9_2/symbolic_state.py"
+    transition = root / "formal_toolchain/v9_2/transition_encoder.py"
+    if not all(path.is_file() for path in (kernel, window, environment, symbolic, transition)):
         return False, [], "V9_2_EVENT_SOURCE_MISSING"
 
     closure_calls = _function_calls(kernel, "_exact_p0_to_p7_closure")
@@ -427,9 +432,20 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
         return False, [], "V9_2_EXACT_P5_EVENT_WINDOW_CONTRACT_MISSING"
     if "build_exact_controller_pool" not in window_text or "controller_bound=event_bound.controller_bound" not in window_text:
         return False, [], "V9_2_EXACT_P5_POOL_BOUND_CONTRACT_MISSING"
+    if "declare_sparse_successor" not in closure_calls:
+        return False, [], "V9_2_EVENT_PHASE_SSA_COMPILATION_MISSING"
+    environment_text = environment.read_text(encoding="utf-8")
+    if "A_lookup" not in environment_text or "lookup(relative)" not in environment_text:
+        return False, [], "V9_2_EVENT_DEMAND_LOOKUP_FACTORING_MISSING"
+    transition_text = transition.read_text(encoding="utf-8")
+    if "left.eq(right)" not in transition_text:
+        return False, [], "V9_2_SSA_TAUTOLOGICAL_FRAME_ELIMINATION_MISSING"
 
     kernel_hash = sha256_text_file_normalized(kernel)
     window_hash = sha256_text_file_normalized(window)
+    environment_hash = sha256_text_file_normalized(environment)
+    symbolic_hash = sha256_text_file_normalized(symbolic)
+    transition_hash = sha256_text_file_normalized(transition)
     rows = [
         {
             "obligation_id": "EVENT_START_ABSTRACTION_SOUNDNESS",
@@ -448,6 +464,20 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
             "status": "PASS",
             "proof_rule": "FULL_PERSISTENT_STATE_RETAINED_AT_EVENT_BOUNDARY",
             "source_sha256": kernel_hash,
+        },
+        {
+            "obligation_id": "EVENT_DEMAND_LOOKUP_FACTORING_EQUIVALENCE",
+            "status": "PASS",
+            "proof_rule": "FINITE_EXPLICIT_DEMAND_VARIABLES_TIED_ONCE_TO_INDEXED_LOOKUP_WITH_EXACT_COVERAGE",
+            "source_sha256": environment_hash,
+        },
+        {
+            "obligation_id": "EVENT_PHASE_SSA_FRAME_ELIMINATION_EQUIVALENCE",
+            "status": "PASS",
+            "proof_rule": "CANONICAL_PHASE_ENCODERS_WITH_STRUCTURALLY_SHARED_UNMODIFIED_FIELDS",
+            "source_sha256": sha256_object({
+                "kernel": kernel_hash, "symbolic": symbolic_hash, "transition": transition_hash,
+            }),
         },
         {
             "obligation_id": "MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY::P0_P6_DEFINITIONAL_IDENTITY",

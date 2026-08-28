@@ -28,6 +28,9 @@ class PeriodicPhaseContext:
 @dataclass(frozen=True, slots=True)
 class SymbolicEnvironment:
     actual_demands: Mapping[tuple[str, int], z3.ArithRef]
+    demand_lookup: Mapping[str, z3.FuncDeclRef]
+    allowed_ticks_by_task: Mapping[str, tuple[int, ...]]
+    regular_tick_step_by_task: Mapping[str, int | None]
     constraints: tuple[z3.BoolRef, ...]
     release_times: Mapping[tuple[str, int], int]
     phase: PeriodicPhaseContext
@@ -73,6 +76,9 @@ def declare_environment(
     origin = z3.Int(f"{prefix}.origin_time")
     phase = PeriodicPhaseContext(residue, origin, modulus)
     demands: dict[tuple[str, int], z3.ArithRef] = {}
+    lookups: dict[str, z3.FuncDeclRef] = {}
+    allowed_ticks: dict[str, tuple[int, ...]] = {}
+    regular_steps: dict[str, int | None] = {}
     release_times: dict[tuple[str, int], int] = {}
     constraints: list[z3.BoolRef] = list(periodic_phase_constraints(phase, model, model.agent_period))
     for task in model.tasks:
@@ -85,13 +91,32 @@ def declare_environment(
             ticks = tuple(sorted({int(tick) for tick in raw_ticks if 0 <= int(tick) < release_count}))
             if not ticks:
                 raise ValueError(f"no admissible relative release ticks declared for {task.name}")
+        ticks = tuple(ticks)
+        allowed_ticks[task.name] = ticks
+        step: int | None = None
+        if ticks and ticks[0] == 0:
+            if len(ticks) == 1:
+                step = release_count
+            else:
+                candidate = ticks[1] - ticks[0]
+                if candidate > 0 and ticks == tuple(range(0, release_count, candidate)):
+                    step = candidate
+        regular_steps[task.name] = step
+        lookup = z3.Function(f"{prefix}.A_lookup.{task.name}", z3.IntSort(), z3.IntSort())
+        lookups[task.name] = lookup
         for tick in ticks:
             key = (task.name, tick)
             value = z3.Int(f"{prefix}.A.{task.name}.{tick}")
             demands[key] = value
             release_times[key] = tick
-            constraints.append(z3.And(value >= lower, value <= upper))
-    return SymbolicEnvironment(demands, tuple(constraints), release_times, phase, int(release_count))
+            constraints.extend((
+                z3.And(value >= lower, value <= upper),
+                lookup(z3.IntVal(tick)) == value,
+            ))
+    return SymbolicEnvironment(
+        demands, lookups, allowed_ticks, regular_steps, tuple(constraints),
+        release_times, phase, int(release_count)
+    )
 
 
 def demand_for_time(
@@ -99,25 +124,34 @@ def demand_for_time(
     task: TaskBound,
     absolute_time: z3.ArithRef,
 ) -> tuple[z3.ArithRef, z3.BoolRef]:
-    """Select the fresh demand associated with ``absolute_time``.
+    """Select the fresh release demand at ``absolute_time`` in O(1) AST size.
 
-    The second result proves that the timestamp is covered by the finite
-    environment prefix.  P3 requires it whenever a release is due, so no
-    release can silently fall outside the quantified demand domain.
+    Every admissible finite release tick still owns an independent explicit
+    demand variable.  A window-global uninterpreted lookup function is tied to
+    those variables once in :func:`declare_environment`; P3 then indexes that
+    exact table by ``absolute_time-origin`` instead of rebuilding a long nested
+    If chain in every Event slot.  This is formula factoring only: no demand
+    value, release timestamp, or environment behavior is added or removed.
     """
 
-    rows = sorted(
-        (tick, demand)
-        for (name, tick), demand in env.actual_demands.items()
-        if name == task.name
-    )
-    if not rows:
+    ticks = env.allowed_ticks_by_task.get(task.name, ())
+    if not ticks:
         raise ValueError(f"environment has no demand variables for task {task.name}")
-    covered = z3.Or(*(absolute_time == env.phase.origin_time + tick for tick, _ in rows))
-    value: z3.ArithRef = rows[-1][1]
-    for tick, demand in reversed(rows[:-1]):
-        value = z3.If(absolute_time == env.phase.origin_time + tick, demand, value)
-    return value, covered
+    relative = absolute_time - env.phase.origin_time
+    lookup = env.demand_lookup[task.name]
+    step = env.regular_tick_step_by_task.get(task.name)
+    if step is not None:
+        if len(ticks) == 1:
+            covered = relative == ticks[0]
+        else:
+            covered = z3.And(
+                relative >= 0,
+                relative < env.horizon,
+                relative % int(step) == 0,
+            )
+    else:
+        covered = z3.Or(*(relative == tick for tick in ticks))
+    return lookup(relative), covered
 
 
 def target_release_constraints(

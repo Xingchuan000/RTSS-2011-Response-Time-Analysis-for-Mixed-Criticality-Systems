@@ -18,7 +18,9 @@ from typing import Iterable
 import z3
 
 from .environment_encoder import SymbolicEnvironment
-from .symbolic_state import BoundModel, SymbolicJob, SymbolicKernelState, declare_state
+from .symbolic_state import (
+    BoundModel, SymbolicJob, SymbolicKernelState, declare_sparse_successor, declare_state,
+)
 from .transition_encoder import (
     encode_p0_settle,
     encode_p1_idle_recovery,
@@ -31,7 +33,7 @@ from .transition_encoder import (
 )
 
 
-EVENT_KERNEL_VERSION = "V9_2_EXACT_EVENT_MACRO_V2_EXACT_P5_POOL"
+EVENT_KERNEL_VERSION = "V9_2_EXACT_EVENT_MACRO_V3_SSA_EXACT_P5_POOL"
 
 
 def _job_fields(job: SymbolicJob) -> tuple[z3.ExprRef, ...]:
@@ -269,8 +271,33 @@ def _exact_p0_to_p7_closure(
 ) -> tuple[tuple[SymbolicKernelState, ...], z3.BoolRef]:
     """Execute exact P0..P6, ending at the P7 dispatch state."""
 
-    states = tuple(declare_state(f"{prefix}.p{phase}", model) for phase in range(1, 8))
-    p1, p2, p3, p4, p5, p6, p7 = states
+    # Exact SSA-style phase chain.  A phase declares fresh Z3 symbols only for
+    # fields it owns; every frame component is structurally shared with the
+    # preceding state.  Canonical phase encoders are still used unchanged, so
+    # this is existential/frame elimination rather than a new abstraction.
+    p1 = declare_sparse_successor(
+        f"{prefix}.p1", source, model, phase=1,
+        mutable=frozenset({"jobs.present", "jobs.removed", "jobs.ready"}),
+    )
+    p2 = declare_sparse_successor(
+        f"{prefix}.p2", p1, model, phase=2, mutable=frozenset({"mode"}),
+    )
+    p3 = declare_sparse_successor(
+        f"{prefix}.p3", p2, model, phase=3, mutable=frozenset({"hi_miss_ledger"}),
+    )
+    p4 = declare_sparse_successor(
+        f"{prefix}.p4", p3, model, phase=4, mutable=frozenset({"eta", "jobs"}),
+    )
+    p5 = declare_sparse_successor(
+        f"{prefix}.p5", p4, model, phase=5, mutable=frozenset({"mode"}),
+    )
+    p6 = declare_sparse_successor(
+        f"{prefix}.p6", p5, model, phase=6, mutable=frozenset({"budgets", "history"}),
+    )
+    p7 = declare_sparse_successor(
+        f"{prefix}.p7", p6, model, phase=7, mutable=frozenset({"frontier"}),
+    )
+    states = (p1, p2, p3, p4, p5, p6, p7)
     formula = z3.And(
         encode_p0_settle(source, p1, model),
         encode_p1_idle_recovery(p1, p2, model),
