@@ -22,6 +22,8 @@ from .environment_encoder import (
 from .event_kernel import (
     EVENT_KERNEL_VERSION,
     EventStepEncoding,
+    ExactControllerPool,
+    build_exact_controller_pool,
     encode_event_step,
     event_boundary_stutter,
 )
@@ -34,7 +36,7 @@ from .transition_encoder import (
 )
 
 
-ENCODER_VERSION = "V9_2_EVENT_FIRST_BAD_WINDOW_V1_EXACT_MACRO"
+ENCODER_VERSION = "V9_2_EVENT_FIRST_BAD_WINDOW_V2_EXACT_P5_POOL"
 ENCODER_COMPLETE = True
 ENCODER_READINESS_GAPS: tuple[str, ...] = ()
 
@@ -77,6 +79,7 @@ class EventWindowEncoding:
     terminal_phase_states: tuple[SymbolicKernelState, ...]
     environment: Any
     event_bound: EventBound
+    controller_pool: ExactControllerPool
     source_obligations: tuple[str, ...]
     event_layer_added_abstractions: tuple[str, ...] = ()
     exact_p5_in_event_window: bool = True
@@ -118,7 +121,10 @@ def derive_finite_event_bound(model: BoundModel, target_task: str) -> EventBound
         for task in model.tasks
     }
     total_release = sum(release_by_task.values())
-    initial_jobs = len(model.tasks) * int(model.max_jobs_per_task)
+    # Only semantically usable two-slot representatives contribute terminal
+    # events: HI uses one exact slot; LO uses aggregate+exact.  Unused HI slot1
+    # is structurally absent and must not inflate the finite event bound.
+    initial_jobs = sum(1 if row.criticality == "HI" else 2 for row in model.tasks)
 
     # Every present HI carry-in and every future HI release has at most one
     # deadline event in the window.
@@ -126,13 +132,17 @@ def derive_finite_event_bound(model: BoundModel, target_task: str) -> EventBound
         release_by_task[task.name] for task in model.hi_tasks
     )
 
-    # A release can activate one exact slot and, for LO, can additionally
-    # revive the aggregate slot by folding unfinished exact work.  Counting two
-    # possible terminal activations per release is deliberately loose but
-    # structurally obvious and independent of any workload-token accounting.
-    # The looseness changes only the number of allocated Event slots; it does
-    # not widen Event behavior.
-    completion_bound = initial_jobs + 2 * total_release
+    # Each HI release can contribute at most one exact-job terminal event.
+    # Each LO release can contribute at most two: the new exact job and a
+    # revived aggregate after folding unfinished prior exact work.  This is the
+    # same structural argument as the previous 2*all-releases bound, but avoids
+    # counting a nonexistent second HI completion.  It changes only allocated
+    # Event slots, never the Event transition relation.
+    future_terminal_bound = sum(
+        release_by_task[row.name] * (1 if row.criticality == "HI" else 2)
+        for row in model.tasks
+    )
+    completion_bound = initial_jobs + future_terminal_bound
 
     controller_bound = deadline // int(model.agent_period) + 1
     horizon_bound = 1
@@ -203,8 +213,16 @@ def build_event_first_bad_window(
         for index in range(event_bound.finite_event_bound + 1)
     )
     start = event_states[0]
+    controller_pool = build_exact_controller_pool(
+        model,
+        origin_time=env.phase.origin_time,
+        horizon_time=horizon_time,
+        controller_bound=event_bound.controller_bound,
+        prefix="event.window.controller",
+    )
 
     clauses: list[z3.BoolRef] = [
+        controller_pool.formula,
         *env.constraints,
         env.phase.origin_time == start.t,
         invariant.formula(start),
@@ -225,6 +243,7 @@ def build_event_first_bad_window(
             env,
             horizon_time=horizon_time,
             prefix=f"event.window.step.{index}",
+            controller_pool=controller_pool,
         )
         event_steps.append(step)
         clauses.append(z3.Or(
@@ -285,6 +304,7 @@ def build_event_first_bad_window(
         terminal_phase_states=(terminal_p1, terminal_p2, terminal_p3),
         environment=env,
         event_bound=event_bound,
+        controller_pool=controller_pool,
         source_obligations=(
             "event_start_is_exact_full_p0_safe_prefix_projection",
             "event_boundary_retains_all_full_safety_relevant_fields",
@@ -292,7 +312,8 @@ def build_event_first_bad_window(
             "no_release_deadline_completion_controller_event_skipped",
             "silent_interval_service_and_eta_equal_repeated_p7",
             "event_macro_composes_exact_p0_through_p6",
-            "first_bad_event_window_uses_exact_deployed_p5",
+            "first_bad_event_window_uses_window_global_exact_p5_pool",
+            "controller_pool_count_derived_from_agent_period_bound",
             "event_layer_added_abstractions_empty",
             "target_deadline_processed_exactly_through_p2",
             "finite_event_bound_is_structural_not_memory_selected",

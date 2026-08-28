@@ -439,9 +439,11 @@ def verify_bundle_v9_2(
         # Each potential active macro declares seven zero-time P0..P6 closure
         # states.  This is still tiny compared with D*8 microstep unrolling and
         # retains exact Full-state information to avoid new conservatism.
+        controller_exact_instance_count = event_bound.controller_bound
         declared_full_state_upper = (
             event_boundary_count
             + event_bound.finite_event_bound * 7
+            + controller_exact_instance_count * 2  # pooled exact-P5 pre/post
             + 3  # terminal P1/P2/P3
         )
         estimated_symbols = declared_full_state_upper * symbols_per_full_state
@@ -453,6 +455,7 @@ def verify_bundle_v9_2(
             deadline=int(task.deadline),
             finite_event_bound=event_bound.finite_event_bound,
             event_boundary_count=event_boundary_count,
+            controller_exact_instance_count=controller_exact_instance_count,
             declared_full_state_upper=declared_full_state_upper,
             estimated_declared_state_symbols=estimated_symbols,
         )
@@ -467,6 +470,7 @@ def verify_bundle_v9_2(
             deadline=int(task.deadline),
             finite_event_bound=event_bound.finite_event_bound,
             event_boundary_count=event_boundary_count,
+            controller_exact_instance_count=controller_exact_instance_count,
             declared_full_state_upper=declared_full_state_upper,
             estimated_declared_state_symbols=estimated_symbols,
             build_seconds=round(build_seconds, 6),
@@ -485,6 +489,7 @@ def verify_bundle_v9_2(
             "deadline": task.deadline,
             "finite_event_bound": event_bound.finite_event_bound,
             "event_boundary_count": event_boundary_count,
+            "controller_exact_instance_count": controller_exact_instance_count,
             "declared_full_state_upper": declared_full_state_upper,
             "estimated_declared_state_symbols": estimated_symbols,
             "build_seconds": round(build_seconds, 6),

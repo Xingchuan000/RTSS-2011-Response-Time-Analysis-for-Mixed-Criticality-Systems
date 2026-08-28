@@ -315,6 +315,14 @@ def _copy_history(z: SymbolicKernelState, zp: SymbolicKernelState) -> list[z3.Bo
     return clauses
 
 
+def encode_p5_identity(
+    z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel
+) -> z3.BoolRef:
+    """Exact deployed P5 relation when the periodic controller is disabled."""
+
+    return z3.And(*(_phase(z, zp, 5, 6) + _frame_state(z, zp, model)))
+
+
 def encode_p5_invariant_summary(
     z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel
 ) -> z3.BoolRef:
@@ -485,6 +493,7 @@ def encode_step(
 
 __all__ = [
     "encode_p0_settle", "encode_p1_idle_recovery", "encode_p2_deadline_observe",
-    "encode_p3_arrival_freeze", "encode_p4_mode_switch", "encode_p5_controller",
-    "encode_p6_dispatch", "encode_p7_time_and_service", "encode_phase_step", "encode_step",
+    "encode_p3_arrival_freeze", "encode_p4_mode_switch", "encode_p5_identity",
+    "encode_p5_controller", "encode_p6_dispatch", "encode_p7_time_and_service",
+    "encode_phase_step", "encode_step",
 ]

@@ -26,11 +26,12 @@ from .transition_encoder import (
     encode_p3_arrival_freeze,
     encode_p4_mode_switch,
     encode_p5_controller,
+    encode_p5_identity,
     encode_p6_dispatch,
 )
 
 
-EVENT_KERNEL_VERSION = "V9_2_EXACT_EVENT_MACRO_V1"
+EVENT_KERNEL_VERSION = "V9_2_EXACT_EVENT_MACRO_V2_EXACT_P5_POOL"
 
 
 def _job_fields(job: SymbolicJob) -> tuple[z3.ExprRef, ...]:
@@ -112,6 +113,128 @@ def _slot_index(model: BoundModel, key: tuple[str, int]) -> int:
 
 
 @dataclass(frozen=True, slots=True)
+class ExactControllerInstance:
+    """One exact deployed P5 instance at a concrete periodic activation time.
+
+    Instances are pooled per finite event window.  The expensive
+    observation->tree->mask->FirstValid relation is constructed once per
+    *possible controller activation*, not once per Event slot.
+    """
+
+    activation_time: z3.ArithRef
+    pre_state: SymbolicKernelState
+    post_state: SymbolicKernelState
+    formula: z3.BoolRef
+
+
+@dataclass(frozen=True, slots=True)
+class ExactControllerPool:
+    """Finite exact-P5 pool for one target-deadline window."""
+
+    origin_time: z3.ArithRef
+    horizon_time: z3.ArithRef
+    first_activation: z3.ArithRef
+    instances: tuple[ExactControllerInstance, ...]
+    formula: z3.BoolRef
+
+
+def _first_periodic_at_or_after(t: z3.ArithRef, period: int) -> z3.ArithRef:
+    """Least phase-zero periodic timestamp greater than or equal to ``t``."""
+
+    period = int(period)
+    if period <= 0:
+        raise ValueError("period must be positive")
+    return ((t + period - 1) / period) * period
+
+
+def build_exact_controller_pool(
+    model: BoundModel,
+    *,
+    origin_time: z3.ArithRef,
+    horizon_time: z3.ArithRef,
+    controller_bound: int,
+    prefix: str,
+) -> ExactControllerPool:
+    """Construct exactly the finite controller activations that can affect a window.
+
+    ``controller_bound`` is the structural bound ``floor(D/Tctrl)+1`` already
+    proved by the V9.2 finite-event theorem.  Every exact P5 formula is built
+    once here and later shared by every Event slot whose P5 timestamp equals
+    the corresponding activation time.  No controller summary or widened
+    behavior is introduced.
+    """
+
+    controller_bound = int(controller_bound)
+    if controller_bound <= 0:
+        raise ValueError("controller_bound must be positive")
+    first = _first_periodic_at_or_after(origin_time, model.agent_period)
+    instances: list[ExactControllerInstance] = []
+    constraints: list[z3.BoolRef] = []
+    for index in range(controller_bound):
+        activation_time = first + index * int(model.agent_period)
+        pre = declare_state(f"{prefix}.{index}.pre", model)
+        post = declare_state(f"{prefix}.{index}.post", model)
+        exact = encode_p5_controller(pre, post, model)
+        # Only activations strictly before the target horizon are part of the
+        # event-window P5 sequence.  The exact formula is guarded rather than
+        # used as an unconstrained terminal-side witness.
+        constraints.append(z3.Implies(
+            activation_time < horizon_time,
+            z3.And(
+                pre.t == activation_time,
+                activation_time % model.agent_period == 0,
+                exact,
+            ),
+        ))
+        instances.append(ExactControllerInstance(activation_time, pre, post, exact))
+    return ExactControllerPool(
+        origin_time=origin_time,
+        horizon_time=horizon_time,
+        first_activation=first,
+        instances=tuple(instances),
+        formula=z3.And(*constraints),
+    )
+
+
+def encode_p5_from_exact_pool(
+    z: SymbolicKernelState,
+    zp: SymbolicKernelState,
+    model: BoundModel,
+    pool: ExactControllerPool,
+) -> z3.BoolRef:
+    """Exact P5 with window-global sharing of expensive controller formulas.
+
+    When ``t mod Tctrl != 0`` this is strict identity, exactly as deployed P5.
+    At an activation timestamp, the event-local pre/post states are equated to
+    the unique pooled exact-P5 instance for that timestamp.  Hence this is a
+    formula-factoring transformation, not a controller abstraction.
+    """
+
+    enabled = (z.t % model.agent_period) == 0
+    active_rows: list[z3.BoolRef] = []
+    for instance in pool.instances:
+        in_window = instance.activation_time < pool.horizon_time
+        at_instance = z.t == instance.activation_time
+        active_rows.append(z3.And(
+            in_window,
+            at_instance,
+            state_equality(z, instance.pre_state),
+            state_equality(zp, instance.post_state),
+        ))
+
+    # Exact periodic arithmetic plus the finite pool must cover every enabled
+    # P5 inside the proof window.  If this ever becomes false, the formula is
+    # UNSAT rather than silently falling back to identity or a summary.
+    exact_active = z3.Or(*active_rows) if active_rows else z3.BoolVal(False)
+    return z3.And(
+        z.p == 5,
+        zp.p == 6,
+        z3.Implies(z3.Not(enabled), encode_p5_identity(z, zp, model)),
+        z3.Implies(enabled, exact_active),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class EventCandidateSet:
     """Exact candidate timestamps used by one event macro."""
 
@@ -142,6 +265,7 @@ def _exact_p0_to_p7_closure(
     env: SymbolicEnvironment,
     *,
     prefix: str,
+    controller_pool: ExactControllerPool | None = None,
 ) -> tuple[tuple[SymbolicKernelState, ...], z3.BoolRef]:
     """Execute exact P0..P6, ending at the P7 dispatch state."""
 
@@ -153,9 +277,11 @@ def _exact_p0_to_p7_closure(
         encode_p2_deadline_observe(p2, p3, model),
         encode_p3_arrival_freeze(p3, p4, model, env),
         encode_p4_mode_switch(p4, p5, model),
-        # Event windows always use the exact deployed P5.  The P5 invariant
-        # summary is intentionally not imported into this module.
-        encode_p5_controller(p5, p6, model),
+        # Event windows always use exact deployed P5 semantics.  A finite
+        # window may share those exact formulas through ``controller_pool``;
+        # the P5 invariant summary is intentionally never imported here.
+        (encode_p5_controller(p5, p6, model) if controller_pool is None
+         else encode_p5_from_exact_pool(p5, p6, model, controller_pool)),
         encode_p6_dispatch(p6, p7, model),
     )
     return states, formula
@@ -321,6 +447,7 @@ def encode_event_step(
     *,
     horizon_time: z3.ArithRef,
     prefix: str,
+    controller_pool: ExactControllerPool | None = None,
 ) -> EventStepEncoding:
     """Encode one exact V9.2 event macro.
 
@@ -328,7 +455,9 @@ def encode_event_step(
     destination is the next P0 boundary at the exact minimum candidate time.
     """
 
-    phase_states, closure = _exact_p0_to_p7_closure(source, model, env, prefix=prefix)
+    phase_states, closure = _exact_p0_to_p7_closure(
+        source, model, env, prefix=prefix, controller_pool=controller_pool
+    )
     dispatch_state = phase_states[-1]
     candidates = build_event_candidates(dispatch_state, model, horizon_time=horizon_time)
     delta = candidates.next_time - source.t
@@ -365,6 +494,10 @@ def event_boundary_stutter(
 
 __all__ = [
     "EVENT_KERNEL_VERSION",
+    "ExactControllerInstance",
+    "ExactControllerPool",
+    "build_exact_controller_pool",
+    "encode_p5_from_exact_pool",
     "EventCandidateSet",
     "EventStepEncoding",
     "build_event_candidates",

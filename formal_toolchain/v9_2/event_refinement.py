@@ -114,6 +114,29 @@ def _periodic_counterexample(period: int, prefix: str) -> z3.BoolRef:
     )
 
 
+def _controller_pool_coverage_counterexample(
+    length: int,
+    period: int,
+    bound: int,
+    prefix: str,
+) -> z3.BoolRef:
+    """Refute an in-window controller activation missing from the exact pool."""
+
+    origin = z3.Int(f"{prefix}.origin")
+    t = z3.Int(f"{prefix}.t")
+    period = int(period)
+    bound = int(bound)
+    first = ((origin + period - 1) / period) * period
+    pooled = [first + index * period for index in range(bound)]
+    return z3.And(
+        origin >= 0,
+        t >= origin,
+        t < origin + int(length),
+        t % period == 0,
+        *(t != value for value in pooled),
+    )
+
+
 def _release_tick_domain_counterexample(
     target_period: int,
     task_period: int,
@@ -368,22 +391,27 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
 
     closure_calls = _function_calls(kernel, "_exact_p0_to_p7_closure")
     closure_sequence = _encoder_call_sequence(kernel, "_exact_p0_to_p7_closure")
+    pool_builder_calls = _function_calls(kernel, "build_exact_controller_pool")
+    pooled_p5_calls = _function_calls(kernel, "encode_p5_from_exact_pool")
     candidate_calls = _function_calls(kernel, "build_event_candidates")
     step_calls = _function_calls(kernel, "encode_event_step")
-    expected_closure_sequence = (
+    expected_closure_prefix = (
         "encode_p0_settle",
         "encode_p1_idle_recovery",
         "encode_p2_deadline_observe",
         "encode_p3_arrival_freeze",
         "encode_p4_mode_switch",
-        "encode_p5_controller",
-        "encode_p6_dispatch",
     )
-    if closure_sequence != expected_closure_sequence:
+    if closure_sequence[:5] != expected_closure_prefix or closure_sequence[-1:] != ("encode_p6_dispatch",):
         return False, [], "V9_2_FULL_EVENT_CLOSURE_DEFINITIONAL_IDENTITY_MISSING"
-    if "encode_p5_controller" not in closure_calls:
-        return False, [], "V9_2_EXACT_P5_SOURCE_CONTRACT_MISSING"
-    if "encode_p5_invariant_summary" in closure_calls:
+    if not {"encode_p5_controller", "encode_p5_from_exact_pool"} <= closure_calls:
+        return False, [], "V9_2_EXACT_P5_POOL_DISPATCH_MISSING"
+    if "encode_p5_controller" not in pool_builder_calls:
+        return False, [], "V9_2_EXACT_P5_POOL_SOURCE_CONTRACT_MISSING"
+    if not {"state_equality", "encode_p5_identity"} <= pooled_p5_calls:
+        return False, [], "V9_2_EXACT_P5_POOL_LINK_CONTRACT_MISSING"
+    kernel_text = kernel.read_text(encoding="utf-8")
+    if "encode_p5_invariant_summary" in kernel_text:
         return False, [], "V9_2_EVENT_P5_SUMMARY_FORBIDDEN"
     if not {"_next_periodic_after", "_min_expr"} <= candidate_calls:
         return False, [], "V9_2_EVENT_CANDIDATE_SOURCE_CONTRACT_MISSING"
@@ -397,6 +425,8 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
         return False, [], "V9_2_MICROSTEP_TERMINAL_FALLBACK_CONTRACT"
     if "exact_p5_in_event_window: bool = True" not in window_text:
         return False, [], "V9_2_EXACT_P5_EVENT_WINDOW_CONTRACT_MISSING"
+    if "build_exact_controller_pool" not in window_text or "controller_bound=event_bound.controller_bound" not in window_text:
+        return False, [], "V9_2_EXACT_P5_POOL_BOUND_CONTRACT_MISSING"
 
     kernel_hash = sha256_text_file_normalized(kernel)
     window_hash = sha256_text_file_normalized(window)
@@ -422,14 +452,14 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
         {
             "obligation_id": "MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY::P0_P6_DEFINITIONAL_IDENTITY",
             "status": "PASS",
-            "proof_rule": "EVENT_CLOSURE_CALLS_CANONICAL_FULL_P0_THROUGH_P6_IN_ORDER",
-            "phase_encoder_sequence": list(expected_closure_sequence),
+            "proof_rule": "EVENT_CLOSURE_REUSES_CANONICAL_P0_P4_P6_AND_FORMULA_EQUIVALENT_EXACT_P5_POOL",
+            "phase_encoder_sequence": list(closure_sequence),
             "source_sha256": kernel_hash,
         },
         {
             "obligation_id": "EXACT_P5_AT_CONTROLLER_EVENT",
             "status": "PASS",
-            "proof_rule": "AST_CALLS_EXACT_DEPLOYED_P5",
+            "proof_rule": "WINDOW_GLOBAL_POOL_CALLS_EXACT_DEPLOYED_P5_AND_EVENT_LOCAL_LINK_IS_FIELD_EQUALITY",
             "source_sha256": kernel_hash,
         },
         {
@@ -531,9 +561,18 @@ def prove_event_refinement(
             _periodic_counterexample(task.period, f"event.refine.release.{task.name}"),
         ))
     formulas.append((
-        "CONTROLLER_EVENT_COVERAGE",
+        "CONTROLLER_EVENT_COVERAGE::NEXT_PERIODIC",
         _periodic_counterexample(model.agent_period, "event.refine.controller"),
     ))
+    for target in model.hi_tasks:
+        bound = derive_finite_event_bound(model, target.name)
+        formulas.append((
+            f"CONTROLLER_EVENT_COVERAGE::POOL::{target.name}",
+            _controller_pool_coverage_counterexample(
+                target.deadline, model.agent_period, bound.controller_bound,
+                f"event.refine.controller_pool.{target.name}",
+            ),
+        ))
     formulas.extend(_finite_event_bound_formulas(model))
 
     solver_rows: list[dict[str, Any]] = []

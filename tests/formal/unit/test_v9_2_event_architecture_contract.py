@@ -19,13 +19,18 @@ def _function_calls(path: Path, name: str) -> set[str]:
     raise AssertionError(f"missing function {name} in {path}")
 
 
-def test_event_macro_uses_exact_controller_and_exact_event_minimum():
+def test_event_macro_uses_exact_controller_pool_and_exact_event_minimum():
     kernel = ROOT / "formal_toolchain/v9_2/event_kernel.py"
     closure_calls = _function_calls(kernel, "_exact_p0_to_p7_closure")
+    pool_calls = _function_calls(kernel, "build_exact_controller_pool")
+    pooled_p5_calls = _function_calls(kernel, "encode_p5_from_exact_pool")
     candidate_calls = _function_calls(kernel, "build_event_candidates")
     step_calls = _function_calls(kernel, "encode_event_step")
 
     assert "encode_p5_controller" in closure_calls
+    assert "encode_p5_from_exact_pool" in closure_calls
+    assert "encode_p5_controller" in pool_calls
+    assert {"state_equality", "encode_p5_identity"} <= pooled_p5_calls
     assert "encode_p5_invariant_summary" not in kernel.read_text(encoding="utf-8")
     assert "_next_periodic_after" in candidate_calls
     assert "_min_expr" in candidate_calls
@@ -43,6 +48,8 @@ def test_event_window_has_no_microstep_terminal_unroll_or_memory_slot_cap():
     assert "deadline * 8" not in text
     assert "max_event_slots" not in text
     assert "build_first_bad_window" not in text
+    assert "build_exact_controller_pool" in text
+    assert "controller_bound=event_bound.controller_bound" in text
 
 
 def test_trusted_verifier_only_builds_event_first_bad_windows():
