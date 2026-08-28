@@ -32,8 +32,9 @@ from formal_toolchain.v9_2.symbolic_state import BoundModel
 from formal_toolchain.v9_2.universal_conformance import prove_universal_conformance
 from formal_toolchain.v9_2.event_refinement import prove_event_refinement
 from formal_toolchain.v9_2.event_window_encoder import (
-    ENCODER_VERSION, build_event_first_bad_window, derive_finite_event_bound,
+    ENCODER_VERSION, build_incremental_event_first_bad_window, derive_finite_event_bound,
 )
+from formal_toolchain.v9_2.incremental_event_bmc import solve_incremental_event_window
 
 
 def _read_json(path: Path) -> Any:
@@ -460,10 +461,10 @@ def verify_bundle_v9_2(
             estimated_declared_state_symbols=estimated_symbols,
         )
         build_started = perf_counter()
-        encoding = build_event_first_bad_window(model, invariant, task.name)
+        encoding = build_incremental_event_first_bad_window(model, invariant, task.name)
         build_seconds = perf_counter() - build_started
         _write_progress(
-            out, "SOLVE_FIRST_BAD_EVENT_WINDOW",
+            out, "SOLVE_FIRST_BAD_EVENT_WINDOW_INCREMENTAL_DEPTH",
             task=task.name,
             task_index=task_index,
             hi_task_count=len(model.hi_tasks),
@@ -475,12 +476,26 @@ def verify_bundle_v9_2(
             estimated_declared_state_symbols=estimated_symbols,
             build_seconds=round(build_seconds, 6),
             timeout_ms=int(timeout_ms),
+            solver_strategy="EXACT_INCREMENTAL_TERMINAL_DEPTH_BMC_V1",
         )
-        receipt = solve_formula(
+        def _incremental_progress(details: dict[str, Any]) -> None:
+            _write_progress(
+                out, "SOLVE_FIRST_BAD_EVENT_WINDOW_INCREMENTAL_DEPTH",
+                task=task.name,
+                task_index=task_index,
+                hi_task_count=len(model.hi_tasks),
+                deadline=int(task.deadline),
+                finite_event_bound=event_bound.finite_event_bound,
+                timeout_ms=int(timeout_ms),
+                solver_strategy="EXACT_INCREMENTAL_TERMINAL_DEPTH_BMC_V1",
+                **details,
+            )
+
+        receipt, sat_encoding = solve_incremental_event_window(
             f"FIRST_BAD_EVENT_WINDOW_{task.name}",
-            encoding.formula,
+            encoding,
             timeout_ms=timeout_ms,
-            capture_model=False,
+            progress=_incremental_progress,
         )
         statuses[f"FIRST_BAD_EVENT_WINDOW_{task.name}"] = _receipt_status(receipt)
         row = receipt.as_dict()
@@ -498,6 +513,8 @@ def verify_bundle_v9_2(
             "event_layer_added_abstractions": list(encoding.event_layer_added_abstractions),
             "exact_p5_in_event_window": encoding.exact_p5_in_event_window,
             "microstep_terminal_fallback_used": encoding.microstep_terminal_fallback_used,
+            "incremental_terminal_depth_bmc": True,
+            "terminal_stutter_slots_in_solver": 0,
         })
         window_receipts.append(row)
         receipts["hi_event_windows"] = window_receipts
@@ -505,15 +522,27 @@ def verify_bundle_v9_2(
 
         if receipt.result == "SAT":
             sat_tasks.append(task.name)
+            if sat_encoding is None:
+                unknown_tasks.append(task.name)
+                classifications.append({
+                    "status": "UNRESOLVED",
+                    "code": "INCREMENTAL_SAT_DEPTH_MATERIALIZATION_MISSING",
+                    "target_task": task.name,
+                })
+                receipts["sat_classification"] = classifications
+                _write(out / "proof_receipts.partial.json", receipts)
+                del encoding
+                continue
             _write_progress(
                 out, "CLASSIFY_SAT_EVENT_WINDOW",
                 task=task.name,
                 deadline=int(task.deadline),
+                decisive_depth=int(receipt.decisive_depth) if receipt.decisive_depth is not None else None,
                 max_boot_replay_ticks=int(max_boot_replay_ticks),
                 timeout_ms=int(timeout_ms),
             )
             classification = classify_sat_event_window(
-                encoding, model, invariant,
+                sat_encoding, model, invariant,
                 concrete_replayer=concrete_replayer,
                 timeout_ms=timeout_ms,
                 max_boot_ticks=max_boot_replay_ticks,
@@ -538,6 +567,8 @@ def verify_bundle_v9_2(
         elif receipt.result != "UNSAT":
             unknown_tasks.append(task.name)
 
+        if sat_encoding is not None:
+            del sat_encoding
         del encoding
 
     receipts["hi_event_windows"] = window_receipts

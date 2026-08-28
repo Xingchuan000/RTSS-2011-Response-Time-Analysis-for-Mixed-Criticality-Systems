@@ -85,7 +85,11 @@ def test_event_window_has_no_microstep_terminal_unroll_or_memory_slot_cap():
     assert "build_first_bad_window" not in text
     assert "build_exact_controller_pool" in text
     assert "controller_bound=event_bound.controller_bound" in text
+    # The monolithic builder remains as a reference encoding, while the
+    # trusted solver uses the exact incremental terminal-depth partition.
     assert "event_step_or_terminal_stutter" in text
+    assert "build_incremental_event_first_bad_window" in text
+    assert "append_exact_event_step" in text
     assert "event_boundary_stutter(" not in text
 
 
@@ -93,7 +97,8 @@ def test_trusted_verifier_only_builds_event_first_bad_windows():
     path = ROOT / "formal_toolchain/v9_2/verifier.py"
     text = path.read_text(encoding="utf-8")
     assert "prove_event_refinement" in text
-    assert "build_event_first_bad_window" in text
+    assert "build_incremental_event_first_bad_window" in text
+    assert "solve_incremental_event_window" in text
     assert "build_first_bad_window" not in text
     assert '"event_layer_added_abstractions": []' in text
     assert '"microstep_terminal_fallback_used": False' in text
@@ -111,6 +116,7 @@ def test_event_refinement_contains_bidirectional_and_differential_gates():
         "EVENT_WINDOW_ENCODING_SOUNDNESS",
         "EVENT_P5_POOL_SUPPORT_PROJECTION_EQUIVALENCE",
         "EVENT_TERMINAL_STUTTER_FACTORING_EQUIVALENCE",
+        "EVENT_INCREMENTAL_TERMINAL_DEPTH_PARTITION_EQUIVALENCE",
     ):
         assert obligation in text
     # Differential consistency is compositional: the Event closure reuses the
@@ -134,3 +140,16 @@ def test_event_window_uses_indexed_exact_demand_lookup_and_ssa_frames():
     assert "declare_sparse_successor" in symbolic_text
     assert "left.eq(right)" in transition_text
     assert "encode_p5_invariant_summary" not in (ROOT / "formal_toolchain/v9_2/event_kernel.py").read_text(encoding="utf-8")
+
+
+def test_incremental_terminal_depth_solver_is_exact_and_fail_closed():
+    solver = (ROOT / "formal_toolchain/v9_2/incremental_event_bmc.py").read_text(encoding="utf-8")
+    window = (ROOT / "formal_toolchain/v9_2/event_window_encoder.py").read_text(encoding="utf-8")
+    assert "for depth in range(0, max_depth + 1):" in solver
+    assert "encoding.append_exact_event_step()" in solver
+    assert "solver.push()" in solver and "solver.pop()" in solver
+    assert "This is the only path allowed to report window UNSAT" in solver
+    assert '"terminal_stutter_used": False' in solver
+    assert "encode_event_step(" in window
+    incremental_method = window.split("def append_exact_event_step", 1)[1].split("def build_terminal_bad_query", 1)[0]
+    assert "event_step_or_terminal_stutter" not in incremental_method

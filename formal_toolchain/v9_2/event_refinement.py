@@ -37,6 +37,7 @@ EVENT_TERMINAL_OBLIGATIONS = (
     "EVENT_PHASE_SSA_FRAME_ELIMINATION_EQUIVALENCE",
     "EVENT_P5_POOL_SUPPORT_PROJECTION_EQUIVALENCE",
     "EVENT_TERMINAL_STUTTER_FACTORING_EQUIVALENCE",
+    "EVENT_INCREMENTAL_TERMINAL_DEPTH_PARTITION_EQUIVALENCE",
     "NEXT_EVENT_MINIMALITY",
     "NEXT_EVENT_EXACT_MINIMUM",
     "NO_SKIPPED_DISCRETE_EVENT",
@@ -386,6 +387,23 @@ def _function_calls(path: Path, function_name: str) -> set[str]:
     return calls
 
 
+def _class_method_calls(path: Path, class_name: str, method_name: str) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            for child in node.body:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name == method_name:
+                    calls: set[str] = set()
+                    for nested in ast.walk(child):
+                        if isinstance(nested, ast.Call):
+                            if isinstance(nested.func, ast.Name):
+                                calls.add(nested.func.id)
+                            elif isinstance(nested.func, ast.Attribute):
+                                calls.add(nested.func.attr)
+                    return calls
+    return set()
+
+
 def _direct_parameter_attributes(path: Path, function_name: str, parameter: str) -> set[str]:
     """Direct ``parameter.<field>`` reads in one source function.
 
@@ -423,8 +441,9 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
     transition = root / "formal_toolchain/v9_2/transition_encoder.py"
     controller = root / "formal_toolchain/v9_2/controller_encoder.py"
     numeric = root / "formal_toolchain/v9_2/numeric_encoder.py"
+    incremental = root / "formal_toolchain/v9_2/incremental_event_bmc.py"
     if not all(path.is_file() for path in (
-        kernel, window, environment, symbolic, transition, controller, numeric
+        kernel, window, environment, symbolic, transition, controller, numeric, incremental
     )):
         return False, [], "V9_2_EVENT_SOURCE_MISSING"
 
@@ -442,6 +461,10 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
     candidate_calls = _function_calls(kernel, "build_event_candidates")
     step_calls = _function_calls(kernel, "encode_event_step")
     window_builder_calls = _function_calls(window, "build_event_first_bad_window")
+    incremental_step_calls = _class_method_calls(
+        window, "IncrementalEventWindowEncoding", "append_exact_event_step"
+    )
+    incremental_solver_calls = _function_calls(incremental, "solve_incremental_event_window")
     expected_closure_prefix = (
         "encode_p0_settle",
         "encode_p1_idle_recovery",
@@ -497,6 +520,19 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
         return False, [], "V9_2_EXACT_P5_POOL_BOUND_CONTRACT_MISSING"
     if "event_step_or_terminal_stutter" not in window_builder_calls:
         return False, [], "V9_2_EVENT_TERMINAL_STUTTER_FACTORING_MISSING"
+    if "encode_event_step" not in incremental_step_calls or "event_step_or_terminal_stutter" in incremental_step_calls:
+        return False, [], "V9_2_INCREMENTAL_DEPTH_MUST_USE_EXACT_ACTIVE_EVENT_STEP"
+    if not {
+        "append_exact_event_step", "build_terminal_bad_query", "push", "check", "pop"
+    } <= incremental_solver_calls:
+        return False, [], "V9_2_INCREMENTAL_DEPTH_SOLVER_CONTRACT_MISSING"
+    incremental_text = incremental.read_text(encoding="utf-8")
+    if "for depth in range(0, max_depth + 1):" not in incremental_text:
+        return False, [], "V9_2_INCREMENTAL_DEPTH_COVERAGE_NOT_EXHAUSTIVE"
+    if "terminal_stutter_used\": False" not in incremental_text:
+        return False, [], "V9_2_INCREMENTAL_DEPTH_STUTTER_ELIMINATION_CONTRACT_MISSING"
+    if "This is the only path allowed to report window UNSAT" not in incremental_text:
+        return False, [], "V9_2_INCREMENTAL_UNSAT_AGGREGATION_GUARD_MISSING"
     if "declare_sparse_successor" not in closure_calls:
         return False, [], "V9_2_EVENT_PHASE_SSA_COMPILATION_MISSING"
     environment_text = environment.read_text(encoding="utf-8")
@@ -513,6 +549,7 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
     transition_hash = sha256_text_file_normalized(transition)
     controller_hash = sha256_text_file_normalized(controller)
     numeric_hash = sha256_text_file_normalized(numeric)
+    incremental_hash = sha256_text_file_normalized(incremental)
     rows = [
         {
             "obligation_id": "EVENT_START_ABSTRACTION_SOUNDNESS",
@@ -571,6 +608,19 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
             ),
             "source_sha256": sha256_object({
                 "kernel": kernel_hash, "window": window_hash,
+            }),
+        },
+        {
+            "obligation_id": "EVENT_INCREMENTAL_TERMINAL_DEPTH_PARTITION_EQUIVALENCE",
+            "status": "PASS",
+            "proof_rule": (
+                "FINITE_EVENT_BOUND_PARTITIONED_BY_EXACT_FIRST_HORIZON_DEPTH_0_TO_N;_"
+                "EACH_PREFIX_USES_ONLY_EXACT_ACTIVE_EVENT_STEP;_"
+                "TERMINAL_STUTTER_SUFFIX_IS_IDENTITY_AND_OMITTED;_"
+                "UNSAT_REQUIRES_EVERY_DEPTH_UNSAT"
+            ),
+            "source_sha256": sha256_object({
+                "window": window_hash, "incremental_solver": incremental_hash,
             }),
         },
         {

@@ -26,7 +26,8 @@ def test_active_cli_has_no_legacy_route_selection():
 def test_event_terminal_route_has_no_microstep_fallback():
     verifier = (ROOT / "formal_toolchain/v9_2/verifier.py").read_text(encoding="utf-8")
     event_window = (ROOT / "formal_toolchain/v9_2/event_window_encoder.py").read_text(encoding="utf-8")
-    assert "build_event_first_bad_window" in verifier
+    assert "build_incremental_event_first_bad_window" in verifier
+    assert "solve_incremental_event_window" in verifier
     assert "build_first_bad_window" not in verifier
     assert '"candidate_assertions_trusted": False' in verifier
     assert '"microstep_terminal_fallback_used": False' in verifier

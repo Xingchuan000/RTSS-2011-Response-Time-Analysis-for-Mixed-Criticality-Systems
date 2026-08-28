@@ -25,6 +25,7 @@ REQUIRED_SOUNDNESS_CLAUSES = (
     "exact_controller_pool_formula_factoring",
     "indexed_demand_lookup_formula_factoring",
     "phase_ssa_frame_elimination_formula_equivalence",
+    "incremental_terminal_depth_partition_exact",
     "full_to_event_segment_simulation",
     "event_to_full_segment_realizability",
     "first_hi_bad_event_prefix_bi_reflection",

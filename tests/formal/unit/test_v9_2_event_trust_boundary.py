@@ -15,7 +15,8 @@ def test_verifier_regenerates_event_formulas_and_checks_refinement():
     source = (ROOT / "formal_toolchain/v9_2/verifier.py").read_text(encoding="utf-8")
     assert "build_bindings(request_path, source_root=source_root)" in source
     assert "prove_event_refinement" in source
-    assert "build_event_first_bad_window" in source
+    assert "build_incremental_event_first_bad_window" in source
+    assert "solve_incremental_event_window" in source
     assert "solve_formula" in source
     assert "replay_unsat" not in source
     assert "build_first_bad_window" not in source

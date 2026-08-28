@@ -28,7 +28,9 @@ from .event_kernel import (
     event_step_or_terminal_stutter,
 )
 from .safe_prefix_invariant import SafePrefixInvariant
-from .symbolic_state import BoundModel, SymbolicKernelState, declare_state
+from .symbolic_state import (
+    BoundModel, SymbolicKernelState, declare_sparse_successor, declare_state,
+)
 from .transition_encoder import (
     encode_p0_settle,
     encode_p1_idle_recovery,
@@ -36,7 +38,7 @@ from .transition_encoder import (
 )
 
 
-ENCODER_VERSION = "V9_2_EVENT_FIRST_BAD_WINDOW_V4_P5_SUPPORT_STUTTER_FACTORED"
+ENCODER_VERSION = "V9_2_EVENT_FIRST_BAD_WINDOW_V5_INCREMENTAL_TERMINAL_DEPTH"
 ENCODER_COMPLETE = True
 ENCODER_READINESS_GAPS: tuple[str, ...] = ()
 
@@ -97,6 +99,112 @@ class EventWindowEncoding:
         solver = z3.Solver()
         solver.add(self.formula)
         return solver.sexpr()
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalBadEncoding:
+    """Exact target-deadline P0->P2 bad observation at one Event depth."""
+
+    depth: int
+    terminal_state: SymbolicKernelState
+    phase_states: tuple[SymbolicKernelState, ...]
+    formula: z3.BoolRef
+
+
+@dataclass(slots=True)
+class IncrementalEventWindowEncoding:
+    """Lazily extended exact Event prefix for terminal-depth BMC.
+
+    The object owns the same admissible environment, exact controller pool and
+    P0 Event start contract as ``EventWindowEncoding``.  Unlike the monolithic
+    reference encoding, it never allocates terminal stutter slots.  Depth ``k``
+    means exactly ``k`` active Event macros followed immediately by the exact
+    target-deadline P0->P2 observation.
+    """
+
+    target_task: str
+    deadline: int
+    model: BoundModel
+    environment: Any
+    horizon_time: z3.ArithRef
+    event_bound: EventBound
+    controller_pool: ExactControllerPool
+    base_formula: z3.BoolRef
+    event_states: list[SymbolicKernelState]
+    event_steps: list[EventStepEncoding]
+    prefix_formulas: list[z3.BoolRef]
+    source_obligations: tuple[str, ...]
+    event_layer_added_abstractions: tuple[str, ...] = ()
+    exact_p5_in_event_window: bool = True
+    microstep_terminal_fallback_used: bool = False
+
+    @property
+    def start_state(self) -> SymbolicKernelState:
+        return self.event_states[0]
+
+    @property
+    def depth(self) -> int:
+        return len(self.event_steps)
+
+    def append_exact_event_step(self) -> EventStepEncoding:
+        """Append one *active* exact Event macro; terminal stutter is forbidden."""
+
+        if self.depth >= self.event_bound.finite_event_bound:
+            raise ValueError("INCREMENTAL_EVENT_DEPTH_EXCEEDS_FINITE_BOUND")
+        source = self.event_states[-1]
+        destination = declare_state(f"event.window.y.{self.depth + 1}", self.model)
+        step = encode_event_step(
+            source,
+            destination,
+            self.model,
+            self.environment,
+            horizon_time=self.horizon_time,
+            prefix=f"event.window.step.{self.depth}",
+            controller_pool=self.controller_pool,
+        )
+        # ``encode_event_step`` already enforces source.p==0 and source.t<horizon.
+        # The explicit ledger guard is the same no-prior-HI-miss condition used
+        # by the monolithic window at every active Event boundary.
+        prefix_formula = z3.And(
+            step.formula,
+            source.hi_miss_ledger == 0,
+        )
+        self.event_states.append(destination)
+        self.event_steps.append(step)
+        self.prefix_formulas.append(prefix_formula)
+        return step
+
+    def build_terminal_bad_query(self) -> TerminalBadEncoding:
+        return _build_terminal_bad_query(
+            self.event_states[-1],
+            self.model,
+            self.target_task,
+            self.horizon_time,
+            depth=self.depth,
+        )
+
+    def materialize_depth(
+        self, terminal: TerminalBadEncoding
+    ) -> EventWindowEncoding:
+        """Materialize only a decisive depth, primarily for SAT classification."""
+
+        if terminal.depth != self.depth:
+            raise ValueError("TERMINAL_DEPTH_DOES_NOT_MATCH_INCREMENTAL_PREFIX")
+        return EventWindowEncoding(
+            target_task=self.target_task,
+            deadline=self.deadline,
+            formula=z3.And(self.base_formula, *self.prefix_formulas, terminal.formula),
+            event_states=tuple(self.event_states),
+            event_steps=tuple(self.event_steps),
+            terminal_phase_states=terminal.phase_states,
+            environment=self.environment,
+            event_bound=self.event_bound,
+            controller_pool=self.controller_pool,
+            source_obligations=self.source_obligations,
+            event_layer_added_abstractions=self.event_layer_added_abstractions,
+            exact_p5_in_event_window=self.exact_p5_in_event_window,
+            microstep_terminal_fallback_used=self.microstep_terminal_fallback_used,
+        )
 
 
 def derive_finite_event_bound(model: BoundModel, target_task: str) -> EventBound:
@@ -182,11 +290,7 @@ def _allowed_environment_ticks(model: BoundModel, target_task: str, deadline: in
     }
 
 
-def build_event_first_bad_window(
-    model: BoundModel,
-    invariant: SafePrefixInvariant,
-    target_task: str,
-) -> EventWindowEncoding:
+def _validate_event_window_target(model: BoundModel, target_task: str) -> Any:
     task = model.task_by_name.get(target_task)
     if task is None or task.criticality != "HI":
         raise ValueError("FIRST_BAD_EVENT_WINDOW_TARGET_MUST_BE_HI")
@@ -194,7 +298,160 @@ def build_event_first_bad_window(
         raise ValueError("V9_2_TWO_SLOT_CARRY_IN_REQUIRES_D_LE_T")
     if model.max_jobs_per_task < (2 if any(row.criticality == "LO" for row in model.tasks) else 1):
         raise ValueError("V9_2_TWO_SLOT_CARRY_IN_CAPACITY_INVALID")
+    return task
 
+
+def _build_terminal_bad_query(
+    terminal: SymbolicKernelState,
+    model: BoundModel,
+    target_task: str,
+    horizon_time: z3.ArithRef,
+    *,
+    depth: int,
+) -> TerminalBadEncoding:
+    """Exact final deadline observation shared by monolithic/incremental BMC."""
+
+    # Reuse the already-certified exact SSA frame elimination for P0--P2 so
+    # every depth query allocates only the fields those phases may mutate.
+    terminal_p1 = declare_sparse_successor(
+        f"event.window.depth.{depth}.terminal.p1", terminal, model, phase=1,
+        mutable=frozenset({"jobs.present", "jobs.removed", "jobs.ready"}),
+    )
+    terminal_p2 = declare_sparse_successor(
+        f"event.window.depth.{depth}.terminal.p2", terminal_p1, model, phase=2,
+        mutable=frozenset({"mode"}),
+    )
+    terminal_p3 = declare_sparse_successor(
+        f"event.window.depth.{depth}.terminal.p3", terminal_p2, model, phase=3,
+        mutable=frozenset({"hi_miss_ledger"}),
+    )
+    target_slots = [
+        terminal_p2.jobs[(target_task, slot)]
+        for slot in range(model.max_jobs_per_task)
+    ]
+    target_at_deadline = z3.Or(*(
+        job.present
+        & (job.absolute_deadline == terminal_p2.t)
+        & (job.executed_service < job.effective_demand)
+        for job in target_slots
+    ))
+    formula = z3.And(
+        terminal.t == horizon_time,
+        terminal.p == 0,
+        terminal.hi_miss_ledger == 0,
+        encode_p0_settle(terminal, terminal_p1, model),
+        encode_p1_idle_recovery(terminal_p1, terminal_p2, model),
+        encode_p2_deadline_observe(terminal_p2, terminal_p3, model),
+        terminal_p2.t == horizon_time,
+        terminal_p2.p == 2,
+        terminal_p2.hi_miss_ledger == 0,
+        target_at_deadline,
+        terminal_p3.p == 3,
+        terminal_p3.hi_miss_ledger >= 1,
+    )
+    return TerminalBadEncoding(
+        depth=int(depth),
+        terminal_state=terminal,
+        phase_states=(terminal_p1, terminal_p2, terminal_p3),
+        formula=formula,
+    )
+
+
+def _window_source_obligations(*, incremental: bool) -> tuple[str, ...]:
+    rows = [
+        "event_start_is_exact_full_p0_safe_prefix_projection",
+        "event_boundary_retains_all_full_safety_relevant_fields",
+        "next_event_is_exact_minimum_of_bound_event_sources",
+        "no_release_deadline_completion_controller_event_skipped",
+        "silent_interval_service_and_eta_equal_repeated_p7",
+        "event_macro_composes_exact_p0_through_p6",
+        "first_bad_event_window_uses_window_global_exact_p5_pool",
+        "controller_pool_count_derived_from_agent_period_bound",
+        "indexed_demand_lookup_is_exact_finite_formula_factoring",
+        "phase_ssa_shares_only_canonical_frame_fields",
+    ]
+    if incremental:
+        rows.append(
+            "exact_terminal_depth_partition_enumerates_0_through_finite_event_bound_without_stutter"
+        )
+    else:
+        rows.append(
+            "terminal_stutter_is_factored_as_one_fieldwise_ite_destination_update"
+        )
+    rows.extend((
+        "event_layer_added_abstractions_empty",
+        "target_deadline_processed_exactly_through_p2",
+        "finite_event_bound_is_structural_not_memory_selected",
+    ))
+    return tuple(rows)
+
+
+def build_incremental_event_first_bad_window(
+    model: BoundModel,
+    invariant: SafePrefixInvariant,
+    target_task: str,
+) -> IncrementalEventWindowEncoding:
+    """Build the shared base of an exact terminal-depth incremental BMC.
+
+    The finite-depth partition is exact: a monolithic bounded window that first
+    reaches the horizon after ``k`` active macros has precisely the same active
+    prefix as depth ``k`` here; all later monolithic slots are semantic terminal
+    stutters and are therefore omitted rather than approximated.
+    """
+
+    task = _validate_event_window_target(model, target_task)
+    deadline = int(task.deadline)
+    event_bound = derive_finite_event_bound(model, target_task)
+    allowed_ticks = _allowed_environment_ticks(model, target_task, deadline)
+    env = declare_environment(
+        "event.window.env",
+        model,
+        release_count=deadline + 1,
+        allowed_ticks_by_task=allowed_ticks,
+    )
+    start = declare_state("event.window.y.0", model)
+    horizon_time = env.phase.origin_time + deadline
+    controller_pool = build_exact_controller_pool(
+        model,
+        origin_time=env.phase.origin_time,
+        horizon_time=horizon_time,
+        controller_bound=event_bound.controller_bound,
+        prefix="event.window.controller",
+    )
+    base_formula = z3.And(
+        controller_pool.formula,
+        *env.constraints,
+        env.phase.origin_time == start.t,
+        invariant.formula(start),
+        start.hi_miss_ledger == 0,
+        start.p == 0,
+        start.frontier.selected_slot == -1,
+        z3.Not(start.frontier.running),
+        start.eta[target_task] == task.period,
+        *target_release_constraints(env, task),
+    )
+    return IncrementalEventWindowEncoding(
+        target_task=target_task,
+        deadline=deadline,
+        model=model,
+        environment=env,
+        horizon_time=horizon_time,
+        event_bound=event_bound,
+        controller_pool=controller_pool,
+        base_formula=base_formula,
+        event_states=[start],
+        event_steps=[],
+        prefix_formulas=[],
+        source_obligations=_window_source_obligations(incremental=True),
+    )
+
+
+def build_event_first_bad_window(
+    model: BoundModel,
+    invariant: SafePrefixInvariant,
+    target_task: str,
+) -> EventWindowEncoding:
+    task = _validate_event_window_target(model, target_task)
     deadline = int(task.deadline)
     event_bound = derive_finite_event_bound(model, target_task)
     allowed_ticks = _allowed_environment_ticks(model, target_task, deadline)
@@ -262,9 +519,9 @@ def build_event_first_bad_window(
         terminal.hi_miss_ledger == 0,
     ))
 
-    # Process the target deadline timestamp exactly through P2.  If the target
-    # completed exactly at the horizon, P0 settles it before P2 and the bad
-    # predicate is false, matching the Full kernel.
+    # Keep the V4 monolithic reference encoding byte-structure as close as
+    # possible to 0051.  The incremental solver has its own sparse exact
+    # terminal query; this reference remains available for differential audit.
     terminal_p1 = declare_state("event.window.terminal.p1", model)
     terminal_p2 = declare_state("event.window.terminal.p2", model)
     terminal_p3 = declare_state("event.window.terminal.p3", model)
@@ -337,7 +594,10 @@ __all__ = [
     "EVENT_KERNEL_VERSION",
     "EventBound",
     "EventWindowEncoding",
+    "IncrementalEventWindowEncoding",
+    "TerminalBadEncoding",
     "build_event_first_bad_window",
+    "build_incremental_event_first_bad_window",
     "derive_finite_event_bound",
     "write_event_first_bad_window",
 ]
