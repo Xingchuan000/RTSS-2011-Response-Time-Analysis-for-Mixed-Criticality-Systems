@@ -19,6 +19,20 @@ def _function_calls(path: Path, name: str) -> set[str]:
     raise AssertionError(f"missing function {name} in {path}")
 
 
+def _direct_parameter_attributes(path: Path, name: str, parameter: str) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return {
+                child.attr
+                for child in ast.walk(node)
+                if isinstance(child, ast.Attribute)
+                and isinstance(child.value, ast.Name)
+                and child.value.id == parameter
+            }
+    raise AssertionError(f"missing function {name} in {path}")
+
+
 def test_event_macro_uses_exact_controller_pool_and_exact_event_minimum():
     kernel = ROOT / "formal_toolchain/v9_2/event_kernel.py"
     closure_calls = _function_calls(kernel, "_exact_p0_to_p7_closure")
@@ -26,16 +40,36 @@ def test_event_macro_uses_exact_controller_pool_and_exact_event_minimum():
     pooled_p5_calls = _function_calls(kernel, "encode_p5_from_exact_pool")
     candidate_calls = _function_calls(kernel, "build_event_candidates")
     step_calls = _function_calls(kernel, "encode_event_step")
+    transition = ROOT / "formal_toolchain/v9_2/transition_encoder.py"
+    controller = ROOT / "formal_toolchain/v9_2/controller_encoder.py"
+    numeric = ROOT / "formal_toolchain/v9_2/numeric_encoder.py"
+    full_p5_calls = _function_calls(transition, "encode_p5_controller")
 
     assert "encode_p5_controller" in closure_calls
     assert "encode_p5_from_exact_pool" in closure_calls
     assert "declare_sparse_successor" in closure_calls
-    assert "encode_p5_controller" in pool_calls
-    assert {"state_equality", "encode_p5_identity"} <= pooled_p5_calls
+    assert "encode_p5_controller_effect" in pool_calls
+    assert {
+        "_controller_effect_state_equality",
+        "encode_p5_controller_frame",
+        "encode_p5_identity",
+    } <= pooled_p5_calls
+    assert {"encode_p5_controller_effect", "encode_p5_controller_frame"} <= full_p5_calls
+    assert _direct_parameter_attributes(
+        controller, "encode_controller_decision", "state"
+    ) <= {"t", "budgets"}
+    assert _direct_parameter_attributes(
+        numeric, "encode_v11_full_10d_observation", "state"
+    ) <= {"budgets", "chi"}
     assert "encode_p5_invariant_summary" not in kernel.read_text(encoding="utf-8")
     assert "_next_periodic_after" in candidate_calls
     assert "_min_expr" in candidate_calls
-    assert {"_exact_p0_to_p7_closure", "build_event_candidates", "_silent_interval_advance"} <= step_calls
+    assert {
+        "_exact_p0_to_p7_closure",
+        "build_event_candidates",
+        "_silent_interval_core",
+        "_event_destination_update",
+    } <= step_calls
 
 
 def test_event_window_has_no_microstep_terminal_unroll_or_memory_slot_cap():
@@ -51,6 +85,8 @@ def test_event_window_has_no_microstep_terminal_unroll_or_memory_slot_cap():
     assert "build_first_bad_window" not in text
     assert "build_exact_controller_pool" in text
     assert "controller_bound=event_bound.controller_bound" in text
+    assert "event_step_or_terminal_stutter" in text
+    assert "event_boundary_stutter(" not in text
 
 
 def test_trusted_verifier_only_builds_event_first_bad_windows():
@@ -73,6 +109,8 @@ def test_event_refinement_contains_bidirectional_and_differential_gates():
         "EVENT_BAD_PREFIX_FULL_REALIZABILITY",
         "MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY",
         "EVENT_WINDOW_ENCODING_SOUNDNESS",
+        "EVENT_P5_POOL_SUPPORT_PROJECTION_EQUIVALENCE",
+        "EVENT_TERMINAL_STUTTER_FACTORING_EQUIVALENCE",
     ):
         assert obligation in text
     # Differential consistency is compositional: the Event closure reuses the

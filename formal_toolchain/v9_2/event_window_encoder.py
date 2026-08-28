@@ -25,7 +25,7 @@ from .event_kernel import (
     ExactControllerPool,
     build_exact_controller_pool,
     encode_event_step,
-    event_boundary_stutter,
+    event_step_or_terminal_stutter,
 )
 from .safe_prefix_invariant import SafePrefixInvariant
 from .symbolic_state import BoundModel, SymbolicKernelState, declare_state
@@ -36,7 +36,7 @@ from .transition_encoder import (
 )
 
 
-ENCODER_VERSION = "V9_2_EVENT_FIRST_BAD_WINDOW_V3_INDEXED_DEMAND_SSA"
+ENCODER_VERSION = "V9_2_EVENT_FIRST_BAD_WINDOW_V4_P5_SUPPORT_STUTTER_FACTORED"
 ENCODER_COMPLETE = True
 ENCODER_READINESS_GAPS: tuple[str, ...] = ()
 
@@ -246,11 +246,8 @@ def build_event_first_bad_window(
             controller_pool=controller_pool,
         )
         event_steps.append(step)
-        clauses.append(z3.Or(
-            z3.And(source.t < horizon_time, step.formula),
-            z3.And(source.t == horizon_time, event_boundary_stutter(
-                source, destination, horizon_time=horizon_time
-            )),
+        clauses.append(event_step_or_terminal_stutter(
+            step, model, horizon_time=horizon_time
         ))
         clauses.extend((
             source.t <= horizon_time,
@@ -316,6 +313,7 @@ def build_event_first_bad_window(
             "controller_pool_count_derived_from_agent_period_bound",
             "indexed_demand_lookup_is_exact_finite_formula_factoring",
             "phase_ssa_shares_only_canonical_frame_fields",
+            "terminal_stutter_is_factored_as_one_fieldwise_ite_destination_update",
             "event_layer_added_abstractions_empty",
             "target_deadline_processed_exactly_through_p2",
             "finite_event_bound_is_structural_not_memory_selected",

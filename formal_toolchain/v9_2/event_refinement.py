@@ -35,6 +35,8 @@ EVENT_TERMINAL_OBLIGATIONS = (
     "EVENT_STATE_FUTURE_SUFFICIENCY",
     "EVENT_DEMAND_LOOKUP_FACTORING_EQUIVALENCE",
     "EVENT_PHASE_SSA_FRAME_ELIMINATION_EQUIVALENCE",
+    "EVENT_P5_POOL_SUPPORT_PROJECTION_EQUIVALENCE",
+    "EVENT_TERMINAL_STUTTER_FACTORING_EQUIVALENCE",
     "NEXT_EVENT_MINIMALITY",
     "NEXT_EVENT_EXACT_MINIMUM",
     "NO_SKIPPED_DISCRETE_EVENT",
@@ -384,6 +386,34 @@ def _function_calls(path: Path, function_name: str) -> set[str]:
     return calls
 
 
+def _direct_parameter_attributes(path: Path, function_name: str, parameter: str) -> set[str]:
+    """Direct ``parameter.<field>`` reads in one source function.
+
+    This is intentionally a narrow architecture guard, not a semantic parser.
+    It prevents the pooled P5 support projection from silently becoming stale
+    if future controller code starts reading jobs/mode/eta/etc.  The source
+    hashes in the structural receipt then bind this guard to the certified
+    implementation.
+    """
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    target = next(
+        (node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name),
+        None,
+    )
+    if target is None:
+        return set()
+    result: set[str] = set()
+    for node in ast.walk(target):
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == parameter
+        ):
+            result.add(node.attr)
+    return result
+
+
 def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], str | None]:
     root = Path(source_root).resolve()
     kernel = root / "formal_toolchain/v9_2/event_kernel.py"
@@ -391,15 +421,27 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
     environment = root / "formal_toolchain/v9_2/environment_encoder.py"
     symbolic = root / "formal_toolchain/v9_2/symbolic_state.py"
     transition = root / "formal_toolchain/v9_2/transition_encoder.py"
-    if not all(path.is_file() for path in (kernel, window, environment, symbolic, transition)):
+    controller = root / "formal_toolchain/v9_2/controller_encoder.py"
+    numeric = root / "formal_toolchain/v9_2/numeric_encoder.py"
+    if not all(path.is_file() for path in (
+        kernel, window, environment, symbolic, transition, controller, numeric
+    )):
         return False, [], "V9_2_EVENT_SOURCE_MISSING"
 
     closure_calls = _function_calls(kernel, "_exact_p0_to_p7_closure")
     closure_sequence = _encoder_call_sequence(kernel, "_exact_p0_to_p7_closure")
     pool_builder_calls = _function_calls(kernel, "build_exact_controller_pool")
     pooled_p5_calls = _function_calls(kernel, "encode_p5_from_exact_pool")
+    full_p5_calls = _function_calls(transition, "encode_p5_controller")
+    controller_state_reads = _direct_parameter_attributes(
+        controller, "encode_controller_decision", "state"
+    )
+    numeric_state_reads = _direct_parameter_attributes(
+        numeric, "encode_v11_full_10d_observation", "state"
+    )
     candidate_calls = _function_calls(kernel, "build_event_candidates")
     step_calls = _function_calls(kernel, "encode_event_step")
+    window_builder_calls = _function_calls(window, "build_event_first_bad_window")
     expected_closure_prefix = (
         "encode_p0_settle",
         "encode_p1_idle_recovery",
@@ -411,16 +453,37 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
         return False, [], "V9_2_FULL_EVENT_CLOSURE_DEFINITIONAL_IDENTITY_MISSING"
     if not {"encode_p5_controller", "encode_p5_from_exact_pool"} <= closure_calls:
         return False, [], "V9_2_EXACT_P5_POOL_DISPATCH_MISSING"
-    if "encode_p5_controller" not in pool_builder_calls:
+    if "encode_p5_controller_effect" not in pool_builder_calls:
         return False, [], "V9_2_EXACT_P5_POOL_SOURCE_CONTRACT_MISSING"
-    if not {"state_equality", "encode_p5_identity"} <= pooled_p5_calls:
+    if not {
+        "_controller_effect_state_equality",
+        "encode_p5_controller_frame",
+        "encode_p5_identity",
+    } <= pooled_p5_calls:
         return False, [], "V9_2_EXACT_P5_POOL_LINK_CONTRACT_MISSING"
+    if not {"encode_p5_controller_effect", "encode_p5_controller_frame"} <= full_p5_calls:
+        return False, [], "V9_2_EXACT_P5_EFFECT_FRAME_DECOMPOSITION_MISSING"
+    # The pooled support is exact only while the deployed controller observes
+    # no Full-state fields beyond time, budgets and RuntimeFeatureState.  Bind
+    # that architectural fact into the trusted structural gate rather than
+    # relying on a comment that could become stale after future edits.
+    if not controller_state_reads <= {"t", "budgets"}:
+        return False, [], "V9_2_P5_POOL_CONTROLLER_SUPPORT_DRIFT"
+    if not numeric_state_reads <= {"budgets", "chi"}:
+        return False, [], "V9_2_P5_POOL_NUMERIC_SUPPORT_DRIFT"
     kernel_text = kernel.read_text(encoding="utf-8")
     if "encode_p5_invariant_summary" in kernel_text:
         return False, [], "V9_2_EVENT_P5_SUMMARY_FORBIDDEN"
     if not {"_next_periodic_after", "_min_expr"} <= candidate_calls:
         return False, [], "V9_2_EVENT_CANDIDATE_SOURCE_CONTRACT_MISSING"
-    if not {"_exact_p0_to_p7_closure", "build_event_candidates", "_silent_interval_advance"} <= step_calls:
+    # V4 splits the exact silent relation into destination-free core plus a
+    # single destination update so the terminal stutter branch can share it.
+    if not {
+        "_exact_p0_to_p7_closure",
+        "build_event_candidates",
+        "_silent_interval_core",
+        "_event_destination_update",
+    } <= step_calls:
         return False, [], "V9_2_EVENT_MACRO_SOURCE_CONTRACT_MISSING"
 
     window_text = window.read_text(encoding="utf-8")
@@ -432,6 +495,8 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
         return False, [], "V9_2_EXACT_P5_EVENT_WINDOW_CONTRACT_MISSING"
     if "build_exact_controller_pool" not in window_text or "controller_bound=event_bound.controller_bound" not in window_text:
         return False, [], "V9_2_EXACT_P5_POOL_BOUND_CONTRACT_MISSING"
+    if "event_step_or_terminal_stutter" not in window_builder_calls:
+        return False, [], "V9_2_EVENT_TERMINAL_STUTTER_FACTORING_MISSING"
     if "declare_sparse_successor" not in closure_calls:
         return False, [], "V9_2_EVENT_PHASE_SSA_COMPILATION_MISSING"
     environment_text = environment.read_text(encoding="utf-8")
@@ -446,6 +511,8 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
     environment_hash = sha256_text_file_normalized(environment)
     symbolic_hash = sha256_text_file_normalized(symbolic)
     transition_hash = sha256_text_file_normalized(transition)
+    controller_hash = sha256_text_file_normalized(controller)
+    numeric_hash = sha256_text_file_normalized(numeric)
     rows = [
         {
             "obligation_id": "EVENT_START_ABSTRACTION_SOUNDNESS",
@@ -480,6 +547,33 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
             }),
         },
         {
+            "obligation_id": "EVENT_P5_POOL_SUPPORT_PROJECTION_EQUIVALENCE",
+            "status": "PASS",
+            "proof_rule": (
+                "EXACT_P5_DECOMPOSES_INTO_CONTROLLER_EFFECT_AND_EXACT_FRAME;_"
+                "POOL_LINKS_ONLY_EFFECT_READ_WRITE_SUPPORT_WHILE_EVENT_LOCAL_SSA_SUPPLIES_FRAME"
+            ),
+            "controller_state_reads": sorted(controller_state_reads),
+            "numeric_state_reads": sorted(numeric_state_reads),
+            "source_sha256": sha256_object({
+                "kernel": kernel_hash,
+                "transition": transition_hash,
+                "controller": controller_hash,
+                "numeric": numeric_hash,
+            }),
+        },
+        {
+            "obligation_id": "EVENT_TERMINAL_STUTTER_FACTORING_EQUIVALENCE",
+            "status": "PASS",
+            "proof_rule": (
+                "ACTIVE_EVENT_UPDATE_OR_EXACT_TERMINAL_STATE_EQUALITY_FACTORED_INTO_"
+                "GUARDED_CORE_PLUS_ONE_FIELDWISE_ITE_DESTINATION_ASSIGNMENT"
+            ),
+            "source_sha256": sha256_object({
+                "kernel": kernel_hash, "window": window_hash,
+            }),
+        },
+        {
             "obligation_id": "MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY::P0_P6_DEFINITIONAL_IDENTITY",
             "status": "PASS",
             "proof_rule": "EVENT_CLOSURE_REUSES_CANONICAL_P0_P4_P6_AND_FORMULA_EQUIVALENT_EXACT_P5_POOL",
@@ -489,7 +583,10 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
         {
             "obligation_id": "EXACT_P5_AT_CONTROLLER_EVENT",
             "status": "PASS",
-            "proof_rule": "WINDOW_GLOBAL_POOL_CALLS_EXACT_DEPLOYED_P5_AND_EVENT_LOCAL_LINK_IS_FIELD_EQUALITY",
+            "proof_rule": (
+                "WINDOW_GLOBAL_POOL_CALLS_EXACT_CONTROLLER_EFFECT;_"
+                "EVENT_LOCAL_SSA_SUPPLIES_EXACT_P5_FRAME_AND_SUPPORT_LINK_IS_EXACT_EQUALITY"
+            ),
             "source_sha256": kernel_hash,
         },
         {
@@ -673,6 +770,8 @@ def prove_event_refinement(
     segment_dependencies = (
         "EVENT_START_PROJECTION_EXACTNESS",
         "EVENT_STATE_FUTURE_SUFFICIENCY",
+        "EVENT_P5_POOL_SUPPORT_PROJECTION_EQUIVALENCE",
+        "EVENT_TERMINAL_STUTTER_FACTORING_EQUIVALENCE",
         "NO_SPURIOUS_EVENT_SOURCE",
         "NO_SKIPPED_DISCRETE_EVENT",
         "SILENT_INTERVAL_SERVICE_EQUIVALENCE",

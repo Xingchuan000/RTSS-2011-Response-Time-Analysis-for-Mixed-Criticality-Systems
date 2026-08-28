@@ -366,8 +366,35 @@ def encode_p5_invariant_summary(
 
 
 def encode_p5_controller(z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
+    """Exact deployed P5 relation.
+
+    Keep the controller-owned effect separate from the phase frame.  Event
+    windows can then pool the expensive observation/tree/mask relation over
+    only the fields that P5 actually reads or writes, while the event-local
+    SSA chain supplies the unchanged Full-state frame exactly.  The conjunction
+    here is definitionally identical to the former monolithic relation.
+    """
+
+    return z3.And(
+        encode_p5_controller_effect(z, zp, model),
+        encode_p5_controller_frame(z, zp, model),
+    )
+
+
+def encode_p5_controller_effect(
+    z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel
+) -> z3.BoolRef:
+    """Exact P5 projection onto controller-owned state.
+
+    Production P5 observes only ``t``, budgets and RuntimeFeatureState history,
+    and it writes only budgets/history.  Jobs, eta, mode, frontier and the miss
+    ledger are pure frame fields.  Separating those frame equalities is formula
+    factoring only; :func:`encode_p5_controller` still exposes the complete
+    Full-kernel relation.
+    """
+
     decision = encode_controller_decision(z, model)
-    clauses = _phase(z, zp, 5, 6) + _frame_state(z, zp, model, mutable=frozenset({"budgets", "history"}))
+    clauses = _phase(z, zp, 5, 6)
     # The deployed agent is periodic.  Outside an activation timestamp P5 is an
     # identity budget transition.  At an activation timestamp every auxiliary
     # policy equation is enforced and the selected candidate becomes B'.
@@ -384,6 +411,22 @@ def encode_p5_controller(z: SymbolicKernelState, zp: SymbolicKernelState, model:
     clauses.append(z3.Implies(decision.enabled, z3.And(*_history_domain(zp, model))))
     clauses.append(z3.Implies(z3.Not(decision.enabled), history_identity))
     return z3.And(*clauses)
+
+
+def encode_p5_controller_frame(
+    z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel
+) -> z3.BoolRef:
+    """Exact non-controller frame of P5.
+
+    ``budgets`` and ``history`` are intentionally excluded because they are the
+    controller-owned effect encoded by :func:`encode_p5_controller_effect`.
+    With sparse P5 successors this normally simplifies to ``True`` because the
+    unchanged fields are structurally shared rather than re-declared.
+    """
+
+    return z3.And(*_frame_state(
+        z, zp, model, mutable=frozenset({"budgets", "history"})
+    ))
 
 
 def _slot_index(model: BoundModel, key: tuple[str, int]) -> int:
@@ -501,6 +544,7 @@ def encode_step(
 __all__ = [
     "encode_p0_settle", "encode_p1_idle_recovery", "encode_p2_deadline_observe",
     "encode_p3_arrival_freeze", "encode_p4_mode_switch", "encode_p5_identity",
-    "encode_p5_controller", "encode_p6_dispatch", "encode_p7_time_and_service",
+    "encode_p5_controller", "encode_p5_controller_effect", "encode_p5_controller_frame",
+    "encode_p6_dispatch", "encode_p7_time_and_service",
     "encode_phase_step", "encode_step",
 ]

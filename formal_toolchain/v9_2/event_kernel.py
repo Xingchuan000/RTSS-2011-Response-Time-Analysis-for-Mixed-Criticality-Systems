@@ -28,12 +28,14 @@ from .transition_encoder import (
     encode_p3_arrival_freeze,
     encode_p4_mode_switch,
     encode_p5_controller,
+    encode_p5_controller_effect,
+    encode_p5_controller_frame,
     encode_p5_identity,
     encode_p6_dispatch,
 )
 
 
-EVENT_KERNEL_VERSION = "V9_2_EXACT_EVENT_MACRO_V3_SSA_EXACT_P5_POOL"
+EVENT_KERNEL_VERSION = "V9_2_EXACT_EVENT_MACRO_V4_SSA_P5_SUPPORT_POOL"
 
 
 def _job_fields(job: SymbolicJob) -> tuple[z3.ExprRef, ...]:
@@ -87,6 +89,55 @@ def state_equality(left: SymbolicKernelState, right: SymbolicKernelState) -> z3.
     return z3.And(*clauses)
 
 
+def _append_if_distinct(
+    clauses: list[z3.BoolRef], left: z3.ExprRef, right: z3.ExprRef
+) -> None:
+    """Append an equality only when the two ASTs are not already shared."""
+
+    if not left.eq(right):
+        clauses.append(left == right)
+
+
+def _controller_effect_state_equality(
+    left: SymbolicKernelState,
+    right: SymbolicKernelState,
+    *,
+    include_time: bool,
+) -> z3.BoolRef:
+    """Equality over the exact read/write support of deployed P5.
+
+    The controller reads ``t``, budgets and RuntimeFeatureState history and
+    writes budgets/history.  All other Full-state fields are exact P5 frame
+    fields and are handled by ``encode_p5_controller_frame`` in the event-local
+    SSA chain.  Keeping them out of every pool link prevents the same hundreds
+    of job/frame equalities from being copied for every Event slot.
+    """
+
+    clauses: list[z3.BoolRef] = []
+    if include_time:
+        _append_if_distinct(clauses, left.t, right.t)
+    for name in left.budgets:
+        _append_if_distinct(clauses, left.budgets[name], right.budgets[name])
+    for lhs, rhs in (
+        (left.chi.recent_cost, right.chi.recent_cost),
+        (left.chi.ema_cost, right.chi.ema_cost),
+        (left.chi.overrun_ema, right.chi.overrun_ema),
+        (left.chi.max_cost_k, right.chi.max_cost_k),
+    ):
+        for name in lhs:
+            _append_if_distinct(clauses, lhs[name], rhs[name])
+    for lhs_values, rhs_values in (
+        (left.chi.mode_change_window, right.chi.mode_change_window),
+        (left.chi.lo_cancel_window, right.chi.lo_cancel_window),
+        (left.chi.hi_overrun_window, right.chi.hi_overrun_window),
+        (left.chi.lo_overrun_window, right.chi.lo_overrun_window),
+        (left.chi.job_start_window, right.chi.job_start_window),
+    ):
+        for lhs, rhs in zip(lhs_values, rhs_values):
+            _append_if_distinct(clauses, lhs, rhs)
+    return z3.And(*clauses)
+
+
 def _min_expr(values: Iterable[z3.ArithRef]) -> z3.ArithRef:
     rows = list(values)
     if not rows:
@@ -118,9 +169,11 @@ def _slot_index(model: BoundModel, key: tuple[str, int]) -> int:
 class ExactControllerInstance:
     """One exact deployed P5 instance at a concrete periodic activation time.
 
-    Instances are pooled per finite event window.  The expensive
-    observation->tree->mask->FirstValid relation is constructed once per
-    *possible controller activation*, not once per Event slot.
+    Instances are pooled per finite event window.  The expensive exact
+    controller-owned observation->tree->mask->FirstValid/budget/history
+    effect is constructed once per *possible controller activation*, not once
+    per Event slot.  The non-controller Full-state frame remains event-local
+    and exact.
     """
 
     activation_time: z3.ArithRef
@@ -160,10 +213,11 @@ def build_exact_controller_pool(
     """Construct exactly the finite controller activations that can affect a window.
 
     ``controller_bound`` is the structural bound ``floor(D/Tctrl)+1`` already
-    proved by the V9.2 finite-event theorem.  Every exact P5 formula is built
-    once here and later shared by every Event slot whose P5 timestamp equals
-    the corresponding activation time.  No controller summary or widened
-    behavior is introduced.
+    proved by the V9.2 finite-event theorem.  Every exact controller-owned P5
+    effect is built once here and later shared by every Event slot whose P5
+    timestamp equals the corresponding activation time.  The exact P5 frame
+    is kept in the event-local sparse state chain.  No controller summary or
+    widened behavior is introduced.
     """
 
     controller_bound = int(controller_bound)
@@ -176,7 +230,11 @@ def build_exact_controller_pool(
         activation_time = first + index * int(model.agent_period)
         pre = declare_state(f"{prefix}.{index}.pre", model)
         post = declare_state(f"{prefix}.{index}.post", model)
-        exact = encode_p5_controller(pre, post, model)
+        # Pool only the controller-owned exact relation.  The complete deployed
+        # P5 is definitionally ``effect AND frame``; event-local sparse P5
+        # successors supply that exact frame without re-copying it into every
+        # pooled instance and every Event-slot link.
+        exact = encode_p5_controller_effect(pre, post, model)
         # Only activations strictly before the target horizon are part of the
         # event-window P5 sequence.  The exact formula is guarded rather than
         # used as an unconstrained terminal-side witness.
@@ -207,9 +265,12 @@ def encode_p5_from_exact_pool(
     """Exact P5 with window-global sharing of expensive controller formulas.
 
     When ``t mod Tctrl != 0`` this is strict identity, exactly as deployed P5.
-    At an activation timestamp, the event-local pre/post states are equated to
-    the unique pooled exact-P5 instance for that timestamp.  Hence this is a
-    formula-factoring transformation, not a controller abstraction.
+    At an activation timestamp, only the exact P5 read/write support
+    (time/budgets/history on input and budgets/history on output) is linked to
+    the unique pooled controller effect for that timestamp; the complete
+    non-controller frame is imposed locally by ``encode_p5_controller_frame``.
+    The conjunction is definitionally the deployed P5 relation, so this is
+    formula factoring rather than a controller abstraction.
     """
 
     enabled = (z.t % model.agent_period) == 0
@@ -220,8 +281,12 @@ def encode_p5_from_exact_pool(
         active_rows.append(z3.And(
             in_window,
             at_instance,
-            state_equality(z, instance.pre_state),
-            state_equality(zp, instance.post_state),
+            _controller_effect_state_equality(
+                z, instance.pre_state, include_time=True
+            ),
+            _controller_effect_state_equality(
+                zp, instance.post_state, include_time=False
+            ),
         ))
 
     # Exact periodic arithmetic plus the finite pool must cover every enabled
@@ -231,6 +296,7 @@ def encode_p5_from_exact_pool(
     return z3.And(
         z.p == 5,
         zp.p == 6,
+        encode_p5_controller_frame(z, zp, model),
         z3.Implies(z3.Not(enabled), encode_p5_identity(z, zp, model)),
         z3.Implies(enabled, exact_active),
     )
@@ -258,6 +324,8 @@ class EventStepEncoding:
     phase_states: tuple[SymbolicKernelState, ...]
     candidates: EventCandidateSet
     delta: z3.ArithRef
+    closure_formula: z3.BoolRef
+    silent_core_formula: z3.BoolRef
     formula: z3.BoolRef
 
 
@@ -387,66 +455,24 @@ def build_event_candidates(
     )
 
 
-def _silent_interval_advance(
+def _silent_interval_core(
     dispatch_state: SymbolicKernelState,
-    destination: SymbolicKernelState,
     model: BoundModel,
     candidates: EventCandidateSet,
 ) -> z3.BoolRef:
-    """Exact quotient of repeated P7 ticks over an event-free interval."""
+    """Destination-free side conditions of an exact silent P7 interval."""
 
     next_time = candidates.next_time
     delta = next_time - dispatch_state.t
     clauses: list[z3.BoolRef] = [
-        destination.t == next_time,
-        destination.p == 0,
-        destination.mode_hi == dispatch_state.mode_hi,
-        destination.hi_miss_ledger == dispatch_state.hi_miss_ledger,
-        destination.frontier.selected_slot == -1,
-        z3.Not(destination.frontier.running),
         delta >= 1,
         next_time <= candidates.horizon,
     ]
 
-    for task in model.tasks:
-        clauses.extend((
-            destination.budgets[task.name] == dispatch_state.budgets[task.name],
-            destination.eta[task.name] == z3.If(
-                dispatch_state.eta[task.name] + delta < task.period,
-                dispatch_state.eta[task.name] + delta,
-                task.period,
-            ),
-            destination.chi.recent_cost[task.name] == dispatch_state.chi.recent_cost[task.name],
-            destination.chi.ema_cost[task.name] == dispatch_state.chi.ema_cost[task.name],
-            destination.chi.overrun_ema[task.name] == dispatch_state.chi.overrun_ema[task.name],
-            destination.chi.max_cost_k[task.name] == dispatch_state.chi.max_cost_k[task.name],
-        ))
-
-    for lhs, rhs in (
-        (destination.chi.mode_change_window, dispatch_state.chi.mode_change_window),
-        (destination.chi.lo_cancel_window, dispatch_state.chi.lo_cancel_window),
-        (destination.chi.hi_overrun_window, dispatch_state.chi.hi_overrun_window),
-        (destination.chi.lo_overrun_window, dispatch_state.chi.lo_overrun_window),
-        (destination.chi.job_start_window, dispatch_state.chi.job_start_window),
-    ):
-        clauses.extend(a == b for a, b in zip(lhs, rhs))
-
     selected_remaining_terms: list[z3.BoolRef] = []
     for key, job in dispatch_state.jobs.items():
-        other = destination.jobs[key]
         index = _slot_index(model, key)
         selected = dispatch_state.frontier.selected_slot == index
-        for field_name in (
-            "present", "release_index", "release_time", "absolute_deadline",
-            "tie_break", "release_entry_mode_hi", "classification_abnormal",
-            "budget_at_release", "actual_demand", "effective_demand",
-            "removed", "ready",
-        ):
-            clauses.append(getattr(other, field_name) == getattr(job, field_name))
-        clauses.append(
-            other.executed_service
-            == job.executed_service + z3.If(selected, delta, 0)
-        )
         selected_remaining_terms.append(z3.Implies(
             selected,
             z3.And(
@@ -464,6 +490,168 @@ def _silent_interval_advance(
     clauses.extend(candidates.next_time <= value for value in candidates.all_candidates)
     clauses.append(z3.Or(*(candidates.next_time == value for value in candidates.all_candidates)))
     return z3.And(*clauses)
+
+
+def _event_destination_update(
+    dispatch_state: SymbolicKernelState,
+    destination: SymbolicKernelState,
+    model: BoundModel,
+    candidates: EventCandidateSet,
+    *,
+    active_guard: z3.BoolRef | None = None,
+    stutter_source: SymbolicKernelState | None = None,
+) -> z3.BoolRef:
+    """Write one event-boundary successor, optionally factoring terminal stutter.
+
+    With ``active_guard=None`` this is the ordinary exact silent-interval
+    destination relation.  With a guard and ``stutter_source``, each destination
+    field is assigned once as ``If(active, active_rhs, source_rhs)``.  This is
+    Boolean/SSA factoring of
+
+      ``(active & ActiveUpdate(dst)) | (!active & dst=src)``
+
+    and avoids serializing a second complete Full-state equality at every
+    bounded Event slot.
+    """
+
+    if (active_guard is None) != (stutter_source is None):
+        raise ValueError("active_guard and stutter_source must be supplied together")
+
+    def choose(active_value: z3.ExprRef, stutter_value: z3.ExprRef | None = None) -> z3.ExprRef:
+        if active_guard is None:
+            return active_value
+        assert stutter_value is not None
+        return z3.If(active_guard, active_value, stutter_value)
+
+    next_time = candidates.next_time
+    delta = next_time - dispatch_state.t
+    source = stutter_source
+    clauses: list[z3.BoolRef] = [
+        destination.t == choose(next_time, None if source is None else source.t),
+        destination.p == choose(z3.IntVal(0), None if source is None else source.p),
+        destination.mode_hi == choose(
+            dispatch_state.mode_hi, None if source is None else source.mode_hi
+        ),
+        destination.hi_miss_ledger == choose(
+            dispatch_state.hi_miss_ledger,
+            None if source is None else source.hi_miss_ledger,
+        ),
+        destination.frontier.selected_slot == choose(
+            z3.IntVal(-1), None if source is None else source.frontier.selected_slot
+        ),
+        destination.frontier.running == choose(
+            z3.BoolVal(False), None if source is None else source.frontier.running
+        ),
+    ]
+
+    for task in model.tasks:
+        clauses.extend((
+            destination.budgets[task.name] == choose(
+                dispatch_state.budgets[task.name],
+                None if source is None else source.budgets[task.name],
+            ),
+            destination.eta[task.name] == choose(
+                z3.If(
+                    dispatch_state.eta[task.name] + delta < task.period,
+                    dispatch_state.eta[task.name] + delta,
+                    task.period,
+                ),
+                None if source is None else source.eta[task.name],
+            ),
+            destination.chi.recent_cost[task.name] == choose(
+                dispatch_state.chi.recent_cost[task.name],
+                None if source is None else source.chi.recent_cost[task.name],
+            ),
+            destination.chi.ema_cost[task.name] == choose(
+                dispatch_state.chi.ema_cost[task.name],
+                None if source is None else source.chi.ema_cost[task.name],
+            ),
+            destination.chi.overrun_ema[task.name] == choose(
+                dispatch_state.chi.overrun_ema[task.name],
+                None if source is None else source.chi.overrun_ema[task.name],
+            ),
+            destination.chi.max_cost_k[task.name] == choose(
+                dispatch_state.chi.max_cost_k[task.name],
+                None if source is None else source.chi.max_cost_k[task.name],
+            ),
+        ))
+
+    for lhs, active_values, stutter_values in (
+        (
+            destination.chi.mode_change_window,
+            dispatch_state.chi.mode_change_window,
+            None if source is None else source.chi.mode_change_window,
+        ),
+        (
+            destination.chi.lo_cancel_window,
+            dispatch_state.chi.lo_cancel_window,
+            None if source is None else source.chi.lo_cancel_window,
+        ),
+        (
+            destination.chi.hi_overrun_window,
+            dispatch_state.chi.hi_overrun_window,
+            None if source is None else source.chi.hi_overrun_window,
+        ),
+        (
+            destination.chi.lo_overrun_window,
+            dispatch_state.chi.lo_overrun_window,
+            None if source is None else source.chi.lo_overrun_window,
+        ),
+        (
+            destination.chi.job_start_window,
+            dispatch_state.chi.job_start_window,
+            None if source is None else source.chi.job_start_window,
+        ),
+    ):
+        if stutter_values is None:
+            clauses.extend(a == b for a, b in zip(lhs, active_values))
+        else:
+            clauses.extend(
+                a == choose(b, c)
+                for a, b, c in zip(lhs, active_values, stutter_values)
+            )
+
+    job_field_names = (
+        "present", "release_index", "release_time", "absolute_deadline",
+        "tie_break", "release_entry_mode_hi", "classification_abnormal",
+        "budget_at_release", "actual_demand", "effective_demand",
+        "removed", "ready",
+    )
+    for key, job in dispatch_state.jobs.items():
+        other = destination.jobs[key]
+        source_job = None if source is None else source.jobs[key]
+        index = _slot_index(model, key)
+        selected = dispatch_state.frontier.selected_slot == index
+        for field_name in job_field_names:
+            clauses.append(
+                getattr(other, field_name)
+                == choose(
+                    getattr(job, field_name),
+                    None if source_job is None else getattr(source_job, field_name),
+                )
+            )
+        clauses.append(
+            other.executed_service
+            == choose(
+                job.executed_service + z3.If(selected, delta, 0),
+                None if source_job is None else source_job.executed_service,
+            )
+        )
+    return z3.And(*clauses)
+
+
+def _silent_interval_advance(
+    dispatch_state: SymbolicKernelState,
+    destination: SymbolicKernelState,
+    model: BoundModel,
+    candidates: EventCandidateSet,
+) -> z3.BoolRef:
+    """Exact quotient of repeated P7 ticks over an event-free interval."""
+
+    return z3.And(
+        _silent_interval_core(dispatch_state, model, candidates),
+        _event_destination_update(dispatch_state, destination, model, candidates),
+    )
 
 
 def encode_event_step(
@@ -488,11 +676,13 @@ def encode_event_step(
     dispatch_state = phase_states[-1]
     candidates = build_event_candidates(dispatch_state, model, horizon_time=horizon_time)
     delta = candidates.next_time - source.t
+    silent_core = _silent_interval_core(dispatch_state, model, candidates)
     formula = z3.And(
         source.p == 0,
         source.t < horizon_time,
         closure,
-        _silent_interval_advance(dispatch_state, destination, model, candidates),
+        silent_core,
+        _event_destination_update(dispatch_state, destination, model, candidates),
     )
     return EventStepEncoding(
         source=source,
@@ -500,7 +690,45 @@ def encode_event_step(
         phase_states=phase_states,
         candidates=candidates,
         delta=delta,
+        closure_formula=closure,
+        silent_core_formula=silent_core,
         formula=formula,
+    )
+
+
+def event_step_or_terminal_stutter(
+    step: EventStepEncoding,
+    model: BoundModel,
+    *,
+    horizon_time: z3.ArithRef,
+) -> z3.BoolRef:
+    """Exact active-step/terminal-stutter disjunction with one state update.
+
+    The old encoding serialized a complete active destination relation and a
+    second complete ``state_equality`` for the terminal branch at every slot.
+    Because event-window callers separately enforce ``source.t <= horizon``,
+    ``source.t < horizon`` and ``source.t == horizon`` are exhaustive.  The two
+    branches can therefore share one fieldwise ITE destination assignment while
+    the expensive closure/core constraints remain guarded only by the active
+    branch.  No event behavior is added or removed.
+    """
+
+    source = step.source
+    dispatch_state = step.phase_states[-1]
+    active = source.t < horizon_time
+    return z3.And(
+        source.p == 0,
+        source.t <= horizon_time,
+        z3.Implies(active, step.closure_formula),
+        z3.Implies(active, step.silent_core_formula),
+        _event_destination_update(
+            dispatch_state,
+            step.destination,
+            model,
+            step.candidates,
+            active_guard=active,
+            stutter_source=source,
+        ),
     )
 
 
@@ -529,6 +757,7 @@ __all__ = [
     "EventStepEncoding",
     "build_event_candidates",
     "encode_event_step",
+    "event_step_or_terminal_stutter",
     "event_boundary_stutter",
     "state_equality",
 ]
