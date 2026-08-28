@@ -1,6 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "object",
-  "required": ["construction_version", "prefix_fingerprint", "full_task_count", "prefix_task_count", "tasks", "hi_fields_equal", "lo_saturation_equalities", "timing_fields_equal"],
-  "properties": {"construction_version": {"const": "saturated-protected-prefix-v1"}, "prefix_fingerprint": {"type": "string"}, "full_task_count": {"type": "integer"}, "prefix_task_count": {"type": "integer"}, "tasks": {"type": "array"}, "hi_fields_equal": {"const": true}, "lo_saturation_equalities": {"type": "array"}, "timing_fields_equal": {"const": true}}
-}

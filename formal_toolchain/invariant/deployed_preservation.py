@@ -127,7 +127,7 @@ def check_deployed_policy_preservation(
     explicit_noop_ids = tuple(
         int(value) for value in mask_contract.get("explicit_noop_action_ids", ())
     )
-    # Defence in depth for V7 A6/A7.  The mask/fallback certificate normally
+    # The mask/fallback certificate normally
     # rejects this earlier, but preservation must not certify an explicit-noop
     # deployment under a top1-only selection rule if called independently.
     if explicit_noop and selection_semantics != "ranked_first_valid":

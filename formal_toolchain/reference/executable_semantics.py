@@ -9,9 +9,8 @@ from formal_toolchain.reference.reference_state import (
     ReferenceModeSwitch,
 )
 from formal_toolchain.reference.c_amc_sem_semantics import (
-    classify_arrival_batch, decide_reference_release,
+    classify_arrival_batch, decide_reference_release, recovery_is_legal,
 )
-from formal_toolchain.reference.semantics_contract import recovery_is_legal
 from formal_toolchain.bridge.logical_events import LogicalEvent, LogicalEventKind, PHASE_RANK
 from formal_toolchain.adapters.formal_runtime_snapshot import (
     ReleasedJobRecord, TerminalRecord, MissRecord,

@@ -37,6 +37,23 @@ class ReferenceReleaseDecision:
     release_budget: int
 
 
+def recovery_is_legal(
+    *,
+    mode: str,
+    active_job_count: int,
+    running_job_present: bool,
+    pending_release_count: int,
+) -> bool:
+    """Exact C-AMC-sem quiescent HI->LO recovery predicate."""
+
+    return bool(
+        mode == "HI"
+        and active_job_count == 0
+        and not running_job_present
+        and pending_release_count == 0
+    )
+
+
 def classify_arrival_batch(
     *,
     mode_before: str,

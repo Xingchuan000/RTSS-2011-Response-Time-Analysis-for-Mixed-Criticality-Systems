@@ -15,9 +15,7 @@ from formal_toolchain.semantics.frozen_runtime_contract import (
     frozen_runtime_wrapper_path, frozen_contract_manifest,
 )
 from formal_toolchain.core.z3_resources import new_context, new_solver
-from formal_toolchain.reference.protected_priority_prefix.pp0_checker import (
-    _solve_code_bound_smt2,
-)
+from formal_toolchain.theory.smt_solver import solve_closed_smt2
 
 
 ARRIVAL_BATCH_ALTERNATIVES = (
@@ -63,7 +61,7 @@ def prove_reschedule_partition() -> dict[str, object]:
         dispatch = f"(and (not {keep}) (not selected_is_none))"
 
         def unsat(assertion: str) -> bool:
-            result, _ = _solve_code_bound_smt2(
+            result, _ = solve_closed_smt2(
                 declarations + f"\n(assert {assertion})\n(check-sat)\n"
             )
             return result == "UNSAT"
@@ -129,7 +127,7 @@ def prove_handler_reschedule_unreachability() -> dict[str, object]:
         }
         result = {}
         for name, formula in checks.items():
-            solver_result, _ = _solve_code_bound_smt2(
+            solver_result, _ = solve_closed_smt2(
                 declarations + f"\n(assert {formula})\n(check-sat)\n"
             )
             result[name] = solver_result
@@ -199,7 +197,7 @@ def prove_arrival_reschedule_partition(
 
         def unsat(*assertions: str) -> bool:
             body = "\n".join(f"(assert {item})" for item in assertions)
-            result, _ = _solve_code_bound_smt2(
+            result, _ = solve_closed_smt2(
                 declarations + "\n" + body + "\n(check-sat)\n"
             )
             return result == "UNSAT"
@@ -746,7 +744,7 @@ def _run_sequence_z3_query(*, declarations: str, assertion: str) -> tuple[str, s
     try:
         import z3
     except ImportError:
-        result, error = _solve_code_bound_smt2(
+        result, error = solve_closed_smt2(
             prepared + "\n(assert " + assertion + ")\n(check-sat)\n"
         )
         if result in {"SAT", "UNSAT"}:

@@ -1,1 +1,0 @@
-{"schema_version":"synthetic_target_recipe_v1","factory":"tests.formal.fixtures.synthetic_p0.target:build_target","fixture":"synthetic_p0_v1","uses_real_seed":false}

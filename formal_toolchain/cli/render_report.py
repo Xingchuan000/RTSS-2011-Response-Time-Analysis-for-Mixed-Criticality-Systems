@@ -1,4 +1,4 @@
-"""Human-readable V9.1 proof report."""
+"""Human-readable V9.2 proof report."""
 
 import argparse
 import json
@@ -8,7 +8,7 @@ from pathlib import Path
 def render_report(verified: Path, output: Path) -> None:
     summary = json.loads((Path(verified) / "proof_summary.json").read_text(encoding="utf-8"))
     lines = [
-        "# V9.1 Formal Proof Report", "",
+        "# V9.2 Formal Proof Report", "",
         "## Claim", "",
         f"- proof_route: `{summary.get('proof_route')}`",
         f"- scope: `{summary.get('scope')}`",
@@ -37,7 +37,7 @@ def render_report(verified: Path, output: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="render a V9.1 verified bundle report")
+    parser = argparse.ArgumentParser(description="render a V9.2 verified bundle report")
     parser.add_argument("--verified", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args(argv)

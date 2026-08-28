@@ -59,7 +59,7 @@ def select_by_semantics(ranking: Sequence[int], valid_mask: Sequence[bool], *, a
         raise ValueError("explicit_noop_action_id 越界")
     if selection_semantics == "ranked_first_valid":
         first = select_first_valid(ranking, valid_mask, action_dim=action_dim)
-        # V7 A8: if the mask contract is malformed and even the total explicit
+        # If the mask contract is malformed and even the total explicit
         # noop is reported invalid, fail operationally to the same action id
         # rather than reintroducing legacy implicit ``None`` semantics.
         return explicit_noop_action_id if first is None and explicit_noop_action_id is not None else first
@@ -133,7 +133,7 @@ def build_parametric_mask_fallback_certificate(
                 "failure": {"code": "UNSUPPORTED_POLICY_SELECTION_SEMANTICS"}}
     explicit_noop = bool(mask_contract.get("explicit_noop", False))
     noop_ids = tuple(int(value) for value in mask_contract.get("explicit_noop_action_ids", ()))
-    # V7 A6/A7: an explicit noop is a normal ranked candidate.  Certification
+    # An explicit noop is a normal ranked candidate.  Certification
     # must therefore use ranked first-valid semantics; top1-only variants can
     # skip a valid explicit noop that appears before later budget actions.
     if explicit_noop and selection_semantics != "ranked_first_valid":

@@ -40,8 +40,8 @@
   "source_binding_hash_mode": "canonical_text_v1",
   "source_bindings": {
     "formal_toolchain/bridge/logical_events.py": "87c4ec04755534cd4ffc82b3f7682341bb49d9fc276313da370afd943ae5041f",
-    "formal_toolchain/reference/c_amc_sem_semantics.py": "d0ae27dcb954a278aadaf061df130c907960ea2385123445ad4759fb527bfe7c",
-    "formal_toolchain/reference/executable_semantics.py": "f26667f2034a1af965e8b2888d3ae8bedb246eabcf2c87ee74a83ea7a22810b4",
+    "formal_toolchain/reference/c_amc_sem_semantics.py": "6550ea80348d423e1e565eb896196b195204ebcd33fdfb3ae71e42a965e01bab",
+    "formal_toolchain/reference/executable_semantics.py": "373c31c002d5146640b12e12aafc0a11c689c235dcd8a3be857ec96a5acb7378",
     "formal_toolchain/reference/p0_projection.py": "970d387fcd6e3a080c8f2e6bc36e20ab2c84cab3c179ae2f6ab7feb18f439407",
     "formal_toolchain/reference/p0_transition_contract.py": "f3f70143a7d352dd5c4d5d568de59fcaf7c769ca1011e452044be005ac56bcfa",
     "formal_toolchain/reference/reference_state.py": "717831658057f120844fcf47aa597c8a921168b3a3fa0a03f9e6d72aafd901ae"

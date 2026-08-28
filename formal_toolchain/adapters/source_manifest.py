@@ -29,8 +29,6 @@ TARGET_FILES = frozen_contract_files() + (
     "amc_py/viper/integer_tree.py",
     "amc_py/viper/tree_policy.py",
     "formal_toolchain/core/hashing.py",
-    "formal_toolchain/core/registry.py",
-    "formal_toolchain/core/contexts.py",
 )
 
 # Mutable implementation files are useful diagnostics, but changes here do not
@@ -45,9 +43,14 @@ IMPLEMENTATION_AUDIT_FILES = (
 )
 
 FORMAL_TARGET_FILES = (
-    "formal_toolchain/verifier/artifact_verifier.py",
-    "formal_toolchain/verifier/aggregator.py",
-    "formal_toolchain/verifier/theory_verifier.py",
+    "formal_toolchain/v9_2/compiler.py",
+    "formal_toolchain/v9_2/verifier.py",
+    "formal_toolchain/v9_2/event_kernel.py",
+    "formal_toolchain/v9_2/event_window_encoder.py",
+    "formal_toolchain/v9_2/event_refinement.py",
+    "formal_toolchain/v9_2/safe_prefix_invariant.py",
+    "formal_toolchain/v9_2/transition_encoder.py",
+    "formal_toolchain/v9_2/conformance.py",
     "formal_toolchain/binding/action_binding.py",
     "formal_toolchain/binding/observation_binding.py",
     "formal_toolchain/binding/removal_binding.py",

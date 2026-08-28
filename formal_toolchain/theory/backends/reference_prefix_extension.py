@@ -110,17 +110,15 @@ def _prove_unsat(
 def _prove_smt2_unsat(*, obligation_id: str, smt2: str) -> dict[str, Any]:
     """Prove one closed SMT-LIB2 obligation using z3py or system libz3.
 
-    The PPP transition checker already carries a narrow ctypes fallback for
+    The runtime-refinement theorem layer carries a narrow ctypes fallback for
     environments where the shared Z3 library is installed but the Python
     package is not.  Reusing the same universal solver path keeps proof-object
     regeneration independent of a particular Python environment; it does not
     replace SMT solving with finite testing.
     """
-    from formal_toolchain.reference.protected_priority_prefix.pp0_checker import (
-        _solve_code_bound_smt2,
-    )
+    from formal_toolchain.theory.smt_solver import solve_closed_smt2
 
-    result, error = _solve_code_bound_smt2(smt2)
+    result, error = solve_closed_smt2(smt2)
     if result != "UNSAT":
         return {
             "status": "FAIL" if result in {"SAT", "UNKNOWN"} else "UNRESOLVED",

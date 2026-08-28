@@ -247,15 +247,13 @@ def prove_smt2_case(*, case_id: str, source_branch_id: str,
         # shared library but not the z3py wheel.  The fallback submits the same
         # quantified SMT-LIB2 obligations to a fresh native Z3 solver; it never
         # replaces universal solving with finite testing.
-        from formal_toolchain.reference.protected_priority_prefix.pp0_checker import (
-            _solve_code_bound_smt2,
-        )
+        from formal_toolchain.theory.smt_solver import solve_closed_smt2
 
         feasibility_query = (
             declarations
             + f"\n(assert {precondition})\n(assert {concrete_delta})\n(check-sat)\n"
         )
-        feasible_result, _ = _solve_code_bound_smt2(feasibility_query)
+        feasible_result, _ = solve_closed_smt2(feasibility_query)
         concrete_feasibility = (
             "SAT" if feasible_result == "SAT"
             else "UNSAT" if feasible_result == "UNSAT"
@@ -273,7 +271,7 @@ def prove_smt2_case(*, case_id: str, source_branch_id: str,
                 + f"(assert (not (exists ({post_vars}) {body})))\n"
                 + "(check-sat)\n"
             )
-            result, _ = _solve_code_bound_smt2(query)
+            result, _ = solve_closed_smt2(query)
             return result
 
         totality_result = native_counterexample(projected_reference_delta)

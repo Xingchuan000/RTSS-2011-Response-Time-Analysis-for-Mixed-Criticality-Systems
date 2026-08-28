@@ -1,6 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "object",
-  "required": ["route"],
-  "properties": {"route": {"enum": ["strict_full", "protected_prefix", "raw_protected_prefix"]}}
-}

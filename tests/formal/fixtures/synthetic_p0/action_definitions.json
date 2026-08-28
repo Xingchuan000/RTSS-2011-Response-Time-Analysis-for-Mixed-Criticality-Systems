@@ -1,1 +1,0 @@
-{"actions":[{"action_id":0,"direction":"increase","target_task":"SYN_HI","is_noop":false},{"action_id":1,"direction":"increase","target_task":"SYN_LO","is_noop":false},{"action_id":2,"direction":"decrease","target_task":"SYN_HI","is_noop":false},{"action_id":3,"direction":"decrease","target_task":"SYN_LO","is_noop":false}]}

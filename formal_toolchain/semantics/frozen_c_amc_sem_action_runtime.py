@@ -2,7 +2,7 @@
 
 This module is a proof model, not the mutable training/runtime environment.  It
 captures the action ordering, candidate update, mask, fallback, and step
-semantics certified by the existing PPP proof route.  q-AMC and future
+semantics bound by the active C-AMC-sem proof model.  q-AMC and future
 experimental action branches may evolve independently under ``amc_py``.
 """
 

@@ -1,4 +1,0 @@
-{
-  "required_after_phase1": ["--seed-dir", "--tree-variant", "--code-root", "--out", "--target-recipe", "--proof-route", "--overwrite", "--refresh-phase-k-map", "--json"],
-  "forbidden_after_phase1": ["--nonvacuity-profile", "--nonvacuity-disabled-guard", "--nonvacuity-action-ratio", "--nonvacuity-min-budget-delta", "--nonvacuity-controller-overhead-ticks"]
-}

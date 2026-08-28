@@ -125,14 +125,12 @@ def _canonical_n6_smt2(obligation_id: str) -> str:
 
 
 def verify_finite_hi_bad_prefix_math() -> dict[str, Any]:
-    from formal_toolchain.reference.protected_priority_prefix.pp0_checker import (
-        _solve_code_bound_smt2,
-    )
+    from formal_toolchain.theory.smt_solver import solve_closed_smt2
 
     receipts: dict[str, dict[str, str]] = {}
     for obligation_id in EXPECTED_N6_SOLVER_OBLIGATIONS:
         smt2 = _canonical_n6_smt2(obligation_id)
-        result, detail = _solve_code_bound_smt2(smt2)
+        result, detail = solve_closed_smt2(smt2)
         if result != "UNSAT":
             return {
                 "status": "FAIL" if result in {"SAT", "UNKNOWN"} else "UNRESOLVED",
