@@ -162,7 +162,11 @@ def _fresh_check(
     """Solve one exact depth in a fresh non-incremental solver context."""
 
     solver = z3.Solver()
-    solver.set(timeout=int(timeout_ms))
+    # Z3 has no wall-clock deadline when the timeout parameter is omitted.
+    # ``timeout_ms == 0`` is the trusted verifier's explicit unlimited mode
+    # for final FirstBadEventWindow solving; negative values remain invalid.
+    if int(timeout_ms) > 0:
+        solver.set(timeout=int(timeout_ms))
     solver.add(*tuple(assertions))
     started = perf_counter()
     result = solver.check()
@@ -362,8 +366,8 @@ def solve_incremental_event_window(
     """
 
     timeout_ms = int(timeout_ms)
-    if timeout_ms <= 0:
-        raise ValueError("solver timeout must be positive")
+    if timeout_ms < 0:
+        raise ValueError("solver timeout must be non-negative (0 means unlimited)")
 
     max_depth = int(encoding.event_bound.finite_event_bound)
     rows: list[IncrementalDepthReceipt] = []

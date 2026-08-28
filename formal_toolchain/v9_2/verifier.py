@@ -39,6 +39,14 @@ from formal_toolchain.v9_2.incremental_event_bmc import (
 )
 
 
+# Final exact FirstBadEventWindow queries are intentionally allowed to run to
+# completion.  All earlier conformance / invariant / refinement obligations
+# keep the user-visible global timeout so regressions there still fail fast.
+# A value of 0 is interpreted by incremental_event_bmc as "do not install a
+# Z3 timeout parameter".
+TERMINAL_EVENT_WINDOW_TIMEOUT_MS = 0
+
+
 def _read_json(path: Path) -> Any:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -477,7 +485,8 @@ def verify_bundle_v9_2(
             declared_full_state_upper=declared_full_state_upper,
             estimated_declared_state_symbols=estimated_symbols,
             build_seconds=round(build_seconds, 6),
-            timeout_ms=int(timeout_ms),
+            timeout_ms=TERMINAL_EVENT_WINDOW_TIMEOUT_MS,
+            global_obligation_timeout_ms=int(timeout_ms),
             solver_strategy=SOLVER_STRATEGY,
         )
         def _incremental_progress(details: dict[str, Any]) -> None:
@@ -488,7 +497,8 @@ def verify_bundle_v9_2(
                 hi_task_count=len(model.hi_tasks),
                 deadline=int(task.deadline),
                 finite_event_bound=event_bound.finite_event_bound,
-                timeout_ms=int(timeout_ms),
+                timeout_ms=TERMINAL_EVENT_WINDOW_TIMEOUT_MS,
+                global_obligation_timeout_ms=int(timeout_ms),
                 solver_strategy=SOLVER_STRATEGY,
                 **details,
             )
@@ -496,7 +506,7 @@ def verify_bundle_v9_2(
         receipt, sat_encoding = solve_incremental_event_window(
             f"FIRST_BAD_EVENT_WINDOW_{task.name}",
             encoding,
-            timeout_ms=timeout_ms,
+            timeout_ms=TERMINAL_EVENT_WINDOW_TIMEOUT_MS,
             progress=_incremental_progress,
         )
         statuses[f"FIRST_BAD_EVENT_WINDOW_{task.name}"] = _receipt_status(receipt)

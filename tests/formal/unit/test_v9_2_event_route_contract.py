@@ -33,3 +33,15 @@ def test_event_terminal_route_has_no_microstep_fallback():
     assert '"microstep_terminal_fallback_used": False' in verifier
     assert "encode_p5_controller" in (ROOT / "formal_toolchain/v9_2/event_kernel.py").read_text(encoding="utf-8")
     assert "encode_p5_invariant_summary" not in event_window
+
+
+def test_terminal_event_window_is_unlimited_but_global_timeout_remains_available():
+    verifier = (ROOT / "formal_toolchain/v9_2/verifier.py").read_text(encoding="utf-8")
+    bmc = (ROOT / "formal_toolchain/v9_2/incremental_event_bmc.py").read_text(encoding="utf-8")
+    cli = (ROOT / "formal_toolchain/cli/prove_seed.py").read_text(encoding="utf-8")
+    assert "TERMINAL_EVENT_WINDOW_TIMEOUT_MS = 0" in verifier
+    assert "timeout_ms=TERMINAL_EVENT_WINDOW_TIMEOUT_MS" in verifier
+    assert "global_obligation_timeout_ms=int(timeout_ms)" in verifier
+    assert "if int(timeout_ms) > 0:" in bmc
+    assert "0 means unlimited" in bmc
+    assert "--solver-timeout-ms" in cli
