@@ -41,7 +41,9 @@ def test_terminal_event_window_is_unlimited_but_global_timeout_remains_available
     cli = (ROOT / "formal_toolchain/cli/prove_seed.py").read_text(encoding="utf-8")
     assert "TERMINAL_EVENT_WINDOW_TIMEOUT_MS = 0" in verifier
     assert "timeout_ms=TERMINAL_EVENT_WINDOW_TIMEOUT_MS" in verifier
+    assert "probe_timeout_ms=int(timeout_ms)" in verifier
     assert "global_obligation_timeout_ms=int(timeout_ms)" in verifier
     assert "if int(timeout_ms) > 0:" in bmc
+    assert "probe timeout must be positive" in bmc
     assert "0 means unlimited" in bmc
     assert "--solver-timeout-ms" in cli

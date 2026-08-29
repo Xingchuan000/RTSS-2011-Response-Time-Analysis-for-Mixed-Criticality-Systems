@@ -158,6 +158,12 @@ def test_incremental_terminal_depth_solver_is_exact_and_fail_closed():
     assert "SRC_RELEASE_ANY" in solver
     assert "SRC_HI_DEADLINE_ANY" in solver
     assert "SRC_COMPLETION" in solver
+    assert "SRC_RELEASE_TASK_" in solver
+    assert "SRC_HI_DEADLINE_JOB_" in solver
+    assert "SRC_COMPLETION_SLOT_" in solver
+    assert "probe_timeout_ms" in solver
+    assert "leaf_timeout_ms" in solver
+    assert "bounded_probe_before_exact_partition" in solver
     assert "This is the only path allowed to report window UNSAT" in solver
     assert '"terminal_stutter_used": False' in solver
     assert "encode_event_step(" in window

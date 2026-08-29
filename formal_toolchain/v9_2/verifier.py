@@ -486,6 +486,7 @@ def verify_bundle_v9_2(
             estimated_declared_state_symbols=estimated_symbols,
             build_seconds=round(build_seconds, 6),
             timeout_ms=TERMINAL_EVENT_WINDOW_TIMEOUT_MS,
+            probe_timeout_ms=int(timeout_ms),
             global_obligation_timeout_ms=int(timeout_ms),
             solver_strategy=SOLVER_STRATEGY,
         )
@@ -498,6 +499,7 @@ def verify_bundle_v9_2(
                 deadline=int(task.deadline),
                 finite_event_bound=event_bound.finite_event_bound,
                 timeout_ms=TERMINAL_EVENT_WINDOW_TIMEOUT_MS,
+                probe_timeout_ms=int(timeout_ms),
                 global_obligation_timeout_ms=int(timeout_ms),
                 solver_strategy=SOLVER_STRATEGY,
                 **details,
@@ -507,6 +509,7 @@ def verify_bundle_v9_2(
             f"FIRST_BAD_EVENT_WINDOW_{task.name}",
             encoding,
             timeout_ms=TERMINAL_EVENT_WINDOW_TIMEOUT_MS,
+            probe_timeout_ms=int(timeout_ms),
             progress=_incremental_progress,
         )
         statuses[f"FIRST_BAD_EVENT_WINDOW_{task.name}"] = _receipt_status(receipt)

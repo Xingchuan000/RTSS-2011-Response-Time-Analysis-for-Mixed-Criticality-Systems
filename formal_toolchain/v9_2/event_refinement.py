@@ -560,6 +560,15 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
         return False, [], "V9_2_EXACT_DEPTH_CASE_PARTITION_CONTRACT_MISSING"
     if "SRC_HI_DEADLINE_ANY" not in incremental_text or "SRC_COMPLETION" not in incremental_text:
         return False, [], "V9_2_EXACT_EVENT_SOURCE_PARTITION_CONTRACT_MISSING"
+    if not all(token in incremental_text for token in (
+        "SRC_RELEASE_TASK_",
+        "SRC_HI_DEADLINE_JOB_",
+        "SRC_COMPLETION_SLOT_",
+        "probe_timeout_ms",
+        "leaf_timeout_ms",
+        "bounded_probe_before_exact_partition",
+    )):
+        return False, [], "V9_2_HIERARCHICAL_EXACT_LEAF_PARTITION_CONTRACT_MISSING"
     if "solver.push()" in incremental_text or "solver.pop()" in incremental_text:
         return False, [], "V9_2_FRESH_DEPTH_SOLVER_MUST_NOT_REUSE_PUSH_POP_CONTEXT"
     if "This is the only path allowed to report window UNSAT" not in incremental_text:
