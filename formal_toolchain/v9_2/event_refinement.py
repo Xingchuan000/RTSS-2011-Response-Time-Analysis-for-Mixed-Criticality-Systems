@@ -148,9 +148,24 @@ def _periodic_scalarization_counterexample(
     nxt = z3.Int(f"{prefix}.nxt")
     index = z3.Int(f"{prefix}.period_index")
     period = int(period)
-    reference = ((t / period) + 1) * period
+    reference_index = (t / period) + 1
+    reference = reference_index * period
     scalar = z3.And(
         nxt == index * period,
+        nxt > t,
+        nxt <= t + period,
+    )
+
+    # The production ``period_index`` is an existential SSA witness.  The
+    # forward direction may therefore use an arbitrary witness and asks
+    # whether it can select a time different from the division reference.
+    #
+    # For the reverse direction we must *construct* one valid witness for the
+    # reference time.  Using the same free ``index`` under ``Not(scalar)`` is
+    # wrong: the solver can simply choose a deliberately bad index even when
+    # another valid witness exists, producing a spurious SAT counterexample.
+    reference_witness = z3.And(
+        nxt == reference_index * period,
         nxt > t,
         nxt <= t + period,
     )
@@ -158,7 +173,7 @@ def _periodic_scalarization_counterexample(
         t >= 0,
         z3.Or(
             z3.And(scalar, nxt != reference),
-            z3.And(nxt == reference, z3.Not(scalar)),
+            z3.And(nxt == reference, z3.Not(reference_witness)),
         ),
     )
 

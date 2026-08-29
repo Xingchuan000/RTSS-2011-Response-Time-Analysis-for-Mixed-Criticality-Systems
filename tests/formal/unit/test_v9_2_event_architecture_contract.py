@@ -197,3 +197,17 @@ def test_periodic_event_candidates_use_quotient_free_exact_successor():
     assert "nxt > t" in text
     assert "nxt <= t + period" in text
     assert "_next_periodic_after" in text  # retained only as reference expression
+
+
+def test_periodic_scalarization_reverse_direction_uses_constructed_witness():
+    refinement = ROOT / "formal_toolchain/v9_2/event_refinement.py"
+    text = refinement.read_text(encoding="utf-8")
+    function = text.split("def _periodic_scalarization_counterexample", 1)[1].split(
+        "def _controller_pool_coverage_counterexample", 1
+    )[0]
+    assert "reference_index = (t / period) + 1" in function
+    assert "reference_witness = z3.And(" in function
+    assert "z3.And(nxt == reference, z3.Not(reference_witness))" in function
+    # Regression guard for the 0062 bug: the reverse direction must not negate
+    # the scalar relation containing the arbitrary/free period-index witness.
+    assert "z3.And(nxt == reference, z3.Not(scalar))" not in function
