@@ -23,6 +23,42 @@ class EventDepthFloor:
     witness_response_bound: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class TargetWindowElimination:
+    target_task: str
+    response_bound: int
+    deadline: int
+    proof_rule: str = "PROTECTED_PRIORITY_TARGET_RESPONSE_DOMINANCE"
+
+
+def derive_target_window_elimination(
+    model: BoundModel, target_task: str
+) -> TargetWindowElimination | None:
+    """Prove a target FirstBadEventWindow empty before Event allocation.
+
+    For a target inside the protected priority prefix, the universal fixed-
+    priority response envelope bounds every concrete deployed execution: HI
+    effective demand equals raw demand, LO effective demand never exceeds raw
+    demand, P5 has zero processor overhead, and HI-mode degradation/cancellation
+    can only remove work.  If that response envelope is no larger than D_i, a
+    target job cannot remain incomplete at its deadline in any reachable Event
+    history, so the FirstBadEventWindow set is empty.
+
+    Targets that do not satisfy this theorem are left untouched and continue
+    to the exact Event BMC.
+    """
+
+    target = model.task_by_name[target_task]
+    response = derive_protected_priority_prefix(model).response_by_task.get(target_task)
+    if response is None or int(response) > int(target.deadline):
+        return None
+    return TargetWindowElimination(
+        target_task=target_task,
+        response_bound=int(response),
+        deadline=int(target.deadline),
+    )
+
+
 def possible_relative_phase_offsets(target_period: int, stream_period: int) -> tuple[int, ...]:
     """All possible first phase-zero stream ticks relative to a target release."""
 
@@ -118,7 +154,9 @@ def penultimate_release_is_impossible(
 
 __all__ = [
     "EventDepthFloor",
+    "TargetWindowElimination",
     "derive_minimum_event_depth",
+    "derive_target_window_elimination",
     "penultimate_release_is_impossible",
     "possible_relative_phase_offsets",
 ]

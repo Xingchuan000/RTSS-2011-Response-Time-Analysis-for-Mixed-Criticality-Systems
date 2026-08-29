@@ -30,6 +30,7 @@ from formal_toolchain.v9_2.safe_prefix_invariant import SafePrefixInvariant
 from formal_toolchain.v9_2.symbolic_state import BoundModel
 from formal_toolchain.v9_2.universal_conformance import prove_universal_conformance
 from formal_toolchain.v9_2.event_refinement import prove_event_refinement
+from formal_toolchain.v9_2.event_depth_feasibility import derive_target_window_elimination
 from formal_toolchain.v9_2.event_window_encoder import (
     ENCODER_VERSION, build_incremental_event_first_bad_window, derive_finite_event_bound,
 )
@@ -337,8 +338,9 @@ def verify_bundle_v9_2(
     statuses["SAFE_PREFIX_INVARIANT_CONDITIONAL_INDUCTIVENESS"] = "PASS"
 
     # 4) V9.3 reachable carry-in theorem: derive the maximal contiguous
-    # universal-service protected priority prefix.  This theorem refines only
-    # Event-window start states; it is not a second terminal safety route.
+    # universal-service protected priority prefix.  The same dominance theorem
+    # tightens Event-window carry-in and can eliminate a target FirstBadWindow
+    # before Event allocation when R_i^U <= D_i.
     _write_progress(out, "REACHABLE_CARRY_IN_PREFIX")
     protected_prefix = derive_protected_priority_prefix(model)
     carry_receipt = {
@@ -354,7 +356,7 @@ def verify_bundle_v9_2(
             }
             for row in protected_prefix.members
         ],
-        "use": "EVENT_START_REACHABLE_CARRY_IN_ONLY",
+        "use": "EVENT_START_REACHABLE_CARRY_IN_AND_TARGET_WINDOW_ELIMINATION",
     }
     receipts["reachable_carry_in"] = carry_receipt
     statuses["REACHABLE_CARRY_IN_ENVELOPE"] = "PASS"
@@ -409,6 +411,50 @@ def verify_bundle_v9_2(
             + 3  # terminal P1/P2/P3
         )
         estimated_symbols = declared_full_state_upper * symbols_per_full_state
+
+        target_elimination = derive_target_window_elimination(model, task.name)
+        if target_elimination is not None:
+            obligation_id = f"FIRST_BAD_EVENT_WINDOW_{task.name}"
+            statuses[obligation_id] = "PASS"
+            row = {
+                "obligation_id": obligation_id,
+                "result": "UNSAT",
+                "task": task.name,
+                "deadline": int(task.deadline),
+                "finite_event_bound": event_bound.finite_event_bound,
+                "event_boundary_count": event_boundary_count,
+                "controller_exact_instance_count": controller_exact_instance_count,
+                "declared_full_state_upper": 0,
+                "estimated_declared_state_symbols": 0,
+                "build_seconds": 0.0,
+                "solver_check_seconds": 0.0,
+                "checked_depth_count": 0,
+                "solver_strategy": "V9_3_STRUCTURAL_TARGET_WINDOW_ELIMINATION",
+                "proof_rule": target_elimination.proof_rule,
+                "target_response_bound": target_elimination.response_bound,
+                "target_deadline": target_elimination.deadline,
+                "reason": (
+                    "FIRST_BAD_EVENT_WINDOW_EMPTY_BY_TARGET_RESPONSE_DOMINANCE:"
+                    f"R={target_elimination.response_bound}:"
+                    f"D={target_elimination.deadline}"
+                ),
+                "event_bound": event_bound.as_dict(),
+                "event_formula_allocated": False,
+            }
+            window_receipts.append(row)
+            receipts["hi_event_windows"] = window_receipts
+            _write(out / "proof_receipts.partial.json", receipts)
+            _write_progress(
+                out, "FIRST_BAD_EVENT_WINDOW_STRUCTURALLY_ELIMINATED",
+                task=task.name,
+                task_index=task_index,
+                hi_task_count=len(model.hi_tasks),
+                deadline=int(task.deadline),
+                target_response_bound=target_elimination.response_bound,
+                proof_rule=target_elimination.proof_rule,
+            )
+            continue
+
         _write_progress(
             out, "BUILD_FIRST_BAD_EVENT_WINDOW",
             task=task.name,

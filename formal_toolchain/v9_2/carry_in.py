@@ -1,10 +1,11 @@
 """Reachable carry-in refinement for the V9.3 Event proof route.
 
-This module intentionally has one job: derive the contiguous fixed-priority
-prefix whose jobs are guaranteed to finish no later than their next release
-under the universal per-job execution envelope already bound by the verifier.
-The result is used only to tighten SafePrefix carry-in.  It is not a terminal
-schedulability proof route.
+This module derives the contiguous fixed-priority prefix whose jobs are
+guaranteed to finish no later than their next release under the universal
+per-job execution envelope already bound by the verifier.  V9.3 uses that one
+dominance theorem both to tighten SafePrefix carry-in and, when R_i^U <= D_i,
+to prove the corresponding target FirstBadEventWindow set empty before Event
+formula allocation.
 """
 
 from __future__ import annotations
