@@ -128,6 +128,41 @@ def _periodic_counterexample(period: int, prefix: str) -> z3.BoolRef:
     )
 
 
+def _periodic_scalarization_counterexample(
+    period: int,
+    prefix: str,
+) -> z3.BoolRef:
+    """Refute mismatch between division reference and quotient-free candidate.
+
+    The production Event kernel represents the next periodic timestamp with a
+    fresh scalar ``nxt`` and integer period index ``k``:
+
+        nxt = k * period
+        t < nxt <= t + period
+
+    For non-negative runtime timestamps this relation has exactly the same
+    unique solution as ``((t / period) + 1) * period``.
+    """
+
+    t = z3.Int(f"{prefix}.t")
+    nxt = z3.Int(f"{prefix}.nxt")
+    index = z3.Int(f"{prefix}.period_index")
+    period = int(period)
+    reference = ((t / period) + 1) * period
+    scalar = z3.And(
+        nxt == index * period,
+        nxt > t,
+        nxt <= t + period,
+    )
+    return z3.And(
+        t >= 0,
+        z3.Or(
+            z3.And(scalar, nxt != reference),
+            z3.And(nxt == reference, z3.Not(scalar)),
+        ),
+    )
+
+
 def _controller_pool_coverage_counterexample(
     length: int,
     period: int,
@@ -513,10 +548,12 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
     kernel_text = kernel.read_text(encoding="utf-8")
     if "encode_p5_invariant_summary" in kernel_text:
         return False, [], "V9_2_EVENT_P5_SUMMARY_FORBIDDEN"
-    if not {"_next_periodic_after", "_exact_minimum_definition"} <= candidate_calls:
+    if not {"_declare_exact_periodic_successor", "_exact_minimum_definition"} <= candidate_calls:
         return False, [], "V9_2_EVENT_CANDIDATE_SOURCE_CONTRACT_MISSING"
     if "_min_expr(" in kernel_text:
         return False, [], "V9_2_EVENT_NESTED_MIN_REINTRODUCED"
+    if "period_index * period" not in kernel_text or ".candidate.controller" not in kernel_text:
+        return False, [], "V9_2_PERIODIC_EVENT_SCALARIZATION_CONTRACT_MISSING"
     if not all(token in kernel_text for token in (
         ".candidate.completion", ".candidate.next_time", "definition_formula",
     )):
@@ -564,6 +601,9 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
         "SRC_RELEASE_TASK_",
         "SRC_HI_DEADLINE_JOB_",
         "SRC_COMPLETION_SLOT_",
+        "SRC_RELEASE_TICK_",
+        "SRC_RELEASE_TICK_OTHER",
+        "MEMBER_PROBE_CHECK",
         "probe_timeout_ms",
         "leaf_timeout_ms",
         "bounded_probe_before_exact_partition",
@@ -676,8 +716,8 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
                 "EACH_DEPTH_IS_SOLVED_IN_A_FRESH_EQUIVALENT_SOLVER_CONTEXT;_"
                 "WITHIN_ONE_DEPTH_THE_SAME_SOLVER_CONTEXT_IS_REUSED_ONLY_UNDER_TEMPORARY_EXACT_CASE_SCOPES;_"
                 "NO_SOLVER_CONTEXT_IS_REUSED_ACROSS_DEPTHS;_"
-                "EVENT_CANDIDATE_MINIMA_USE_EXACT_SCALAR_SSA_DEFINITIONS;_"
-                "UNKNOWN_RETRY_PARTITIONS_EXACTLY_BY_CONTROLLER_COUNT_DISJOINT_EVENT_SOURCE_AND_DISJOINT_SOURCE_MEMBER;_"
+                "EVENT_CANDIDATE_MINIMA_AND_PERIODIC_SUCCESSORS_USE_EXACT_SCALAR_SSA_DEFINITIONS;_"
+                "UNKNOWN_RETRY_PARTITIONS_EXACTLY_BY_CONTROLLER_COUNT_DISJOINT_EVENT_SOURCE_DISJOINT_SOURCE_MEMBER_AND_RELEASE_TICK;_"
                 "EXACT_LEAF_TIMEOUT_RESUME_REUSES_THE_SAME_CASE_CONTEXT;_"
                 "UNSAT_REQUIRES_EVERY_CASE_AND_EVERY_DEPTH_UNSAT"
             ),
@@ -799,9 +839,21 @@ def prove_event_refinement(
             f"RELEASE_EVENT_COVERAGE::{task.name}",
             _periodic_counterexample(task.period, f"event.refine.release.{task.name}"),
         ))
+        formulas.append((
+            f"PERIODIC_EVENT_CANDIDATE_SCALARIZATION::RELEASE::{task.name}",
+            _periodic_scalarization_counterexample(
+                task.period, f"event.refine.periodic_scalar.release.{task.name}"
+            ),
+        ))
     formulas.append((
         "CONTROLLER_EVENT_COVERAGE::NEXT_PERIODIC",
         _periodic_counterexample(model.agent_period, "event.refine.controller"),
+    ))
+    formulas.append((
+        "PERIODIC_EVENT_CANDIDATE_SCALARIZATION::CONTROLLER",
+        _periodic_scalarization_counterexample(
+            model.agent_period, "event.refine.periodic_scalar.controller"
+        ),
     ))
     for target in model.hi_tasks:
         bound = derive_finite_event_bound(model, target.name)
@@ -846,6 +898,7 @@ def prove_event_refinement(
         "NO_SKIPPED_DISCRETE_EVENT",
         (
             "NEXT_EVENT_EXACT_MINIMUM",
+            "PERIODIC_EVENT_CANDIDATE_SCALARIZATION",
             "RELEASE_EVENT_COVERAGE",
             "DEADLINE_EVENT_COVERAGE",
             "TERMINAL_SERVICE_EVENT_COVERAGE",

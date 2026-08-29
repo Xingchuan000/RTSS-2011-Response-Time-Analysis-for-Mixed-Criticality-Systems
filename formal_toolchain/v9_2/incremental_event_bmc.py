@@ -39,7 +39,7 @@ from .event_window_encoder import (
 )
 
 
-SOLVER_STRATEGY = "EXACT_WITHIN_DEPTH_REUSE_HIERARCHICAL_BMC_V5"
+SOLVER_STRATEGY = "EXACT_LINEAR_PERIODIC_RELEASE_TICK_BMC_V6"
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +86,7 @@ class IncrementalDepthReceipt:
             row["primary_result"] = self.primary_result
         if self.case_receipts:
             row["case_partition_used"] = True
-            row["case_partition_kind"] = "CONTROLLER_COUNT_THEN_SOURCE_CLASS_THEN_EXACT_MEMBER"
+            row["case_partition_kind"] = "CONTROLLER_COUNT_THEN_SOURCE_CLASS_THEN_EXACT_MEMBER_THEN_RELEASE_TICK"
             row["case_receipts"] = [item.as_dict() for item in self.case_receipts]
         else:
             row["case_partition_used"] = False
@@ -139,6 +139,7 @@ class IncrementalBMCReceipt:
             "disjoint_exact_case_partition": True,
             "bounded_probe_before_exact_partition": True,
             "hierarchical_source_member_partition": True,
+            "hierarchical_release_tick_partition": True,
             "exhaustive_case_partition_on_unknown": True,
             "depth_partition_complete_if_unsat": self.result == "UNSAT",
         }
@@ -153,7 +154,7 @@ def _query_plan_hash(encoding: IncrementalEventWindowEncoding) -> str:
     """Hash the exact finite query plan without materializing a huge SMT text."""
 
     return sha256_object({
-        "schema": "v9_2_within_depth_reuse_query_plan_v5",
+        "schema": "v9_2_linear_periodic_release_tick_query_plan_v6",
         "solver_strategy": SOLVER_STRATEGY,
         "event_window_encoder_version": ENCODER_VERSION,
         "target_task": encoding.target_task,
@@ -169,7 +170,7 @@ def _query_plan_hash(encoding: IncrementalEventWindowEncoding) -> str:
         "within_depth_solver_context_reused": True,
         "cross_depth_solver_context_reused": False,
         "same_solver_timeout_resume": True,
-        "unknown_fallback_partition": "controller_count_then_disjoint_source_class_then_disjoint_exact_source_member",
+        "unknown_fallback_partition": "controller_count_then_disjoint_source_class_then_disjoint_exact_source_member_then_release_tick",
         "coarse_queries_use_bounded_probe": True,
         "only_exact_leaf_cases_may_use_unlimited_timeout": True,
     })
@@ -391,6 +392,51 @@ def _source_member_partition(
 
     return ()
 
+
+def _release_tick_subpartition(
+    encoding: IncrementalEventWindowEncoding,
+    member_id: str,
+) -> tuple[tuple[str, z3.BoolRef], ...]:
+    """Exact finite refinement of one periodic-release task by relative tick.
+
+    ``SRC_RELEASE_TASK_*`` still leaves the absolute periodic phase symbolic.
+    For a target-relative first-bad window, however, every admissible release
+    timestamp belongs to the finite environment tick domain.  Splitting by
+    ``next_time == origin + tick`` removes that hidden phase disjunction before
+    any unlimited solve.
+
+    A final OTHER cube makes the partition tautologically exhaustive even if a
+    future environment-domain implementation changes.  Therefore this helper
+    is a solver decomposition only and cannot remove a concrete model.
+    """
+
+    if len(encoding.event_steps) < 2:
+        return ()
+    step = encoding.event_steps[-2]
+    candidates = step.candidates
+    nxt = candidates.next_time
+    origin = encoding.environment.phase.origin_time
+
+    task_name: str | None = None
+    for candidate_task, _ in candidates.releases:
+        expected = f"SRC_RELEASE_TASK_{_safe_case_token(candidate_task)}"
+        if member_id == expected:
+            task_name = candidate_task
+            break
+    if task_name is None:
+        return ()
+
+    ticks = tuple(int(tick) for tick in encoding.environment.allowed_ticks_by_task.get(task_name, ()))
+    raw_rows: list[tuple[str, z3.BoolRef]] = []
+    raw_cubes: list[z3.BoolRef] = []
+    for tick in ticks:
+        cube = nxt == origin + tick
+        raw_cubes.append(cube)
+        raw_rows.append((f"SRC_RELEASE_TICK_{tick}", cube))
+    other = z3.Not(z3.Or(*raw_cubes)) if raw_cubes else z3.BoolVal(True)
+    raw_rows.append(("SRC_RELEASE_TICK_OTHER", other))
+    return _ordered_disjoint_cover(raw_rows)
+
 def _solve_unknown_by_exact_cases(
     solver: z3.Solver,
     encoding: IncrementalEventWindowEncoding,
@@ -537,6 +583,37 @@ def _solve_unknown_by_exact_cases(
                     for member_id, member_cube in members:
                         member_case_id = f"{source_case_id}__{member_id}"
                         with _solver_scope(solver, member_cube):
+                            release_ticks = _release_tick_subpartition(encoding, member_id)
+                            if release_ticks:
+                                member_result, member_reason = run_current(
+                                    f"{member_case_id}__PROBE",
+                                    timeout_ms=probe_timeout_ms,
+                                    phase="MEMBER_PROBE_CHECK",
+                                )
+                                if member_result == "SAT":
+                                    return "SAT", total, tuple(rows), None
+                                if member_result == "UNSAT":
+                                    continue
+
+                                tick_unknown = False
+                                for tick_id, tick_cube in release_ticks:
+                                    tick_case_id = f"{member_case_id}__{tick_id}"
+                                    with _solver_scope(solver, tick_cube):
+                                        leaf_result, leaf_reason = probe_then_resume_exact_leaf(
+                                            f"{tick_case_id}__EXACT_LEAF"
+                                        )
+                                        if leaf_result == "SAT":
+                                            return "SAT", total, tuple(rows), None
+                                        if leaf_result == "UNKNOWN":
+                                            tick_unknown = True
+                                            unresolved.append(
+                                                tick_case_id
+                                                + (f":{leaf_reason}" if leaf_reason else "")
+                                            )
+                                if tick_unknown:
+                                    member_unknown = True
+                                continue
+
                             leaf_result, leaf_reason = probe_then_resume_exact_leaf(
                                 f"{member_case_id}__EXACT_LEAF"
                             )
@@ -551,7 +628,7 @@ def _solve_unknown_by_exact_cases(
 
                     if member_unknown:
                         count_unresolved = True
-                    # Otherwise every disjoint exact member is UNSAT.
+                    # Otherwise every disjoint exact member/tick leaf is UNSAT.
 
             if count_unresolved:
                 continue

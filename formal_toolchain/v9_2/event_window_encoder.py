@@ -369,6 +369,7 @@ def _window_source_obligations(*, incremental: bool) -> tuple[str, ...]:
         "controller_pool_count_derived_from_agent_period_bound",
         "indexed_demand_lookup_is_exact_finite_formula_factoring",
         "event_candidate_minima_are_exact_scalar_ssa_definitions",
+        "periodic_event_candidates_use_exact_quotient_free_scalar_successors",
         "phase_ssa_shares_only_canonical_frame_fields",
     ]
     if incremental:

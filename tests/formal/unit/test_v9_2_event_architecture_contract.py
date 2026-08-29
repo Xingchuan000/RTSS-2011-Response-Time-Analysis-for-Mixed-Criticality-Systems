@@ -62,7 +62,7 @@ def test_event_macro_uses_exact_controller_pool_and_exact_event_minimum():
         numeric, "encode_v11_full_10d_observation", "state"
     ) <= {"budgets", "chi"}
     assert "encode_p5_invariant_summary" not in kernel.read_text(encoding="utf-8")
-    assert "_next_periodic_after" in candidate_calls
+    assert "_declare_exact_periodic_successor" in candidate_calls
     assert "_exact_minimum_definition" in candidate_calls
     kernel_text = kernel.read_text(encoding="utf-8")
     assert "_min_expr(" not in kernel_text
@@ -173,6 +173,9 @@ def test_incremental_terminal_depth_solver_is_exact_and_fail_closed():
     assert "SRC_RELEASE_TASK_" in solver
     assert "SRC_HI_DEADLINE_JOB_" in solver
     assert "SRC_COMPLETION_SLOT_" in solver
+    assert "SRC_RELEASE_TICK_" in solver
+    assert "SRC_RELEASE_TICK_OTHER" in solver
+    assert "MEMBER_PROBE_CHECK" in solver
     assert "probe_timeout_ms" in solver
     assert "leaf_timeout_ms" in solver
     assert "bounded_probe_before_exact_partition" in solver
@@ -181,3 +184,16 @@ def test_incremental_terminal_depth_solver_is_exact_and_fail_closed():
     assert "encode_event_step(" in window
     incremental_method = window.split("def append_exact_event_step", 1)[1].split("def build_terminal_bad_query", 1)[0]
     assert "event_step_or_terminal_stutter" not in incremental_method
+
+
+def test_periodic_event_candidates_use_quotient_free_exact_successor():
+    kernel = ROOT / "formal_toolchain/v9_2/event_kernel.py"
+    candidate_calls = _function_calls(kernel, "build_event_candidates")
+    scalar_calls = _function_calls(kernel, "_declare_exact_periodic_successor")
+    text = kernel.read_text(encoding="utf-8")
+    assert "_declare_exact_periodic_successor" in candidate_calls
+    assert "_next_periodic_after" not in candidate_calls
+    assert "period_index * period" in text
+    assert "nxt > t" in text
+    assert "nxt <= t + period" in text
+    assert "_next_periodic_after" in text  # retained only as reference expression

@@ -35,7 +35,7 @@ from .transition_encoder import (
 )
 
 
-EVENT_KERNEL_VERSION = "V9_2_EXACT_EVENT_MACRO_V5_SCALARIZED_EVENT_MIN"
+EVENT_KERNEL_VERSION = "V9_2_EXACT_EVENT_MACRO_V6_LINEAR_PERIODIC_CANDIDATES"
 
 
 def _job_fields(job: SymbolicJob) -> tuple[z3.ExprRef, ...]:
@@ -160,12 +160,50 @@ def _exact_minimum_definition(
 
 
 def _next_periodic_after(t: z3.ArithRef, period: int) -> z3.ArithRef:
-    """Least phase-zero periodic timestamp strictly larger than ``t``."""
+    """Reference expression for the least phase-zero timestamp after ``t``.
+
+    The production Event kernel no longer substitutes this symbolic division
+    expression into every candidate relation.  It is retained as an
+    independent reference term for machine equivalence checks.
+    """
 
     period = int(period)
     if period <= 0:
         raise ValueError("period must be positive")
     return ((t / period) + 1) * period
+
+
+def _declare_exact_periodic_successor(
+    t: z3.ArithRef,
+    period: int,
+    *,
+    prefix: str,
+) -> tuple[z3.ArithRef, z3.BoolRef]:
+    """Exact quotient-free encoding of the next phase-zero periodic timestamp.
+
+    For positive integer ``period`` there is exactly one multiple ``nxt`` of
+    ``period`` in the half-open interval ``(t, t + period]``.  Introducing an
+    integer period index keeps the relation in linear integer arithmetic:
+
+        nxt = k * period
+        t < nxt <= t + period
+
+    This is formula-equivalent to ``((t / period) + 1) * period`` for the
+    non-negative runtime timestamps used by the Event kernel, while avoiding
+    symbolic integer division in every release/controller candidate.
+    """
+
+    period = int(period)
+    if period <= 0:
+        raise ValueError("period must be positive")
+    period_index = z3.Int(f"{prefix}.period_index")
+    nxt = z3.Int(f"{prefix}.time")
+    definition = z3.And(
+        nxt == period_index * period,
+        nxt > t,
+        nxt <= t + period,
+    )
+    return nxt, definition
 
 
 def _slot_index(model: BoundModel, key: tuple[str, int]) -> int:
@@ -412,11 +450,23 @@ def build_event_candidates(
     """
 
     t = dispatch_state.t
-    releases = tuple(
-        (task.name, _next_periodic_after(t, task.period))
-        for task in model.tasks
+    periodic_definitions: list[z3.BoolRef] = []
+    release_rows: list[tuple[str, z3.ArithRef]] = []
+    for task in model.tasks:
+        release_time, release_definition = _declare_exact_periodic_successor(
+            t,
+            task.period,
+            prefix=f"{prefix}.candidate.release.{task.name}",
+        )
+        release_rows.append((task.name, release_time))
+        periodic_definitions.append(release_definition)
+    releases = tuple(release_rows)
+    controller, controller_definition = _declare_exact_periodic_successor(
+        t,
+        model.agent_period,
+        prefix=f"{prefix}.candidate.controller",
     )
-    controller = _next_periodic_after(t, model.agent_period)
+    periodic_definitions.append(controller_definition)
 
     hi_deadlines: list[tuple[tuple[str, int], z3.ArithRef]] = []
     for task in model.hi_tasks:
@@ -457,7 +507,7 @@ def build_event_candidates(
     )
     next_time = z3.Int(f"{prefix}.candidate.next_time")
     next_time_definition = _exact_minimum_definition(next_time, all_candidates)
-    definition_formula = z3.And(completion_definition, next_time_definition)
+    definition_formula = z3.And(*periodic_definitions, completion_definition, next_time_definition)
     return EventCandidateSet(
         horizon=horizon_time,
         releases=releases,
