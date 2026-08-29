@@ -43,7 +43,10 @@ def test_terminal_event_window_is_unlimited_but_global_timeout_remains_available
     assert "timeout_ms=TERMINAL_EVENT_WINDOW_TIMEOUT_MS" in verifier
     assert "probe_timeout_ms=int(timeout_ms)" in verifier
     assert "global_obligation_timeout_ms=int(timeout_ms)" in verifier
-    assert "if int(timeout_ms) > 0:" in bmc
+    # V5 reuses one solver within a depth.  Setting timeout=0 explicitly
+    # clears a previous bounded probe timeout before exact-leaf resume.
+    assert "solver.set(timeout=timeout_ms)" in bmc
     assert "probe timeout must be positive" in bmc
     assert "0 means unlimited" in bmc
+    assert "same_solver_timeout_resume" in bmc
     assert "--solver-timeout-ms" in cli

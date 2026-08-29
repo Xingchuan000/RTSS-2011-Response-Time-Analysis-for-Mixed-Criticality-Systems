@@ -490,19 +490,28 @@ def verify_bundle_v9_2(
             global_obligation_timeout_ms=int(timeout_ms),
             solver_strategy=SOLVER_STRATEGY,
         )
+        progress_base = {
+            "task": task.name,
+            "task_index": task_index,
+            "hi_task_count": len(model.hi_tasks),
+            "deadline": int(task.deadline),
+            "finite_event_bound": event_bound.finite_event_bound,
+            "timeout_ms": TERMINAL_EVENT_WINDOW_TIMEOUT_MS,
+            "probe_timeout_ms": int(timeout_ms),
+            "global_obligation_timeout_ms": int(timeout_ms),
+            "solver_strategy": SOLVER_STRATEGY,
+        }
+
         def _incremental_progress(details: dict[str, Any]) -> None:
+            # Incremental BMC progress may refine fields already present in the
+            # verifier-level defaults (for example probe_timeout_ms).  Merge
+            # dictionaries before expanding keyword arguments so duplicate
+            # keys override deterministically instead of raising TypeError.
+            payload = dict(progress_base)
+            payload.update(details)
             _write_progress(
                 out, "SOLVE_FIRST_BAD_EVENT_WINDOW_INCREMENTAL_DEPTH",
-                task=task.name,
-                task_index=task_index,
-                hi_task_count=len(model.hi_tasks),
-                deadline=int(task.deadline),
-                finite_event_bound=event_bound.finite_event_bound,
-                timeout_ms=TERMINAL_EVENT_WINDOW_TIMEOUT_MS,
-                probe_timeout_ms=int(timeout_ms),
-                global_obligation_timeout_ms=int(timeout_ms),
-                solver_strategy=SOLVER_STRATEGY,
-                **details,
+                **payload,
             )
 
         receipt, sat_encoding = solve_incremental_event_window(

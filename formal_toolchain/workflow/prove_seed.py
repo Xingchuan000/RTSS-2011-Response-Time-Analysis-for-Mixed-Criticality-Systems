@@ -24,6 +24,32 @@ def _write(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _publish_staging(staging: Path, out: Path) -> str:
+    """Publish a completed staging directory without losing long proof runs.
+
+    Windows can reject a directory rename when Explorer, antivirus, or another
+    reader temporarily holds a handle.  The proof artifacts are already fully
+    materialized at this point, so a same-tree copy is a safe publication
+    fallback.  The staging directory is intentionally retained after a copy so
+    the original proof result remains recoverable.
+    """
+
+    try:
+        staging.rename(out)
+        return "RENAMED"
+    except PermissionError as rename_exc:
+        if out.exists():
+            raise
+        try:
+            shutil.copytree(staging, out)
+        except OSError as copy_exc:
+            raise OSError(
+                f"failed to publish proof staging directory; "
+                f"rename_error={rename_exc}; copy_error={copy_exc}"
+            ) from copy_exc
+        return "COPIED_AFTER_RENAME_DENIED"
+
+
 def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
                target_recipe: Path | None = None, overwrite: bool = False,
                solver_timeout_ms: int = 120_000,
@@ -137,7 +163,9 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
                 f"# V9.2 Formal Proof Report\n\n- result_status: `{result_status}`\n- failure_code: `{summary.get('failure_code')}`\n",
                 encoding="utf-8",
             )
-        staging.rename(out)
+        publish_mode = _publish_staging(staging, out)
+        proof_result["publish_mode"] = publish_mode
+        _write(out / "proof_result.json", proof_result)
         return int(proof_result["exit_code"]), proof_result
     except (FormalWorkflowError, OSError, ValueError, KeyError) as exc:
         route = exc.route if isinstance(exc, FormalWorkflowError) else RESULT_UNRESOLVED
@@ -153,7 +181,11 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
             staging.mkdir(parents=True, exist_ok=True)
             _write(staging / "proof_result.json", failure)
             if not out.exists():
-                staging.rename(out)
+                try:
+                    _publish_staging(staging, out)
+                except OSError:
+                    # Keep staging intact as the recoverable source of truth.
+                    pass
         return int(failure["exit_code"]), failure
     finally:
         os.close(fd)
