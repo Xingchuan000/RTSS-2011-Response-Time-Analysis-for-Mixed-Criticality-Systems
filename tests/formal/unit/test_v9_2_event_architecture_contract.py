@@ -153,7 +153,13 @@ def test_incremental_terminal_depth_solver_is_exact_and_fail_closed():
     assert "for depth in range(0, max_depth + 1):" in solver
     assert "encoding.append_exact_event_step()" in solver
     assert '"fresh_solver_per_depth": True' in solver
-    assert "solver.push()" not in solver and "solver.pop()" not in solver
+    assert '"within_depth_solver_context_reused": True' in solver
+    assert '"cross_depth_solver_context_reused": False' in solver
+    assert "_new_depth_solver(assertions)" in solver
+    assert "_solver_scope" in solver
+    assert "solver.push()" in solver and "solver.pop()" in solver
+    assert "same_solver_timeout_resume" in solver
+    assert "_ordered_disjoint_cover" in solver
     assert "CTRL_COUNT_" in solver
     assert "SRC_RELEASE_ANY" in solver
     assert "SRC_HI_DEADLINE_ANY" in solver

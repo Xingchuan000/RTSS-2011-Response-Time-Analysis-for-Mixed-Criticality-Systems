@@ -1,12 +1,11 @@
 """Exact terminal-depth BMC for V9.2 Event FirstBadWindow.
 
-The Event prefix is still extended one exact active macro at a time, but each
-terminal depth is solved in a *fresh* Z3 solver.  This is intentional: after a
-solver has been checked under push/pop and later extended, Z3 remains in an
-incremental context and cannot apply some whole-query preprocessing as
-aggressively.  The s313 receipts exposed this directly: very small exact depths
-were timing out even though formula construction and memory were already under
-control.
+The Event prefix is still extended one exact active macro at a time, and every
+terminal depth receives a *fresh* Z3 solver.  Solver state is never reused
+across depths, preserving the whole-query preprocessing benefit established by
+the s313 fresh-depth experiments.  Within one fixed depth, however, the solver
+is reused across exact controller/source/member refinements so the expensive
+base preprocessing and learned clauses are not discarded.
 
 For depth ``k`` the queried formula is exactly
 
@@ -24,6 +23,7 @@ not abstractions.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Callable, Iterable
@@ -39,7 +39,7 @@ from .event_window_encoder import (
 )
 
 
-SOLVER_STRATEGY = "EXACT_HIERARCHICAL_PROBE_LEAF_BMC_V4"
+SOLVER_STRATEGY = "EXACT_WITHIN_DEPTH_REUSE_HIERARCHICAL_BMC_V5"
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,12 +48,16 @@ class DepthCaseReceipt:
     result: str
     solver_check_seconds: float
     reason: str | None = None
+    solver_context_reused: bool = True
+    resumed_after_timeout: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         row: dict[str, Any] = {
             "case_id": self.case_id,
             "result": self.result,
             "solver_check_seconds": round(float(self.solver_check_seconds), 6),
+            "solver_context_reused": bool(self.solver_context_reused),
+            "resumed_after_timeout": bool(self.resumed_after_timeout),
         }
         if self.reason is not None:
             row["reason"] = self.reason
@@ -129,6 +133,10 @@ class IncrementalBMCReceipt:
             "terminal_stutter_used": False,
             "exact_active_event_prefix": True,
             "fresh_solver_per_depth": True,
+            "within_depth_solver_context_reused": True,
+            "cross_depth_solver_context_reused": False,
+            "same_solver_timeout_resume": True,
+            "disjoint_exact_case_partition": True,
             "bounded_probe_before_exact_partition": True,
             "hierarchical_source_member_partition": True,
             "exhaustive_case_partition_on_unknown": True,
@@ -145,7 +153,7 @@ def _query_plan_hash(encoding: IncrementalEventWindowEncoding) -> str:
     """Hash the exact finite query plan without materializing a huge SMT text."""
 
     return sha256_object({
-        "schema": "v9_2_hierarchical_probe_leaf_query_plan_v4",
+        "schema": "v9_2_within_depth_reuse_query_plan_v5",
         "solver_strategy": SOLVER_STRATEGY,
         "event_window_encoder_version": ENCODER_VERSION,
         "target_task": encoding.target_task,
@@ -158,24 +166,30 @@ def _query_plan_hash(encoding: IncrementalEventWindowEncoding) -> str:
         "terminal_relation": "exact_P0_P1_P2_target_first_bad",
         "terminal_stutter_used": False,
         "fresh_solver_per_depth": True,
-        "unknown_fallback_partition": "controller_count_then_source_class_then_exact_source_member",
+        "within_depth_solver_context_reused": True,
+        "cross_depth_solver_context_reused": False,
+        "same_solver_timeout_resume": True,
+        "unknown_fallback_partition": "controller_count_then_disjoint_source_class_then_disjoint_exact_source_member",
         "coarse_queries_use_bounded_probe": True,
         "only_exact_leaf_cases_may_use_unlimited_timeout": True,
     })
 
 
-def _fresh_check(
-    assertions: Iterable[z3.BoolRef], *, timeout_ms: int
+def _solver_check(
+    solver: z3.Solver, *, timeout_ms: int
 ) -> tuple[str, float, str | None]:
-    """Solve one exact depth in a fresh non-incremental solver context."""
+    """Check one already-built exact solver context.
 
-    solver = z3.Solver()
-    # Z3 has no wall-clock deadline when the timeout parameter is omitted.
-    # ``timeout_ms == 0`` is the trusted verifier's explicit unlimited mode
-    # for final FirstBadEventWindow solving; negative values remain invalid.
-    if int(timeout_ms) > 0:
-        solver.set(timeout=int(timeout_ms))
-    solver.add(*tuple(assertions))
+    A depth owns exactly one solver.  Bounded parent probes and their refined
+    child cases reuse that solver so preprocessing and learned clauses are not
+    discarded.  ``timeout_ms == 0`` explicitly clears a prior bounded timeout
+    on the same solver before an exact leaf resumes without a deadline.
+    """
+
+    timeout_ms = int(timeout_ms)
+    if timeout_ms < 0:
+        raise ValueError("solver timeout must be non-negative (0 means unlimited)")
+    solver.set(timeout=timeout_ms)
     started = perf_counter()
     result = solver.check()
     elapsed = perf_counter() - started
@@ -185,6 +199,48 @@ def _fresh_check(
         return "UNSAT", elapsed, None
     return "UNKNOWN", elapsed, solver.reason_unknown()
 
+
+def _new_depth_solver(assertions: Iterable[z3.BoolRef]) -> z3.Solver:
+    """Create the one fresh solver owned by a single terminal depth."""
+
+    solver = z3.Solver()
+    solver.add(*tuple(assertions))
+    return solver
+
+
+@contextmanager
+def _solver_scope(solver: z3.Solver, *extra: z3.BoolRef):
+    """Temporarily refine one depth solver without losing parent learning."""
+
+    solver.push()
+    try:
+        if extra:
+            solver.add(*extra)
+        yield
+    finally:
+        solver.pop()
+
+
+def _ordered_disjoint_cover(
+    rows: Iterable[tuple[str, z3.BoolRef]],
+) -> tuple[tuple[str, z3.BoolRef], ...]:
+    """Turn an overlapping finite cover into an equivalent disjoint cover.
+
+    Simultaneous Event sources are legal, so the older source/member cases can
+    overlap.  An ordered first-witness partition preserves the union exactly
+    while ensuring a concrete model is solved in only one sibling case.
+    """
+
+    out: list[tuple[str, z3.BoolRef]] = []
+    previous: list[z3.BoolRef] = []
+    for case_id, cube in rows:
+        if previous:
+            disjoint = z3.And(cube, z3.Not(z3.Or(*previous)))
+        else:
+            disjoint = cube
+        out.append((case_id, disjoint))
+        previous.append(cube)
+    return tuple(out)
 
 def _terminal_horizon_bridge(encoding: IncrementalEventWindowEncoding) -> z3.BoolRef:
     """Expose a redundant equality already implied by the exact last step.
@@ -255,7 +311,7 @@ def _penultimate_event_source_partition(
     nxt = candidates.next_time
     release_values = [value for _, value in candidates.releases]
     deadline_values = [value for _, value in candidates.hi_deadlines]
-    return (
+    return _ordered_disjoint_cover((
         ("SRC_HORIZON", nxt == candidates.horizon),
         (
             "SRC_RELEASE_ANY",
@@ -269,7 +325,7 @@ def _penultimate_event_source_partition(
             if deadline_values else z3.BoolVal(False),
         ),
         ("SRC_COMPLETION", nxt == candidates.completion),
-    )
+    ))
 
 
 
@@ -297,7 +353,7 @@ def _source_member_partition(
     nxt = candidates.next_time
 
     if source_id == "SRC_RELEASE_ANY":
-        return tuple(
+        return _ordered_disjoint_cover(
             (
                 f"SRC_RELEASE_TASK_{_safe_case_token(task_name)}",
                 nxt == value,
@@ -306,7 +362,7 @@ def _source_member_partition(
         )
 
     if source_id == "SRC_HI_DEADLINE_ANY":
-        return tuple(
+        return _ordered_disjoint_cover(
             (
                 f"SRC_HI_DEADLINE_JOB_{_safe_case_token(task_name)}_{slot}",
                 nxt == value,
@@ -331,12 +387,12 @@ def _source_member_partition(
             "SRC_COMPLETION_SLOT_OTHER",
             z3.Not(z3.Or(*known)) if known else z3.BoolVal(True),
         ))
-        return tuple(rows)
+        return _ordered_disjoint_cover(rows)
 
     return ()
 
 def _solve_unknown_by_exact_cases(
-    assertions: tuple[z3.BoolRef, ...],
+    solver: z3.Solver,
     encoding: IncrementalEventWindowEncoding,
     *,
     probe_timeout_ms: int,
@@ -344,19 +400,17 @@ def _solve_unknown_by_exact_cases(
     progress: Callable[[dict[str, Any]], None] | None,
     depth: int,
 ) -> tuple[str, float, tuple[DepthCaseReceipt, ...], str | None]:
-    """Refine a hard exact depth with bounded probes and exact leaf solving.
+    """Refine one hard depth while reusing its single Z3 solver context.
 
-    Coarse formulas are never allowed to monopolize an unlimited solver.  The
-    whole-depth caller has already exhausted its bounded probe.  Here each
-    controller-count case and each source-class case receives the same bounded
-    probe.  A source class that is still UNKNOWN is refined into an exhaustive
-    exact member cover (release task, HI-deadline job, or completion selected
-    slot).  Only those exact leaves are allowed to use ``leaf_timeout_ms``;
-    with the verifier's terminal policy this is zero/unlimited.
+    The solver already contains the exact depth formula and has just completed
+    the whole-depth bounded probe.  All count/source/member refinements are
+    temporary scopes on that same solver, so the expensive base preprocessing
+    and learned clauses are retained.  No solver object is shared across
+    different depths.
 
-    SAT in any leaf is SAT.  A parent is UNSAT only when every member of its
-    exact cover is UNSAT.  Any non-timeout UNKNOWN at an exact leaf remains
-    UNKNOWN, preserving fail-closed aggregation.
+    Exact leaves use a bounded probe first.  If that probe times out, the same
+    solver in the same pushed scope has its timeout cleared and is checked again
+    unlimited; the first 120 seconds are therefore not thrown away.
     """
 
     rows: list[DepthCaseReceipt] = []
@@ -364,12 +418,12 @@ def _solve_unknown_by_exact_cases(
     unresolved: list[str] = []
     source_partition = _penultimate_event_source_partition(encoding)
 
-    def run_case(
+    def run_current(
         case_id: str,
-        extra: tuple[z3.BoolRef, ...],
         *,
         timeout_ms: int,
         phase: str,
+        resumed_after_timeout: bool = False,
     ) -> tuple[str, str | None]:
         nonlocal total
         if progress is not None:
@@ -378,12 +432,16 @@ def _solve_unknown_by_exact_cases(
                 "phase": phase,
                 "case_id": case_id,
                 "case_timeout_ms": int(timeout_ms),
+                "within_depth_solver_context_reused": True,
+                "resumed_after_timeout": bool(resumed_after_timeout),
             })
-        result, elapsed, reason = _fresh_check(
-            (*assertions, *extra), timeout_ms=timeout_ms
-        )
+        result, elapsed, reason = _solver_check(solver, timeout_ms=timeout_ms)
         total += elapsed
-        rows.append(DepthCaseReceipt(case_id, result, elapsed, reason=reason))
+        rows.append(DepthCaseReceipt(
+            case_id, result, elapsed, reason=reason,
+            solver_context_reused=True,
+            resumed_after_timeout=resumed_after_timeout,
+        ))
         if progress is not None:
             progress({
                 "depth": depth,
@@ -392,114 +450,119 @@ def _solve_unknown_by_exact_cases(
                 "case_result": result,
                 "case_timeout_ms": int(timeout_ms),
                 "case_solver_check_seconds": round(elapsed, 6),
+                "within_depth_solver_context_reused": True,
+                "resumed_after_timeout": bool(resumed_after_timeout),
             })
         return result, reason
 
-    for count_id, count_cube in _controller_count_partition(encoding):
-        count_result, _ = run_case(
-            count_id, (count_cube,),
-            timeout_ms=probe_timeout_ms,
-            phase="COUNT_PROBE_CHECK",
+    def resume_exact_leaf(case_id: str) -> tuple[str, str | None]:
+        """Continue an already-timed-out exact leaf in the same solver context."""
+
+        return run_current(
+            f"{case_id}__RESUME",
+            timeout_ms=leaf_timeout_ms,
+            phase="EXACT_LEAF_RESUME_CHECK",
+            resumed_after_timeout=True,
         )
-        if count_result == "SAT":
-            return "SAT", total, tuple(rows), None
-        if count_result == "UNSAT":
-            continue
 
-        # Depth 0/1 has no nonterminal penultimate macro.  The count cube is
-        # already an exact leaf, so only now may it receive the terminal
-        # unlimited policy.
-        if not source_partition:
-            leaf_id = f"{count_id}__EXACT_LEAF"
-            leaf_result, leaf_reason = run_case(
-                leaf_id, (count_cube,),
-                timeout_ms=leaf_timeout_ms,
-                phase="EXACT_LEAF_CHECK",
-            )
-            if leaf_result == "SAT":
-                return "SAT", total, tuple(rows), None
-            if leaf_result == "UNKNOWN":
-                unresolved.append(leaf_id + (f":{leaf_reason}" if leaf_reason else ""))
-            continue
+    def probe_then_resume_exact_leaf(case_id: str) -> tuple[str, str | None]:
+        """Probe a new exact leaf once, then continue that same context."""
 
-        count_unresolved = False
-        for source_id, source_cube in source_partition:
-            source_case_id = f"{count_id}__{source_id}"
-            source_result, _ = run_case(
-                source_case_id,
-                (count_cube, source_cube),
+        probe_id = f"{case_id}__PROBE"
+        result, reason = run_current(
+            probe_id, timeout_ms=probe_timeout_ms, phase="LEAF_PROBE_CHECK"
+        )
+        if result != "UNKNOWN":
+            return result, reason
+        return resume_exact_leaf(case_id)
+
+    for count_id, count_cube in _controller_count_partition(encoding):
+        with _solver_scope(solver, count_cube):
+            count_result, _ = run_current(
+                count_id,
                 timeout_ms=probe_timeout_ms,
-                phase="SOURCE_PROBE_CHECK",
+                phase="COUNT_PROBE_CHECK",
             )
-            if source_result == "SAT":
+            if count_result == "SAT":
                 return "SAT", total, tuple(rows), None
-            if source_result == "UNSAT":
+            if count_result == "UNSAT":
                 continue
 
-            members = _source_member_partition(encoding, source_id)
-            if not members:
-                # HORIZON/CONTROLLER are already exact source leaves.
-                leaf_id = f"{source_case_id}__EXACT_LEAF"
-                leaf_result, leaf_reason = run_case(
-                    leaf_id,
-                    (count_cube, source_cube),
-                    timeout_ms=leaf_timeout_ms,
-                    phase="EXACT_LEAF_CHECK",
+            # Depth 0/1 has no nonterminal penultimate macro.  The count cube is
+            # already exact, so resume this same context instead of restarting.
+            if not source_partition:
+                leaf_result, leaf_reason = resume_exact_leaf(
+                    f"{count_id}__EXACT_LEAF"
                 )
                 if leaf_result == "SAT":
                     return "SAT", total, tuple(rows), None
                 if leaf_result == "UNKNOWN":
                     unresolved.append(
-                        leaf_id + (f":{leaf_reason}" if leaf_reason else "")
+                        count_id + (f":{leaf_reason}" if leaf_reason else "")
                     )
-                    count_unresolved = True
                 continue
 
-            member_unknown = False
-            for member_id, member_cube in members:
-                member_case_id = f"{source_case_id}__{member_id}"
-                member_probe_id = f"{member_case_id}__PROBE"
-                member_result, _ = run_case(
-                    member_probe_id,
-                    (count_cube, source_cube, member_cube),
-                    timeout_ms=probe_timeout_ms,
-                    phase="MEMBER_PROBE_CHECK",
-                )
-                if member_result == "SAT":
-                    return "SAT", total, tuple(rows), None
-                if member_result == "UNSAT":
-                    continue
-
-                leaf_id = f"{member_case_id}__EXACT_LEAF"
-                leaf_result, leaf_reason = run_case(
-                    leaf_id,
-                    (count_cube, source_cube, member_cube),
-                    timeout_ms=leaf_timeout_ms,
-                    phase="EXACT_LEAF_CHECK",
-                )
-                if leaf_result == "SAT":
-                    return "SAT", total, tuple(rows), None
-                if leaf_result == "UNKNOWN":
-                    member_unknown = True
-                    unresolved.append(
-                        leaf_id + (f":{leaf_reason}" if leaf_reason else "")
+            count_unresolved = False
+            for source_id, source_cube in source_partition:
+                source_case_id = f"{count_id}__{source_id}"
+                with _solver_scope(solver, source_cube):
+                    source_result, _ = run_current(
+                        source_case_id,
+                        timeout_ms=probe_timeout_ms,
+                        phase="SOURCE_PROBE_CHECK",
                     )
+                    if source_result == "SAT":
+                        return "SAT", total, tuple(rows), None
+                    if source_result == "UNSAT":
+                        continue
 
-            if member_unknown:
-                count_unresolved = True
-            # Otherwise every exact member of this source class is UNSAT.
+                    members = _source_member_partition(encoding, source_id)
+                    if not members:
+                        # HORIZON/CONTROLLER are exact leaves.  Continue the
+                        # timed-out source query in this very solver context.
+                        leaf_result, leaf_reason = resume_exact_leaf(
+                            f"{source_case_id}__EXACT_LEAF"
+                        )
+                        if leaf_result == "SAT":
+                            return "SAT", total, tuple(rows), None
+                        if leaf_result == "UNKNOWN":
+                            unresolved.append(
+                                source_case_id
+                                + (f":{leaf_reason}" if leaf_reason else "")
+                            )
+                            count_unresolved = True
+                        continue
 
-        if count_unresolved:
-            continue
-        # Otherwise all exact source classes were UNSAT, hence this controller
-        # count case is UNSAT even though its coarse count probe timed out.
+                    member_unknown = False
+                    for member_id, member_cube in members:
+                        member_case_id = f"{source_case_id}__{member_id}"
+                        with _solver_scope(solver, member_cube):
+                            leaf_result, leaf_reason = probe_then_resume_exact_leaf(
+                                f"{member_case_id}__EXACT_LEAF"
+                            )
+                            if leaf_result == "SAT":
+                                return "SAT", total, tuple(rows), None
+                            if leaf_result == "UNKNOWN":
+                                member_unknown = True
+                                unresolved.append(
+                                    member_case_id
+                                    + (f":{leaf_reason}" if leaf_reason else "")
+                                )
+
+                    if member_unknown:
+                        count_unresolved = True
+                    # Otherwise every disjoint exact member is UNSAT.
+
+            if count_unresolved:
+                continue
+            # Otherwise every disjoint exact source class is UNSAT.
 
     if unresolved:
         return (
             "UNKNOWN",
             total,
             tuple(rows),
-            "EXACT_HIERARCHICAL_LEAF_UNKNOWN:" + ",".join(unresolved),
+            "EXACT_HIERARCHICAL_REUSED_LEAF_UNKNOWN:" + ",".join(unresolved),
         )
     return "UNSAT", total, tuple(rows), None
 
@@ -570,8 +633,9 @@ def solve_incremental_event_window(
         # The whole-depth query is only a bounded probe.  Unlimited solving is
         # reserved for exact hierarchical leaves after controller/source/member
         # partitioning, otherwise the fallback can never be reached.
-        primary_result, primary_seconds, primary_reason = _fresh_check(
-            assertions, timeout_ms=probe_timeout_ms
+        depth_solver = _new_depth_solver(assertions)
+        primary_result, primary_seconds, primary_reason = _solver_check(
+            depth_solver, timeout_ms=probe_timeout_ms
         )
         one_check = primary_seconds
         effective_result = primary_result
@@ -581,7 +645,7 @@ def solve_incremental_event_window(
         if primary_result == "UNKNOWN":
             effective_result, case_seconds, case_rows, effective_reason = (
                 _solve_unknown_by_exact_cases(
-                    assertions,
+                    depth_solver,
                     encoding,
                     probe_timeout_ms=probe_timeout_ms,
                     leaf_timeout_ms=timeout_ms,
@@ -655,6 +719,7 @@ def solve_incremental_event_window(
                 reason=effective_reason,
             ), None
 
+        del depth_solver
         del terminal
 
     # This is the only path allowed to report window UNSAT: every exact
