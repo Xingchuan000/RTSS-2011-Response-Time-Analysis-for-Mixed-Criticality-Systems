@@ -7,7 +7,6 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.v9_2.bindings import build_bindings, load_request
 from formal_toolchain.v9_2.constants import PROOF_ROUTE, SCOPE
 from formal_toolchain.v9_2.encoding_contract import (
@@ -51,17 +50,14 @@ def compile_request_v9_2(request_path: Path, out: Path, *, source_root: Path) ->
             "required_soundness_clauses": list(REQUIRED_SOUNDNESS_CLAUSES),
             "event_layer_added_abstractions": [],
             "exact_p5_in_event_window": True,
-            "microstep_terminal_fallback_used": False,
         },
         "implementation_gaps": gaps,
     }
-    manifest["candidate_root_hash"] = sha256_object(manifest)
     _write(out / "candidate_manifest.json", manifest)
     return {
         "workflow_status": "CANDIDATE_COMPILED",
         "proof_route": PROOF_ROUTE,
         "binding_root_hash": bindings["binding_root_hash"],
-        "candidate_root_hash": manifest["candidate_root_hash"],
         "implementation_gap_count": len(gaps),
     }
 

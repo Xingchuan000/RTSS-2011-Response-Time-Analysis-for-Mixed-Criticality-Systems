@@ -1,4 +1,4 @@
-"""Proof-object builders for the V9.2 safe-prefix invariant Psi."""
+"""Proof-object builders for the V9.3 base safe-prefix invariant Psi."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from .transition_encoder import encode_p5_invariant_summary, encode_phase_step, 
 @dataclass(frozen=True, slots=True)
 class SafePrefixInvariant:
     model: BoundModel
-    template_name: str = "V9_2_SAFE_PREFIX_PSI_V1"
+    template_name: str = "V9_3_BASE_SAFE_PREFIX_PSI_V1"
 
     def formula(self, state: SymbolicKernelState) -> z3.BoolRef:
         return build_psi(state, self.model)

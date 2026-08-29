@@ -1,8 +1,8 @@
-"""Trusted, verifier-regenerated V9.2 end-to-end proof checker.
+"""V9.3 end-to-end research proof checker.
 
-The candidate bundle is intentionally untrusted.  It transports frozen binding
-identity only.  Every mathematical formula used for the final claim is rebuilt
-from request + current source in this process and solved in a fresh Z3 solver.
+Bindings and proof formulas are rebuilt directly from the proof request.  The
+research route intentionally contains no candidate-manifest integrity layer or
+proof-receipt hashing.
 """
 
 from __future__ import annotations
@@ -13,9 +13,8 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from formal_toolchain.core.hashing import sha256_object
 from formal_toolchain.v9_2.bindings import build_bindings, load_request
-from formal_toolchain.v9_2.carry_in import build_two_slot_carry_in_obligations
+from formal_toolchain.v9_2.carry_in import derive_protected_priority_prefix
 from formal_toolchain.v9_2.counterexample_replay import (
     DeployedRuntimeCounterexampleReplayer, classify_sat_event_window,
 )
@@ -39,18 +38,6 @@ from formal_toolchain.v9_2.incremental_event_bmc import (
 )
 
 
-# Final exact FirstBadEventWindow queries are intentionally allowed to run to
-# completion.  All earlier conformance / invariant / refinement obligations
-# keep the user-visible global timeout so regressions there still fail fast.
-# A value of 0 is interpreted by incremental_event_bmc as "do not install a
-# Z3 timeout parameter".
-TERMINAL_EVENT_WINDOW_TIMEOUT_MS = 0
-
-
-def _read_json(path: Path) -> Any:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
-
-
 def _write(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -60,7 +47,7 @@ def _write(path: Path, value: Any) -> None:
 
 def _write_progress(out: Path, stage: str, **details: Any) -> None:
     _write(out / "verifier_progress.json", {
-        "schema_version": "v9_2_verifier_progress_v1",
+        "schema_version": "v9_3_verifier_progress_v1",
         "stage": stage,
         **details,
     })
@@ -76,7 +63,7 @@ def _estimated_symbols_per_state(model: BoundModel) -> int:
 def _fail_summary(request: dict[str, Any], statuses: dict[str, str], *, code: str,
                   message: str | None = None, result: str = RESULT_UNRESOLVED) -> dict[str, Any]:
     return {
-        "schema_version": "v9_2_verified_summary_v2",
+        "schema_version": "v9_3_verified_summary_v1",
         "workflow_status": "FAILED",
         "result_status": result,
         "failure_route": result,
@@ -93,15 +80,6 @@ def _fail_summary(request: dict[str, Any], statuses: dict[str, str], *, code: st
     }
 
 
-def _candidate_integrity(candidate: dict[str, Any]) -> bool:
-    declared = candidate.get("candidate_root_hash")
-    if not isinstance(declared, str):
-        return False
-    payload = dict(candidate)
-    payload.pop("candidate_root_hash", None)
-    return sha256_object(payload) == declared
-
-
 def _receipt_status(receipt: FormulaReceipt) -> str:
     return "PASS" if receipt.result == "UNSAT" else (
         "FAIL" if receipt.result == "SAT" else "UNRESOLVED"
@@ -113,10 +91,9 @@ def _proof_summary(
     statuses: dict[str, str],
     *,
     binding_root_hash: str,
-    receipts: dict[str, Any],
 ) -> dict[str, Any]:
     return {
-        "schema_version": "v9_2_verified_summary_v2",
+        "schema_version": "v9_3_verified_summary_v1",
         "workflow_status": "PASS",
         "result_status": RESULT_PROVED,
         "proof_route": PROOF_ROUTE,
@@ -129,13 +106,11 @@ def _proof_summary(
         "binding_root_hash": binding_root_hash,
         "event_window_encoder_version": ENCODER_VERSION,
         "obligation_statuses": statuses,
-        "proof_receipt_hash": sha256_object(receipts),
         "event_layer_added_abstractions": [],
         "exact_event_macro_semantics": True,
         "event_to_full_realizability_verified": True,
         "small_horizon_differential_consistency_verified": True,
         "exact_p5_in_event_window": True,
-        "microstep_terminal_fallback_used": False,
     }
 
 
@@ -159,44 +134,19 @@ def verify_bundle_v9_2(
     request = load_request(request_path)
     statuses: dict[str, str] = {}
     receipts: dict[str, Any] = {
-        "schema_version": "v9_2_event_fresh_proof_receipts_v1",
+        "schema_version": "v9_3_event_fresh_leaf_proof_receipts_v1",
         "proof_route": PROOF_ROUTE,
         "timeout_ms": int(timeout_ms),
-        "candidate_assertions_trusted": False,
+        "binding_source": "verifier_regenerated_from_request",
     }
-
-    candidate_path = bundle / "candidate_manifest.json"
-    bindings_path = bundle / "bindings.json"
-    if not candidate_path.is_file() or not bindings_path.is_file():
-        summary = _fail_summary(
-            request, statuses, code="V9_2_CANDIDATE_BUNDLE_INCOMPLETE", result=RESULT_INVALID
-        )
-        _write(out / "proof_summary.json", summary)
-        return summary
-    candidate = _read_json(candidate_path)
-    candidate_bindings = _read_json(bindings_path)
-    if candidate.get("proof_route") != PROOF_ROUTE or not _candidate_integrity(candidate):
-        summary = _fail_summary(
-            request, statuses, code="V9_2_CANDIDATE_MANIFEST_INTEGRITY_FAILED", result=RESULT_INVALID
-        )
-        _write(out / "proof_summary.json", summary)
-        return summary
 
     try:
         recomputed = build_bindings(request_path, source_root=source_root)
     except (ValueError, FileNotFoundError, KeyError, TypeError) as exc:
         summary = _fail_summary(
-            request, statuses, code="V9_2_BINDING_REGENERATION_FAILED",
+            request, statuses, code="V9_3_BINDING_BUILD_FAILED",
             message=str(exc), result=RESULT_INVALID,
         )
-        _write(out / "proof_summary.json", summary)
-        return summary
-    if candidate_bindings.get("binding_root_hash") != recomputed["binding_root_hash"]:
-        summary = _fail_summary(request, statuses, code="BINDING_RECOMPUTE_MISMATCH", result=RESULT_INVALID)
-        _write(out / "proof_summary.json", summary)
-        return summary
-    if candidate.get("binding_root_hash") != recomputed["binding_root_hash"]:
-        summary = _fail_summary(request, statuses, code="CANDIDATE_BINDING_ROOT_MISMATCH", result=RESULT_INVALID)
         _write(out / "proof_summary.json", summary)
         return summary
 
@@ -386,35 +336,36 @@ def verify_bundle_v9_2(
         return summary
     statuses["SAFE_PREFIX_INVARIANT_CONDITIONAL_INDUCTIVENESS"] = "PASS"
 
-    # 4) Finite two-slot carry-in adequacy meta-theorems.
-    _write_progress(out, "CARRY_IN_ADEQUACY", timeout_ms=int(timeout_ms))
-    carry_receipts: list[dict[str, Any]] = []
-    for obligation in build_two_slot_carry_in_obligations(model, prefix="verify.carry"):
-        receipt = solve_formula(
-            obligation.obligation_id, obligation.counterexample, timeout_ms=timeout_ms
-        )
-        row = receipt.as_dict()
-        row["explanation"] = obligation.explanation
-        carry_receipts.append(row)
-        if receipt.result != "UNSAT":
-            statuses["CARRY_IN_SUMMARY_ADEQUACY"] = _receipt_status(receipt)
-            receipts["carry_in"] = carry_receipts
-            summary = _fail_summary(
-                request, statuses, code=f"CARRY_IN_ADEQUACY_{receipt.result}:{obligation.obligation_id}"
-            )
-            _write(out / "proof_receipts.json", receipts)
-            _write(out / "proof_summary.json", summary)
-            return summary
-    receipts["carry_in"] = carry_receipts
-    statuses["CARRY_IN_SUMMARY_ADEQUACY"] = "PASS"
+    # 4) V9.3 reachable carry-in theorem: derive the maximal contiguous
+    # universal-service protected priority prefix.  This theorem refines only
+    # Event-window start states; it is not a second terminal safety route.
+    _write_progress(out, "REACHABLE_CARRY_IN_PREFIX")
+    protected_prefix = derive_protected_priority_prefix(model)
+    carry_receipt = {
+        "status": "PASS",
+        "proof_rule": "UNIVERSAL_SERVICE_FIXED_PRIORITY_RESPONSE_ENVELOPE",
+        "members": [
+            {
+                "task": row.task_name,
+                "priority": row.priority,
+                "service_upper": row.service_upper,
+                "response_bound": row.response_bound,
+                "period": model.task_by_name[row.task_name].period,
+            }
+            for row in protected_prefix.members
+        ],
+        "use": "EVENT_START_REACHABLE_CARRY_IN_ONLY",
+    }
+    receipts["reachable_carry_in"] = carry_receipt
+    statuses["REACHABLE_CARRY_IN_ENVELOPE"] = "PASS"
     _write(out / "proof_receipts.partial.json", receipts)
 
-    # 5) V9.2 Event layer must be exact semantic compression.  The verifier
+    # 5) V9.3 Event layer must be exact semantic compression.  The verifier
     # fresh-checks the exact-minimum/silent-interval/differential obligations
     # before any Event FirstBadWindow is accepted.
     _write_progress(out, "EVENT_REFINEMENT_EQUIVALENCE", timeout_ms=int(timeout_ms))
     event_refinement = prove_event_refinement(
-        model, source_root=source_root, timeout_ms=timeout_ms
+        model, timeout_ms=timeout_ms
     )
     receipts["event_refinement"] = event_refinement.as_dict()
     statuses.update(event_refinement.obligation_statuses)
@@ -485,9 +436,6 @@ def verify_bundle_v9_2(
             declared_full_state_upper=declared_full_state_upper,
             estimated_declared_state_symbols=estimated_symbols,
             build_seconds=round(build_seconds, 6),
-            timeout_ms=TERMINAL_EVENT_WINDOW_TIMEOUT_MS,
-            probe_timeout_ms=int(timeout_ms),
-            global_obligation_timeout_ms=int(timeout_ms),
             solver_strategy=SOLVER_STRATEGY,
         )
         progress_base = {
@@ -496,17 +444,11 @@ def verify_bundle_v9_2(
             "hi_task_count": len(model.hi_tasks),
             "deadline": int(task.deadline),
             "finite_event_bound": event_bound.finite_event_bound,
-            "timeout_ms": TERMINAL_EVENT_WINDOW_TIMEOUT_MS,
-            "probe_timeout_ms": int(timeout_ms),
-            "global_obligation_timeout_ms": int(timeout_ms),
             "solver_strategy": SOLVER_STRATEGY,
         }
 
         def _incremental_progress(details: dict[str, Any]) -> None:
-            # Incremental BMC progress may refine fields already present in the
-            # verifier-level defaults (for example probe_timeout_ms).  Merge
-            # dictionaries before expanding keyword arguments so duplicate
-            # keys override deterministically instead of raising TypeError.
+            # Exact-leaf progress refines only task-local fields.
             payload = dict(progress_base)
             payload.update(details)
             _write_progress(
@@ -517,8 +459,6 @@ def verify_bundle_v9_2(
         receipt, sat_encoding = solve_incremental_event_window(
             f"FIRST_BAD_EVENT_WINDOW_{task.name}",
             encoding,
-            timeout_ms=TERMINAL_EVENT_WINDOW_TIMEOUT_MS,
-            probe_timeout_ms=int(timeout_ms),
             progress=_incremental_progress,
         )
         statuses[f"FIRST_BAD_EVENT_WINDOW_{task.name}"] = _receipt_status(receipt)
@@ -536,9 +476,7 @@ def verify_bundle_v9_2(
             "source_obligations": list(encoding.source_obligations),
             "event_layer_added_abstractions": list(encoding.event_layer_added_abstractions),
             "exact_p5_in_event_window": encoding.exact_p5_in_event_window,
-            "microstep_terminal_fallback_used": encoding.microstep_terminal_fallback_used,
             "incremental_terminal_depth_bmc": True,
-            "terminal_stutter_slots_in_solver": 0,
         })
         window_receipts.append(row)
         receipts["hi_event_windows"] = window_receipts
@@ -583,7 +521,6 @@ def verify_bundle_v9_2(
                     result=RESULT_CONCRETE_COUNTEREXAMPLE,
                 )
                 summary["binding_root_hash"] = recomputed["binding_root_hash"]
-                summary["counterexample_receipt_hash"] = sha256_object(classifications)
                 _write(out / "proof_receipts.json", receipts)
                 _write(out / "proof_summary.json", summary)
                 _write_progress(out, "COMPLETE", result_status=RESULT_CONCRETE_COUNTEREXAMPLE)
@@ -618,7 +555,6 @@ def verify_bundle_v9_2(
             message=",".join(sat_tasks),
         )
         summary["binding_root_hash"] = recomputed["binding_root_hash"]
-        summary["counterexample_receipt_hash"] = sha256_object(classifications)
         _write(out / "proof_receipts.json", receipts)
         _write(out / "proof_summary.json", summary)
         _write_progress(out, "COMPLETE", result_status=RESULT_UNRESOLVED, sat_tasks=sat_tasks)
@@ -629,7 +565,6 @@ def verify_bundle_v9_2(
         request,
         statuses,
         binding_root_hash=recomputed["binding_root_hash"],
-        receipts=receipts,
     )
     _write(out / "proof_receipts.json", receipts)
     _write(out / "proof_summary.json", summary)

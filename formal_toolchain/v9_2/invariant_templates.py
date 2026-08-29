@@ -165,11 +165,11 @@ def history_bounds(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
 
 
 def carry_in_consistency(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
+    """Base SafePrefix carry-in shape; reachable bounds are proved separately."""
+
     clauses: list[z3.BoolRef] = []
     for task in model.tasks:
         if task.deadline > task.period:
-            # The two-slot theorem intentionally does not claim arbitrary
-            # overlapping HI jobs for D>T tasksets.
             clauses.append(z3.BoolVal(False))
         for slot in range(model.max_jobs_per_task):
             job = state.jobs[(task.name, slot)]

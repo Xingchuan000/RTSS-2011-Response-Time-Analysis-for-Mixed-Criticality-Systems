@@ -762,56 +762,6 @@ def encode_event_step(
     )
 
 
-def event_step_or_terminal_stutter(
-    step: EventStepEncoding,
-    model: BoundModel,
-    *,
-    horizon_time: z3.ArithRef,
-) -> z3.BoolRef:
-    """Exact active-step/terminal-stutter disjunction with one state update.
-
-    The old encoding serialized a complete active destination relation and a
-    second complete ``state_equality`` for the terminal branch at every slot.
-    Because event-window callers separately enforce ``source.t <= horizon``,
-    ``source.t < horizon`` and ``source.t == horizon`` are exhaustive.  The two
-    branches can therefore share one fieldwise ITE destination assignment while
-    the expensive closure/core constraints remain guarded only by the active
-    branch.  No event behavior is added or removed.
-    """
-
-    source = step.source
-    dispatch_state = step.phase_states[-1]
-    active = source.t < horizon_time
-    return z3.And(
-        source.p == 0,
-        source.t <= horizon_time,
-        z3.Implies(active, step.closure_formula),
-        z3.Implies(active, step.silent_core_formula),
-        _event_destination_update(
-            dispatch_state,
-            step.destination,
-            model,
-            step.candidates,
-            active_guard=active,
-            stutter_source=source,
-        ),
-    )
-
-
-def event_boundary_stutter(
-    source: SymbolicKernelState,
-    destination: SymbolicKernelState,
-    *,
-    horizon_time: z3.ArithRef,
-) -> z3.BoolRef:
-    """Canonical terminal self-loop used only after reaching the query horizon."""
-
-    return z3.And(
-        source.t == horizon_time,
-        source.p == 0,
-        state_equality(source, destination),
-    )
-
 
 __all__ = [
     "EVENT_KERNEL_VERSION",
@@ -823,7 +773,5 @@ __all__ = [
     "EventStepEncoding",
     "build_event_candidates",
     "encode_event_step",
-    "event_step_or_terminal_stutter",
-    "event_boundary_stutter",
     "state_equality",
 ]

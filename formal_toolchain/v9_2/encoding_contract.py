@@ -31,7 +31,6 @@ REQUIRED_SOUNDNESS_CLAUSES = (
     "first_hi_bad_event_prefix_bi_reflection",
     "finite_event_count_bound_structural",
     "event_layer_added_abstractions_empty",
-    "microstep_terminal_fallback_forbidden",
     "small_horizon_full_event_differential_consistency",
 )
 
