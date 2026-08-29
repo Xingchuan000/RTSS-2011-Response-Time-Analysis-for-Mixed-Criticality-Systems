@@ -160,6 +160,12 @@ def test_incremental_terminal_depth_solver_is_exact_and_fail_closed():
     assert "solver.push()" in solver and "solver.pop()" in solver
     assert "same_solver_timeout_resume" in solver
     assert "_ordered_disjoint_cover" in solver
+    refinement = (ROOT / "formal_toolchain/v9_2/event_refinement.py").read_text(encoding="utf-8")
+    assert '"_new_depth_solver", "_solver_check", "_solve_unknown_by_exact_cases"' in refinement
+    assert "V9_2_WITHIN_DEPTH_SOLVER_REUSE_CONTRACT_MISSING" in refinement
+    assert '"within_depth_solver_context_reused": True' in refinement
+    assert '"cross_depth_solver_context_reused": False' in refinement
+    assert 'if "_fresh_check" in incremental_text' in refinement
     assert "CTRL_COUNT_" in solver
     assert "SRC_RELEASE_ANY" in solver
     assert "SRC_HI_DEADLINE_ANY" in solver

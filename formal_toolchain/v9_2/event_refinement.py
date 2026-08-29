@@ -546,7 +546,7 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
         return False, [], "V9_2_INCREMENTAL_DEPTH_MUST_USE_EXACT_ACTIVE_EVENT_STEP"
     if not {
         "append_exact_event_step", "build_terminal_bad_query",
-        "_fresh_check", "_solve_unknown_by_exact_cases",
+        "_new_depth_solver", "_solver_check", "_solve_unknown_by_exact_cases",
     } <= incremental_solver_calls:
         return False, [], "V9_2_INCREMENTAL_DEPTH_SOLVER_CONTRACT_MISSING"
     incremental_text = incremental.read_text(encoding="utf-8")
@@ -569,8 +569,24 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
         "bounded_probe_before_exact_partition",
     )):
         return False, [], "V9_2_HIERARCHICAL_EXACT_LEAF_PARTITION_CONTRACT_MISSING"
-    if "solver.push()" in incremental_text or "solver.pop()" in incremental_text:
-        return False, [], "V9_2_FRESH_DEPTH_SOLVER_MUST_NOT_REUSE_PUSH_POP_CONTEXT"
+    # V5 keeps the proven fresh-solver-per-depth boundary, but intentionally
+    # reuses that one solver *within* a fixed depth across exact count/source/
+    # member refinements.  Push/pop is therefore required here, while the
+    # explicit receipt/source markers below forbid cross-depth reuse.
+    if "_new_depth_solver(assertions)" not in incremental_text:
+        return False, [], "V9_2_FRESH_DEPTH_SOLVER_CONTRACT_MISSING"
+    if not all(token in incremental_text for token in (
+        "def _solver_scope",
+        "solver.push()",
+        "solver.pop()",
+        '"within_depth_solver_context_reused": True',
+        '"cross_depth_solver_context_reused": False',
+        "same_solver_timeout_resume",
+        "_ordered_disjoint_cover",
+    )):
+        return False, [], "V9_2_WITHIN_DEPTH_SOLVER_REUSE_CONTRACT_MISSING"
+    if "_fresh_check" in incremental_text:
+        return False, [], "V9_2_STALE_FRESH_CHECK_REINTRODUCED"
     if "This is the only path allowed to report window UNSAT" not in incremental_text:
         return False, [], "V9_2_INCREMENTAL_UNSAT_AGGREGATION_GUARD_MISSING"
     if "declare_sparse_successor" not in closure_calls:
@@ -658,8 +674,11 @@ def _source_contracts(source_root: Path) -> tuple[bool, list[dict[str, Any]], st
                 "EACH_PREFIX_USES_ONLY_EXACT_ACTIVE_EVENT_STEP;_"
                 "TERMINAL_STUTTER_SUFFIX_IS_IDENTITY_AND_OMITTED;_"
                 "EACH_DEPTH_IS_SOLVED_IN_A_FRESH_EQUIVALENT_SOLVER_CONTEXT;_"
+                "WITHIN_ONE_DEPTH_THE_SAME_SOLVER_CONTEXT_IS_REUSED_ONLY_UNDER_TEMPORARY_EXACT_CASE_SCOPES;_"
+                "NO_SOLVER_CONTEXT_IS_REUSED_ACROSS_DEPTHS;_"
                 "EVENT_CANDIDATE_MINIMA_USE_EXACT_SCALAR_SSA_DEFINITIONS;_"
-                "UNKNOWN_RETRY_PARTITIONS_EXACTLY_BY_CONTROLLER_COUNT_AND_PENULTIMATE_EVENT_SOURCE;_"
+                "UNKNOWN_RETRY_PARTITIONS_EXACTLY_BY_CONTROLLER_COUNT_DISJOINT_EVENT_SOURCE_AND_DISJOINT_SOURCE_MEMBER;_"
+                "EXACT_LEAF_TIMEOUT_RESUME_REUSES_THE_SAME_CASE_CONTEXT;_"
                 "UNSAT_REQUIRES_EVERY_CASE_AND_EVERY_DEPTH_UNSAT"
             ),
             "source_sha256": sha256_object({
