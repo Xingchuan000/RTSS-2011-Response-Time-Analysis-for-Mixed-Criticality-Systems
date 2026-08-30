@@ -32,11 +32,9 @@ from formal_toolchain.v9_2.universal_conformance import prove_universal_conforma
 from formal_toolchain.v9_2.event_refinement import prove_event_refinement
 from formal_toolchain.v9_2.event_depth_feasibility import derive_target_window_elimination
 from formal_toolchain.v9_2.event_window_encoder import (
-    ENCODER_VERSION, build_incremental_event_first_bad_window, derive_finite_event_bound,
+    ENCODER_VERSION, build_event_graph_problem, derive_finite_event_bound,
 )
-from formal_toolchain.v9_2.incremental_event_bmc import (
-    SOLVER_STRATEGY, solve_incremental_event_window,
-)
+from formal_toolchain.v9_2.event_graph_solver import SOLVER_STRATEGY, solve_event_graph
 
 
 def _write(path: Path, value: Any) -> None:
@@ -135,7 +133,7 @@ def verify_bundle_v9_2(
     request = load_request(request_path)
     statuses: dict[str, str] = {}
     receipts: dict[str, Any] = {
-        "schema_version": "v9_3_event_fresh_leaf_proof_receipts_v1",
+        "schema_version": "v9_3_explicit_event_graph_proof_receipts_v1",
         "proof_route": PROOF_ROUTE,
         "timeout_ms": int(timeout_ms),
         "binding_source": "verifier_regenerated_from_request",
@@ -400,17 +398,11 @@ def verify_bundle_v9_2(
     for task_index, task in enumerate(model.hi_tasks):
         event_bound = derive_finite_event_bound(model, task.name)
         event_boundary_count = event_bound.finite_event_bound + 1
-        # Each potential active macro declares seven zero-time P0..P6 closure
-        # states.  This is still tiny compared with D*8 microstep unrolling and
-        # retains exact Full-state information to avoid new conservatism.
-        controller_exact_instance_count = event_bound.controller_bound
-        declared_full_state_upper = (
-            event_boundary_count
-            + event_bound.finite_event_bound * 7
-            + controller_exact_instance_count * 2  # pooled exact-P5 pre/post
-            + 3  # terminal P1/P2/P3
-        )
-        estimated_symbols = declared_full_state_upper * symbols_per_full_state
+        # Explicit graph DFS keeps one source-specialized prefix live.  There is
+        # no window-global controller pool and no symbolic multi-event skeleton.
+        controller_exact_instance_count = 0
+        live_path_full_state_upper = 1 + event_bound.finite_event_bound * 8 + 3
+        estimated_symbols = live_path_full_state_upper * symbols_per_full_state
 
         target_elimination = derive_target_window_elimination(model, task.name)
         if target_elimination is not None:
@@ -424,8 +416,8 @@ def verify_bundle_v9_2(
                 "finite_event_bound": event_bound.finite_event_bound,
                 "event_boundary_count": event_boundary_count,
                 "controller_exact_instance_count": controller_exact_instance_count,
-                "declared_full_state_upper": 0,
-                "estimated_declared_state_symbols": 0,
+                "live_path_full_state_upper": 0,
+                "estimated_live_path_state_symbols": 0,
                 "build_seconds": 0.0,
                 "solver_check_seconds": 0.0,
                 "checked_depth_count": 0,
@@ -464,14 +456,14 @@ def verify_bundle_v9_2(
             finite_event_bound=event_bound.finite_event_bound,
             event_boundary_count=event_boundary_count,
             controller_exact_instance_count=controller_exact_instance_count,
-            declared_full_state_upper=declared_full_state_upper,
-            estimated_declared_state_symbols=estimated_symbols,
+            live_path_full_state_upper=live_path_full_state_upper,
+            estimated_live_path_state_symbols=estimated_symbols,
         )
         build_started = perf_counter()
-        encoding = build_incremental_event_first_bad_window(model, invariant, task.name)
+        encoding = build_event_graph_problem(model, invariant, task.name)
         build_seconds = perf_counter() - build_started
         _write_progress(
-            out, "SOLVE_FIRST_BAD_EVENT_WINDOW_INCREMENTAL_DEPTH",
+            out, "SOLVE_FIRST_BAD_EVENT_WINDOW_EVENT_GRAPH",
             task=task.name,
             task_index=task_index,
             hi_task_count=len(model.hi_tasks),
@@ -479,8 +471,8 @@ def verify_bundle_v9_2(
             finite_event_bound=event_bound.finite_event_bound,
             event_boundary_count=event_boundary_count,
             controller_exact_instance_count=controller_exact_instance_count,
-            declared_full_state_upper=declared_full_state_upper,
-            estimated_declared_state_symbols=estimated_symbols,
+            live_path_full_state_upper=live_path_full_state_upper,
+            estimated_live_path_state_symbols=estimated_symbols,
             build_seconds=round(build_seconds, 6),
             solver_strategy=SOLVER_STRATEGY,
         )
@@ -493,19 +485,18 @@ def verify_bundle_v9_2(
             "solver_strategy": SOLVER_STRATEGY,
         }
 
-        def _incremental_progress(details: dict[str, Any]) -> None:
-            # Exact-leaf progress refines only task-local fields.
+        def _event_graph_progress(details: dict[str, Any]) -> None:
             payload = dict(progress_base)
             payload.update(details)
             _write_progress(
-                out, "SOLVE_FIRST_BAD_EVENT_WINDOW_INCREMENTAL_DEPTH",
+                out, "SOLVE_FIRST_BAD_EVENT_WINDOW_EVENT_GRAPH",
                 **payload,
             )
 
-        receipt, sat_encoding = solve_incremental_event_window(
+        receipt, sat_encoding = solve_event_graph(
             f"FIRST_BAD_EVENT_WINDOW_{task.name}",
             encoding,
-            progress=_incremental_progress,
+            progress=_event_graph_progress,
         )
         statuses[f"FIRST_BAD_EVENT_WINDOW_{task.name}"] = _receipt_status(receipt)
         row = receipt.as_dict()
@@ -515,14 +506,15 @@ def verify_bundle_v9_2(
             "finite_event_bound": event_bound.finite_event_bound,
             "event_boundary_count": event_boundary_count,
             "controller_exact_instance_count": controller_exact_instance_count,
-            "declared_full_state_upper": declared_full_state_upper,
-            "estimated_declared_state_symbols": estimated_symbols,
+            "live_path_full_state_upper": live_path_full_state_upper,
+            "estimated_live_path_state_symbols": estimated_symbols,
             "build_seconds": round(build_seconds, 6),
             "event_bound": event_bound.as_dict(),
             "source_obligations": list(encoding.source_obligations),
             "event_layer_added_abstractions": list(encoding.event_layer_added_abstractions),
             "exact_p5_in_event_window": encoding.exact_p5_in_event_window,
-            "incremental_terminal_depth_bmc": True,
+            "explicit_event_graph_search": True,
+            "symbolic_multi_event_skeleton": False,
         })
         window_receipts.append(row)
         receipts["hi_event_windows"] = window_receipts
@@ -534,7 +526,7 @@ def verify_bundle_v9_2(
                 unknown_tasks.append(task.name)
                 classifications.append({
                     "status": "UNRESOLVED",
-                    "code": "INCREMENTAL_SAT_DEPTH_MATERIALIZATION_MISSING",
+                    "code": "EVENT_GRAPH_SAT_PATH_MATERIALIZATION_MISSING",
                     "target_task": task.name,
                 })
                 receipts["sat_classification"] = classifications

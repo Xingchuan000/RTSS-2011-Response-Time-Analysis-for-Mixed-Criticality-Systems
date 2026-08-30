@@ -15,6 +15,7 @@ from typing import Any, Iterable
 import z3
 
 from .event_kernel import (
+    EventSource,
     _silent_interval_advance,
     build_event_candidates,
     state_equality,
@@ -31,8 +32,8 @@ EVENT_TERMINAL_OBLIGATIONS = (
     "EVENT_STATE_FUTURE_SUFFICIENCY",
     "EVENT_DEMAND_LOOKUP_FACTORING_EQUIVALENCE",
     "EVENT_PHASE_SSA_FRAME_ELIMINATION_EQUIVALENCE",
-    "EVENT_P5_POOL_SUPPORT_PROJECTION_EQUIVALENCE",
-    "EVENT_INCREMENTAL_TERMINAL_DEPTH_PARTITION_EQUIVALENCE",
+    "EVENT_P5_GRAPH_BRANCH_SPECIALIZATION_EQUIVALENCE",
+    "EVENT_EXPLICIT_GRAPH_SOURCE_PARTITION_EQUIVALENCE",
     "NEXT_EVENT_MINIMALITY",
     "NEXT_EVENT_EXACT_MINIMUM",
     "NO_SKIPPED_DISCRETE_EVENT",
@@ -169,29 +170,6 @@ def _periodic_scalarization_counterexample(
             z3.And(scalar, nxt != reference),
             z3.And(nxt == reference, z3.Not(reference_witness)),
         ),
-    )
-
-
-def _controller_pool_coverage_counterexample(
-    length: int,
-    period: int,
-    bound: int,
-    prefix: str,
-) -> z3.BoolRef:
-    """Refute an in-window controller activation missing from the exact pool."""
-
-    origin = z3.Int(f"{prefix}.origin")
-    t = z3.Int(f"{prefix}.t")
-    period = int(period)
-    bound = int(bound)
-    first = ((origin + period - 1) / period) * period
-    pooled = [first + index * period for index in range(bound)]
-    return z3.And(
-        origin >= 0,
-        t >= origin,
-        t < origin + int(length),
-        t % period == 0,
-        *(t != value for value in pooled),
     )
 
 
@@ -333,7 +311,8 @@ def _p7_delta1_counterexample(model: BoundModel) -> z3.BoolRef:
     event_end = declare_state("event.diff.p7.event_end", model)
     horizon = dispatch.t + 1
     candidates = build_event_candidates(
-        dispatch, model, horizon_time=horizon, prefix="event.diff.p7.candidates"
+        dispatch, model, horizon_time=horizon, prefix="event.diff.p7.candidates",
+        source=EventSource("HORIZON"),
     )
     return z3.And(
         dispatch.p == 7,
@@ -405,17 +384,17 @@ def _structural_claims() -> list[dict[str, Any]]:
         ("EVENT_STATE_FUTURE_SUFFICIENCY", "FULL_PERSISTENT_STATE_RETAINED_AT_EVENT_BOUNDARY"),
         ("EVENT_DEMAND_LOOKUP_FACTORING_EQUIVALENCE", "EXACT_FINITE_DEMAND_LOOKUP"),
         ("EVENT_PHASE_SSA_FRAME_ELIMINATION_EQUIVALENCE", "SHARED_CANONICAL_PHASE_ENCODERS"),
-        ("EVENT_P5_POOL_SUPPORT_PROJECTION_EQUIVALENCE", "EXACT_P5_EFFECT_PLUS_EVENT_LOCAL_FRAME"),
+        ("EVENT_P5_GRAPH_BRANCH_SPECIALIZATION_EQUIVALENCE", "CANONICAL_CONTROLLER_SOURCE_OWNS_ENABLED_P5_BRANCH"),
         (
-            "EVENT_INCREMENTAL_TERMINAL_DEPTH_PARTITION_EQUIVALENCE",
-            "STRUCTURAL_DEPTH_PRUNE_PLUS_FRESH_SPECIALIZED_EXACT_LEAF_COVER",
+            "EVENT_EXPLICIT_GRAPH_SOURCE_PARTITION_EQUIVALENCE",
+            "DISJOINT_FIRST_MINIMUM_OWNER_DFS_COVERS_ALL_EVENT_PREFIXES",
         ),
         (
             "MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY::P0_P6_DEFINITIONAL_IDENTITY",
             "EVENT_CLOSURE_REUSES_CANONICAL_P0_TO_P6",
         ),
-        ("EXACT_P5_AT_CONTROLLER_EVENT", "WINDOW_GLOBAL_EXACT_P5_POOL"),
-        ("NO_SPURIOUS_EVENT_SOURCE", "CLOSED_EXACT_EVENT_SOURCE_ENUMERATION"),
+        ("EXACT_P5_AT_CONTROLLER_EVENT", "DIRECT_ENABLED_P5_ON_CONTROLLER_GRAPH_NODE"),
+        ("NO_SPURIOUS_EVENT_SOURCE", "CANONICAL_DISJOINT_FIRST_MINIMUM_OWNER"),
     )
     return [
         {"obligation_id": name, "status": "PASS", "proof_rule": rule}
@@ -517,15 +496,6 @@ def prove_event_refinement(
             model.agent_period, "event.refine.periodic_scalar.controller"
         ),
     ))
-    for target in model.hi_tasks:
-        bound = derive_finite_event_bound(model, target.name)
-        formulas.append((
-            f"CONTROLLER_EVENT_COVERAGE::POOL::{target.name}",
-            _controller_pool_coverage_counterexample(
-                target.deadline, model.agent_period, bound.controller_bound,
-                f"event.refine.controller_pool.{target.name}",
-            ),
-        ))
     formulas.extend(_finite_event_bound_formulas(model))
 
     solver_rows: list[dict[str, Any]] = []
@@ -597,7 +567,7 @@ def prove_event_refinement(
     segment_dependencies = (
         "EVENT_START_PROJECTION_EXACTNESS",
         "EVENT_STATE_FUTURE_SUFFICIENCY",
-        "EVENT_P5_POOL_SUPPORT_PROJECTION_EQUIVALENCE",
+        "EVENT_P5_GRAPH_BRANCH_SPECIALIZATION_EQUIVALENCE",
             "NO_SPURIOUS_EVENT_SOURCE",
         "NO_SKIPPED_DISCRETE_EVENT",
         "SILENT_INTERVAL_SERVICE_EQUIVALENCE",
@@ -639,7 +609,7 @@ def prove_event_refinement(
         window_dependencies,
         statuses,
         structural_rows,
-        proof_rule="V9_2_EVENT_WINDOW_SOUNDNESS_COMPOSITION",
+        proof_rule="V9_3_EXPLICIT_EVENT_GRAPH_SOUNDNESS_COMPOSITION",
     ):
         return EventRefinementProof("UNRESOLVED", statuses, tuple(solver_rows), tuple(structural_rows), "EVENT_WINDOW_ENCODING_SOUNDNESS_UNPROVED")
 

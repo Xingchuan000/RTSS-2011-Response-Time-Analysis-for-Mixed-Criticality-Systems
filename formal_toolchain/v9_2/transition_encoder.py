@@ -413,6 +413,34 @@ def encode_p5_controller_effect(
     return z3.And(*clauses)
 
 
+def encode_p5_controller_enabled(
+    z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel
+) -> z3.BoolRef:
+    """Exact deployed P5 relation at a known controller activation.
+
+    Event-graph search owns controller timestamp branching.  Once a graph node
+    is known to be a controller activation, keeping the generic ``enabled``
+    Boolean inside P5 only recreates an avoidable theory split.  This relation
+    therefore encodes exactly the enabled branch: deployed observation/tree/
+    mask/FirstValid equations, the selected budget update, the existing history
+    domain, and the exact non-controller frame.
+    """
+
+    decision = encode_controller_decision(z, model)
+    clauses = _phase(z, zp, 5, 6)
+    clauses.append(decision.enabled)
+    clauses.extend(decision.constraints)
+    clauses.extend(
+        zp.budgets[name] == decision.budget_after[name]
+        for name in z.budgets
+    )
+    clauses.append(z3.And(*_history_domain(zp, model)))
+    clauses.extend(_frame_state(
+        z, zp, model, mutable=frozenset({"budgets", "history"})
+    ))
+    return z3.And(*clauses)
+
+
 def encode_p5_controller_frame(
     z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel
 ) -> z3.BoolRef:

@@ -13,13 +13,12 @@ not from merging job identities or widening controller behavior.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
 
 import z3
 
 from .environment_encoder import SymbolicEnvironment
 from .symbolic_state import (
-    BoundModel, SymbolicJob, SymbolicKernelState, declare_sparse_successor, declare_state,
+    BoundModel, SymbolicJob, SymbolicKernelState, declare_sparse_successor,
 )
 from .transition_encoder import (
     encode_p0_settle,
@@ -27,15 +26,13 @@ from .transition_encoder import (
     encode_p2_deadline_observe,
     encode_p3_arrival_freeze,
     encode_p4_mode_switch,
-    encode_p5_controller,
-    encode_p5_controller_effect,
-    encode_p5_controller_frame,
+    encode_p5_controller_enabled,
     encode_p5_identity,
     encode_p6_dispatch,
 )
 
 
-EVENT_KERNEL_VERSION = "V9_2_EXACT_EVENT_MACRO_V6_LINEAR_PERIODIC_CANDIDATES"
+EVENT_KERNEL_VERSION = "V9_3_EXACT_EVENT_GRAPH_SOURCE_SPECIALIZED_V1"
 
 
 def _job_fields(job: SymbolicJob) -> tuple[z3.ExprRef, ...]:
@@ -89,90 +86,6 @@ def state_equality(left: SymbolicKernelState, right: SymbolicKernelState) -> z3.
     return z3.And(*clauses)
 
 
-def _append_if_distinct(
-    clauses: list[z3.BoolRef], left: z3.ExprRef, right: z3.ExprRef
-) -> None:
-    """Append an equality only when the two ASTs are not already shared."""
-
-    if not left.eq(right):
-        clauses.append(left == right)
-
-
-def _controller_effect_state_equality(
-    left: SymbolicKernelState,
-    right: SymbolicKernelState,
-    *,
-    include_time: bool,
-) -> z3.BoolRef:
-    """Equality over the exact read/write support of deployed P5.
-
-    The controller reads ``t``, budgets and RuntimeFeatureState history and
-    writes budgets/history.  All other Full-state fields are exact P5 frame
-    fields and are handled by ``encode_p5_controller_frame`` in the event-local
-    SSA chain.  Keeping them out of every pool link prevents the same hundreds
-    of job/frame equalities from being copied for every Event slot.
-    """
-
-    clauses: list[z3.BoolRef] = []
-    if include_time:
-        _append_if_distinct(clauses, left.t, right.t)
-    for name in left.budgets:
-        _append_if_distinct(clauses, left.budgets[name], right.budgets[name])
-    for lhs, rhs in (
-        (left.chi.recent_cost, right.chi.recent_cost),
-        (left.chi.ema_cost, right.chi.ema_cost),
-        (left.chi.overrun_ema, right.chi.overrun_ema),
-        (left.chi.max_cost_k, right.chi.max_cost_k),
-    ):
-        for name in lhs:
-            _append_if_distinct(clauses, lhs[name], rhs[name])
-    for lhs_values, rhs_values in (
-        (left.chi.mode_change_window, right.chi.mode_change_window),
-        (left.chi.lo_cancel_window, right.chi.lo_cancel_window),
-        (left.chi.hi_overrun_window, right.chi.hi_overrun_window),
-        (left.chi.lo_overrun_window, right.chi.lo_overrun_window),
-        (left.chi.job_start_window, right.chi.job_start_window),
-    ):
-        for lhs, rhs in zip(lhs_values, rhs_values):
-            _append_if_distinct(clauses, lhs, rhs)
-    return z3.And(*clauses)
-
-
-def _exact_minimum_definition(
-    result: z3.ArithRef, values: Iterable[z3.ArithRef]
-) -> z3.BoolRef:
-    """Exact finite minimum without a nested ITE expression.
-
-    ``result <= value`` for every candidate plus equality to at least one
-    candidate uniquely defines the mathematical minimum.  This is an exact
-    existential/SSA factoring of the previous nested ``If`` minimum, not an
-    approximation.  Keeping the minimum as a scalar prevents the full nested
-    candidate term from being substituted into every service/eta/state update.
-    """
-
-    rows = tuple(values)
-    if not rows:
-        raise ValueError("event candidate set must be non-empty")
-    return z3.And(
-        *(result <= value for value in rows),
-        z3.Or(*(result == value for value in rows)),
-    )
-
-
-def _next_periodic_after(t: z3.ArithRef, period: int) -> z3.ArithRef:
-    """Reference expression for the least phase-zero timestamp after ``t``.
-
-    The production Event kernel no longer substitutes this symbolic division
-    expression into every candidate relation.  It is retained as an
-    independent reference term for machine equivalence checks.
-    """
-
-    period = int(period)
-    if period <= 0:
-        raise ValueError("period must be positive")
-    return ((t / period) + 1) * period
-
-
 def _declare_exact_periodic_successor(
     t: z3.ArithRef,
     period: int,
@@ -215,145 +128,45 @@ def _slot_index(model: BoundModel, key: tuple[str, int]) -> int:
 
 
 @dataclass(frozen=True, slots=True)
-class ExactControllerInstance:
-    """One exact deployed P5 instance at a concrete periodic activation time.
+class EventSource:
+    """One member of the canonical disjoint next-event source partition.
 
-    Instances are pooled per finite event window.  The expensive exact
-    controller-owned observation->tree->mask->FirstValid/budget/history
-    effect is constructed once per *possible controller activation*, not once
-    per Event slot.  The non-controller Full-state frame remains event-local
-    and exact.
+    The ordered partition uses HORIZON first, CONTROLLER second, then task
+    releases, HI deadlines and finally selected-job completion.  If several
+    physical events share the same timestamp, the earliest source in this
+    order owns that timestamp; P0--P6 still processes *all* simultaneous
+    effects at the destination, so ownership changes no kernel semantics.
     """
 
-    activation_time: z3.ArithRef
-    pre_state: SymbolicKernelState
-    post_state: SymbolicKernelState
-    formula: z3.BoolRef
+    kind: str
+    task_name: str | None = None
+    slot: int | None = None
+
+    @property
+    def source_id(self) -> str:
+        if self.task_name is None:
+            return self.kind
+        suffix = self.task_name if self.slot is None else f"{self.task_name}_{self.slot}"
+        return f"{self.kind}_{suffix}"
 
 
-@dataclass(frozen=True, slots=True)
-class ExactControllerPool:
-    """Finite exact-P5 pool for one target-deadline window."""
+def enumerate_event_sources(model: BoundModel) -> tuple[EventSource, ...]:
+    """Canonical complete source order used by explicit Event-graph search."""
 
-    origin_time: z3.ArithRef
-    horizon_time: z3.ArithRef
-    first_activation: z3.ArithRef
-    instances: tuple[ExactControllerInstance, ...]
-    formula: z3.BoolRef
-
-
-def _first_periodic_at_or_after(t: z3.ArithRef, period: int) -> z3.ArithRef:
-    """Least phase-zero periodic timestamp greater than or equal to ``t``."""
-
-    period = int(period)
-    if period <= 0:
-        raise ValueError("period must be positive")
-    return ((t + period - 1) / period) * period
-
-
-def build_exact_controller_pool(
-    model: BoundModel,
-    *,
-    origin_time: z3.ArithRef,
-    horizon_time: z3.ArithRef,
-    controller_bound: int,
-    prefix: str,
-) -> ExactControllerPool:
-    """Construct exactly the finite controller activations that can affect a window.
-
-    ``controller_bound`` is the structural bound ``floor(D/Tctrl)+1`` already
-    proved by the V9.2 finite-event theorem.  Every exact controller-owned P5
-    effect is built once here and later shared by every Event slot whose P5
-    timestamp equals the corresponding activation time.  The exact P5 frame
-    is kept in the event-local sparse state chain.  No controller summary or
-    widened behavior is introduced.
-    """
-
-    controller_bound = int(controller_bound)
-    if controller_bound <= 0:
-        raise ValueError("controller_bound must be positive")
-    first = _first_periodic_at_or_after(origin_time, model.agent_period)
-    instances: list[ExactControllerInstance] = []
-    constraints: list[z3.BoolRef] = []
-    for index in range(controller_bound):
-        activation_time = first + index * int(model.agent_period)
-        pre = declare_state(f"{prefix}.{index}.pre", model)
-        post = declare_state(f"{prefix}.{index}.post", model)
-        # Pool only the controller-owned exact relation.  The complete deployed
-        # P5 is definitionally ``effect AND frame``; event-local sparse P5
-        # successors supply that exact frame without re-copying it into every
-        # pooled instance and every Event-slot link.
-        exact = encode_p5_controller_effect(pre, post, model)
-        # Only activations strictly before the target horizon are part of the
-        # event-window P5 sequence.  The exact formula is guarded rather than
-        # used as an unconstrained terminal-side witness.
-        constraints.append(z3.Implies(
-            activation_time < horizon_time,
-            z3.And(
-                pre.t == activation_time,
-                activation_time % model.agent_period == 0,
-                exact,
-            ),
-        ))
-        instances.append(ExactControllerInstance(activation_time, pre, post, exact))
-    return ExactControllerPool(
-        origin_time=origin_time,
-        horizon_time=horizon_time,
-        first_activation=first,
-        instances=tuple(instances),
-        formula=z3.And(*constraints),
-    )
-
-
-def encode_p5_from_exact_pool(
-    z: SymbolicKernelState,
-    zp: SymbolicKernelState,
-    model: BoundModel,
-    pool: ExactControllerPool,
-) -> z3.BoolRef:
-    """Exact P5 with window-global sharing of expensive controller formulas.
-
-    When ``t mod Tctrl != 0`` this is strict identity, exactly as deployed P5.
-    At an activation timestamp, only the exact P5 read/write support
-    (time/budgets/history on input and budgets/history on output) is linked to
-    the unique pooled controller effect for that timestamp; the complete
-    non-controller frame is imposed locally by ``encode_p5_controller_frame``.
-    The conjunction is definitionally the deployed P5 relation, so this is
-    formula factoring rather than a controller abstraction.
-    """
-
-    enabled = (z.t % model.agent_period) == 0
-    active_rows: list[z3.BoolRef] = []
-    for instance in pool.instances:
-        in_window = instance.activation_time < pool.horizon_time
-        at_instance = z.t == instance.activation_time
-        active_rows.append(z3.And(
-            in_window,
-            at_instance,
-            _controller_effect_state_equality(
-                z, instance.pre_state, include_time=True
-            ),
-            _controller_effect_state_equality(
-                zp, instance.post_state, include_time=False
-            ),
-        ))
-
-    # Exact periodic arithmetic plus the finite pool must cover every enabled
-    # P5 inside the proof window.  If this ever becomes false, the formula is
-    # UNSAT rather than silently falling back to identity or a summary.
-    exact_active = z3.Or(*active_rows) if active_rows else z3.BoolVal(False)
-    return z3.And(
-        z.p == 5,
-        zp.p == 6,
-        encode_p5_controller_frame(z, zp, model),
-        z3.Implies(z3.Not(enabled), encode_p5_identity(z, zp, model)),
-        z3.Implies(enabled, exact_active),
-    )
+    rows: list[EventSource] = [EventSource("HORIZON"), EventSource("CONTROLLER")]
+    rows.extend(EventSource("RELEASE", task.name) for task in model.tasks)
+    for task in model.hi_tasks:
+        for slot in range(model.max_jobs_per_task):
+            rows.append(EventSource("HI_DEADLINE", task.name, slot))
+    for task in model.tasks:
+        for slot in range(model.max_jobs_per_task):
+            rows.append(EventSource("COMPLETION", task.name, slot))
+    return tuple(rows)
 
 
 @dataclass(frozen=True, slots=True)
 class EventCandidateSet:
-    """Exact candidate timestamps used by one event macro."""
+    """Exact candidate timestamps used by one source-specialized Event edge."""
 
     horizon: z3.ArithRef
     releases: tuple[tuple[str, z3.ArithRef], ...]
@@ -362,6 +175,8 @@ class EventCandidateSet:
     completion: z3.ArithRef
     all_candidates: tuple[z3.ArithRef, ...]
     next_time: z3.ArithRef
+    base_definition_formula: z3.BoolRef
+    source_definition_formula: z3.BoolRef
     definition_formula: z3.BoolRef
 
 
@@ -385,7 +200,7 @@ def _exact_p0_to_p7_closure(
     env: SymbolicEnvironment,
     *,
     prefix: str,
-    controller_pool: ExactControllerPool | None = None,
+    controller_enabled: bool,
 ) -> tuple[tuple[SymbolicKernelState, ...], z3.BoolRef]:
     """Execute exact P0..P6, ending at the P7 dispatch state."""
 
@@ -422,14 +237,62 @@ def _exact_p0_to_p7_closure(
         encode_p2_deadline_observe(p2, p3, model),
         encode_p3_arrival_freeze(p3, p4, model, env),
         encode_p4_mode_switch(p4, p5, model),
-        # Event windows always use exact deployed P5 semantics.  A finite
-        # window may share those exact formulas through ``controller_pool``;
-        # the P5 invariant summary is intentionally never imported here.
-        (encode_p5_controller(p5, p6, model) if controller_pool is None
-         else encode_p5_from_exact_pool(p5, p6, model, controller_pool)),
+        # Event-graph ownership tells us exactly whether this timestamp is a
+        # controller activation.  Compile only that exact P5 branch instead of
+        # keeping a symbolic enabled/disabled split inside every event macro.
+        (encode_p5_controller_enabled(p5, p6, model)
+         if controller_enabled else encode_p5_identity(p5, p6, model)),
         encode_p6_dispatch(p6, p7, model),
     )
     return states, formula
+
+
+def _source_partition_definition(
+    candidates: EventCandidateSet,
+    dispatch_state: SymbolicKernelState,
+    model: BoundModel,
+    source: EventSource,
+) -> z3.BoolRef:
+    """Exact disjoint first-minimum owner for one next-event source."""
+
+    if source.kind == "HORIZON":
+        chosen, index, guard = candidates.horizon, 0, z3.BoolVal(True)
+    elif source.kind == "CONTROLLER":
+        chosen, index, guard = candidates.controller, 1, z3.BoolVal(True)
+    elif source.kind == "RELEASE":
+        release_index = next(
+            i for i, (task_name, _) in enumerate(candidates.releases)
+            if task_name == source.task_name
+        )
+        chosen = candidates.releases[release_index][1]
+        index = 2 + release_index
+        guard = z3.BoolVal(True)
+    elif source.kind == "HI_DEADLINE":
+        deadline_index = next(
+            i for i, ((task_name, slot), _) in enumerate(candidates.hi_deadlines)
+            if task_name == source.task_name and slot == source.slot
+        )
+        chosen = candidates.hi_deadlines[deadline_index][1]
+        index = 2 + len(candidates.releases) + deadline_index
+        guard = z3.BoolVal(True)
+    elif source.kind == "COMPLETION":
+        if source.task_name is None or source.slot is None:
+            raise KeyError(source.source_id)
+        chosen = candidates.completion
+        index = len(candidates.all_candidates) - 1
+        selected_index = _slot_index(model, (source.task_name, source.slot))
+        guard = dispatch_state.frontier.selected_slot == selected_index
+    else:
+        raise KeyError(source.source_id)
+
+    earlier = candidates.all_candidates[:index]
+    later = candidates.all_candidates[index + 1:]
+    return z3.And(
+        guard,
+        candidates.next_time == chosen,
+        *(value > chosen for value in earlier),
+        *(value >= chosen for value in later),
+    )
 
 
 def build_event_candidates(
@@ -438,15 +301,14 @@ def build_event_candidates(
     *,
     horizon_time: z3.ArithRef,
     prefix: str,
+    source: EventSource | None = None,
 ) -> EventCandidateSet:
-    """Build the exact next-event candidate set after P6 dispatch.
+    """Build candidates with one exact disjoint next-event source fixed.
 
-    Candidate classes are exactly the discrete changes represented by the Full
-    P0--P7 kernel plus the proof query horizon.  The two finite minima
-    (selected-job completion and global next-event time) are represented by
-    fresh scalar SSA symbols constrained by ``_exact_minimum_definition``.
-    This is formula-equivalent to the previous nested-ITE minima but exposes
-    substantially better arithmetic propagation to SMT preprocessing.
+    Global ``min`` disjunction is intentionally absent.  Python graph search
+    chooses one source member, and this function enforces that member is the
+    canonical first owner of the mathematical minimum.  Simultaneous physical
+    events are still all processed by the destination P0 closure.
     """
 
     t = dispatch_state.t
@@ -454,17 +316,13 @@ def build_event_candidates(
     release_rows: list[tuple[str, z3.ArithRef]] = []
     for task in model.tasks:
         release_time, release_definition = _declare_exact_periodic_successor(
-            t,
-            task.period,
-            prefix=f"{prefix}.candidate.release.{task.name}",
+            t, task.period, prefix=f"{prefix}.candidate.release.{task.name}"
         )
         release_rows.append((task.name, release_time))
         periodic_definitions.append(release_definition)
     releases = tuple(release_rows)
     controller, controller_definition = _declare_exact_periodic_successor(
-        t,
-        model.agent_period,
-        prefix=f"{prefix}.candidate.controller",
+        t, model.agent_period, prefix=f"{prefix}.candidate.controller"
     )
     periodic_definitions.append(controller_definition)
 
@@ -474,8 +332,7 @@ def build_event_candidates(
             job = dispatch_state.jobs[(task.name, slot)]
             candidate = z3.If(
                 z3.And(
-                    job.present,
-                    z3.Not(job.removed),
+                    job.present, z3.Not(job.removed),
                     job.executed_service < job.effective_demand,
                     job.absolute_deadline > t,
                 ),
@@ -489,32 +346,46 @@ def build_event_candidates(
         z3.Implies(z3.Not(dispatch_state.frontier.running), completion == horizon_time),
     ]
     for key, job in dispatch_state.jobs.items():
-        index = _slot_index(model, key)
+        selected_index = _slot_index(model, key)
         completion_rows.append(z3.Implies(
-            dispatch_state.frontier.selected_slot == index,
+            dispatch_state.frontier.selected_slot == selected_index,
             completion == t + (job.effective_demand - job.executed_service),
         ))
     completion_definition = z3.And(*completion_rows)
 
+    # HORIZON precedes CONTROLLER deliberately.  A controller activation at the
+    # target horizon is irrelevant because the terminal bad observation stops
+    # after P2.  CONTROLLER precedes every nonterminal source so a graph child
+    # is controller-enabled iff its incoming source is CONTROLLER.
     all_candidates = (
         horizon_time,
-        *(value for _, value in releases),
         controller,
+        *(value for _, value in releases),
         *(value for _, value in hi_deadlines),
         completion,
     )
     next_time = z3.Int(f"{prefix}.candidate.next_time")
-    next_time_definition = _exact_minimum_definition(next_time, all_candidates)
-    definition_formula = z3.And(*periodic_definitions, completion_definition, next_time_definition)
+    base_definition = z3.And(*periodic_definitions, completion_definition)
+    shell = EventCandidateSet(
+        horizon=horizon_time, releases=releases, controller=controller,
+        hi_deadlines=tuple(hi_deadlines), completion=completion,
+        all_candidates=tuple(all_candidates), next_time=next_time,
+        base_definition_formula=base_definition,
+        source_definition_formula=z3.BoolVal(True),
+        definition_formula=z3.BoolVal(True),
+    )
+    source_definition = (
+        z3.BoolVal(True) if source is None
+        else _source_partition_definition(shell, dispatch_state, model, source)
+    )
+    definition = z3.And(base_definition, source_definition)
     return EventCandidateSet(
-        horizon=horizon_time,
-        releases=releases,
-        controller=controller,
-        hi_deadlines=tuple(hi_deadlines),
-        completion=completion,
-        all_candidates=tuple(all_candidates),
-        next_time=next_time,
-        definition_formula=definition_formula,
+        horizon=horizon_time, releases=releases, controller=controller,
+        hi_deadlines=tuple(hi_deadlines), completion=completion,
+        all_candidates=tuple(all_candidates), next_time=next_time,
+        base_definition_formula=base_definition,
+        source_definition_formula=source_definition,
+        definition_formula=definition,
     )
 
 
@@ -716,60 +587,59 @@ def _silent_interval_advance(
     )
 
 
-def encode_event_step(
-    source: SymbolicKernelState,
+def encode_event_step_for_source(
+    source_state: SymbolicKernelState,
     destination: SymbolicKernelState,
     model: BoundModel,
     env: SymbolicEnvironment,
     *,
     horizon_time: z3.ArithRef,
     prefix: str,
-    controller_pool: ExactControllerPool | None = None,
+    event_source: EventSource,
+    controller_enabled: bool,
 ) -> EventStepEncoding:
-    """Encode one exact V9.2 event macro.
+    """Encode one exact edge of the explicit Event graph.
 
-    ``source`` must be a P0 boundary strictly before ``horizon_time``.  The
-    destination is the next P0 boundary at the exact minimum candidate time.
+    ``event_source`` is fixed by host-side graph search.  The arithmetic formula
+    proves that this source is the canonical owner of the exact minimum next
+    timestamp.  ``controller_enabled`` is a graph-node fact: root nodes are
+    split on controller phase, and every later node is enabled exactly when its
+    incoming canonical source was CONTROLLER.
     """
 
     phase_states, closure = _exact_p0_to_p7_closure(
-        source, model, env, prefix=prefix, controller_pool=controller_pool
+        source_state, model, env, prefix=prefix,
+        controller_enabled=controller_enabled,
     )
     dispatch_state = phase_states[-1]
     candidates = build_event_candidates(
-        dispatch_state, model, horizon_time=horizon_time, prefix=prefix
+        dispatch_state, model, horizon_time=horizon_time, prefix=prefix,
+        source=event_source,
     )
-    delta = candidates.next_time - source.t
+    delta = candidates.next_time - source_state.t
     silent_core = _silent_interval_core(dispatch_state, model, candidates)
     formula = z3.And(
-        source.p == 0,
-        source.t < horizon_time,
+        source_state.p == 0,
+        source_state.t < horizon_time,
         closure,
         silent_core,
         _event_destination_update(dispatch_state, destination, model, candidates),
     )
     return EventStepEncoding(
-        source=source,
-        destination=destination,
-        phase_states=phase_states,
-        candidates=candidates,
-        delta=delta,
-        closure_formula=closure,
-        silent_core_formula=silent_core,
-        formula=formula,
+        source=source_state, destination=destination, phase_states=phase_states,
+        candidates=candidates, delta=delta, closure_formula=closure,
+        silent_core_formula=silent_core, formula=formula,
     )
 
 
 
 __all__ = [
     "EVENT_KERNEL_VERSION",
-    "ExactControllerInstance",
-    "ExactControllerPool",
-    "build_exact_controller_pool",
-    "encode_p5_from_exact_pool",
     "EventCandidateSet",
+    "EventSource",
     "EventStepEncoding",
     "build_event_candidates",
-    "encode_event_step",
+    "encode_event_step_for_source",
+    "enumerate_event_sources",
     "state_equality",
 ]
