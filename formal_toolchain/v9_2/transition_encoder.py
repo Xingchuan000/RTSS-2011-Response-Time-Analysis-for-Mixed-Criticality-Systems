@@ -435,28 +435,66 @@ def _slot_index(model: BoundModel, key: tuple[str, int]) -> int:
 
 
 def encode_p6_dispatch(z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
-    clauses = _phase(z, zp, 6, 7) + _frame_state(z, zp, model, mutable=frozenset({"frontier"}))
-    jobs = list(z.jobs.items())
-    eligible = {key: job.present & job.ready & (job.remaining > 0) & z3.Not(job.removed)
-                for key, job in jobs}
-    winners = []
-    for key, job in jobs:
-        higher: list[z3.BoolRef] = []
-        for other_key, other in jobs:
-            if other_key == key:
-                continue
-            priority_precedes = z3.BoolVal(other.priority < job.priority)
-            same_priority_precedes = z3.And(
-                z3.BoolVal(other.priority == job.priority),
-                other.tie_break < job.tie_break,
+    """Exact fixed-priority dispatch with linear task-priority structure.
+
+    Task priorities are static and already stored in canonical order.  The old
+    encoding compared every job slot against every other slot and then folded
+    all winner booleans through a nested ITE.  This version first chooses the
+    highest-priority task with any eligible job, then resolves only that task's
+    local slots by tie_break (and slot order for an exact tie, matching the old
+    winner-fold behavior).
+    """
+
+    clauses = _phase(z, zp, 6, 7) + _frame_state(
+        z, zp, model, mutable=frozenset({"frontier"})
+    )
+    eligible: dict[tuple[str, int], z3.BoolRef] = {}
+    task_has: dict[str, z3.BoolRef] = {}
+    for task in model.tasks:
+        rows: list[z3.BoolRef] = []
+        for slot in range(model.max_jobs_per_task):
+            key = (task.name, slot)
+            job = z.jobs[key]
+            value = job.present & job.ready & (job.remaining > 0) & z3.Not(job.removed)
+            eligible[key] = value
+            rows.append(value)
+        task_has[task.name] = z3.Or(*rows)
+
+    any_eligible = z3.Or(*(task_has[task.name] for task in model.tasks))
+    clauses.append(zp.frontier.running == any_eligible)
+    clauses.append(z3.Implies(z3.Not(any_eligible), zp.frontier.selected_slot == -1))
+
+    higher_task_busy = z3.BoolVal(False)
+    for task in model.tasks:
+        task_wins = z3.And(task_has[task.name], z3.Not(higher_task_busy))
+        for slot in range(model.max_jobs_per_task):
+            key = (task.name, slot)
+            job = z.jobs[key]
+            index = _slot_index(model, key)
+            local_predecessors: list[z3.BoolRef] = []
+            for other_slot in range(model.max_jobs_per_task):
+                if other_slot == slot:
+                    continue
+                other_key = (task.name, other_slot)
+                other = z.jobs[other_key]
+                other_index = _slot_index(model, other_key)
+                local_predecessors.append(z3.And(
+                    eligible[other_key],
+                    z3.Or(
+                        other.tie_break < job.tie_break,
+                        z3.And(other.tie_break == job.tie_break, other_index < index),
+                    ),
+                ))
+            local_wins = z3.And(
+                eligible[key],
+                *(z3.Not(value) for value in local_predecessors),
             )
-            higher.append(eligible[other_key] & z3.Or(priority_precedes, same_priority_precedes))
-        winners.append(eligible[key] & z3.And(*(z3.Not(value) for value in higher)))
-    selected = -1
-    for (key, _), winner in reversed(list(zip(jobs, winners))):
-        selected = z3.If(winner, _slot_index(model, key), selected)
-    clauses.extend((zp.frontier.selected_slot == selected,
-                    zp.frontier.running == z3.Or(*eligible.values())))
+            clauses.append(z3.Implies(
+                z3.And(task_wins, local_wins),
+                zp.frontier.selected_slot == index,
+            ))
+        higher_task_busy = z3.Or(higher_task_busy, task_has[task.name])
+
     return z3.And(*clauses)
 
 

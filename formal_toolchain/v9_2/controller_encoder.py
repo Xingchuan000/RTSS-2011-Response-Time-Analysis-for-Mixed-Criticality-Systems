@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import z3
 
-from .action_encoder import encode_budget_after_selected_action, encode_first_valid_explicit_noop
+from .action_encoder import encode_budget_after_selected_action, encode_first_valid_leaf_cases
 from .mask_encoder import encode_action_mask, encode_safety_margin_min
 from .numeric_encoder import NumericEncoding, encode_v11_full_10d_observation
 from .symbolic_state import BoundModel, SymbolicKernelState
@@ -43,35 +43,44 @@ def encode_controller_decision(state: SymbolicKernelState, model: BoundModel) ->
 
     base = str(state.t)
     enabled = (state.t % model.agent_period) == 0
-    safety_margin = encode_safety_margin_min(state.budgets, model)
+    used_features = tuple(sorted({int(node.feature_index) for node in model.tree.nodes}))
+    safety_margin_index = 10 * len(model.tasks) + 7
+    safety_margin = (
+        encode_safety_margin_min(state.budgets, model)
+        if safety_margin_index in used_features
+        else z3.RealVal(1)
+    )
     observation = encode_v11_full_10d_observation(
         state,
         model,
         safety_margin=safety_margin,
         prefix=f"{base}.p5.q",
+        active_feature_indices=used_features,
     )
     tree = encode_tree_leaf_and_ranking(observation.quantized, model.tree, prefix=f"{base}.p5.tree")
     mask, candidates, mask_constraints = encode_action_mask(
         state.budgets, model.action_definitions, model
     )
-    selected, selector_constraints = encode_first_valid_explicit_noop(
-        tree.ranking,
+    selected, selector_constraints = encode_first_valid_leaf_cases(
+        tree.leaf_cases,
         mask,
         action_dim=model.action_dim,
         noop_id=model.noop_id,
         name=f"{base}.p5.selected_action",
     )
-    budget_after = encode_budget_after_selected_action(
+    budget_after, budget_update_constraints = encode_budget_after_selected_action(
         selected,
         candidates,
         state.budgets,
         action_dim=model.action_dim,
+        prefix=f"{base}.p5.budget_after",
     )
     constraints = tuple(
         list(observation.constraints)
         + list(tree.constraints)
         + list(mask_constraints)
         + list(selector_constraints)
+        + list(budget_update_constraints)
     )
     return ControllerEncoding(
         enabled=enabled,

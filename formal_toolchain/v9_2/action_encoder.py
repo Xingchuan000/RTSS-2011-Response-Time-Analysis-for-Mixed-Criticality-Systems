@@ -1,4 +1,4 @@
-"""Ranked FirstValid selector and symbolic budget update."""
+"""Leaf-specialized FirstValid selector and sparse symbolic budget update."""
 
 from __future__ import annotations
 
@@ -10,38 +10,51 @@ import z3
 from .symbolic_state import BoundModel
 
 
-def encode_first_valid_explicit_noop(
-    ranking: Sequence[z3.ArithRef | int],
+def encode_first_valid_leaf_cases(
+    leaf_cases: Sequence[Any],
     mask: Sequence[z3.BoolRef],
     *,
     action_dim: int,
     noop_id: int,
     name: str = "selected_action",
 ) -> tuple[z3.ArithRef, tuple[z3.BoolRef, ...]]:
-    if len(ranking) != action_dim or len(mask) != action_dim:
+    """Encode ranked FirstValid directly under each concrete CART leaf.
+
+    Every leaf ranking is a concrete permutation.  Therefore mask lookup is a
+    direct array index and no symbolic ``ranking[j] == action`` multiplexor is
+    needed.  Explicit noop makes every leaf total, so positions after noop are
+    unreachable and are not encoded.
+    """
+
+    if len(mask) != action_dim or not (0 <= noop_id < action_dim):
         raise ValueError("POLICY_SELECTION_SEMANTICS_FAILED")
-    normalized = tuple(item if isinstance(item, z3.ExprRef) else z3.IntVal(int(item)) for item in ranking)
-    if not (0 <= noop_id < action_dim):
-        raise ValueError("EXPLICIT_NOOP_IDENTITY_UNRESOLVED")
     selected = z3.Int(name)
-    clauses: list[z3.BoolRef] = [mask[noop_id]]
+    clauses: list[z3.BoolRef] = [
+        mask[noop_id],
+        selected >= 0,
+        selected < action_dim,
+    ]
 
-    def mask_at(action: z3.ArithRef) -> z3.BoolRef:
-        if z3.is_int_value(action):
-            value = action.as_long()
-            if not (0 <= value < action_dim):
-                raise ValueError("POLICY_SELECTION_SEMANTICS_FAILED")
-            return mask[value]
-        return z3.Or(*(z3.And(action == index, mask[index]) for index in range(action_dim)))
+    for case in leaf_cases:
+        ranking = tuple(int(value) for value in case.ranking)
+        if len(ranking) != action_dim or set(ranking) != set(range(action_dim)):
+            raise ValueError("POLICY_SELECTION_SEMANTICS_FAILED")
+        prior_invalid: list[z3.BoolRef] = []
+        reached_noop = False
+        for action in ranking:
+            choose = z3.And(
+                case.guard,
+                mask[action],
+                *(z3.Not(value) for value in prior_invalid),
+            )
+            clauses.append(z3.Implies(choose, selected == action))
+            prior_invalid.append(mask[action])
+            if action == noop_id:
+                reached_noop = True
+                break
+        if not reached_noop:
+            raise ValueError("EXPLICIT_NOOP_IDENTITY_UNRESOLVED")
 
-    for index, action in enumerate(normalized):
-        prior_invalid = z3.And(*(z3.Not(mask_at(normalized[j])) for j in range(index)))
-        clauses.append(z3.Implies(selected == action, z3.And(mask_at(action), prior_invalid)))
-    clauses.append(z3.Or(*(selected == action for action in normalized)))
-    # Every enabled prefix candidate must be the selected first candidate.
-    for index, action in enumerate(normalized):
-        prior_invalid = z3.And(*(z3.Not(mask_at(normalized[j])) for j in range(index)))
-        clauses.append(z3.Implies(z3.And(mask_at(action), prior_invalid), selected == action))
     return selected, tuple(clauses)
 
 
@@ -51,16 +64,23 @@ def encode_budget_after_selected_action(
     budgets: Mapping[str, z3.ArithRef],
     *,
     action_dim: int,
-) -> dict[str, z3.ArithRef]:
+    prefix: str = "budget_after",
+) -> tuple[dict[str, z3.ArithRef], tuple[z3.BoolRef, ...]]:
+    """Use fresh post-budget scalars plus action implications, not ITE ladders."""
+
     if len(candidates) != action_dim:
         raise ValueError("BUDGET_UPDATE_ACTION_DIM_MISMATCH")
     result: dict[str, z3.ArithRef] = {}
-    for name, before in budgets.items():
-        value = before
-        for index in reversed(range(action_dim)):
-            value = z3.If(selected == index, candidates[index][name], value)
-        result[name] = value
-    return result
+    clauses: list[z3.BoolRef] = []
+    for name in budgets:
+        after = z3.Int(f"{prefix}.{name}")
+        result[name] = after
+        for action in range(action_dim):
+            clauses.append(z3.Implies(
+                selected == action,
+                after == candidates[action][name],
+            ))
+    return result, tuple(clauses)
 
 
-__all__ = ["encode_budget_after_selected_action", "encode_first_valid_explicit_noop"]
+__all__ = ["encode_budget_after_selected_action", "encode_first_valid_leaf_cases"]

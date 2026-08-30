@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from fractions import Fraction
+from functools import lru_cache
+from math import ceil, floor
 from typing import Any
 
 import z3
@@ -27,17 +30,88 @@ def _budget_as_binary64(value: z3.ArithRef) -> z3.FPRef:
     return z3.fpToFP(z3.RNE(), z3.ToReal(value), z3.Float64())
 
 
-def _float_product(value: z3.ArithRef, factor: float) -> z3.ArithRef:
-    product = z3.fpMul(z3.RNE(), _budget_as_binary64(value), _binary64(factor))
-    return z3.fpToReal(product)
 
 
-def _ceil_real(value: z3.ArithRef) -> z3.ArithRef:
-    return -z3.ToInt(-value)
+
+@lru_cache(maxsize=None)
+def _verified_rounding_fraction(
+    direction: str, ratio: float, lower: int, upper: int
+) -> tuple[int, int]:
+    """Replace bounded CPython binary64 ratio updates by exact integer arithmetic.
+
+    Runtime budgets are finite integers.  For the concrete action ratio, verify
+    every admissible budget value against CPython's binary64 multiply followed
+    by ceil/floor.  Only after the finite equality check succeeds do we return
+    the short decimal rational used in SMT.  Thus the SMT relation contains no
+    floating-point theory while remaining exact on the complete bound domain.
+    """
+
+    if lower < 1 or upper < lower:
+        raise ValueError("INVALID_BUDGET_DOMAIN")
+    if direction == "increase":
+        factor = 1.0 + float(ratio)
+        op = ceil
+    elif direction == "decrease":
+        factor = 1.0 - float(ratio)
+        op = floor
+    else:
+        raise ValueError("UNSUPPORTED_BUDGET_DIRECTION")
+    rational = Fraction(str(factor))
+    p, q = int(rational.numerator), int(rational.denominator)
+    for budget in range(int(lower), int(upper) + 1):
+        runtime = int(op(float(budget) * factor))
+        if direction == "increase":
+            exact = (p * budget + q - 1) // q
+        else:
+            exact = (p * budget) // q
+        if runtime != exact:
+            raise ValueError("BINARY64_BUDGET_ROUNDING_NOT_RATIONALIZABLE_ON_BOUND_DOMAIN")
+    return p, q
 
 
-def _floor_real(value: z3.ArithRef) -> z3.ArithRef:
-    return z3.ToInt(value)
+def _exact_rounded_ratio(
+    value: z3.ArithRef, task: Any, ratio: float, *, direction: str
+) -> z3.ArithRef:
+    p, q = _verified_rounding_fraction(
+        direction, float(ratio), int(task.budget_floor), int(task.budget_upper)
+    )
+    numerator = z3.IntVal(p) * value
+    if direction == "increase":
+        return (numerator + (q - 1)) / q
+    return numerator / q
+
+
+@lru_cache(maxsize=None)
+def _verified_deploy_cap_cutoff(
+    initial_budget: int, lower: int, upper: int, ratio: float
+) -> int | None:
+    """Compile the bounded binary64 deploy-cap predicate to one integer cutoff."""
+
+    truth = [
+        (budget, (float(budget) / float(initial_budget)) < float(ratio))
+        for budget in range(int(lower), int(upper) + 1)
+    ]
+    seen_false = False
+    max_valid: int | None = None
+    for budget, valid in truth:
+        if valid:
+            if seen_false:
+                raise ValueError("DEPLOY_CAP_BINARY64_PREDICATE_NOT_MONOTONE")
+            max_valid = budget
+        else:
+            seen_false = True
+    return max_valid
+
+
+def _deploy_cap_guard(budget: z3.ArithRef, task: Any, ratio: float) -> z3.BoolRef:
+    cutoff = _verified_deploy_cap_cutoff(
+        int(task.initial_budget), int(task.budget_floor), int(task.budget_upper), float(ratio)
+    )
+    if cutoff is None:
+        return z3.BoolVal(False)
+    if cutoff >= int(task.budget_upper):
+        return z3.BoolVal(True)
+    return budget <= int(cutoff)
 
 
 def _primitive_candidate(
@@ -70,7 +144,9 @@ def _primitive_candidate(
             raise ValueError("ACTION_TARGET_TASK_UNBOUND")
         ratio = float(_field(action, "increase_ratio", 0.10))
         old = budgets[inc_name]
-        rounded = _ceil_real(_float_product(old, 1.0 + ratio))
+        rounded = _exact_rounded_ratio(
+            old, task_by_name[inc_name], ratio, direction="increase"
+        )
         increased = z3.If(rounded >= old + model.min_budget_delta, rounded, old + model.min_budget_delta)
         upper = task_by_name[inc_name].budget_upper
         candidate[inc_name] = z3.If(increased > upper, upper, z3.If(increased < 1, 1, increased))
@@ -80,7 +156,9 @@ def _primitive_candidate(
             raise ValueError("ACTION_TARGET_TASK_UNBOUND")
         ratio = float(_field(action, "decrease_ratio", 0.05))
         old = budgets[name]
-        rounded = _floor_real(_float_product(old, 1.0 - ratio))
+        rounded = _exact_rounded_ratio(
+            old, task_by_name[name], ratio, direction="decrease"
+        )
         decreased = z3.If(rounded <= old - model.min_budget_delta, rounded, old - model.min_budget_delta)
         candidate[name] = z3.If(decreased < 1, 1, decreased)
 
@@ -186,12 +264,9 @@ def encode_action_mask(
             task = task_by_name[inc_name]
             cap_applies = model.deploy_cap_mask_criticality == "all" or task.criticality == "LO"
             if cap_applies:
-                runtime_ratio = z3.fpDiv(
-                    z3.RNE(),
-                    _budget_as_binary64(budgets[inc_name]),
-                    _binary64(float(task.initial_budget)),
-                )
-                valid.append(z3.fpLT(runtime_ratio, _binary64(model.deploy_cap_mask_ratio)))
+                valid.append(_deploy_cap_guard(
+                    budgets[inc_name], task, model.deploy_cap_mask_ratio
+                ))
 
         decrease_tasks = tuple(str(name) for name in (_field(action, "decrease_tasks", ()) or ()))
         if direction == "decrease" and not decrease_tasks:

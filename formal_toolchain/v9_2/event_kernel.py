@@ -484,19 +484,17 @@ def build_event_candidates(
             )
             hi_deadlines.append(((task.name, slot), candidate))
 
-    completion_terms: list[z3.ArithRef] = []
+    completion = z3.Int(f"{prefix}.candidate.completion")
+    completion_rows: list[z3.BoolRef] = [
+        z3.Implies(z3.Not(dispatch_state.frontier.running), completion == horizon_time),
+    ]
     for key, job in dispatch_state.jobs.items():
         index = _slot_index(model, key)
-        completion_terms.append(z3.If(
+        completion_rows.append(z3.Implies(
             dispatch_state.frontier.selected_slot == index,
-            t + (job.effective_demand - job.executed_service),
-            horizon_time,
+            completion == t + (job.effective_demand - job.executed_service),
         ))
-    completion = z3.Int(f"{prefix}.candidate.completion")
-    completion_definition = (
-        _exact_minimum_definition(completion, completion_terms)
-        if completion_terms else completion == horizon_time
-    )
+    completion_definition = z3.And(*completion_rows)
 
     all_candidates = (
         horizon_time,

@@ -1,4 +1,4 @@
-"""Integer CART encoding; no concrete leaf is fixed into the SMT formula."""
+"""Exact integer CART encoding specialized as leaf-path guards."""
 
 from __future__ import annotations
 
@@ -9,9 +9,16 @@ import z3
 
 
 @dataclass(frozen=True, slots=True)
+class TreeLeafCase:
+    leaf_id: int
+    ranking: tuple[int, ...]
+    guard: z3.BoolRef
+
+
+@dataclass(frozen=True, slots=True)
 class TreeEncoding:
     leaf_id: z3.ArithRef
-    ranking: tuple[z3.ArithRef, ...]
+    leaf_cases: tuple[TreeLeafCase, ...]
     constraints: tuple[z3.BoolRef, ...]
 
 
@@ -23,26 +30,48 @@ def _indexes(tree: Any):
 def encode_tree_leaf_and_ranking(
     q: Sequence[z3.ArithRef], tree: Any, *, prefix: str = "tree"
 ) -> TreeEncoding:
+    """Compile CART as disjoint root-to-leaf path guards.
+
+    The previous encoder materialized every ranking position as a nested ITE
+    over the whole tree.  FirstValid then compared those symbolic action IDs
+    against every mask entry, multiplying the tree ITEs by the action alphabet.
+    Here the tree is represented once as its finite disjoint leaf paths.  Each
+    leaf carries its already-concrete ranking, exactly matching deployed CART
+    evaluation while keeping ranking arithmetic out of SMT.
+    """
+
     nodes, leaves = _indexes(tree)
     if len(q) != int(tree.state_dim):
         raise ValueError("TREE_STATE_DIMENSION_MISMATCH")
-    constraints: list[z3.BoolRef] = []
 
-    def visit(node_id: int) -> tuple[z3.ArithRef, tuple[z3.ArithRef, ...]]:
+    cases: list[TreeLeafCase] = []
+
+    def visit(node_id: int, guard: z3.BoolRef) -> None:
         if node_id in leaves:
             leaf = leaves[node_id]
-            return z3.IntVal(leaf.node_id), tuple(z3.IntVal(value) for value in leaf.action_ranking)
+            ranking = tuple(int(value) for value in leaf.action_ranking)
+            if len(ranking) != int(tree.action_dim):
+                raise ValueError("TREE_ACTION_RANKING_DIMENSION_MISMATCH")
+            cases.append(TreeLeafCase(int(leaf.node_id), ranking, guard))
+            return
         node = nodes[node_id]
-        predicate = q[node.feature_index] <= node.threshold_int
-        left_leaf, left_rank = visit(node.left_child)
-        right_leaf, right_rank = visit(node.right_child)
-        return z3.If(predicate, left_leaf, right_leaf), tuple(
-            z3.If(predicate, left_rank[index], right_rank[index])
-            for index in range(int(tree.action_dim))
-        )
+        predicate = q[int(node.feature_index)] <= int(node.threshold_int)
+        visit(int(node.left_child), z3.And(guard, predicate))
+        visit(int(node.right_child), z3.And(guard, z3.Not(predicate)))
 
-    leaf_id, ranking = visit(int(tree.root_node_id))
-    return TreeEncoding(leaf_id, ranking, tuple(constraints))
+    visit(int(tree.root_node_id), z3.BoolVal(True))
+    if not cases:
+        raise ValueError("TREE_HAS_NO_LEAVES")
+
+    leaf_id = z3.Int(f"{prefix}.leaf_id")
+    constraints: list[z3.BoolRef] = [
+        z3.Or(*(case.guard for case in cases)),
+    ]
+    constraints.extend(
+        z3.Implies(case.guard, leaf_id == case.leaf_id)
+        for case in cases
+    )
+    return TreeEncoding(leaf_id, tuple(cases), tuple(constraints))
 
 
-__all__ = ["TreeEncoding", "encode_tree_leaf_and_ranking"]
+__all__ = ["TreeEncoding", "TreeLeafCase", "encode_tree_leaf_and_ranking"]

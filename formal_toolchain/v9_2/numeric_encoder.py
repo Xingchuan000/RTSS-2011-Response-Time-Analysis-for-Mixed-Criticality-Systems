@@ -94,11 +94,26 @@ def encode_v11_full_10d_observation(
     *,
     safety_margin: z3.ArithRef | int | float = 1,
     prefix: str = "q",
+    active_feature_indices: Sequence[int] | None = None,
 ) -> NumericEncoding:
-    """Translate every production v11 feature equation to SMT."""
+    """Translate only tree-observed v11 features to SMT.
 
-    if model.feature_names and len(model.feature_names) != 10 * len(model.tasks) + 8:
+    The deployed CART can only inspect feature indices that occur in its
+    internal nodes.  Unused observation coordinates are semantically dead for
+    policy selection, so they are represented by constant zero and receive no
+    quantization constraints.  This is exact support projection, not a policy
+    abstraction.
+    """
+
+    feature_count = 10 * len(model.tasks) + 8
+    if model.feature_names and len(model.feature_names) != feature_count:
         raise ValueError("NUMERIC_OBSERVATION_FEATURE_SCHEMA_MISMATCH")
+    if active_feature_indices is None:
+        active = frozenset(range(feature_count))
+    else:
+        active = frozenset(int(index) for index in active_feature_indices)
+        if any(index < 0 or index >= feature_count for index in active):
+            raise ValueError("TREE_FEATURE_INDEX_OUT_OF_RANGE")
     cfg = model.fixed_point_config
     scale = int(_config_value(cfg, "scale", 1_000_000))
     raw: list[z3.ArithRef] = []
@@ -157,6 +172,9 @@ def encode_v11_full_10d_observation(
     quantized: list[z3.ArithRef] = []
     constraints: list[z3.BoolRef] = []
     for index, value in enumerate(raw):
+        if index not in active:
+            quantized.append(z3.IntVal(0))
+            continue
         q, relation = _quantize_real(value, cfg, name=f"{prefix}.{index}")
         quantized.append(q)
         constraints.extend(relation)
