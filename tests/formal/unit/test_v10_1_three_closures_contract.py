@@ -74,6 +74,20 @@ def test_scheduler_safe_prefix_does_not_assume_real_ema_bound():
     assert "build_p5_scheduler_summary_soundness_obligations" in text
 
 
+def test_p5_scheduler_summary_preserves_structural_history_domain():
+    text = (ROOT / "formal_toolchain/v10_1/safe_prefix.py").read_text(encoding="utf-8")
+    assert "_history_structural_domain" in text
+    assert "z3.Implies(enabled, _history_structural_domain(zp, model))" in text
+    for token in (
+        "state.chi.recent_cost[task.name] >= 0",
+        "state.chi.ema_cost[task.name] >= 0",
+        "state.chi.overrun_ema[task.name] >= 0",
+        "state.chi.max_cost_k[task.name] >= 0",
+        "state.chi.job_start_window",
+    ):
+        assert token in text
+
+
 def test_controller_prefix_coverage_checks_depth_and_budget_boxes_before_receipt():
     text = (ROOT / "formal_toolchain/v10_1/pcssc.py").read_text(encoding="utf-8")
     assert "required_controller_depth" in text

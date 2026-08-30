@@ -48,10 +48,12 @@ def encode_p5_scheduler_summary(
 ) -> z3.BoolRef:
     """Superset P5 relation sufficient for scheduler-SafePrefix induction.
 
-    Enabled P5 may choose any post budget inside the frozen legal bounds and
-    leaves policy history completely unconstrained.  Disabled P5 is identity.
-    Since the V10.1 scheduler invariant does not mention policy history, this is
-    both cheaper and strictly safer than assuming a Real-valued history bound.
+    Enabled P5 may choose any post budget inside the frozen legal bounds.
+    Policy history is not given any EMA/sample upper bound here, but it must
+    remain inside the structural runtime domain (all counters/statistics are
+    non-negative).  Disabled P5 is exact identity.  This keeps the summary a
+    sound superset of the deployed P5 while avoiding the old Real-valued EMA
+    bound in the scheduler SafePrefix invariant.
     """
 
     enabled = (z.t % model.agent_period) == 0
@@ -59,6 +61,7 @@ def encode_p5_scheduler_summary(
         z, zp, model, mutable=frozenset({"budgets", "history"})
     )
     history_identity = z3.And(*_copy_history(z, zp))
+    clauses.append(z3.Implies(enabled, _history_structural_domain(zp, model)))
     clauses.append(z3.Implies(z3.Not(enabled), history_identity))
     for task in model.tasks:
         clauses.append(z3.Implies(
@@ -71,6 +74,38 @@ def encode_p5_scheduler_summary(
         clauses.append(z3.Implies(
             z3.Not(enabled), zp.budgets[task.name] == z.budgets[task.name]
         ))
+    return z3.And(*clauses)
+
+
+def _history_structural_domain(
+    state: SymbolicKernelState, model: BoundModel
+) -> z3.BoolRef:
+    """Structural policy-history domain retained by scheduler well-formedness.
+
+    V10.1 deliberately removes history *upper bounds* from scheduler SafePrefix,
+    because those numeric bounds belong to the feature-transfer proof.  The
+    Full-kernel state contract still requires runtime statistics/event counters
+    to be non-negative.  The P5 summary must preserve that structural fact;
+    otherwise it admits impossible negative-history post states and creates a
+    spurious inductiveness counterexample.
+    """
+
+    clauses: list[z3.BoolRef] = []
+    for task in model.tasks:
+        clauses.extend((
+            state.chi.recent_cost[task.name] >= 0,
+            state.chi.ema_cost[task.name] >= 0,
+            state.chi.overrun_ema[task.name] >= 0,
+            state.chi.max_cost_k[task.name] >= 0,
+        ))
+    for window in (
+        state.chi.mode_change_window,
+        state.chi.lo_cancel_window,
+        state.chi.hi_overrun_window,
+        state.chi.lo_overrun_window,
+        state.chi.job_start_window,
+    ):
+        clauses.extend(value >= 0 for value in window)
     return z3.And(*clauses)
 
 
