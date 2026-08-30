@@ -1,7 +1,8 @@
 import z3
 
 from amc_py.viper.fixed_point import FixedPointConfig
-from formal_toolchain.v9_2.action_encoder import encode_first_valid_explicit_noop
+from formal_toolchain.v9_2.action_encoder import encode_first_valid_leaf_cases
+from formal_toolchain.v9_2.tree_encoder import TreeLeafCase
 from formal_toolchain.v9_2.mask_encoder import encode_action_mask
 from formal_toolchain.v9_2.numeric_encoder import encode_quantized_feature
 from formal_toolchain.v9_2.symbolic_state import BoundModel, TaskBound, declare_state
@@ -30,7 +31,12 @@ def test_action_mask_and_firstvalid_share_explicit_noop():
         {"action_id": 1, "is_noop": True},
     )
     masks, candidates, constraints = encode_action_mask(state.budgets, actions, model)
-    selected, selector = encode_first_valid_explicit_noop((0, 1), masks, action_dim=2, noop_id=1)
+    selected, selector = encode_first_valid_leaf_cases(
+        (TreeLeafCase(0, (0, 1), z3.BoolVal(True)),),
+        masks,
+        action_dim=2,
+        noop_id=1,
+    )
     solver = z3.Solver(); solver.add(*constraints, *selector, state.budgets["hi"] == 3, selected != 1)
     assert solver.check() == z3.unsat
 

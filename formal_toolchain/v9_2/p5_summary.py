@@ -13,7 +13,8 @@ from dataclasses import dataclass
 
 import z3
 
-from .action_encoder import encode_first_valid_explicit_noop
+from .action_encoder import encode_first_valid_leaf_cases
+from .tree_encoder import TreeLeafCase
 from .invariant_templates import history_bounds
 from .mask_encoder import encode_action_mask
 from .symbolic_state import BoundModel, declare_state
@@ -54,13 +55,13 @@ def build_p5_summary_soundness_obligations(
 
     Proof decomposition:
 
-    1. FirstValid always returns a masked action when rankings are permutations.
-       Bindings already machine-check every deployed tree leaf ranking as a full
-       action permutation, so this theorem is independent of observation/tree
-       arithmetic.
+    1. Leaf-specialized FirstValid always returns a masked action for every
+       concrete deployed leaf ranking.  Bindings already machine-check every
+       ranking as a full action permutation, so this theorem is independent of
+       observation/tree arithmetic.
     2. Every masked static action candidate obeys the frozen controller budget
-       interval.  This uses the exact deployed mask/candidate arithmetic, including
-       binary64 rounding and the explicit noop.
+       interval.  This uses the exact bounded-domain integer compilation of the
+       deployed binary64 update semantics and the explicit noop.
     3. The controller-boundary history abstraction is contained in Psi's history
        clause.  Therefore the exact P5 post-history contract implies the summary.
 
@@ -73,33 +74,50 @@ def build_p5_summary_soundness_obligations(
 
     obligations: list[P5SummaryObligation] = []
 
-    # Selector theorem over arbitrary permutation rankings and arbitrary masks.
-    # It deliberately does not depend on numeric observation or tree guards.
-    ranking = tuple(z3.Int(f"{prefix}.ranking.{i}") for i in range(model.action_dim))
-    mask = tuple(z3.Bool(f"{prefix}.mask.{i}") for i in range(model.action_dim))
-    selected, selector_constraints = encode_first_valid_explicit_noop(
-        ranking,
-        mask,
-        action_dim=model.action_dim,
-        noop_id=model.noop_id,
-        name=f"{prefix}.selected",
-    )
-    permutation = z3.And(
-        *(z3.And(value >= 0, value < model.action_dim) for value in ranking),
-        z3.Distinct(*ranking),
-    )
-    selected_is_masked = z3.Or(*(
-        z3.And(selected == index, mask[index]) for index in range(model.action_dim)
-    ))
-    obligations.append(P5SummaryObligation(
-        "P5_FIRST_VALID_SELECTED_ACTION_IS_MASKED",
-        z3.And(permutation, *selector_constraints, z3.Not(selected_is_masked)),
-        "ranked FirstValid with the explicit noop can only return a mask-valid action",
-    ))
+    # Selector theorem for the leaf-specialized encoder actually used by P5.
+    # Every deployed leaf carries a concrete action permutation, so prove the
+    # FirstValid property once for each distinct deployed ranking under an
+    # arbitrary mask.  Tree/observation arithmetic is intentionally absent.
+    if model.tree is None:
+        raise ValueError("V9_2_P5_POLICY_ARTIFACT_UNBOUND")
+    rankings = sorted({
+        tuple(int(value) for value in leaf.action_ranking)
+        for leaf in model.tree.leaves
+    })
+    if not rankings:
+        raise ValueError("TREE_HAS_NO_LEAVES")
+    for ranking_index, ranking in enumerate(rankings):
+        if len(ranking) != model.action_dim or set(ranking) != set(range(model.action_dim)):
+            raise ValueError("POLICY_SELECTION_SEMANTICS_FAILED")
+        mask = tuple(
+            z3.Bool(f"{prefix}.ranking_{ranking_index}.mask.{i}")
+            for i in range(model.action_dim)
+        )
+        case = TreeLeafCase(
+            leaf_id=ranking_index,
+            ranking=ranking,
+            guard=z3.BoolVal(True),
+        )
+        selected, selector_constraints = encode_first_valid_leaf_cases(
+            (case,),
+            mask,
+            action_dim=model.action_dim,
+            noop_id=model.noop_id,
+            name=f"{prefix}.ranking_{ranking_index}.selected",
+        )
+        selected_is_masked = z3.Or(*(
+            z3.And(selected == index, mask[index])
+            for index in range(model.action_dim)
+        ))
+        obligations.append(P5SummaryObligation(
+            f"P5_LEAF_FIRST_VALID_SELECTED_ACTION_IS_MASKED_{ranking_index}",
+            z3.And(*selector_constraints, z3.Not(selected_is_masked)),
+            "leaf-specialized FirstValid with explicit noop can only return a mask-valid action",
+        ))
 
-    # Candidate theorem uses the exact deployed mask and binary64 budget-update
-    # arithmetic, but not the observation/tree path that caused the induction
-    # timeout.  A single disjunction covers the entire frozen action alphabet.
+    # Candidate theorem uses the exact deployed mask and the bounded-domain
+    # integer compilation of budget-update arithmetic, but not observation/tree
+    # paths.  A single disjunction covers the frozen action alphabet.
     state = declare_state(f"{prefix}.budget", model)
     masks, candidates, mask_constraints = encode_action_mask(
         state.budgets, model.action_definitions, model
