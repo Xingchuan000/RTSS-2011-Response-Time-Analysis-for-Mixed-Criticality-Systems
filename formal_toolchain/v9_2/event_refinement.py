@@ -333,7 +333,10 @@ def _finite_event_bound_formulas(model: BoundModel) -> list[tuple[str, z3.BoolRe
     formulas: list[tuple[str, z3.BoolRef]] = []
     for target in model.hi_tasks:
         bound = derive_finite_event_bound(model, target.name)
-        for task in model.tasks:
+        active_tasks = tuple(
+            task for task in model.tasks if task.priority <= target.priority
+        )
+        for task in active_tasks:
             formulas.append((
                 f"FINITE_EVENT_COUNT_BOUND::RELEASE::{target.name}::{task.name}",
                 _count_bound_counterexample(
