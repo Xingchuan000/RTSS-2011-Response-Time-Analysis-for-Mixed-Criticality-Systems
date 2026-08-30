@@ -15,23 +15,29 @@ from typing import Any, Callable
 import z3
 
 from .carry_in import derive_protected_priority_prefix, reachable_carry_in_consistency
+from .controller_encoder import enumerate_controller_policy_cases
 from .event_depth_feasibility import derive_minimum_event_depth
 from .event_kernel import (
     EventSource,
     EventStepEncoding,
-    encode_event_step_for_source,
+    encode_event_node_closure,
+    encode_event_time_edge,
     enumerate_event_sources,
 )
 from .event_window_encoder import EventGraphProblem, EventWindowEncoding
 from .symbolic_state import SymbolicKernelState, declare_state
+from .target_projection import target_pending_after_origin
 
 
-SOLVER_STRATEGY = "V9_3_EXPLICIT_SOURCE_SPECIALIZED_EVENT_GRAPH_DFS"
+SOLVER_STRATEGY = "V9_3_TARGET_LOCAL_NORMALIZED_EVENT_GRAPH_DFS"
 
 
 @dataclass(slots=True)
 class _DepthStats:
     nodes: int = 0
+    closure_checks: int = 0
+    closure_feasible: int = 0
+    closure_infeasible: int = 0
     edge_checks: int = 0
     feasible_edges: int = 0
     infeasible_edges: int = 0
@@ -45,6 +51,9 @@ class _DepthStats:
         return {
             "depth": int(depth),
             "nodes": int(self.nodes),
+            "closure_checks": int(self.closure_checks),
+            "closure_feasible": int(self.closure_feasible),
+            "closure_infeasible": int(self.closure_infeasible),
             "edge_checks": int(self.edge_checks),
             "feasible_edges": int(self.feasible_edges),
             "infeasible_edges": int(self.infeasible_edges),
@@ -65,6 +74,9 @@ class EventGraphReceipt:
     finite_event_bound: int
     minimum_feasible_depth: int
     explored_nodes: int
+    closure_checks: int
+    closure_feasible: int
+    closure_infeasible: int
     edge_checks: int
     feasible_edges: int
     infeasible_edges: int
@@ -87,6 +99,9 @@ class EventGraphReceipt:
             "finite_event_bound": int(self.finite_event_bound),
             "minimum_feasible_depth": int(self.minimum_feasible_depth),
             "explored_nodes": int(self.explored_nodes),
+            "closure_checks": int(self.closure_checks),
+            "closure_feasible": int(self.closure_feasible),
+            "closure_infeasible": int(self.closure_infeasible),
             "edge_checks": int(self.edge_checks),
             "feasible_edges": int(self.feasible_edges),
             "infeasible_edges": int(self.infeasible_edges),
@@ -114,6 +129,9 @@ class EventGraphReceipt:
 class _SearchState:
     depth_stats: dict[int, _DepthStats] = field(default_factory=dict)
     explored_nodes: int = 0
+    closure_checks: int = 0
+    closure_feasible: int = 0
+    closure_infeasible: int = 0
     edge_checks: int = 0
     feasible_edges: int = 0
     infeasible_edges: int = 0
@@ -144,8 +162,11 @@ def _search_sources(problem: EventGraphProblem) -> tuple[EventSource, ...]:
     """Static exact source set after proven slot-shape eliminations."""
 
     protected = set(derive_protected_priority_prefix(problem.model).task_names)
+    active = frozenset(problem.projection.active_task_names)
     rows: list[EventSource] = []
-    for source in enumerate_event_sources(problem.model):
+    for source in enumerate_event_sources(
+        problem.model, active_task_names=active
+    ):
         if source.kind == "HI_DEADLINE" and source.slot != 0:
             continue
         if source.kind == "COMPLETION" and source.task_name is not None:
@@ -174,6 +195,9 @@ def _progress(
         "phase": phase,
         "depth": int(depth),
         "explored_nodes": int(state.explored_nodes),
+        "closure_checks": int(state.closure_checks),
+        "closure_feasible": int(state.closure_feasible),
+        "closure_infeasible": int(state.closure_infeasible),
         "edge_checks": int(state.edge_checks),
         "feasible_edges": int(state.feasible_edges),
         "infeasible_edges": int(state.infeasible_edges),
@@ -224,116 +248,179 @@ def solve_event_graph(
             search.unknown_reason = "FINITE_EVENT_BOUND_REACHED_BEFORE_HORIZON"
             return "UNKNOWN"
 
-        for source in sources:
-            next_depth = depth + 1
-            if source.kind == "HORIZON" and next_depth < floor.minimum_depth:
-                search.structural_skips += 1
-                search.at(depth).structural_skips += 1
-                continue
-
-            serial = search.edge_serial
+        controller_cases = (
+            enumerate_controller_policy_cases(problem.model)
+            if controller_enabled else (None,)
+        )
+        for controller_case in controller_cases:
+            closure_serial = search.edge_serial
             search.edge_serial += 1
-            destination = declare_state(
-                f"event.graph.edge.{serial}.y.{next_depth}", problem.model
-            )
             build_started = perf_counter()
-            step = encode_event_step_for_source(
+            closure = encode_event_node_closure(
                 state,
-                destination,
                 problem.model,
                 problem.environment,
-                horizon_time=problem.horizon_time,
-                prefix=f"event.graph.edge.{serial}",
-                event_source=source,
+                prefix=f"event.graph.node.{closure_serial}.{depth}",
                 controller_enabled=controller_enabled,
-            )
-            edge_formula = z3.And(
-                step.formula,
-                state.hi_miss_ledger == 0,
-                destination.hi_miss_ledger == 0,
-                reachable_carry_in_consistency(destination, problem.model),
+                active_task_names=problem.projection.active_task_names,
+                controller_case=controller_case,
             )
             build_elapsed = perf_counter() - build_started
             search.build_seconds += build_elapsed
             search.at(depth).build_seconds += build_elapsed
-
             solver.push()
-            solver.add(edge_formula)
-            search.edge_checks += 1
-            search.at(depth).edge_checks += 1
+            solver.add(closure.formula)
+            search.closure_checks += 1
+            search.at(depth).closure_checks += 1
             _progress(
-                progress, search, phase="EVENT_GRAPH_EDGE_CHECK", depth=depth,
-                source=source, path=tuple(path_sources), next_depth=next_depth,
+                progress, search, phase="EVENT_GRAPH_NODE_CLOSURE_CHECK",
+                depth=depth, path=tuple(path_sources),
+                controller_enabled=controller_enabled,
+                controller_case_id=(
+                    None if controller_case is None else controller_case.case_id
+                ),
             )
-            edge_result, elapsed, reason = _check(solver)
-            search.solver_seconds += elapsed
-            search.at(depth).solver_seconds += elapsed
-
-            if edge_result == "UNSAT":
-                search.infeasible_edges += 1
-                search.at(depth).infeasible_edges += 1
+            closure_result, closure_elapsed, closure_reason = _check(solver)
+            search.solver_seconds += closure_elapsed
+            search.at(depth).solver_seconds += closure_elapsed
+            if closure_result == "UNSAT":
+                search.closure_infeasible += 1
+                search.at(depth).closure_infeasible += 1
                 solver.pop()
                 continue
-            if edge_result == "UNKNOWN":
-                search.unknown_reason = reason or "EVENT_GRAPH_EDGE_UNKNOWN"
+            if closure_result == "UNKNOWN":
+                search.unknown_reason = closure_reason or "EVENT_GRAPH_NODE_CLOSURE_UNKNOWN"
                 solver.pop()
                 return "UNKNOWN"
+            search.closure_feasible += 1
+            search.at(depth).closure_feasible += 1
 
-            search.feasible_edges += 1
-            search.at(depth).feasible_edges += 1
-            event_states.append(destination)
-            event_steps.append(step)
-            path_formulas.append(edge_formula)
-            path_sources.append(source.source_id)
+            for source in sources:
+                next_depth = depth + 1
+                if source.kind == "HORIZON" and next_depth < floor.minimum_depth:
+                    search.structural_skips += 1
+                    search.at(depth).structural_skips += 1
+                    continue
 
-            if source.kind == "HORIZON":
-                terminal = problem.build_terminal_bad_query(destination, depth=next_depth)
-                solver.push()
-                solver.add(terminal.formula)
-                search.terminal_checks += 1
-                search.at(depth).terminal_checks += 1
-                _progress(
-                    progress, search, phase="EVENT_GRAPH_TERMINAL_BAD_CHECK",
-                    depth=next_depth, source=source, path=tuple(path_sources),
+                serial = search.edge_serial
+                search.edge_serial += 1
+                destination = declare_state(
+                    f"event.graph.edge.{serial}.y.{next_depth}", problem.model
                 )
-                terminal_result, terminal_elapsed, terminal_reason = _check(solver)
-                search.solver_seconds += terminal_elapsed
-                search.at(depth).solver_seconds += terminal_elapsed
-                solver.pop()
-                if terminal_result == "SAT":
-                    decisive_depth = next_depth
-                    decisive_path = tuple(path_sources)
-                    decisive_encoding = problem.materialize_sat_path(
-                        root_case=current_root_case,
-                        event_states=tuple(event_states),
-                        event_steps=tuple(event_steps),
-                        path_formulas=tuple(path_formulas),
-                        terminal=terminal,
-                    )
-                    path_sources.pop(); path_formulas.pop(); event_steps.pop(); event_states.pop()
+                build_started = perf_counter()
+                step = encode_event_time_edge(
+                    state,
+                    destination,
+                    closure,
+                    problem.model,
+                    horizon_time=problem.horizon_time,
+                    prefix=f"event.graph.edge.{serial}",
+                    event_source=source,
+                    active_task_names=problem.projection.active_task_names,
+                )
+                edge_terms: list[z3.BoolRef] = [
+                    step.time_edge_formula,
+                    state.hi_miss_ledger == 0,
+                    destination.hi_miss_ledger == 0,
+                    reachable_carry_in_consistency(
+                        destination, problem.projection.active_model
+                    ),
+                ]
+                if source.kind != "HORIZON":
+                    edge_terms.append(target_pending_after_origin(
+                        destination, problem.model, problem.target_task
+                    ))
+                edge_formula = z3.And(*edge_terms)
+                build_elapsed = perf_counter() - build_started
+                search.build_seconds += build_elapsed
+                search.at(depth).build_seconds += build_elapsed
+
+                solver.push()
+                solver.add(edge_formula)
+                search.edge_checks += 1
+                search.at(depth).edge_checks += 1
+                _progress(
+                    progress, search, phase="EVENT_GRAPH_TIME_EDGE_CHECK", depth=depth,
+                    source=source, path=tuple(path_sources), next_depth=next_depth,
+                    controller_case_id=(
+                        None if controller_case is None else controller_case.case_id
+                    ),
+                )
+                edge_result, elapsed, reason = _check(solver)
+                search.solver_seconds += elapsed
+                search.at(depth).solver_seconds += elapsed
+
+                if edge_result == "UNSAT":
+                    search.infeasible_edges += 1
+                    search.at(depth).infeasible_edges += 1
                     solver.pop()
-                    return "SAT"
-                if terminal_result == "UNKNOWN":
-                    search.unknown_reason = terminal_reason or "EVENT_GRAPH_TERMINAL_UNKNOWN"
-                    path_sources.pop(); path_formulas.pop(); event_steps.pop(); event_states.pop()
+                    continue
+                if edge_result == "UNKNOWN":
+                    search.unknown_reason = reason or "EVENT_GRAPH_EDGE_UNKNOWN"
+                    solver.pop()
                     solver.pop()
                     return "UNKNOWN"
-                search.at(depth).terminal_safe += 1
-                child_result = "UNSAT"
-            else:
-                child_result = dfs(
-                    destination,
-                    next_depth,
-                    controller_enabled=(source.kind == "CONTROLLER"),
-                )
 
-            path_sources.pop()
-            path_formulas.pop()
-            event_steps.pop()
-            event_states.pop()
+                search.feasible_edges += 1
+                search.at(depth).feasible_edges += 1
+                event_states.append(destination)
+                event_steps.append(step)
+                path_formulas.append(step.formula)
+                path_sources.append(source.source_id)
+
+                if source.kind == "HORIZON":
+                    terminal = problem.build_terminal_bad_query(destination, depth=next_depth)
+                    solver.push()
+                    solver.add(terminal.formula)
+                    search.terminal_checks += 1
+                    search.at(depth).terminal_checks += 1
+                    _progress(
+                        progress, search, phase="EVENT_GRAPH_TERMINAL_BAD_CHECK",
+                        depth=next_depth, source=source, path=tuple(path_sources),
+                    )
+                    terminal_result, terminal_elapsed, terminal_reason = _check(solver)
+                    search.solver_seconds += terminal_elapsed
+                    search.at(depth).solver_seconds += terminal_elapsed
+                    solver.pop()
+                    if terminal_result == "SAT":
+                        decisive_depth = next_depth
+                        decisive_path = tuple(path_sources)
+                        decisive_encoding = problem.materialize_sat_path(
+                            root_case=current_root_case,
+                            event_states=tuple(event_states),
+                            event_steps=tuple(event_steps),
+                            path_formulas=tuple(path_formulas),
+                            terminal=terminal,
+                        )
+                        path_sources.pop(); path_formulas.pop(); event_steps.pop(); event_states.pop()
+                        solver.pop()
+                        solver.pop()
+                        return "SAT"
+                    if terminal_result == "UNKNOWN":
+                        search.unknown_reason = terminal_reason or "EVENT_GRAPH_TERMINAL_UNKNOWN"
+                        path_sources.pop(); path_formulas.pop(); event_steps.pop(); event_states.pop()
+                        solver.pop()
+                        solver.pop()
+                        return "UNKNOWN"
+                    search.at(depth).terminal_safe += 1
+                    child_result = "UNSAT"
+                else:
+                    child_result = dfs(
+                        destination,
+                        next_depth,
+                        controller_enabled=(source.kind == "CONTROLLER"),
+                    )
+
+                path_sources.pop()
+                path_formulas.pop()
+                event_steps.pop()
+                event_states.pop()
+                solver.pop()
+                if child_result in {"SAT", "UNKNOWN"}:
+                    solver.pop()
+                    return child_result
+
             solver.pop()
-            if child_result in {"SAT", "UNKNOWN"}:
-                return child_result
 
         return "UNSAT"
 
@@ -382,6 +469,9 @@ def solve_event_graph(
         finite_event_bound=finite_bound,
         minimum_feasible_depth=floor.minimum_depth,
         explored_nodes=search.explored_nodes,
+        closure_checks=search.closure_checks,
+        closure_feasible=search.closure_feasible,
+        closure_infeasible=search.closure_infeasible,
         edge_checks=search.edge_checks,
         feasible_edges=search.feasible_edges,
         infeasible_edges=search.infeasible_edges,

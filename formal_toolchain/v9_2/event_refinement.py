@@ -1,10 +1,11 @@
-"""V9.3 Full-kernel <-> exact Event-macro proof obligations.
+"""V9.3 Full-kernel and target-local Event-graph proof obligations.
 
-The Event layer is a semantic quotient only: it retains the complete Full-state
-persistent information, executes exact P0--P6 at every event boundary and
-compresses only event-free repetitions of P7.  Terminal compositional theorems
-are derived only from explicitly machine-checked leaves recorded in this
-module; source hashing and AST anti-tamper checks are intentionally absent.
+The reference Event macro remains an exact quotient of the Full kernel.  The
+deployed FirstBadWindow search then projects away lower-priority scheduling
+state while retaining the complete controller budget/history state.  Under
+strict fixed priority this is a safety-preserving interference dominance: the
+projected graph can admit extra bad behavior, so UNSAT proves Full safety while
+SAT must be classified by replay.  No reverse projected->Full theorem is used.
 """
 from __future__ import annotations
 
@@ -28,12 +29,14 @@ from .transition_encoder import encode_p7_time_and_service
 
 EVENT_TERMINAL_OBLIGATIONS = (
     "EVENT_START_ABSTRACTION_SOUNDNESS",
-    "EVENT_START_PROJECTION_EXACTNESS",
     "EVENT_STATE_FUTURE_SUFFICIENCY",
-    "EVENT_DEMAND_LOOKUP_FACTORING_EQUIVALENCE",
     "EVENT_PHASE_SSA_FRAME_ELIMINATION_EQUIVALENCE",
     "EVENT_P5_GRAPH_BRANCH_SPECIALIZATION_EQUIVALENCE",
+    "EVENT_CONTROLLER_POLICY_CASE_PARTITION_EQUIVALENCE",
     "EVENT_EXPLICIT_GRAPH_SOURCE_PARTITION_EQUIVALENCE",
+    "TARGET_LOCAL_FIXED_PRIORITY_INTERFERENCE_DOMINANCE",
+    "TARGET_LOCAL_POLICY_STATE_RETENTION",
+    "EVENT_LAZY_RELEASE_DEMAND_INDEPENDENCE",
     "NEXT_EVENT_MINIMALITY",
     "NEXT_EVENT_EXACT_MINIMUM",
     "NO_SKIPPED_DISCRETE_EVENT",
@@ -45,9 +48,8 @@ EVENT_TERMINAL_OBLIGATIONS = (
     "CONTROLLER_EVENT_COVERAGE",
     "EXACT_P5_AT_CONTROLLER_EVENT",
     "FULL_TO_EVENT_SEGMENT_SIMULATION",
-    "EVENT_TO_FULL_SEGMENT_REALIZABILITY",
-    "FIRST_HI_BAD_EVENT_PREFIX_REFLECTION",
-    "EVENT_BAD_PREFIX_FULL_REALIZABILITY",
+    "FULL_TO_PROJECTED_EVENT_PREFIX_SIMULATION",
+    "FIRST_HI_BAD_PROJECTED_EVENT_REFLECTION",
     "FINITE_EVENT_COUNT_BOUND",
     "MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY",
     "EVENT_WINDOW_ENCODING_SOUNDNESS",
@@ -69,9 +71,13 @@ class EventRefinementProof:
             "obligation_statuses": dict(self.obligation_statuses),
             "solver_receipts": list(self.solver_receipts),
             "structural_receipts": list(self.structural_receipts),
-            "event_layer_added_abstractions": [],
-            "exact_event_macro_semantics": self.status == "PASS",
-            "event_to_full_realizability_verified": self.status == "PASS",
+            "event_layer_added_abstractions": [
+                "TARGET_LOCAL_FIXED_PRIORITY_INTERFERENCE_DOMINANCE"
+            ],
+            "exact_reference_event_macro_semantics": self.status == "PASS",
+            "full_to_projected_event_simulation_verified": self.status == "PASS",
+            "event_to_full_realizability_verified": False,
+            "projected_sat_requires_full_replay": True,
             "small_horizon_differential_consistency_verified": self.status == "PASS",
             "exact_p5_in_event_window": True,
         }
@@ -379,21 +385,32 @@ def _structural_claims() -> list[dict[str, Any]]:
     """
 
     rows = (
-        ("EVENT_START_ABSTRACTION_SOUNDNESS", "REFINED_P0_EVENT_START_IS_FULL_STATE_CONJUNCTION"),
-        ("EVENT_START_PROJECTION_EXACTNESS", "REFINED_P0_EVENT_START_IS_FULL_STATE_CONJUNCTION"),
-        ("EVENT_STATE_FUTURE_SUFFICIENCY", "FULL_PERSISTENT_STATE_RETAINED_AT_EVENT_BOUNDARY"),
-        ("EVENT_DEMAND_LOOKUP_FACTORING_EQUIVALENCE", "EXACT_FINITE_DEMAND_LOOKUP"),
+        ("EVENT_START_ABSTRACTION_SOUNDNESS", "TARGET_LOCAL_SAFE_PREFIX_IS_A_SUPERSET_OF_FULL_REACHABLE_STARTS"),
+        ("EVENT_STATE_FUTURE_SUFFICIENCY", "TARGET_PREFIX_SCHEDULING_STATE_PLUS_FULL_POLICY_STATE_RETAINED"),
         ("EVENT_PHASE_SSA_FRAME_ELIMINATION_EQUIVALENCE", "SHARED_CANONICAL_PHASE_ENCODERS"),
         ("EVENT_P5_GRAPH_BRANCH_SPECIALIZATION_EQUIVALENCE", "CANONICAL_CONTROLLER_SOURCE_OWNS_ENABLED_P5_BRANCH"),
+        ("EVENT_CONTROLLER_POLICY_CASE_PARTITION_EQUIVALENCE", "CART_LEAF_AND_FIRSTVALID_CASES_EXHAUST_EXACT_POLICY"),
         (
             "EVENT_EXPLICIT_GRAPH_SOURCE_PARTITION_EQUIVALENCE",
-            "DISJOINT_FIRST_MINIMUM_OWNER_DFS_COVERS_ALL_EVENT_PREFIXES",
+            "DISJOINT_FIRST_MINIMUM_OWNER_DFS_COVERS_ALL_PROJECTED_EVENT_PREFIXES",
+        ),
+        (
+            "TARGET_LOCAL_FIXED_PRIORITY_INTERFERENCE_DOMINANCE",
+            "LOWER_PRIORITY_JOBS_CANNOT_DELAY_PENDING_TARGET_AND_OMITTED_LOWER_HI_SWITCH_ONLY_PRESERVES_INTERFERENCE",
+        ),
+        (
+            "TARGET_LOCAL_POLICY_STATE_RETENTION",
+            "ALL_BUDGET_AND_HISTORY_SCALARS_USED_BY_EXACT_P5_ARE_RETAINED",
+        ),
+        (
+            "EVENT_LAZY_RELEASE_DEMAND_INDEPENDENCE",
+            "EACH_EXPLICIT_RELEASE_GETS_ONE_FRESH_BOUNDED_INDEPENDENT_DEMAND",
         ),
         (
             "MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY::P0_P6_DEFINITIONAL_IDENTITY",
-            "EVENT_CLOSURE_REUSES_CANONICAL_P0_TO_P6",
+            "REFERENCE_EVENT_CLOSURE_REUSES_CANONICAL_P0_TO_P6",
         ),
-        ("EXACT_P5_AT_CONTROLLER_EVENT", "DIRECT_ENABLED_P5_ON_CONTROLLER_GRAPH_NODE"),
+        ("EXACT_P5_AT_CONTROLLER_EVENT", "EXHAUSTIVE_POLICY_CASE_SPLIT_USES_DIRECT_ENABLED_P5"),
         ("NO_SPURIOUS_EVENT_SOURCE", "CANONICAL_DISJOINT_FIRST_MINIMUM_OWNER"),
     )
     return [
@@ -565,7 +582,6 @@ def prove_event_refinement(
         )
 
     segment_dependencies = (
-        "EVENT_START_PROJECTION_EXACTNESS",
         "EVENT_STATE_FUTURE_SUFFICIENCY",
         "EVENT_P5_GRAPH_BRANCH_SPECIALIZATION_EQUIVALENCE",
             "NO_SPURIOUS_EVENT_SOURCE",
@@ -575,28 +591,46 @@ def prove_event_refinement(
         "MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY",
     )
     for theorem, rule in (
-        ("FULL_TO_EVENT_SEGMENT_SIMULATION", "EXACT_CLOSURE_PLUS_SILENT_TICK_INDUCTION"),
-        ("EVENT_TO_FULL_SEGMENT_REALIZABILITY", "EVENT_MACRO_EXPANSION_TO_FULL_TICKS"),
+        ("FULL_TO_EVENT_SEGMENT_SIMULATION", "EXACT_REFERENCE_CLOSURE_PLUS_SILENT_TICK_INDUCTION"),
+        ("EVENT_TO_FULL_SEGMENT_REALIZABILITY", "REFERENCE_EVENT_MACRO_EXPANSION_TO_FULL_TICKS"),
     ):
         if not _derive(theorem, segment_dependencies, statuses, structural_rows, proof_rule=rule):
             return EventRefinementProof("UNRESOLVED", statuses, tuple(solver_rows), tuple(structural_rows), f"{theorem}_UNPROVED")
 
     if not _derive(
-        "FIRST_HI_BAD_EVENT_PREFIX_REFLECTION",
-        ("FULL_TO_EVENT_SEGMENT_SIMULATION", "DEADLINE_EVENT_COVERAGE", "NO_SKIPPED_DISCRETE_EVENT"),
+        "FULL_TO_PROJECTED_EVENT_PREFIX_SIMULATION",
+        (
+            "FULL_TO_EVENT_SEGMENT_SIMULATION",
+            "TARGET_LOCAL_FIXED_PRIORITY_INTERFERENCE_DOMINANCE",
+            "TARGET_LOCAL_POLICY_STATE_RETENTION",
+            "EVENT_LAZY_RELEASE_DEMAND_INDEPENDENCE",
+            "EVENT_CONTROLLER_POLICY_CASE_PARTITION_EQUIVALENCE",
+            "EVENT_EXPLICIT_GRAPH_SOURCE_PARTITION_EQUIVALENCE",
+        ),
         statuses,
         structural_rows,
-        proof_rule="FULL_BAD_DEADLINE_IS_EVENT_BOUNDARY",
+        proof_rule="FULL_EVENT_PREFIX_EMBEDS_IN_TARGET_LOCAL_INTERFERENCE_SUPERSET",
     ):
-        return EventRefinementProof("UNRESOLVED", statuses, tuple(solver_rows), tuple(structural_rows), "FIRST_HI_BAD_EVENT_PREFIX_REFLECTION_UNPROVED")
+        return EventRefinementProof(
+            "UNRESOLVED", statuses, tuple(solver_rows), tuple(structural_rows),
+            "FULL_TO_PROJECTED_EVENT_PREFIX_SIMULATION_UNPROVED",
+        )
+
     if not _derive(
-        "EVENT_BAD_PREFIX_FULL_REALIZABILITY",
-        ("EVENT_TO_FULL_SEGMENT_REALIZABILITY", "DEADLINE_EVENT_COVERAGE", "EXACT_P5_AT_CONTROLLER_EVENT"),
+        "FIRST_HI_BAD_PROJECTED_EVENT_REFLECTION",
+        (
+            "FULL_TO_PROJECTED_EVENT_PREFIX_SIMULATION",
+            "DEADLINE_EVENT_COVERAGE",
+            "NO_SKIPPED_DISCRETE_EVENT",
+        ),
         statuses,
         structural_rows,
-        proof_rule="EVENT_BAD_MACRO_EXPANDS_TO_FULL_BAD_PREFIX",
+        proof_rule="EVERY_FULL_FIRST_HI_BAD_PREFIX_HAS_A_PROJECTED_BAD_EVENT_PREFIX",
     ):
-        return EventRefinementProof("UNRESOLVED", statuses, tuple(solver_rows), tuple(structural_rows), "EVENT_BAD_PREFIX_FULL_REALIZABILITY_UNPROVED")
+        return EventRefinementProof(
+            "UNRESOLVED", statuses, tuple(solver_rows), tuple(structural_rows),
+            "FIRST_HI_BAD_PROJECTED_EVENT_REFLECTION_UNPROVED",
+        )
 
     # The structural count is safe only after every per-stream arithmetic leaf
     # and the composition leaf have been solved.
@@ -609,7 +643,7 @@ def prove_event_refinement(
         window_dependencies,
         statuses,
         structural_rows,
-        proof_rule="V9_3_EXPLICIT_EVENT_GRAPH_SOUNDNESS_COMPOSITION",
+        proof_rule="V9_3_TARGET_LOCAL_EVENT_GRAPH_SAFETY_DOMINANCE_COMPOSITION",
     ):
         return EventRefinementProof("UNRESOLVED", statuses, tuple(solver_rows), tuple(structural_rows), "EVENT_WINDOW_ENCODING_SOUNDNESS_UNPROVED")
 

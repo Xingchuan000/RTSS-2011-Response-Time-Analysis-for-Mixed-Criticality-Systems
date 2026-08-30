@@ -105,9 +105,13 @@ def _proof_summary(
         "binding_root_hash": binding_root_hash,
         "event_window_encoder_version": ENCODER_VERSION,
         "obligation_statuses": statuses,
-        "event_layer_added_abstractions": [],
-        "exact_event_macro_semantics": True,
-        "event_to_full_realizability_verified": True,
+        "event_layer_added_abstractions": [
+            "TARGET_LOCAL_FIXED_PRIORITY_INTERFERENCE_DOMINANCE"
+        ],
+        "exact_reference_event_macro_semantics": True,
+        "full_to_projected_event_simulation_verified": True,
+        "event_to_full_realizability_verified": False,
+        "projected_sat_requires_full_replay": True,
         "small_horizon_differential_consistency_verified": True,
         "exact_p5_in_event_window": True,
     }

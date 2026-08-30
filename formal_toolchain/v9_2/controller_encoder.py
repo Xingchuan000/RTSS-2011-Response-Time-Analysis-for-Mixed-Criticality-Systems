@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import z3
 
@@ -23,6 +24,121 @@ class ControllerEncoding:
     selected_action: z3.ArithRef
     budget_after: dict[str, z3.ArithRef]
     constraints: tuple[z3.BoolRef, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ControllerPolicyCase:
+    leaf_id: int
+    selected_action: int
+
+    @property
+    def case_id(self) -> str:
+        return f"LEAF_{self.leaf_id}__ACTION_{self.selected_action}"
+
+
+@dataclass(frozen=True, slots=True)
+class ControllerCaseEncoding:
+    case: ControllerPolicyCase
+    budget_after: dict[str, z3.ArithRef]
+    constraints: tuple[z3.BoolRef, ...]
+
+
+def _tree_maps(tree: Any):
+    return (
+        {int(node.node_id): node for node in tree.nodes},
+        {int(leaf.node_id): leaf for leaf in tree.leaves},
+    )
+
+
+def _leaf_paths(tree: Any) -> dict[int, tuple[tuple[int, int, bool], ...]]:
+    nodes, leaves = _tree_maps(tree)
+    result: dict[int, tuple[tuple[int, int, bool], ...]] = {}
+
+    def visit(node_id: int, path: tuple[tuple[int, int, bool], ...]) -> None:
+        if node_id in leaves:
+            result[node_id] = path
+            return
+        node = nodes[node_id]
+        step = (int(node.feature_index), int(node.threshold_int))
+        visit(int(node.left_child), path + ((step[0], step[1], True),))
+        visit(int(node.right_child), path + ((step[0], step[1], False),))
+
+    visit(int(tree.root_node_id), ())
+    return result
+
+
+def enumerate_controller_policy_cases(model: BoundModel) -> tuple[ControllerPolicyCase, ...]:
+    if model.tree is None or model.noop_id is None:
+        raise ValueError("V9_3_CONTROLLER_POLICY_UNBOUND")
+    _, leaves = _tree_maps(model.tree)
+    rows: list[ControllerPolicyCase] = []
+    for leaf_id in sorted(leaves):
+        ranking = tuple(int(value) for value in leaves[leaf_id].action_ranking)
+        for action in ranking:
+            rows.append(ControllerPolicyCase(leaf_id, action))
+            if action == int(model.noop_id):
+                break
+    return tuple(rows)
+
+
+def encode_controller_policy_case(
+    state: SymbolicKernelState,
+    model: BoundModel,
+    case: ControllerPolicyCase,
+) -> ControllerCaseEncoding:
+    """Exact deployed controller restricted to one leaf/FirstValid outcome."""
+
+    if model.tree is None or model.noop_id is None:
+        raise ValueError("V9_3_CONTROLLER_POLICY_UNBOUND")
+    paths = _leaf_paths(model.tree)
+    _, leaves = _tree_maps(model.tree)
+    if case.leaf_id not in paths:
+        raise ValueError("V9_3_CONTROLLER_CASE_LEAF_UNKNOWN")
+    leaf = leaves[case.leaf_id]
+    ranking = tuple(int(value) for value in leaf.action_ranking)
+    if case.selected_action not in ranking:
+        raise ValueError("V9_3_CONTROLLER_CASE_ACTION_NOT_RANKED")
+    selected_pos = ranking.index(case.selected_action)
+    noop_pos = ranking.index(int(model.noop_id))
+    if selected_pos > noop_pos:
+        raise ValueError("V9_3_CONTROLLER_CASE_AFTER_NOOP")
+
+    path = paths[case.leaf_id]
+    used_features = tuple(sorted({index for index, _, _ in path}))
+    safety_margin_index = 10 * len(model.tasks) + 7
+    safety_margin = (
+        encode_safety_margin_min(state.budgets, model)
+        if safety_margin_index in used_features else z3.RealVal(1)
+    )
+    base = str(state.t)
+    observation = encode_v11_full_10d_observation(
+        state,
+        model,
+        safety_margin=safety_margin,
+        prefix=f"{base}.p5.case.{case.leaf_id}.q",
+        active_feature_indices=used_features,
+    )
+    path_constraints: list[z3.BoolRef] = []
+    for index, threshold, goes_left in path:
+        predicate = observation.quantized[index] <= int(threshold)
+        path_constraints.append(predicate if goes_left else z3.Not(predicate))
+
+    mask, candidates, mask_constraints = encode_action_mask(
+        state.budgets, model.action_definitions, model
+    )
+    first_valid = [mask[case.selected_action]]
+    first_valid.extend(z3.Not(mask[action]) for action in ranking[:selected_pos])
+    constraints = tuple(
+        list(observation.constraints)
+        + path_constraints
+        + list(mask_constraints)
+        + first_valid
+    )
+    return ControllerCaseEncoding(
+        case=case,
+        budget_after=dict(candidates[case.selected_action]),
+        constraints=constraints,
+    )
 
 
 def encode_controller_decision(state: SymbolicKernelState, model: BoundModel) -> ControllerEncoding:
@@ -94,4 +210,8 @@ def encode_controller_decision(state: SymbolicKernelState, model: BoundModel) ->
     )
 
 
-__all__ = ["ControllerEncoding", "encode_controller_decision"]
+__all__ = [
+    "ControllerCaseEncoding", "ControllerEncoding", "ControllerPolicyCase",
+    "encode_controller_decision", "encode_controller_policy_case",
+    "enumerate_controller_policy_cases",
+]

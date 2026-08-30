@@ -340,6 +340,7 @@ def declare_sparse_successor(
     *,
     phase: int,
     mutable: frozenset[str],
+    active_task_names: frozenset[str] | None = None,
 ) -> SymbolicKernelState:
     """Declare only fields owned by one phase; structurally share all frames.
 
@@ -365,8 +366,16 @@ def declare_sparse_successor(
         {task.name: fresh_int(f"B.{task.name}") for task in model.tasks}
         if "budgets" in mutable else prior.budgets
     )
+    active = None if active_task_names is None else frozenset(active_task_names)
     eta = (
-        {task.name: fresh_int(f"eta.{task.name}") for task in model.tasks}
+        {
+            task.name: (
+                fresh_int(f"eta.{task.name}")
+                if active is None or task.name in active
+                else prior.eta[task.name]
+            )
+            for task in model.tasks
+        }
         if "eta" in mutable else prior.eta
     )
 
@@ -385,6 +394,9 @@ def declare_sparse_successor(
         for slot in range(model.max_jobs_per_task):
             key = (task.name, slot)
             old = prior.jobs[key]
+            if active is not None and task.name not in active:
+                jobs[key] = old
+                continue
             base = f"J.{task_id}.{slot}"
             values: dict[str, Any] = {}
             for name in job_field_names:

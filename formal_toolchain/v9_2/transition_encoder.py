@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Collection
 
 import z3
 
-from .controller_encoder import encode_controller_decision
+from .controller_encoder import (
+    ControllerPolicyCase,
+    encode_controller_decision,
+    encode_controller_policy_case,
+)
 from .environment_encoder import (
     SymbolicEnvironment, classify_from_actual_demand, demand_for_time,
 )
@@ -95,11 +99,25 @@ def _phase(z: SymbolicKernelState, zp: SymbolicKernelState, current: int, next_p
     return [z.p == current, zp.p == next_phase]
 
 
-def encode_p0_settle(z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
+def _active_names(model: BoundModel, active_task_names: Collection[str] | None) -> frozenset[str]:
+    return (
+        frozenset(task.name for task in model.tasks)
+        if active_task_names is None
+        else frozenset(str(name) for name in active_task_names)
+    )
+
+
+def encode_p0_settle(
+    z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel,
+    *, active_task_names: Collection[str] | None = None,
+) -> z3.BoolRef:
     clauses = _phase(z, zp, 0, 1) + _frame_state(
         z, zp, model, mutable=frozenset({"jobs.present", "jobs.removed", "jobs.ready"})
     )
+    active = _active_names(model, active_task_names)
     for key, job in z.jobs.items():
+        if key[0] not in active:
+            continue
         other = zp.jobs[key]
         completed = job.present & (job.executed_service >= job.effective_demand)
         clauses.extend((other.present == z3.And(job.present, z3.Not(completed)),
@@ -108,19 +126,32 @@ def encode_p0_settle(z: SymbolicKernelState, zp: SymbolicKernelState, model: Bou
     return z3.And(*clauses)
 
 
-def encode_p1_idle_recovery(z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
+def encode_p1_idle_recovery(
+    z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel,
+    *, active_task_names: Collection[str] | None = None,
+) -> z3.BoolRef:
     clauses = _phase(z, zp, 1, 2) + _frame_state(z, zp, model, mutable=frozenset({"mode"}))
-    active = z3.Or(*(job.present & (job.remaining > 0) for job in z.jobs.values()))
+    names = _active_names(model, active_task_names)
+    active = z3.Or(*(
+        job.present & (job.remaining > 0)
+        for (task_name, _), job in z.jobs.items() if task_name in names
+    ))
     clauses.append(zp.mode_hi == z3.And(z.mode_hi, active))
     return z3.And(*clauses)
 
 
-def encode_p2_deadline_observe(z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
+def encode_p2_deadline_observe(
+    z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel,
+    *, active_task_names: Collection[str] | None = None,
+) -> z3.BoolRef:
     clauses = _phase(z, zp, 2, 3) + _frame_state(
         z, zp, model, mutable=frozenset({"hi_miss_ledger"})
     )
     misses = []
+    active = _active_names(model, active_task_names)
     for task in model.tasks:
+        if task.name not in active:
+            continue
         if task.criticality != "HI":
             continue
         misses.extend(job.present & (job.absolute_deadline == z.t) &
@@ -226,14 +257,18 @@ def _encode_exact_release_slot(
 
 
 def encode_p3_arrival_freeze(
-    z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel, env: SymbolicEnvironment
+    z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel, env: SymbolicEnvironment,
+    *, active_task_names: Collection[str] | None = None,
 ) -> z3.BoolRef:
     if model.max_jobs_per_task < 2 and any(task.criticality == "LO" for task in model.tasks):
         raise ValueError("V9_2_TWO_SLOT_LO_CARRY_IN_REQUIRES_TWO_JOB_SLOTS")
     clauses = _phase(z, zp, 3, 4) + _frame_state(
         z, zp, model, mutable=frozenset({"eta", "jobs"})
     )
+    active = _active_names(model, active_task_names)
     for task in model.tasks:
+        if task.name not in active:
+            continue
         due = _release_due(z, task)
         demand, covered = demand_for_time(env, task, z.t)
         clauses.append(z3.Implies(due, covered))
@@ -263,10 +298,14 @@ def encode_p3_arrival_freeze(
     return z3.And(*clauses)
 
 
-def encode_p4_mode_switch(z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
+def encode_p4_mode_switch(
+    z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel,
+    *, active_task_names: Collection[str] | None = None,
+) -> z3.BoolRef:
     clauses = _phase(z, zp, 4, 5) + _frame_state(z, zp, model, mutable=frozenset({"mode"}))
+    active = _active_names(model, active_task_names)
     abnormal_batch = z3.Or(*(job.present & (job.release_time == z.t) & job.classification_abnormal
-                             for task in model.hi_tasks
+                             for task in model.hi_tasks if task.name in active
                              for (name, _), job in z.jobs.items() if name == task.name))
     clauses.append(zp.mode_hi == z3.Or(z.mode_hi, abnormal_batch))
     return z3.And(*clauses)
@@ -441,6 +480,29 @@ def encode_p5_controller_enabled(
     return z3.And(*clauses)
 
 
+def encode_p5_controller_enabled_case(
+    z: SymbolicKernelState,
+    zp: SymbolicKernelState,
+    model: BoundModel,
+    case: ControllerPolicyCase,
+) -> z3.BoolRef:
+    """Exact enabled P5 under one host-selected leaf/FirstValid case."""
+
+    decision = encode_controller_policy_case(z, model, case)
+    clauses = _phase(z, zp, 5, 6)
+    clauses.append((z.t % model.agent_period) == 0)
+    clauses.extend(decision.constraints)
+    clauses.extend(
+        zp.budgets[name] == decision.budget_after[name]
+        for name in z.budgets
+    )
+    clauses.append(z3.And(*_history_domain(zp, model)))
+    clauses.extend(_frame_state(
+        z, zp, model, mutable=frozenset({"budgets", "history"})
+    ))
+    return z3.And(*clauses)
+
+
 def encode_p5_controller_frame(
     z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel
 ) -> z3.BoolRef:
@@ -462,7 +524,10 @@ def _slot_index(model: BoundModel, key: tuple[str, int]) -> int:
                 if (item.name, slot) == key for index in [index * model.max_jobs_per_task + slot])
 
 
-def encode_p6_dispatch(z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
+def encode_p6_dispatch(
+    z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel,
+    *, active_task_names: Collection[str] | None = None,
+) -> z3.BoolRef:
     """Exact fixed-priority dispatch with linear task-priority structure.
 
     Task priorities are static and already stored in canonical order.  The old
@@ -478,7 +543,10 @@ def encode_p6_dispatch(z: SymbolicKernelState, zp: SymbolicKernelState, model: B
     )
     eligible: dict[tuple[str, int], z3.BoolRef] = {}
     task_has: dict[str, z3.BoolRef] = {}
+    active = _active_names(model, active_task_names)
     for task in model.tasks:
+        if task.name not in active:
+            continue
         rows: list[z3.BoolRef] = []
         for slot in range(model.max_jobs_per_task):
             key = (task.name, slot)
@@ -488,12 +556,13 @@ def encode_p6_dispatch(z: SymbolicKernelState, zp: SymbolicKernelState, model: B
             rows.append(value)
         task_has[task.name] = z3.Or(*rows)
 
-    any_eligible = z3.Or(*(task_has[task.name] for task in model.tasks))
+    active_tasks = tuple(task for task in model.tasks if task.name in active)
+    any_eligible = z3.Or(*(task_has[task.name] for task in active_tasks))
     clauses.append(zp.frontier.running == any_eligible)
     clauses.append(z3.Implies(z3.Not(any_eligible), zp.frontier.selected_slot == -1))
 
     higher_task_busy = z3.BoolVal(False)
-    for task in model.tasks:
+    for task in active_tasks:
         task_wins = z3.And(task_has[task.name], z3.Not(higher_task_busy))
         for slot in range(model.max_jobs_per_task):
             key = (task.name, slot)
@@ -611,6 +680,7 @@ __all__ = [
     "encode_p0_settle", "encode_p1_idle_recovery", "encode_p2_deadline_observe",
     "encode_p3_arrival_freeze", "encode_p4_mode_switch", "encode_p5_identity",
     "encode_p5_controller", "encode_p5_controller_effect", "encode_p5_controller_frame",
+    "encode_p5_controller_enabled_case",
     "encode_p6_dispatch", "encode_p7_time_and_service",
     "encode_phase_step", "encode_step",
 ]

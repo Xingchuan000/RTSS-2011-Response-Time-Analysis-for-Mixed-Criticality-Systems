@@ -11,7 +11,9 @@ def test_event_encoder_is_the_only_terminal_finite_realization():
     assert EVENT_WINDOW_ENCODER_VERSION == ENCODER_VERSION
     assert EVENT_WINDOW_ENCODER_IMPLEMENTED is ENCODER_COMPLETE
     assert ENCODER_COMPLETE is True
-    assert "event_layer_added_abstractions_empty" in REQUIRED_SOUNDNESS_CLAUSES
-    assert "microstep_terminal_fallback_forbidden" in REQUIRED_SOUNDNESS_CLAUSES
-    assert "EVENT_TO_FULL_SEGMENT_REALIZABILITY" in EVENT_TERMINAL_OBLIGATIONS
-    assert "MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY" in EVENT_TERMINAL_OBLIGATIONS
+    assert "target_local_fixed_priority_interference_dominance" in REQUIRED_SOUNDNESS_CLAUSES
+    assert "lazy_release_demand_independence_exact" in REQUIRED_SOUNDNESS_CLAUSES
+    assert "controller_policy_case_partition_exact" in REQUIRED_SOUNDNESS_CLAUSES
+    assert "single_event_graph_route_no_terminal_fallback" in REQUIRED_SOUNDNESS_CLAUSES
+    assert "FULL_TO_PROJECTED_EVENT_PREFIX_SIMULATION" in EVENT_TERMINAL_OBLIGATIONS
+    assert "FIRST_HI_BAD_PROJECTED_EVENT_REFLECTION" in EVENT_TERMINAL_OBLIGATIONS

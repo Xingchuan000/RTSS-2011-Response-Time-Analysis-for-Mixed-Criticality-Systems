@@ -35,6 +35,7 @@ class SymbolicEnvironment:
     release_times: Mapping[tuple[str, int], int]
     phase: PeriodicPhaseContext
     horizon: int
+    lazy_release_demands: bool = False
 
 
 def periodic_phase_constraints(
@@ -115,7 +116,48 @@ def declare_environment(
             ))
     return SymbolicEnvironment(
         demands, lookups, allowed_ticks, regular_steps, tuple(constraints),
-        release_times, phase, int(release_count)
+        release_times, phase, int(release_count), False
+    )
+
+
+def declare_event_graph_environment(
+    prefix: str,
+    model: BoundModel,
+    *,
+    horizon: int,
+) -> SymbolicEnvironment:
+    """Declare only the absolute periodic phase for explicit Event-graph search.
+
+    The old finite-window encoder predeclared one demand scalar for every
+    relative tick at which a task *might* release under some admissible origin
+    phase, then tied them to per-task lookup UFs.  That table was useful when a
+    monolithic BMC could revisit/recycle a job slot, but it is unnecessary in
+    the explicit Event graph: every P3 occurrence belongs to one unique event
+    node and every concrete release gets one fresh demand scalar at that node.
+
+    This environment therefore keeps only the exact common periodic phase.
+    ``demand_for_time`` allocates a bounded release demand lazily when P3 is
+    actually encoded.  Different releases remain independent, exactly as in
+    the original environment semantics.
+    """
+
+    if horizon <= 0:
+        raise ValueError("event-graph horizon must be positive")
+    modulus = lcm(model.agent_period, *(task.period for task in model.tasks))
+    residue = z3.Int(f"{prefix}.absolute_time_residue")
+    origin = z3.Int(f"{prefix}.origin_time")
+    phase = PeriodicPhaseContext(residue, origin, modulus)
+    constraints = periodic_phase_constraints(phase, model, model.agent_period)
+    return SymbolicEnvironment(
+        actual_demands={},
+        demand_lookup={},
+        allowed_ticks_by_task={},
+        regular_tick_step_by_task={},
+        constraints=constraints,
+        release_times={},
+        phase=phase,
+        horizon=int(horizon),
+        lazy_release_demands=True,
     )
 
 
@@ -133,6 +175,19 @@ def demand_for_time(
     If chain in every Event slot.  This is formula factoring only: no demand
     value, release timestamp, or environment behavior is added or removed.
     """
+
+    if env.lazy_release_demands:
+        # ``absolute_time`` is a structurally shared event-state timestamp and
+        # therefore gives a stable unique name per graph node.  Reusing the
+        # same scalar across alternative outgoing edges from that node is also
+        # exact: P3 at the current timestamp precedes the choice of the *next*
+        # event and must observe one common demand for the same release.
+        demand = z3.Int(f"{absolute_time}.A.{task.name}")
+        covered = z3.And(
+            demand >= int(task.actual_demand_min),
+            demand <= int(task.actual_demand_upper),
+        )
+        return demand, covered
 
     ticks = env.allowed_ticks_by_task.get(task.name, ())
     if not ticks:
@@ -159,7 +214,7 @@ def target_release_constraints(
 ) -> tuple[z3.BoolRef, ...]:
     if release_index != 0:
         raise ValueError("V9.2 relative first-bad windows pin the target at relative release 0")
-    if (task.name, 0) not in env.actual_demands:
+    if not env.lazy_release_demands and (task.name, 0) not in env.actual_demands:
         raise KeyError("target release was not declared")
     return (env.phase.origin_time % task.period == 0,)
 
@@ -172,6 +227,6 @@ def classify_from_actual_demand(actual_demand: z3.ArithRef, task: TaskBound) -> 
 
 __all__ = [
     "PeriodicPhaseContext", "SymbolicEnvironment", "classify_from_actual_demand",
-    "declare_environment", "demand_for_time", "periodic_phase_constraints",
+    "declare_environment", "declare_event_graph_environment", "demand_for_time", "periodic_phase_constraints",
     "target_release_constraints",
 ]

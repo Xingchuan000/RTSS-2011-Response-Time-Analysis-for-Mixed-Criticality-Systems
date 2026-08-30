@@ -9,18 +9,19 @@ No Event-layer abstraction is introduced.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import gcd
 from typing import Any, Mapping
 
 import z3
 
 from .environment_encoder import (
-    declare_environment,
+    declare_event_graph_environment,
     target_release_constraints,
 )
-from .carry_in import derive_protected_priority_prefix, reachable_carry_in_consistency
+from .carry_in import derive_protected_priority_prefix
 from .event_kernel import EVENT_KERNEL_VERSION, EventStepEncoding
 from .safe_prefix_invariant import SafePrefixInvariant
+from .target_projection import event_root_safe_prefix_formula
+from .target_projection import TargetSchedulingProjection, derive_target_scheduling_projection
 from .symbolic_state import (
     BoundModel, SymbolicKernelState, declare_sparse_successor, declare_state,
 )
@@ -114,6 +115,7 @@ class EventGraphProblem:
     event_bound: EventBound
     base_formula: z3.BoolRef
     start_state: SymbolicKernelState
+    projection: TargetSchedulingProjection
     source_obligations: tuple[str, ...]
     event_layer_added_abstractions: tuple[str, ...] = ()
     exact_p5_in_event_window: bool = True
@@ -122,7 +124,8 @@ class EventGraphProblem:
         self, state: SymbolicKernelState, *, depth: int
     ) -> TerminalBadEncoding:
         return _build_terminal_bad_query(
-            state, self.model, self.target_task, self.horizon_time, depth=depth
+            state, self.model, self.target_task, self.horizon_time, depth=depth,
+            active_task_names=self.projection.active_task_names,
         )
 
     def materialize_sat_path(
@@ -165,13 +168,16 @@ def derive_finite_event_bound(model: BoundModel, target_task: str) -> EventBound
     if target is None or target.criticality != "HI":
         raise ValueError("EVENT_BOUND_TARGET_MUST_BE_HI")
     deadline = int(target.deadline)
+    active_tasks = tuple(
+        task for task in model.tasks if task.priority <= target.priority
+    )
 
     # In an interval of length D, a phase-zero periodic stream has at most
     # floor(D/T)+1 future timestamps.  The +1 is intentionally conservative
     # with respect to the arbitrary absolute origin phase.
     release_by_task = {
         task.name: deadline // int(task.period) + 1
-        for task in model.tasks
+        for task in active_tasks
     }
     total_release = sum(release_by_task.values())
     # V9.3 reachable carry-in refinement removes the historical aggregate for
@@ -180,13 +186,14 @@ def derive_finite_event_bound(model: BoundModel, target_task: str) -> EventBound
     protected = set(derive_protected_priority_prefix(model).task_names)
     initial_jobs = sum(
         1 if row.criticality == "HI" or row.name in protected else 2
-        for row in model.tasks
+        for row in active_tasks
     )
 
     # Every present HI carry-in and every future HI release has at most one
     # deadline event in the window.
-    hi_deadline_bound = len(model.hi_tasks) + sum(
-        release_by_task[task.name] for task in model.hi_tasks
+    active_hi = tuple(task for task in active_tasks if task.criticality == "HI")
+    hi_deadline_bound = len(active_hi) + sum(
+        release_by_task[task.name] for task in active_hi
     )
 
     # Protected LO releases cannot revive an aggregate: their preceding exact
@@ -195,7 +202,7 @@ def derive_finite_event_bound(model: BoundModel, target_task: str) -> EventBound
     future_terminal_bound = sum(
         release_by_task[row.name]
         * (1 if row.criticality == "HI" or row.name in protected else 2)
-        for row in model.tasks
+        for row in active_tasks
     )
     completion_bound = initial_jobs + future_terminal_bound
 
@@ -226,17 +233,6 @@ def derive_finite_event_bound(model: BoundModel, target_task: str) -> EventBound
     )
 
 
-def _allowed_environment_ticks(model: BoundModel, target_task: str, deadline: int) -> dict[str, tuple[int, ...]]:
-    target = model.task_by_name[target_task]
-    return {
-        task.name: tuple(
-            tick for tick in range(deadline + 1)
-            if tick % gcd(target.period, task.period) == 0
-        )
-        for task in model.tasks
-    }
-
-
 def _validate_event_window_target(model: BoundModel, target_task: str) -> Any:
     task = model.task_by_name.get(target_task)
     if task is None or task.criticality != "HI":
@@ -255,6 +251,7 @@ def _build_terminal_bad_query(
     horizon_time: z3.ArithRef,
     *,
     depth: int,
+    active_task_names: tuple[str, ...] | None = None,
 ) -> TerminalBadEncoding:
     """Exact final deadline observation shared by monolithic/incremental BMC."""
 
@@ -286,9 +283,15 @@ def _build_terminal_bad_query(
         terminal.t == horizon_time,
         terminal.p == 0,
         terminal.hi_miss_ledger == 0,
-        encode_p0_settle(terminal, terminal_p1, model),
-        encode_p1_idle_recovery(terminal_p1, terminal_p2, model),
-        encode_p2_deadline_observe(terminal_p2, terminal_p3, model),
+        encode_p0_settle(
+            terminal, terminal_p1, model, active_task_names=active_task_names
+        ),
+        encode_p1_idle_recovery(
+            terminal_p1, terminal_p2, model, active_task_names=active_task_names
+        ),
+        encode_p2_deadline_observe(
+            terminal_p2, terminal_p3, model, active_task_names=active_task_names
+        ),
         terminal_p2.t == horizon_time,
         terminal_p2.p == 2,
         terminal_p2.hi_miss_ledger == 0,
@@ -306,22 +309,24 @@ def _build_terminal_bad_query(
 
 def _window_source_obligations() -> tuple[str, ...]:
     rows = [
-        "event_start_is_base_safe_prefix_plus_reachable_carry_in",
-        "event_boundary_retains_all_full_safety_relevant_fields",
+        "event_start_is_target_local_safe_prefix_plus_reachable_carry_in",
+        "target_priority_prefix_jobs_and_eta_are_retained",
+        "full_policy_budget_and_history_state_is_retained",
+        "lower_priority_job_scheduling_is_removed_by_fixed_priority_hi_target_dominance",
+        "omitted_lower_priority_hi_release_mode_switch_can_only_reduce_target_interference",
         "next_event_source_partition_is_exact_disjoint_first_minimum_owner",
-        "no_release_deadline_completion_controller_event_skipped",
+        "no_target_or_higher_priority_release_deadline_completion_controller_event_skipped",
         "silent_interval_service_and_eta_equal_repeated_p7",
         "event_macro_composes_exact_p0_through_p6",
         "controller_timestamp_is_owned_by_canonical_event_source",
         "controller_p5_branch_is_specialized_by_graph_node",
-        "indexed_demand_lookup_is_exact_finite_formula_factoring",
+        "release_demand_is_fresh_bounded_per_explicit_release_node",
         "event_candidate_minima_are_exact_scalar_ssa_definitions",
         "periodic_event_candidates_use_exact_quotient_free_scalar_successors",
         "phase_ssa_shares_only_canonical_frame_fields",
     ]
     rows.append("explicit_event_graph_explores_each_reachable_source_prefix_once")
     rows.extend((
-        "event_layer_added_abstractions_empty",
         "target_deadline_processed_exactly_through_p2",
         "finite_event_bound_is_structural_not_memory_selected",
     ))
@@ -337,19 +342,17 @@ def build_event_graph_problem(
 
     task = _validate_event_window_target(model, target_task)
     deadline = int(task.deadline)
+    projection = derive_target_scheduling_projection(model, target_task)
     event_bound = derive_finite_event_bound(model, target_task)
-    allowed_ticks = _allowed_environment_ticks(model, target_task, deadline)
-    env = declare_environment(
-        "event.window.env", model, release_count=deadline + 1,
-        allowed_ticks_by_task=allowed_ticks,
+    env = declare_event_graph_environment(
+        "event.window.env", model, horizon=deadline + 1,
     )
     start = declare_state("event.window.y.root", model)
     horizon_time = env.phase.origin_time + deadline
     base_formula = z3.And(
         *env.constraints,
         env.phase.origin_time == start.t,
-        invariant.formula(start),
-        reachable_carry_in_consistency(start, model),
+        event_root_safe_prefix_formula(start, model, invariant, target_task),
         start.hi_miss_ledger == 0,
         start.p == 0,
         start.frontier.selected_slot == -1,
@@ -360,8 +363,11 @@ def build_event_graph_problem(
     return EventGraphProblem(
         target_task=target_task, deadline=deadline, model=model,
         environment=env, horizon_time=horizon_time, event_bound=event_bound,
-        base_formula=base_formula, start_state=start,
+        base_formula=base_formula, start_state=start, projection=projection,
         source_obligations=_window_source_obligations(),
+        event_layer_added_abstractions=(
+            "TARGET_LOCAL_FIXED_PRIORITY_INTERFERENCE_DOMINANCE",
+        ),
     )
 
 

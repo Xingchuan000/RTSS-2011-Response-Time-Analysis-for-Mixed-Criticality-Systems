@@ -13,9 +13,11 @@ not from merging job identities or widening controller behavior.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Collection
 
 import z3
 
+from .controller_encoder import ControllerPolicyCase
 from .environment_encoder import SymbolicEnvironment
 from .symbolic_state import (
     BoundModel, SymbolicJob, SymbolicKernelState, declare_sparse_successor,
@@ -27,6 +29,7 @@ from .transition_encoder import (
     encode_p3_arrival_freeze,
     encode_p4_mode_switch,
     encode_p5_controller_enabled,
+    encode_p5_controller_enabled_case,
     encode_p5_identity,
     encode_p6_dispatch,
 )
@@ -150,15 +153,27 @@ class EventSource:
         return f"{self.kind}_{suffix}"
 
 
-def enumerate_event_sources(model: BoundModel) -> tuple[EventSource, ...]:
+def enumerate_event_sources(
+    model: BoundModel,
+    *,
+    active_task_names: Collection[str] | None = None,
+) -> tuple[EventSource, ...]:
     """Canonical complete source order used by explicit Event-graph search."""
 
+    active = (
+        frozenset(task.name for task in model.tasks)
+        if active_task_names is None else frozenset(active_task_names)
+    )
     rows: list[EventSource] = [EventSource("HORIZON"), EventSource("CONTROLLER")]
-    rows.extend(EventSource("RELEASE", task.name) for task in model.tasks)
+    rows.extend(EventSource("RELEASE", task.name) for task in model.tasks if task.name in active)
     for task in model.hi_tasks:
+        if task.name not in active:
+            continue
         for slot in range(model.max_jobs_per_task):
             rows.append(EventSource("HI_DEADLINE", task.name, slot))
     for task in model.tasks:
+        if task.name not in active:
+            continue
         for slot in range(model.max_jobs_per_task):
             rows.append(EventSource("COMPLETION", task.name, slot))
     return tuple(rows)
@@ -190,7 +205,18 @@ class EventStepEncoding:
     candidates: EventCandidateSet
     delta: z3.ArithRef
     closure_formula: z3.BoolRef
+    time_edge_formula: z3.BoolRef
     silent_core_formula: z3.BoolRef
+    formula: z3.BoolRef
+
+
+@dataclass(frozen=True, slots=True)
+class EventNodeClosureEncoding:
+    """Exact P0--P6 normalization of one Event-graph node to dispatch state."""
+
+    source: SymbolicKernelState
+    phase_states: tuple[SymbolicKernelState, ...]
+    dispatch_state: SymbolicKernelState
     formula: z3.BoolRef
 
 
@@ -201,6 +227,8 @@ def _exact_p0_to_p7_closure(
     *,
     prefix: str,
     controller_enabled: bool,
+    active_task_names: frozenset[str] | None = None,
+    controller_case: ControllerPolicyCase | None = None,
 ) -> tuple[tuple[SymbolicKernelState, ...], z3.BoolRef]:
     """Execute exact P0..P6, ending at the P7 dispatch state."""
 
@@ -211,6 +239,7 @@ def _exact_p0_to_p7_closure(
     p1 = declare_sparse_successor(
         f"{prefix}.p1", source, model, phase=1,
         mutable=frozenset({"jobs.present", "jobs.removed", "jobs.ready"}),
+        active_task_names=active_task_names,
     )
     p2 = declare_sparse_successor(
         f"{prefix}.p2", p1, model, phase=2, mutable=frozenset({"mode"}),
@@ -220,6 +249,7 @@ def _exact_p0_to_p7_closure(
     )
     p4 = declare_sparse_successor(
         f"{prefix}.p4", p3, model, phase=4, mutable=frozenset({"eta", "jobs"}),
+        active_task_names=active_task_names,
     )
     p5 = declare_sparse_successor(
         f"{prefix}.p5", p4, model, phase=5, mutable=frozenset({"mode"}),
@@ -232,19 +262,103 @@ def _exact_p0_to_p7_closure(
     )
     states = (p1, p2, p3, p4, p5, p6, p7)
     formula = z3.And(
-        encode_p0_settle(source, p1, model),
-        encode_p1_idle_recovery(p1, p2, model),
-        encode_p2_deadline_observe(p2, p3, model),
-        encode_p3_arrival_freeze(p3, p4, model, env),
-        encode_p4_mode_switch(p4, p5, model),
+        encode_p0_settle(source, p1, model, active_task_names=active_task_names),
+        encode_p1_idle_recovery(p1, p2, model, active_task_names=active_task_names),
+        encode_p2_deadline_observe(p2, p3, model, active_task_names=active_task_names),
+        encode_p3_arrival_freeze(p3, p4, model, env, active_task_names=active_task_names),
+        encode_p4_mode_switch(p4, p5, model, active_task_names=active_task_names),
         # Event-graph ownership tells us exactly whether this timestamp is a
         # controller activation.  Compile only that exact P5 branch instead of
         # keeping a symbolic enabled/disabled split inside every event macro.
-        (encode_p5_controller_enabled(p5, p6, model)
-         if controller_enabled else encode_p5_identity(p5, p6, model)),
-        encode_p6_dispatch(p6, p7, model),
+        (
+            encode_p5_controller_enabled_case(p5, p6, model, controller_case)
+            if controller_enabled and controller_case is not None
+            else encode_p5_controller_enabled(p5, p6, model)
+            if controller_enabled
+            else encode_p5_identity(p5, p6, model)
+        ),
+        encode_p6_dispatch(p6, p7, model, active_task_names=active_task_names),
     )
     return states, formula
+
+
+def encode_event_node_closure(
+    source_state: SymbolicKernelState,
+    model: BoundModel,
+    env: SymbolicEnvironment,
+    *,
+    prefix: str,
+    controller_enabled: bool,
+    active_task_names: Collection[str] | None = None,
+    controller_case: ControllerPolicyCase | None = None,
+) -> EventNodeClosureEncoding:
+    active = None if active_task_names is None else frozenset(active_task_names)
+    phase_states, formula = _exact_p0_to_p7_closure(
+        source_state,
+        model,
+        env,
+        prefix=prefix,
+        controller_enabled=controller_enabled,
+        active_task_names=active,
+        controller_case=controller_case,
+    )
+    return EventNodeClosureEncoding(
+        source=source_state,
+        phase_states=phase_states,
+        dispatch_state=phase_states[-1],
+        formula=z3.And(source_state.p == 0, formula),
+    )
+
+
+def encode_event_time_edge(
+    source_state: SymbolicKernelState,
+    destination: SymbolicKernelState,
+    closure: EventNodeClosureEncoding,
+    model: BoundModel,
+    *,
+    horizon_time: z3.ArithRef,
+    prefix: str,
+    event_source: EventSource,
+    active_task_names: Collection[str] | None = None,
+) -> EventStepEncoding:
+    """Append only the next-event minimum and silent service to a closed node."""
+
+    active = None if active_task_names is None else frozenset(active_task_names)
+    dispatch_state = closure.dispatch_state
+    candidates = build_event_candidates(
+        dispatch_state,
+        model,
+        horizon_time=horizon_time,
+        prefix=prefix,
+        source=event_source,
+        active_task_names=active,
+    )
+    delta = candidates.next_time - source_state.t
+    silent_core = _silent_interval_core(
+        dispatch_state, model, candidates, active_task_names=active
+    )
+    edge_formula = z3.And(
+        source_state.t < horizon_time,
+        silent_core,
+        _event_destination_update(
+            dispatch_state,
+            destination,
+            model,
+            candidates,
+            active_task_names=active,
+        ),
+    )
+    return EventStepEncoding(
+        source=source_state,
+        destination=destination,
+        phase_states=closure.phase_states,
+        candidates=candidates,
+        delta=delta,
+        closure_formula=closure.formula,
+        time_edge_formula=edge_formula,
+        silent_core_formula=silent_core,
+        formula=z3.And(closure.formula, edge_formula),
+    )
 
 
 def _source_partition_definition(
@@ -302,6 +416,7 @@ def build_event_candidates(
     horizon_time: z3.ArithRef,
     prefix: str,
     source: EventSource | None = None,
+    active_task_names: Collection[str] | None = None,
 ) -> EventCandidateSet:
     """Build candidates with one exact disjoint next-event source fixed.
 
@@ -312,9 +427,15 @@ def build_event_candidates(
     """
 
     t = dispatch_state.t
+    active = (
+        frozenset(task.name for task in model.tasks)
+        if active_task_names is None else frozenset(active_task_names)
+    )
     periodic_definitions: list[z3.BoolRef] = []
     release_rows: list[tuple[str, z3.ArithRef]] = []
     for task in model.tasks:
+        if task.name not in active:
+            continue
         release_time, release_definition = _declare_exact_periodic_successor(
             t, task.period, prefix=f"{prefix}.candidate.release.{task.name}"
         )
@@ -328,6 +449,8 @@ def build_event_candidates(
 
     hi_deadlines: list[tuple[tuple[str, int], z3.ArithRef]] = []
     for task in model.hi_tasks:
+        if task.name not in active:
+            continue
         for slot in range(model.max_jobs_per_task):
             job = dispatch_state.jobs[(task.name, slot)]
             candidate = z3.If(
@@ -346,6 +469,8 @@ def build_event_candidates(
         z3.Implies(z3.Not(dispatch_state.frontier.running), completion == horizon_time),
     ]
     for key, job in dispatch_state.jobs.items():
+        if key[0] not in active:
+            continue
         selected_index = _slot_index(model, key)
         completion_rows.append(z3.Implies(
             dispatch_state.frontier.selected_slot == selected_index,
@@ -393,6 +518,8 @@ def _silent_interval_core(
     dispatch_state: SymbolicKernelState,
     model: BoundModel,
     candidates: EventCandidateSet,
+    *,
+    active_task_names: Collection[str] | None = None,
 ) -> z3.BoolRef:
     """Destination-free side conditions of an exact silent P7 interval."""
 
@@ -405,7 +532,13 @@ def _silent_interval_core(
     ]
 
     selected_remaining_terms: list[z3.BoolRef] = []
+    active = (
+        frozenset(task.name for task in model.tasks)
+        if active_task_names is None else frozenset(active_task_names)
+    )
     for key, job in dispatch_state.jobs.items():
+        if key[0] not in active:
+            continue
         index = _slot_index(model, key)
         selected = dispatch_state.frontier.selected_slot == index
         selected_remaining_terms.append(z3.Implies(
@@ -433,6 +566,7 @@ def _event_destination_update(
     *,
     active_guard: z3.BoolRef | None = None,
     stutter_source: SymbolicKernelState | None = None,
+    active_task_names: Collection[str] | None = None,
 ) -> z3.BoolRef:
     """Write one event-boundary successor, optionally factoring terminal stutter.
 
@@ -477,6 +611,10 @@ def _event_destination_update(
         ),
     ]
 
+    active = (
+        frozenset(task.name for task in model.tasks)
+        if active_task_names is None else frozenset(active_task_names)
+    )
     for task in model.tasks:
         clauses.extend((
             destination.budgets[task.name] == choose(
@@ -484,10 +622,13 @@ def _event_destination_update(
                 None if source is None else source.budgets[task.name],
             ),
             destination.eta[task.name] == choose(
-                z3.If(
-                    dispatch_state.eta[task.name] + delta < task.period,
-                    dispatch_state.eta[task.name] + delta,
-                    task.period,
+                (
+                    z3.If(
+                        dispatch_state.eta[task.name] + delta < task.period,
+                        dispatch_state.eta[task.name] + delta,
+                        task.period,
+                    )
+                    if task.name in active else dispatch_state.eta[task.name]
                 ),
                 None if source is None else source.eta[task.name],
             ),
@@ -551,6 +692,8 @@ def _event_destination_update(
         "removed", "ready",
     )
     for key, job in dispatch_state.jobs.items():
+        if key[0] not in active:
+            continue
         other = destination.jobs[key]
         source_job = None if source is None else source.jobs[key]
         index = _slot_index(model, key)
@@ -578,12 +721,19 @@ def _silent_interval_advance(
     destination: SymbolicKernelState,
     model: BoundModel,
     candidates: EventCandidateSet,
+    *,
+    active_task_names: Collection[str] | None = None,
 ) -> z3.BoolRef:
     """Exact quotient of repeated P7 ticks over an event-free interval."""
 
     return z3.And(
-        _silent_interval_core(dispatch_state, model, candidates),
-        _event_destination_update(dispatch_state, destination, model, candidates),
+        _silent_interval_core(
+            dispatch_state, model, candidates, active_task_names=active_task_names
+        ),
+        _event_destination_update(
+            dispatch_state, destination, model, candidates,
+            active_task_names=active_task_names,
+        ),
     )
 
 
@@ -597,6 +747,7 @@ def encode_event_step_for_source(
     prefix: str,
     event_source: EventSource,
     controller_enabled: bool,
+    active_task_names: Collection[str] | None = None,
 ) -> EventStepEncoding:
     """Encode one exact edge of the explicit Event graph.
 
@@ -607,28 +758,23 @@ def encode_event_step_for_source(
     incoming canonical source was CONTROLLER.
     """
 
-    phase_states, closure = _exact_p0_to_p7_closure(
-        source_state, model, env, prefix=prefix,
+    closure = encode_event_node_closure(
+        source_state,
+        model,
+        env,
+        prefix=f"{prefix}.closure",
         controller_enabled=controller_enabled,
+        active_task_names=active_task_names,
     )
-    dispatch_state = phase_states[-1]
-    candidates = build_event_candidates(
-        dispatch_state, model, horizon_time=horizon_time, prefix=prefix,
-        source=event_source,
-    )
-    delta = candidates.next_time - source_state.t
-    silent_core = _silent_interval_core(dispatch_state, model, candidates)
-    formula = z3.And(
-        source_state.p == 0,
-        source_state.t < horizon_time,
+    return encode_event_time_edge(
+        source_state,
+        destination,
         closure,
-        silent_core,
-        _event_destination_update(dispatch_state, destination, model, candidates),
-    )
-    return EventStepEncoding(
-        source=source_state, destination=destination, phase_states=phase_states,
-        candidates=candidates, delta=delta, closure_formula=closure,
-        silent_core_formula=silent_core, formula=formula,
+        model,
+        horizon_time=horizon_time,
+        prefix=f"{prefix}.edge",
+        event_source=event_source,
+        active_task_names=active_task_names,
     )
 
 
@@ -636,9 +782,12 @@ def encode_event_step_for_source(
 __all__ = [
     "EVENT_KERNEL_VERSION",
     "EventCandidateSet",
+    "EventNodeClosureEncoding",
     "EventSource",
     "EventStepEncoding",
     "build_event_candidates",
+    "encode_event_node_closure",
+    "encode_event_time_edge",
     "encode_event_step_for_source",
     "enumerate_event_sources",
     "state_equality",

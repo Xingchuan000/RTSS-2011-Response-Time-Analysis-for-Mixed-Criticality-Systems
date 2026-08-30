@@ -48,7 +48,10 @@ def compile_request_v9_2(request_path: Path, out: Path, *, source_root: Path) ->
             "version": EVENT_WINDOW_ENCODER_VERSION,
             "implemented": EVENT_WINDOW_ENCODER_IMPLEMENTED,
             "required_soundness_clauses": list(REQUIRED_SOUNDNESS_CLAUSES),
-            "event_layer_added_abstractions": [],
+            "event_layer_added_abstractions": [
+                "TARGET_LOCAL_FIXED_PRIORITY_INTERFERENCE_DOMINANCE"
+            ],
+            "projected_sat_requires_full_replay": True,
             "exact_p5_in_event_window": True,
         },
         "implementation_gaps": gaps,

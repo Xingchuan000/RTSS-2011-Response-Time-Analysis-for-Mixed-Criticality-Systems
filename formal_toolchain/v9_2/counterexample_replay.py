@@ -174,6 +174,30 @@ def _window_demands(
 ) -> dict[tuple[str, int], int]:
     origin = _eval_int(solver_model, encoding.start_state.t)
     result: dict[tuple[str, int], int] = {}
+    if getattr(encoding.environment, "lazy_release_demands", False):
+        # Explicit Event graphs allocate a fresh demand exactly at each P3
+        # occurrence instead of predeclaring a whole-window lookup table.
+        # Recover those concrete release demands from the exact post-arrival
+        # P4 states stored on the materialized SAT path.
+        for step in encoding.event_steps:
+            if len(step.phase_states) < 4:
+                continue
+            p4 = step.phase_states[3]
+            for task in model.tasks:
+                slot = 0 if task.criticality == "HI" else 1
+                job = p4.jobs[(task.name, slot)]
+                present = solver_model.eval(job.present, model_completion=True)
+                if not z3.is_true(present):
+                    continue
+                release_time = _eval_int(solver_model, job.release_time)
+                if release_time != _eval_int(solver_model, p4.t):
+                    continue
+                release_index = _eval_int(solver_model, job.release_index)
+                result[(task.name, release_index)] = _eval_int(
+                    solver_model, job.actual_demand
+                )
+        return result
+
     for task in model.tasks:
         for relative_tick in range(encoding.deadline + 1):
             absolute_time = origin + relative_tick
@@ -231,7 +255,7 @@ def classify_sat_event_window(
             task.name: _eval_int(sat_model, encoding.start_state.budgets[task.name])
             for task in model.tasks
         }
-    except ValueError as exc:
+    except (KeyError, ValueError) as exc:
         details["reason"] = str(exc)
         return ReplayResult("UNRESOLVED", "SPURIOUS_OR_UNRESOLVED_COUNTEREXAMPLE", details)
 
