@@ -17,6 +17,7 @@ import z3
 
 from .kernel.carry_in import derive_protected_priority_prefix
 from .kernel.solver_runtime import make_solver
+from .base_section4_1 import paper_c_lo_bound
 from .controller_macro import (
     BudgetInterval,
     ControllerMacroPath,
@@ -324,8 +325,11 @@ def _weight_for_cell(
         if depth >= len(path.boxes):
             raise PCSSCUnresolved("CONTROLLER_PREFIX_DEPTH_NOT_COVERED")
         primary = _primary_cap(task, path.boxes[depth][task.name])
-        if primary > int(task.c_lo):
-            raise PCSSCUnresolved(f"PRIMARY_EFFECTIVE_SERVICE_LE_C_LO_FAILED:{task.name}")
+        paper_c_lo = paper_c_lo_bound(task)
+        if primary > paper_c_lo:
+            raise PCSSCUnresolved(
+                f"PRIMARY_EFFECTIVE_SERVICE_LE_PAPER_C_LO_FAILED:{task.name}"
+            )
         degraded = _degraded_cap(task)
         if switch.kind == "PRE_HI":
             return degraded

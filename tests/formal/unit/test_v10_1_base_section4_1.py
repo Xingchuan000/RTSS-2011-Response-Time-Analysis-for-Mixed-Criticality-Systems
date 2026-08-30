@@ -119,6 +119,7 @@ def test_v10_binding_uses_frozen_lo_degraded_cost_not_taskbound_c_hi():
                 c_lo=6,
                 c_hi=9,
                 degraded_cost=3,
+                actual_demand_upper=8,
             ),
             SimpleNamespace(
                 name="hi",
@@ -133,9 +134,39 @@ def test_v10_binding_uses_frozen_lo_degraded_cost_not_taskbound_c_hi():
         )
     )
     rows = bind_paper_taskset(model)
+    assert rows[0].c_lo == 8
     assert rows[0].c_hi == 3
+    assert rows[1].c_lo == 4
     assert rows[1].c_hi == 7
 
+
+
+def test_dynamic_lo_initial_budget_is_not_misbound_as_paper_c_lo():
+    from types import SimpleNamespace
+    from formal_toolchain.v10_1.base_section4_1 import bind_paper_taskset, paper_c_lo_bound
+
+    lo = SimpleNamespace(
+        name="mc_sd_lo_3", priority=0, period=10_000, deadline=10_000,
+        criticality="LO", c_lo=1097, c_hi=1097, degraded_cost=548,
+        actual_demand_upper=1646,
+    )
+    hi = SimpleNamespace(
+        name="mc_sd_hi_0", priority=1, period=11_000, deadline=11_000,
+        criticality="HI", c_lo=661, c_hi=2210, degraded_cost=None,
+        actual_demand_upper=2210,
+    )
+    rows = bind_paper_taskset(SimpleNamespace(tasks=(lo, hi)))
+
+    # LO Task.c_lo is the initial runtime budget in mc_stratified_dynamic.
+    # The raw primary-demand envelope is the sound paper WCET.
+    assert paper_c_lo_bound(lo) == 1646
+    assert rows[0].c_lo == 1646
+    assert rows[0].c_hi == 548
+
+    # HI C_LO must remain the semi-clairvoyant classification threshold.
+    assert paper_c_lo_bound(hi) == 661
+    assert rows[1].c_lo == 661
+    assert rows[1].c_hi == 2210
 
 def test_verifier_facing_failure_is_unresolved_not_unsafe():
     from types import SimpleNamespace

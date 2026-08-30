@@ -101,3 +101,17 @@ def test_kernel_p5_history_projection_uses_same_fp64_widening_as_feature_transfe
     assert "state.chi.ema_cost[task.name] <= 2 * upper" in text
     assert "state.chi.overrun_ema[task.name] <= 2" in text
     assert "encode_p5_invariant_summary" not in text
+
+
+def test_paper_lo_wcet_binding_is_raw_demand_not_initial_budget():
+    base = (ROOT / "formal_toolchain/v10_1/base_section4_1.py").read_text(encoding="utf-8")
+    refinement = (ROOT / "formal_toolchain/v10_1/base_refinement.py").read_text(encoding="utf-8")
+    pcssc = (ROOT / "formal_toolchain/v10_1/pcssc.py").read_text(encoding="utf-8")
+
+    assert "def paper_c_lo_bound" in base
+    assert 'elif criticality == "LO":' in base
+    assert "value = int(task.actual_demand_upper)" in base
+    assert "paper_c_lo = Fraction(paper_c_lo_bound(task), 1)" in base
+    assert "PRIMARY_EFFECTIVE_SERVICE_LE_PAPER_C_LO" in refinement
+    assert "paper_c_lo = paper_c_lo_bound(task)" in pcssc
+    assert "PRIMARY_EFFECTIVE_SERVICE_LE_C_LO_FAILED" not in pcssc

@@ -232,17 +232,47 @@ def validate_paper_taskset(tasks: Sequence[PaperTask]) -> tuple[PaperTask, ...]:
     return rows
 
 
+def paper_c_lo_bound(task: Any) -> int:
+    """Return the paper-visible ``C_i(LO)`` bound for a frozen V10.1 task.
+
+    The ``mc_stratified_dynamic`` workload deliberately stores the initial
+    runtime budget in ``Task.c_lo``.  For HI tasks that value is also the
+    semi-clairvoyant NORMAL/ABNORMAL classification threshold and therefore is
+    exactly the paper ``C_i(LO)``.  For LO tasks there is no such
+    classification threshold: the paper ``C_i(LO)`` must instead bound the
+    primary implementation's raw execution demand.  V10.1 freezes that WCET
+    envelope as ``actual_demand_upper``.
+
+    Keeping these two meanings separate is essential.  Treating an LO task's
+    initial budget as its paper WCET incorrectly rejects precisely the policy
+    behaviour that raises future LO-primary service above the initial budget.
+    """
+
+    criticality = str(task.criticality)
+    if criticality == "HI":
+        value = int(task.c_lo)
+    elif criticality == "LO":
+        value = int(task.actual_demand_upper)
+    else:
+        raise Section41ScopeError(f"invalid criticality: {task.name}")
+    if value <= 0:
+        raise Section41ScopeError(f"non-positive paper C_LO binding: {task.name}")
+    return value
+
+
 def bind_paper_taskset(model: Any) -> tuple[PaperTask, ...]:
     """Bind V10.1 ``BoundModel`` tasks to the paper's C-AMC-sem tuple.
 
-    For LO tasks the paper's ``C_i(HI)`` is the degraded/imprecise execution
-    cost.  In the deployed kernel that quantity is bound as ``degraded_cost``;
-    ``TaskBound.c_hi`` is not used as a compatibility fallback.
+    For LO tasks, paper ``C_i(LO)`` is the frozen raw primary-demand WCET
+    envelope and paper ``C_i(HI)`` is the degraded/imprecise execution cost.
+    For HI tasks, paper ``C_i(LO)`` remains the release-classification
+    threshold while ``C_i(HI)`` is the frozen HI-assurance bound.
     """
 
     rows: list[PaperTask] = []
     for task in model.tasks:
         criticality = str(task.criticality)
+        paper_c_lo = Fraction(paper_c_lo_bound(task), 1)
         if criticality == "LO":
             if task.degraded_cost is None:
                 raise Section41ScopeError(
@@ -260,7 +290,7 @@ def bind_paper_taskset(model: Any) -> tuple[PaperTask, ...]:
                 period=int(task.period),
                 deadline=int(task.deadline),
                 criticality=criticality,
-                c_lo=Fraction(int(task.c_lo), 1),
+                c_lo=paper_c_lo,
                 c_hi=paper_c_hi,
             )
         )
@@ -632,6 +662,7 @@ __all__ = [
     "TaskSection41Certificate",
     "Section41Certificate",
     "bind_paper_taskset",
+    "paper_c_lo_bound",
     "validate_paper_taskset",
     "eq4_lo_mode_rhs",
     "eq4_lo_mode_wcrt",

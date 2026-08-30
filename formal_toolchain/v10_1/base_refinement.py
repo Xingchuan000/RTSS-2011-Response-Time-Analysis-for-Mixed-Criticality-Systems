@@ -16,6 +16,7 @@ from .kernel.symbolic_state import BoundModel
 from .base_section4_1 import (
     Section41ScopeError,
     bind_paper_taskset,
+    paper_c_lo_bound,
     prove_original_c_amc_sem_section4_1,
 )
 
@@ -79,11 +80,13 @@ def check_dynamic_to_base_refinement(model: BoundModel, bindings: Mapping[str, A
                     f"LO task lacks frozen degraded C_HI binding: {task.name}"
                 )
             degraded_cap = min(int(task.actual_demand_upper), int(task.degraded_cost))
-            # The frozen C-AMC-sem runtime's degraded budget is the instantiated
-            # paper C_HI_LO value for this deployment scope.
+            # ``Task.c_lo`` is the deployed initial budget for this workload,
+            # not the LO task's paper WCET.  The paper-visible primary WCET is
+            # the frozen raw-demand envelope used by bind_paper_taskset().
+            paper_lo = paper_c_lo_bound(task)
             paper_hi_lo = int(task.degraded_cost)
             rows = (
-                ("PRIMARY_EFFECTIVE_SERVICE_LE_C_LO", primary_cap, int(task.c_lo)),
+                ("PRIMARY_EFFECTIVE_SERVICE_LE_PAPER_C_LO", primary_cap, paper_lo),
                 ("DEGRADED_EFFECTIVE_SERVICE_LE_PAPER_C_HI_LO", degraded_cap, paper_hi_lo),
             )
         for name, lhs, rhs in rows:
