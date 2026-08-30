@@ -1,6 +1,6 @@
-"""Minimal source-bound theorem loader for the V9.2 single proof route.
+"""Minimal source-bound theorem loader for the V10.1 single proof route.
 
-Retired route registries and route-specific theorem backends are absent.  The active V9.2 verifier consumes only the runtime/refinement
+Retired route registries and route-specific theorem backends are absent.  The active V10.1 verifier consumes only the runtime/refinement
 lemmas listed in ``RUNTIME_THEOREM_IDS``.
 """
 from __future__ import annotations
@@ -61,11 +61,11 @@ N6_MACHINE_PREMISES = (
 def _manifest(theory_dir: Path) -> dict[str, Any]:
     path = theory_dir / "theory_manifest.json"
     data = json.loads(path.read_text(encoding="utf-8"))
-    if data.get("schema_version") != "v9_2_runtime_theory_manifest_v1":
-        raise ValueError("V9_2_RUNTIME_THEORY_MANIFEST_VERSION_INVALID")
+    if data.get("schema_version") != "v10_1_runtime_theory_manifest_v1":
+        raise ValueError("V10_1_RUNTIME_THEORY_MANIFEST_VERSION_INVALID")
     ids = tuple(data.get("required_theorems", ()))
     if ids != RUNTIME_THEOREM_IDS:
-        raise ValueError("V9_2_RUNTIME_THEOREM_SET_MISMATCH")
+        raise ValueError("V10_1_RUNTIME_THEOREM_SET_MISMATCH")
     return data
 
 
@@ -73,7 +73,7 @@ def load_verified_theory_statement(theory_dir: Path, theorem_id: str) -> dict[st
     theory_dir = Path(theory_dir).resolve(strict=True)
     _manifest(theory_dir)
     if theorem_id not in RUNTIME_THEOREM_IDS:
-        raise ValueError(f"V9_2_THEOREM_NOT_IN_ACTIVE_RUNTIME_SET:{theorem_id}")
+        raise ValueError(f"V10_1_THEOREM_NOT_IN_ACTIVE_RUNTIME_SET:{theorem_id}")
 
     statement_path = theory_dir / "statements" / f"{theorem_id}.json"
     statement = json.loads(statement_path.read_text(encoding="utf-8"))
@@ -106,8 +106,8 @@ def load_verified_theory_statement(theory_dir: Path, theorem_id: str) -> dict[st
         raise ValueError("theory assumption hash mismatch")
 
     declared = json.loads((theory_dir / "hashes.json").read_text(encoding="utf-8"))
-    if declared.get("schema_version") != "v9_2_runtime_theory_hashes_v1":
-        raise ValueError("V9_2_RUNTIME_THEORY_HASH_MANIFEST_VERSION_INVALID")
+    if declared.get("schema_version") != "v10_1_runtime_theory_hashes_v1":
+        raise ValueError("V10_1_RUNTIME_THEORY_HASH_MANIFEST_VERSION_INVALID")
     expected_hashes = declared.get("statements", {}).get(theorem_id)
     if expected_hashes != {
         "statement_hash": statement["statement_hash"],
@@ -117,7 +117,7 @@ def load_verified_theory_statement(theory_dir: Path, theorem_id: str) -> dict[st
 
     proof_object = statement.get("proof_object")
     if not isinstance(proof_object, dict):
-        raise ValueError(f"V9_2_RUNTIME_THEOREM_PROOF_OBJECT_MISSING:{theorem_id}")
+        raise ValueError(f"V10_1_RUNTIME_THEOREM_PROOF_OBJECT_MISSING:{theorem_id}")
     proof_path = (theory_dir / proof_object["path"]).resolve(strict=True)
     if theory_dir not in proof_path.parents:
         raise ValueError("PROOF_OBJECT_ESCAPES_THEORY_ROOT")
@@ -127,11 +127,11 @@ def load_verified_theory_statement(theory_dir: Path, theorem_id: str) -> dict[st
     backend_name = str(proof_object.get("backend", ""))
     backend = TCB_BACKENDS.get(backend_name)
     if backend is None:
-        raise ValueError(f"V9_2_RUNTIME_THEORY_BACKEND_NOT_AVAILABLE:{backend_name}")
+        raise ValueError(f"V10_1_RUNTIME_THEORY_BACKEND_NOT_AVAILABLE:{backend_name}")
     result = backend.verify(proof_path, theorem=statement)
     if result.get("status") != "PASS":
         raise ValueError(
-            f"V9_2_RUNTIME_THEORY_BACKEND_REJECTED:{theorem_id}:"
+            f"V10_1_RUNTIME_THEORY_BACKEND_REJECTED:{theorem_id}:"
             f"{result.get('code', 'BACKEND_REJECTED_WITHOUT_CODE')}"
         )
     return statement
@@ -145,7 +145,7 @@ def verify_runtime_theory_library(theory_dir: Path) -> dict[str, Any]:
         except (ValueError, FileNotFoundError, KeyError) as exc:
             return {
                 "status": "FAIL",
-                "code": "V9_2_RUNTIME_THEOREM_LOAD_FAILED",
+                "code": "V10_1_RUNTIME_THEOREM_LOAD_FAILED",
                 "theorem_id": theorem_id,
                 "message": str(exc),
                 "checked_theorems": checked,

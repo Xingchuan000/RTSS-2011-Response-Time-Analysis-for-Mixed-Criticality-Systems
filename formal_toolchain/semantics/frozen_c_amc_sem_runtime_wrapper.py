@@ -335,9 +335,9 @@ def simulate_ordered_taskset_with_agent(
         )
         action = agent.select_action(observation)
         if action is None:
-            raise RuntimeError("V9_2_FORBIDS_IMPLICIT_NOOP")
+            raise RuntimeError("V10_1_FORBIDS_IMPLICIT_NOOP")
 
-        # V9.2 只允许动作字母表中的显式 noop。它是普通 ranked candidate，
+        # V10.1 只允许动作字母表中的显式 noop。它是普通 ranked candidate，
         # 恒合法且预算更新为恒等映射；不存在 all-invalid 隐式 fallback。
         if bool(getattr(action, "is_noop", False)):
             budget_snapshot = dict(engine.runtime_budgets.budgets)

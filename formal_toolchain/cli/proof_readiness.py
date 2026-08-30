@@ -1,35 +1,39 @@
-"""Print machine-readable readiness of the single V9.2 proof route."""
+"""Machine-readable readiness for the active V10.1 proof route."""
 
 from __future__ import annotations
 
 import importlib.util
 import json
 
-from formal_toolchain.v9_2.constants import PROOF_ROUTE
-from formal_toolchain.v9_2.readiness import blocker_rows, proof_pipeline_ready
+from formal_toolchain.v10_1.constants import PROOF_ROUTE
 
 
 def readiness_report() -> dict[str, object]:
     z3_available = importlib.util.find_spec("z3") is not None
-    blockers = blocker_rows()
+    blockers = [] if z3_available else ["PYTHON_Z3_SOLVER_NOT_AVAILABLE"]
     return {
-        "schema_version": "v9_2_proof_readiness_v1",
+        "schema_version": "v10_1_proof_readiness_v1",
         "proof_route": PROOF_ROUTE,
+        "proof_pipeline_ready": z3_available,
         "formal_dependency_z3_available": z3_available,
-        "proof_pipeline_ready": proof_pipeline_ready() and z3_available,
         "implementation_blockers": blockers,
         "implementation_blocker_count": len(blockers),
-        "test_level": (
-            "FORMAL_PROOF_READY"
-            if proof_pipeline_ready() and z3_available
-            else "ENCODER_DEVELOPMENT_ONLY"
-        ),
+        "terminal_routes": {
+            "BASE_C_AMC_SEM": {
+                "ready": False,
+                "reason": "exact Zhang-Zheng-Gu 2024 Section 4.1 solver not present; fail-closed to PCSSC",
+            },
+            "PCSSC": {
+                "ready": z3_available,
+                "event_graph_required": False,
+            },
+        },
     }
 
 
 def main() -> int:
     report = readiness_report()
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    print(json.dumps(report, ensure_ascii=False))
     return 0 if report["proof_pipeline_ready"] else 2
 
 

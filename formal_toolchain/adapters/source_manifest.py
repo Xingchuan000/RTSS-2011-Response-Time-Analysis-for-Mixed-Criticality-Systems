@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import ast
+import json
 from typing import Any
 
 from formal_toolchain.core.hashing import sha256_file, sha256_object
@@ -43,24 +44,18 @@ IMPLEMENTATION_AUDIT_FILES = (
 )
 
 FORMAL_TARGET_FILES = (
-    "formal_toolchain/v9_2/compiler.py",
-    "formal_toolchain/v9_2/verifier.py",
-    "formal_toolchain/v9_2/event_kernel.py",
-    "formal_toolchain/v9_2/event_window_encoder.py",
-    "formal_toolchain/v9_2/event_refinement.py",
-    "formal_toolchain/v9_2/safe_prefix_invariant.py",
-    "formal_toolchain/v9_2/transition_encoder.py",
-    "formal_toolchain/v9_2/conformance.py",
-    "formal_toolchain/binding/action_binding.py",
-    "formal_toolchain/binding/observation_binding.py",
-    "formal_toolchain/binding/removal_binding.py",
-    "formal_toolchain/binding/quantization_binding.py",
-    "formal_toolchain/bridge/runtime_branch_map.py",
-    "formal_toolchain/bridge/transition_compiler.py",
-    "formal_toolchain/bridge/transition_cases.py",
-    "formal_toolchain/bridge/handler_decomposition.py",
-    "formal_toolchain/bridge/state_relation.py",
+    # V10.1 terminal route. Retired terminal implementations are not part of
+    # the PASS DAG or the semantic source root.
+    "formal_toolchain/v10_1/verifier.py",
+    "formal_toolchain/v10_1/base_refinement.py",
+    "formal_toolchain/v10_1/controller_macro.py",
+    "formal_toolchain/v10_1/feature_transfer.py",
+    "formal_toolchain/v10_1/safe_prefix.py",
+    "formal_toolchain/v10_1/pcssc.py",
+    "formal_toolchain/v10_1/bindings.py",
+    "formal_toolchain/v10_1/constants.py",
 )
+
 
 
 def _import_closure(source_root: Path, initial: tuple[str, ...]) -> list[str]:
@@ -109,6 +104,36 @@ def _import_closure(source_root: Path, initial: tuple[str, ...]) -> list[str]:
     return sorted(seen)
 
 
+def _active_theory_artifacts(source_root: Path) -> list[str]:
+    """Return the non-Python theorem artifacts consumed by V10.1 conformance.
+
+    The import closure already binds the loader/backends/reference Python code.
+    These JSON files are equally normative proof dependencies, so bind exactly
+    the manifest, declared hashes, active statements, and their proof objects.
+    Unused theory files are intentionally not swept into the semantic root.
+    """
+
+    theory_root = source_root / "formal_toolchain" / "theory"
+    manifest_path = theory_root / "theory_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    files = [
+        "formal_toolchain/theory/theory_manifest.json",
+        "formal_toolchain/theory/hashes.json",
+    ]
+    for theorem_id in manifest.get("required_theorems", []):
+        statement_rel = f"formal_toolchain/theory/statements/{theorem_id}.json"
+        statement = json.loads((source_root / statement_rel).read_text(encoding="utf-8"))
+        proof = statement.get("proof_object")
+        if not isinstance(proof, dict) or not isinstance(proof.get("path"), str):
+            raise ValueError(f"V10_1_THEORY_PROOF_OBJECT_BINDING_INVALID:{theorem_id}")
+        proof_path = (theory_root / proof["path"]).resolve()
+        if theory_root.resolve() not in proof_path.parents:
+            raise ValueError(f"V10_1_THEORY_PROOF_OBJECT_ESCAPES_ROOT:{theorem_id}")
+        files.append(statement_rel)
+        files.append(proof_path.relative_to(source_root).as_posix())
+    return sorted(dict.fromkeys(files))
+
+
 def _records(source_root: Path, files: list[str] | tuple[str, ...], *, required: bool) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for relative in sorted(dict.fromkeys(files)):
@@ -121,35 +146,24 @@ def _records(source_root: Path, files: list[str] | tuple[str, ...], *, required:
     return records
 
 
-def _all_formal_toolchain_sources(source_root: Path) -> tuple[str, ...]:
-    formal_root = source_root / "formal_toolchain"
-    if not formal_root.is_dir():
-        return ()
-    result = []
-    for path in formal_root.rglob("*"):
-        if not path.is_file() or "__pycache__" in path.parts:
-            continue
-        if path.suffix not in {".py", ".json"}:
-            continue
-        relative = path.relative_to(source_root).as_posix()
-        # Proof outputs are instance artifacts; theorem statements/proofs are
-        # still included because they live under the source tree as JSON.
-        result.append(relative)
-    return tuple(sorted(result))
-
-
 def build_source_manifest(source_root: Path, *, include_import_closure: bool = True) -> dict[str, Any]:
     source_root = Path(source_root).resolve()
 
     formal_initial = tuple(TARGET_FILES) + tuple(
         item for item in FORMAL_TARGET_FILES if (source_root / item).is_file()
     )
-    # In the real repository bind every formal-toolchain source, but never pull
-    # mutable runtime modules into the semantic hash through import closure.
-    formal_files = set(formal_initial)
-    formal_files.update(_all_formal_toolchain_sources(source_root))
-    formal_files = {item for item in formal_files if not is_mutable_runtime_path(item)}
-    formal_records = _records(source_root, sorted(formal_files), required=True)
+    # Bind the active proof implementation and its transitive Python import
+    # closure only.  Retired historical/differential terminals are deliberately
+    # outside the V10.1 semantic hash.
+    # This is a proof dependency binding, not a repository anti-tamper hash.
+    formal_files = (
+        _import_closure(source_root, formal_initial)
+        if include_import_closure else list(formal_initial)
+    )
+    formal_files = [item for item in formal_files if not is_mutable_runtime_path(item)]
+    formal_files.extend(_active_theory_artifacts(source_root))
+    formal_files = sorted(dict.fromkeys(formal_files))
+    formal_records = _records(source_root, formal_files, required=True)
 
     implementation_initial = tuple(
         item for item in IMPLEMENTATION_AUDIT_FILES if (source_root / item).is_file()
@@ -161,7 +175,7 @@ def build_source_manifest(source_root: Path, *, include_import_closure: bool = T
     implementation_records = _records(source_root, implementation_files, required=False)
 
     manifest = {
-        "schema_version": "source_tree_manifest_v2_frozen_formal_semantics",
+        "schema_version": "source_tree_manifest_v3_active_proof_closure",
         "binding_mode": "FROZEN_FORMAL_SEMANTICS",
         "files": formal_records,
         "implementation_audit_files": implementation_records,

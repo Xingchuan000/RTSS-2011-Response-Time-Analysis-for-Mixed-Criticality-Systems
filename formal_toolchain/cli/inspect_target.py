@@ -1,4 +1,4 @@
-"""V9.2 request/tree preflight CLI."""
+"""V10.1 request/tree preflight CLI."""
 
 import argparse
 import json
@@ -6,11 +6,11 @@ import sys
 from pathlib import Path
 
 from formal_toolchain.adapters.tree_artifact import inspect_tree_artifact
-from formal_toolchain.v9_2.bindings import build_bindings
+from formal_toolchain.v10_1.bindings import build_bindings
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="inspect a V9.2 proof request or integer-tree artifact")
+    parser = argparse.ArgumentParser(description="inspect a V10.1 proof request or integer-tree artifact")
     parser.add_argument("artifact_dir", type=Path, nargs="?")
     parser.add_argument("--request", type=Path)
     parser.add_argument("--source-root", type=Path, default=Path.cwd())

@@ -112,7 +112,7 @@ def main() -> None:
     OUTPUT.write_text(
         json.dumps(
             {
-                "schema_version": "v9_2_runtime_theory_hashes_v1",
+                "schema_version": "v10_1_runtime_theory_hashes_v1",
                 "statements": result,
             },
             ensure_ascii=False,

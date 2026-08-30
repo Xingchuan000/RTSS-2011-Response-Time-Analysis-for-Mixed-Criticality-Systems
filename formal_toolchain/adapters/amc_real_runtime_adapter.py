@@ -41,9 +41,9 @@ class AMCRealRuntimeAdapter:
             if bool(row.is_noop if hasattr(row, "is_noop") else row.get("is_noop", False))
         )
         if len(self.noop_action_ids) != 1:
-            raise ValueError("V9_2_REQUIRES_EXACTLY_ONE_EXPLICIT_NOOP")
+            raise ValueError("V10_1_REQUIRES_EXACTLY_ONE_EXPLICIT_NOOP")
         if selection_semantics != "ranked_first_valid":
-            raise ValueError("V9_2_REQUIRES_RANKED_FIRST_VALID")
+            raise ValueError("V10_1_REQUIRES_RANKED_FIRST_VALID")
         self.selection_semantics = "ranked_first_valid"
         self.disabled_guards = tuple(str(value) for value in disabled_guards)
         self.rounding_mode = str(rounding_mode)
