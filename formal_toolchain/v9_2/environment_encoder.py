@@ -217,7 +217,12 @@ def target_release_constraints(
 ) -> tuple[z3.BoolRef, ...]:
     if release_index != 0:
         raise ValueError("V9.2 relative first-bad windows pin the target at relative release 0")
-    if not env.lazy_release_demands and (task.name, 0) not in env.actual_demands:
+    if env.lazy_release_demands:
+        # The explicit Event graph binds target release through the root eta
+        # phase relation.  Re-introducing ``origin % T`` here would duplicate
+        # the same periodic fact in a much harder arithmetic theory.
+        return (z3.BoolVal(True),)
+    if (task.name, 0) not in env.actual_demands:
         raise KeyError("target release was not declared")
     return (env.phase.origin_time % task.period == 0,)
 

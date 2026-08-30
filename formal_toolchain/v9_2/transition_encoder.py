@@ -167,6 +167,12 @@ def _release_due(z: SymbolicKernelState, task) -> z3.BoolRef:
     return z3.And(z.t % task.period == 0, z.eta[task.name] == task.period)
 
 
+def _event_release_due(z: SymbolicKernelState, task) -> z3.BoolRef:
+    """Release guard for the Event graph's propagated phase state."""
+
+    return z.eta[task.name] == task.period
+
+
 def _remaining(job: SymbolicJob) -> z3.ArithRef:
     return z3.If(
         z3.And(job.present, job.effective_demand > job.executed_service),
@@ -259,6 +265,7 @@ def _encode_exact_release_slot(
 def encode_p3_arrival_freeze(
     z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel, env: SymbolicEnvironment,
     *, active_task_names: Collection[str] | None = None,
+    event_relative_phase: bool = False,
 ) -> z3.BoolRef:
     if model.max_jobs_per_task < 2 and any(task.criticality == "LO" for task in model.tasks):
         raise ValueError("V9_2_TWO_SLOT_LO_CARRY_IN_REQUIRES_TWO_JOB_SLOTS")
@@ -269,7 +276,7 @@ def encode_p3_arrival_freeze(
     for task in model.tasks:
         if task.name not in active:
             continue
-        due = _release_due(z, task)
+        due = _event_release_due(z, task) if event_relative_phase else _release_due(z, task)
         demand, covered = demand_for_time(env, task, z.t)
         clauses.append(z3.Implies(due, covered))
         clauses.append(zp.eta[task.name] == z3.If(due, 0, z.eta[task.name]))
@@ -467,7 +474,6 @@ def encode_p5_controller_enabled(
 
     decision = encode_controller_decision(z, model)
     clauses = _phase(z, zp, 5, 6)
-    clauses.append(decision.enabled)
     clauses.extend(decision.constraints)
     clauses.extend(
         zp.budgets[name] == decision.budget_after[name]
@@ -490,7 +496,6 @@ def encode_p5_controller_enabled_case(
 
     decision = encode_controller_policy_case(z, model, case)
     clauses = _phase(z, zp, 5, 6)
-    clauses.append((z.t % model.agent_period) == 0)
     clauses.extend(decision.constraints)
     clauses.extend(
         zp.budgets[name] == decision.budget_after[name]
@@ -594,6 +599,100 @@ def encode_p6_dispatch(
 
     return z3.And(*clauses)
 
+
+
+def encode_p6_dispatch_case(
+    z: SymbolicKernelState,
+    zp: SymbolicKernelState,
+    model: BoundModel,
+    *,
+    selected_key: tuple[str, int] | None,
+    active_task_names: Collection[str] | None = None,
+    protected_task_names: Collection[str] = (),
+) -> z3.BoolRef:
+    """Exact fixed-priority P6 transition for one host-selected winner.
+
+    Unlike :func:`encode_p6_dispatch`, this relation does not first encode the
+    complete winner mux and then constrain its result.  It emits only the
+    eligibility facts needed to prove the requested fixed-priority outcome.
+    Structurally absent HI extra slots and protected-LO aggregate slots are
+    omitted exactly as in the Event graph's reachable-state contract.
+    """
+
+    clauses = _phase(z, zp, 6, 7) + _frame_state(
+        z, zp, model, mutable=frozenset({"frontier"})
+    )
+    active = _active_names(model, active_task_names)
+    protected = frozenset(protected_task_names)
+
+    def structural_slots(task) -> tuple[int, ...]:
+        if task.criticality == "HI":
+            return (0,)
+        if task.name in protected:
+            return (1,)
+        return tuple(range(model.max_jobs_per_task))
+
+    def eligible(key: tuple[str, int]) -> z3.BoolRef:
+        job = z.jobs[key]
+        return z3.And(
+            job.present, job.ready, z3.Not(job.removed),
+            job.effective_demand > job.executed_service,
+        )
+
+    active_tasks = tuple(task for task in model.tasks if task.name in active)
+    if selected_key is None:
+        clauses.extend((
+            z3.Not(zp.frontier.running),
+            zp.frontier.selected_slot == -1,
+        ))
+        clauses.extend(
+            z3.Not(eligible((task.name, slot)))
+            for task in active_tasks for slot in structural_slots(task)
+        )
+        return z3.And(*clauses)
+
+    selected_task_name, selected_slot = selected_key
+    selected_task = model.task_by_name[selected_task_name]
+    if selected_task_name not in active:
+        raise ValueError("V9_3_DISPATCH_CASE_INACTIVE_TASK")
+    if selected_slot not in structural_slots(selected_task):
+        raise ValueError("V9_3_DISPATCH_CASE_STRUCTURALLY_ABSENT_SLOT")
+
+    selected_index = _slot_index(model, selected_key)
+    selected_job = z.jobs[selected_key]
+    clauses.extend((
+        zp.frontier.running,
+        zp.frontier.selected_slot == selected_index,
+        eligible(selected_key),
+    ))
+
+    # No higher-priority structurally live job may be eligible.
+    for task in active_tasks:
+        if task.priority >= selected_task.priority:
+            break
+        for slot in structural_slots(task):
+            clauses.append(z3.Not(eligible((task.name, slot))))
+
+    # Resolve only the selected task's local tie-break.  Lower-priority tasks
+    # are irrelevant once this exact winner is fixed.
+    for other_slot in structural_slots(selected_task):
+        if other_slot == selected_slot:
+            continue
+        other_key = (selected_task_name, other_slot)
+        other = z.jobs[other_key]
+        other_index = _slot_index(model, other_key)
+        clauses.append(z3.Not(z3.And(
+            eligible(other_key),
+            z3.Or(
+                other.tie_break < selected_job.tie_break,
+                z3.And(
+                    other.tie_break == selected_job.tie_break,
+                    other_index < selected_index,
+                ),
+            ),
+        )))
+
+    return z3.And(*clauses)
 
 def encode_p7_time_and_service(z: SymbolicKernelState, zp: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
     clauses = _phase(z, zp, 7, 0) + _frame_state(

@@ -23,11 +23,10 @@ def test_event_macro_is_source_specialized_and_controller_branch_specialized():
     kernel = ROOT / "formal_toolchain/v9_2/event_kernel.py"
     transition = ROOT / "formal_toolchain/v9_2/transition_encoder.py"
     text = kernel.read_text(encoding="utf-8")
-    closure_calls = _function_calls(kernel, "_exact_p0_to_p7_closure")
+    closure_calls = _function_calls(kernel, "_exact_p0_to_p6_closure")
     candidate_calls = _function_calls(kernel, "build_event_candidates")
     closure_wrapper_calls = _function_calls(kernel, "encode_event_node_closure")
     edge_calls = _function_calls(kernel, "encode_event_relative_edge")
-    step_calls = _function_calls(kernel, "encode_event_step_for_source")
 
     assert "encode_p5_controller_enabled" in closure_calls
     assert "encode_p5_identity" in closure_calls
@@ -35,21 +34,23 @@ def test_event_macro_is_source_specialized_and_controller_branch_specialized():
     assert "ExactControllerPool" not in text
     assert "_source_partition_definition" in candidate_calls
     assert "_declare_exact_periodic_successor" not in candidate_calls
-    assert "_exact_p0_to_p7_closure" in closure_wrapper_calls
+    assert "_exact_p0_to_p6_closure" in closure_wrapper_calls
     assert {
         "build_event_candidates",
         "_silent_interval_service",
         "_event_destination_update",
     } <= edge_calls
-    assert {"encode_event_node_closure", "encode_event_relative_edge"} <= step_calls
-    assert "def encode_p5_controller_enabled" in transition.read_text(encoding="utf-8")
+    transition_text = transition.read_text(encoding="utf-8")
+    assert "def encode_p5_controller_enabled" in transition_text
+    assert "def encode_p6_dispatch_case" in transition_text
+    assert "encode_p6_dispatch(" not in kernel.read_text(encoding="utf-8")
 
 
 def test_canonical_source_partition_owns_simultaneous_timestamps_once():
     kernel = (ROOT / "formal_toolchain/v9_2/event_kernel.py").read_text(encoding="utf-8")
     assert 'rows: list[EventSource] = [EventSource("HORIZON"), EventSource("CONTROLLER")]' in kernel
-    assert "*(value > chosen for value in earlier)" in kernel
-    assert "*(value >= chosen for value in later)" in kernel
+    assert "value > chosen" in kernel
+    assert "value >= chosen" in kernel
     assert "candidates.next_delta == chosen" in kernel
     assert "_min_expr" not in kernel
 
@@ -79,6 +80,8 @@ def test_explicit_event_graph_solver_owns_combinatorial_search():
     assert "enumerate_controller_policy_cases" in text
     assert "EVENT_GRAPH_NODE_CLOSURE_CHECK" in text
     assert "EVENT_GRAPH_SOURCE_TIME_CHECK" in text
+    assert "_shared_source_precheck" in text
+    assert "ThreadPoolExecutor" not in text
     assert "EVENT_GRAPH_SILENT_SERVICE_CHECK" in text
     assert "EVENT_GRAPH_DESTINATION_CHECK" in text
     assert "EVENT_GRAPH_TIME_EDGE_CHECK" not in text
@@ -168,3 +171,19 @@ def test_relative_countdown_refinement_matches_next_periodic_reference():
     )[0]
     assert "countdown = period - eta" in release
     assert "((t / period) + 1) * period - t" in release
+
+
+def test_production_event_graph_is_modulo_free_and_direct_dispatch_specialized():
+    graph = (ROOT / "formal_toolchain/v9_2/event_graph_solver.py").read_text(encoding="utf-8")
+    kernel = (ROOT / "formal_toolchain/v9_2/event_kernel.py").read_text(encoding="utf-8")
+    projection = (ROOT / "formal_toolchain/v9_2/target_projection.py").read_text(encoding="utf-8")
+    transition = (ROOT / "formal_toolchain/v9_2/transition_encoder.py").read_text(encoding="utf-8")
+    assert "exact_periodic_countdown(" not in graph
+    assert "% problem.model.agent_period" not in graph
+    assert "event_root_linear_phase_formula" in projection
+    assert "state.t % task.period" not in projection
+    assert "event_relative_phase=True" in kernel
+    assert "encode_p6_dispatch_case" in kernel
+    assert "encode_p6_dispatch(p6" not in kernel
+    enabled_case = transition.split("def encode_p5_controller_enabled_case", 1)[1].split("def encode_p5_controller_frame", 1)[0]
+    assert "% model.agent_period" not in enabled_case

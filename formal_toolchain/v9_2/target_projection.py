@@ -21,7 +21,6 @@ from .carry_in import reachable_carry_in_consistency
 from .invariant_templates import (
     budget_bounds,
     carry_in_consistency,
-    exact_periodic_eta,
     history_bounds,
     job_field_consistency,
     no_prior_hi_miss_consistency,
@@ -57,6 +56,36 @@ def derive_target_scheduling_projection(
         dropped_lower_task_names=dropped,
         active_model=active_model,
     )
+
+
+def event_root_linear_phase_formula(
+    state: SymbolicKernelState,
+    model: BoundModel,
+    target_task: str,
+) -> z3.BoolRef:
+    """Exact phase-zero periodic root without modulo arithmetic.
+
+    At the P0 root, ``eta_i`` is the positive release age used by the Full
+    kernel: ``T_i`` exactly on a release timestamp and otherwise the positive
+    residue in ``[1,T_i-1]``.  Express the same relation with one Euclidean
+    quotient per active task, using only linear integer arithmetic.  All task
+    phases remain correlated through the shared absolute ``state.t``.
+    """
+
+    projection = derive_target_scheduling_projection(model, target_task)
+    clauses: list[z3.BoolRef] = []
+    for task in projection.active_model.tasks:
+        q = z3.Int(f"event.root.phase_q.{target_task}.{task.name}")
+        eta = state.eta[task.name]
+        period = int(task.period)
+        clauses.extend((
+            q >= 0,
+            z3.Or(
+                z3.And(eta == period, state.t == q * period),
+                z3.And(eta >= 1, eta < period, state.t == q * period + eta),
+            ),
+        ))
+    return z3.And(*clauses)
 
 
 def _active_settled_job_consistency(
@@ -95,7 +124,7 @@ def event_root_safe_prefix_formula(
     return z3.And(
         state_well_formedness(state, active_model),
         budget_bounds(state, model),
-        exact_periodic_eta(state, active_model),
+        event_root_linear_phase_formula(state, model, target_task),
         job_field_consistency(state, active_model),
         no_prior_hi_miss_consistency(state, active_model),
         _active_settled_job_consistency(state, projection),
@@ -127,6 +156,7 @@ def target_pending_after_origin(
 __all__ = [
     "TargetSchedulingProjection",
     "derive_target_scheduling_projection",
+    "event_root_linear_phase_formula",
     "event_root_safe_prefix_formula",
     "target_pending_after_origin",
 ]

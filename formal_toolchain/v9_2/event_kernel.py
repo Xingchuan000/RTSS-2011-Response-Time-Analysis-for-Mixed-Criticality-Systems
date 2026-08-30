@@ -31,11 +31,11 @@ from .transition_encoder import (
     encode_p5_controller_enabled,
     encode_p5_controller_enabled_case,
     encode_p5_identity,
-    encode_p6_dispatch,
+    encode_p6_dispatch_case,
 )
 
 
-EVENT_KERNEL_VERSION = "V9_3_DISPATCH_SPECIALIZED_EVENT_GRAPH_V2"
+EVENT_KERNEL_VERSION = "V9_3_MODFREE_DIRECT_DISPATCH_EVENT_GRAPH_V3"
 
 
 def exact_periodic_countdown(t: z3.ArithRef, period: int) -> z3.ArithRef:
@@ -116,6 +116,7 @@ class DispatchCase:
 
     case_id: str
     selected_key: tuple[str, int] | None
+    dispatch_state: SymbolicKernelState
     formula: z3.BoolRef
 
     @property
@@ -124,34 +125,22 @@ class DispatchCase:
 
 
 def enumerate_dispatch_cases(
-    dispatch_state: SymbolicKernelState,
+    pre_dispatch_state: SymbolicKernelState,
     model: BoundModel,
     *,
+    prefix: str,
     active_task_names: Collection[str] | None = None,
     protected_task_names: Collection[str] = (),
 ) -> tuple[DispatchCase, ...]:
-    """Exact finite partition of P6 frontier outcomes.
-
-    P6 already proves that ``running`` and ``selected_slot`` identify exactly
-    one fixed-priority winner.  The graph search externalizes that finite
-    choice so source-time formulas never need to solve the dispatch mux again.
-    Structurally absent HI extra slots and protected-LO aggregate slot 0 are
-    omitted because their absence is already part of the V9.3 state contract.
-    """
+    """Exact finite P6 partition compiled as winner-specialized relations."""
 
     active = (
         frozenset(task.name for task in model.tasks)
         if active_task_names is None else frozenset(active_task_names)
     )
     protected = frozenset(protected_task_names)
-    rows: list[DispatchCase] = [DispatchCase(
-        case_id="IDLE",
-        selected_key=None,
-        formula=z3.And(
-            z3.Not(dispatch_state.frontier.running),
-            dispatch_state.frontier.selected_slot == -1,
-        ),
-    )]
+
+    selected_keys: list[tuple[str, int] | None] = [None]
     for task in model.tasks:
         if task.name not in active:
             continue
@@ -161,22 +150,26 @@ def enumerate_dispatch_cases(
             slots = (1,)
         else:
             slots = tuple(range(model.max_jobs_per_task))
-        for slot in slots:
-            key = (task.name, slot)
-            index = _slot_index(model, key)
-            job = dispatch_state.jobs[key]
-            rows.append(DispatchCase(
-                case_id=f"RUN_{task.name}_{slot}",
-                selected_key=key,
-                formula=z3.And(
-                    dispatch_state.frontier.running,
-                    dispatch_state.frontier.selected_slot == index,
-                    job.present,
-                    job.ready,
-                    z3.Not(job.removed),
-                    job.effective_demand > job.executed_service,
-                ),
-            ))
+        selected_keys.extend((task.name, slot) for slot in slots)
+
+    rows: list[DispatchCase] = []
+    for ordinal, key in enumerate(selected_keys):
+        dispatch_state = declare_sparse_successor(
+            f"{prefix}.{ordinal}.p7", pre_dispatch_state, model, phase=7,
+            mutable=frozenset({"frontier"}),
+        )
+        formula = encode_p6_dispatch_case(
+            pre_dispatch_state, dispatch_state, model,
+            selected_key=key,
+            active_task_names=active,
+            protected_task_names=protected,
+        )
+        rows.append(DispatchCase(
+            case_id=("IDLE" if key is None else f"RUN_{key[0]}_{key[1]}"),
+            selected_key=key,
+            dispatch_state=dispatch_state,
+            formula=formula,
+        ))
     return tuple(rows)
 
 
@@ -273,15 +266,15 @@ class EventStepEncoding:
 
 @dataclass(frozen=True, slots=True)
 class EventNodeClosureEncoding:
-    """Exact P0--P6 normalization of one Event-graph node to dispatch state."""
+    """Exact P0--P5 normalization of one Event-graph node before dispatch."""
 
     source: SymbolicKernelState
     phase_states: tuple[SymbolicKernelState, ...]
-    dispatch_state: SymbolicKernelState
+    pre_dispatch_state: SymbolicKernelState
     formula: z3.BoolRef
 
 
-def _exact_p0_to_p7_closure(
+def _exact_p0_to_p6_closure(
     source: SymbolicKernelState,
     model: BoundModel,
     env: SymbolicEnvironment,
@@ -291,7 +284,7 @@ def _exact_p0_to_p7_closure(
     active_task_names: frozenset[str] | None = None,
     controller_case: ControllerPolicyCase | None = None,
 ) -> tuple[tuple[SymbolicKernelState, ...], z3.BoolRef]:
-    """Execute exact P0..P6, ending at the P7 dispatch state."""
+    """Execute exact P0..P5, ending at the P6 pre-dispatch state."""
 
     # Exact SSA-style phase chain.  A phase declares fresh Z3 symbols only for
     # fields it owns; every frame component is structurally shared with the
@@ -318,15 +311,15 @@ def _exact_p0_to_p7_closure(
     p6 = declare_sparse_successor(
         f"{prefix}.p6", p5, model, phase=6, mutable=frozenset({"budgets", "history"}),
     )
-    p7 = declare_sparse_successor(
-        f"{prefix}.p7", p6, model, phase=7, mutable=frozenset({"frontier"}),
-    )
-    states = (p1, p2, p3, p4, p5, p6, p7)
+    states = (p1, p2, p3, p4, p5, p6)
     formula = z3.And(
         encode_p0_settle(source, p1, model, active_task_names=active_task_names),
         encode_p1_idle_recovery(p1, p2, model, active_task_names=active_task_names),
         encode_p2_deadline_observe(p2, p3, model, active_task_names=active_task_names),
-        encode_p3_arrival_freeze(p3, p4, model, env, active_task_names=active_task_names),
+        encode_p3_arrival_freeze(
+            p3, p4, model, env, active_task_names=active_task_names,
+            event_relative_phase=True,
+        ),
         encode_p4_mode_switch(p4, p5, model, active_task_names=active_task_names),
         # Event-graph ownership tells us exactly whether this timestamp is a
         # controller activation.  Compile only that exact P5 branch instead of
@@ -338,7 +331,6 @@ def _exact_p0_to_p7_closure(
             if controller_enabled
             else encode_p5_identity(p5, p6, model)
         ),
-        encode_p6_dispatch(p6, p7, model, active_task_names=active_task_names),
     )
     return states, formula
 
@@ -354,7 +346,7 @@ def encode_event_node_closure(
     controller_case: ControllerPolicyCase | None = None,
 ) -> EventNodeClosureEncoding:
     active = None if active_task_names is None else frozenset(active_task_names)
-    phase_states, formula = _exact_p0_to_p7_closure(
+    phase_states, formula = _exact_p0_to_p6_closure(
         source_state,
         model,
         env,
@@ -366,7 +358,7 @@ def encode_event_node_closure(
     return EventNodeClosureEncoding(
         source=source_state,
         phase_states=phase_states,
-        dispatch_state=phase_states[-1],
+        pre_dispatch_state=phase_states[-1],
         formula=z3.And(source_state.p == 0, formula),
     )
 
@@ -394,6 +386,7 @@ def encode_event_relative_edge(
     source_state: SymbolicKernelState,
     destination: SymbolicKernelState,
     closure: EventNodeClosureEncoding,
+    dispatch_state: SymbolicKernelState,
     model: BoundModel,
     *,
     horizon_time: z3.ArithRef,
@@ -407,7 +400,6 @@ def encode_event_relative_edge(
     """Build one exact edge in source-time/service/destination normal form."""
 
     active = None if active_task_names is None else frozenset(active_task_names)
-    dispatch_state = closure.dispatch_state
     if candidates is None:
         candidates = build_event_candidates(
             dispatch_state,
@@ -439,7 +431,7 @@ def encode_event_relative_edge(
     return EventStepEncoding(
         source=source_state,
         destination=destination,
-        phase_states=closure.phase_states,
+        phase_states=closure.phase_states + (dispatch_state,),
         candidates=candidates,
         delta=delta,
         closure_formula=closure.formula,
@@ -565,8 +557,8 @@ def build_event_candidates(
             hi_deadline_enabled_rows.append(((task.name, slot), enabled))
             hi_deadlines.append(((task.name, slot), t + delta))
 
-    # Production Event Graph passes a concrete dispatch winner.  Refinement
-    # obligations may leave the winner symbolic, in which case this generic
+    # Production Event Graph passes a concrete dispatch winner produced by a
+    # winner-specialized P6 relation.  Refinement obligations may leave the winner symbolic, in which case this generic
     # expression is used only to prove the dispatch-independent identities.
     if selected_job_key == "SYMBOLIC":
         completion_terms: list[z3.ArithRef] = []
@@ -893,33 +885,6 @@ def _silent_interval_advance(
     )
 
 
-def encode_event_step_for_source(
-    source_state: SymbolicKernelState,
-    destination: SymbolicKernelState,
-    model: BoundModel,
-    env: SymbolicEnvironment,
-    *,
-    horizon_time: z3.ArithRef,
-    controller_delta: z3.ArithRef,
-    prefix: str,
-    event_source: EventSource,
-    controller_enabled: bool,
-    active_task_names: Collection[str] | None = None,
-) -> EventStepEncoding:
-    """Compose the exact node closure and relative Event edge."""
-
-    closure = encode_event_node_closure(
-        source_state, model, env, prefix=f"{prefix}.closure",
-        controller_enabled=controller_enabled,
-        active_task_names=active_task_names,
-    )
-    return encode_event_relative_edge(
-        source_state, destination, closure, model,
-        horizon_time=horizon_time, controller_delta=controller_delta,
-        prefix=f"{prefix}.edge", event_source=event_source,
-        active_task_names=active_task_names,
-    )
-
 
 
 __all__ = [
@@ -932,7 +897,6 @@ __all__ = [
     "build_event_candidates",
     "encode_event_node_closure",
     "encode_event_relative_edge",
-    "encode_event_step_for_source",
     "enumerate_dispatch_cases",
     "enumerate_event_sources",
     "event_source_partition_formula",

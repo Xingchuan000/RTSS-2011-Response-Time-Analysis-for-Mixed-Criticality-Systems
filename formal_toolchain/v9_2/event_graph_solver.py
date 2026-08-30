@@ -8,7 +8,6 @@ kernel semantics remain in Z3 while combinatorial source enumeration does not.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Callable
@@ -28,15 +27,14 @@ from .event_kernel import (
     enumerate_dispatch_cases,
     enumerate_event_sources,
     event_source_time_formula,
-    exact_periodic_countdown,
 )
 from .event_window_encoder import EventGraphProblem, EventWindowEncoding
 from .symbolic_state import SymbolicKernelState, declare_state
 from .target_projection import target_pending_after_origin
-from .solver_runtime import DEFAULT_Z3_THREADS, SOURCE_TIME_WORKERS, make_solver
+from .solver_runtime import DEFAULT_Z3_THREADS, make_solver
 
 
-SOLVER_STRATEGY = "V9_3_PARALLEL_DISPATCH_SPECIALIZED_SHARED_CANDIDATE_EVENT_GRAPH_DFS"
+SOLVER_STRATEGY = "V9_3_MODFREE_DIRECT_DISPATCH_SHARED_CONTEXT_EVENT_GRAPH_DFS"
 
 
 @dataclass(slots=True)
@@ -147,7 +145,10 @@ class EventGraphReceipt:
             "controller_branch_specialized_per_graph_node": True,
             "iterative_depth_restart": False,
             "solver_threads": int(DEFAULT_Z3_THREADS),
-            "source_time_workers": int(SOURCE_TIME_WORKERS),
+            "source_time_workers": 1,
+            "source_time_parent_context_reused": True,
+            "source_time_solver_threads": int(DEFAULT_Z3_THREADS),
+            "production_event_modulo_terms": 0,
         }
         if self.decisive_depth is not None:
             row["decisive_depth"] = int(self.decisive_depth)
@@ -197,56 +198,40 @@ def _check(solver: z3.Solver) -> tuple[str, float, str | None]:
     return "UNKNOWN", elapsed, solver.reason_unknown()
 
 
-def _prepare_isolated_solver(
-    assertions: tuple[z3.BoolRef, ...],
-    formula: z3.BoolRef,
-) -> z3.Solver:
-    """Clone one exact source-time query into an isolated single-thread context."""
+def _check_assumption(
+    solver: z3.Solver, formula: z3.BoolRef
+) -> tuple[str, float, str | None]:
+    """Check one source in the already-solved incremental parent context."""
 
-    ctx = z3.Context()
-    local = make_solver(ctx=ctx, threads=1)
-    for assertion in assertions:
-        local.add(assertion.translate(ctx))
-    local.add(formula.translate(ctx))
-    return local
-
-
-def _check_prepared_solver(solver: z3.Solver) -> tuple[str, float, str | None]:
-    return _check(solver)
+    started = perf_counter()
+    result = solver.check(formula)
+    elapsed = perf_counter() - started
+    if result == z3.sat:
+        return "SAT", elapsed, None
+    if result == z3.unsat:
+        return "UNSAT", elapsed, None
+    return "UNKNOWN", elapsed, solver.reason_unknown()
 
 
-def _parallel_source_precheck(
+def _shared_source_precheck(
     solver: z3.Solver,
     rows: tuple[tuple[EventSource, z3.BoolRef], ...],
     *,
-    workers: int = SOURCE_TIME_WORKERS,
-    progress_batch: Callable[[tuple[str, ...]], None] | None = None,
+    progress_one: Callable[[EventSource], None] | None = None,
 ) -> dict[str, tuple[str, float, str | None]]:
-    """Exact parallel source-time precheck using independent Z3 contexts.
+    """Exact source checks over one shared incremental solver.
 
-    The current incremental path assertions are translated once per source into
-    an isolated context.  At most ``workers`` checks run concurrently.  No Z3
-    context is shared across threads.
+    The closure, exact dispatch case and candidate normal form have already
+    been solved in this context.  Each source is supplied as a temporary Z3
+    assumption, so expensive parent arithmetic is not translated or rebuilt.
+    The solver itself uses the repository-wide three-thread policy.
     """
 
     results: dict[str, tuple[str, float, str | None]] = {}
-    assertions = tuple(solver.assertions())
-    width = max(1, int(workers))
-    for offset in range(0, len(rows), width):
-        batch = rows[offset: offset + width]
-        if progress_batch is not None:
-            progress_batch(tuple(source.source_id for source, _ in batch))
-        prepared = [
-            (source, _prepare_isolated_solver(assertions, formula))
-            for source, formula in batch
-        ]
-        with ThreadPoolExecutor(max_workers=len(prepared)) as pool:
-            futures = [
-                (source, pool.submit(_check_prepared_solver, local_solver))
-                for source, local_solver in prepared
-            ]
-            for source, future in futures:
-                results[source.source_id] = future.result()
+    for source, formula in rows:
+        if progress_one is not None:
+            progress_one(source)
+        results[source.source_id] = _check_assumption(solver, formula)
     return results
 
 
@@ -390,8 +375,9 @@ def solve_event_graph(
             search.at(depth).closure_feasible += 1
 
             dispatch_cases = enumerate_dispatch_cases(
-                closure.dispatch_state,
+                closure.pre_dispatch_state,
                 problem.model,
+                prefix=f"event.graph.node.{closure_serial}.{depth}.dispatch",
                 active_task_names=problem.projection.active_task_names,
                 protected_task_names=protected_task_names,
             )
@@ -428,7 +414,7 @@ def solve_event_graph(
                 candidate_serial = search.edge_serial
                 search.edge_serial += 1
                 candidates = build_event_candidates(
-                    closure.dispatch_state,
+                    dispatch_case.dispatch_state,
                     problem.model,
                     horizon_time=problem.horizon_time,
                     controller_delta=controller_delta,
@@ -451,26 +437,25 @@ def solve_event_graph(
                     source_rows.append((
                         source,
                         event_source_time_formula(
-                            state, candidates, closure.dispatch_state, problem.model, source,
+                            state, candidates, dispatch_case.dispatch_state, problem.model, source,
                             horizon_time=problem.horizon_time,
                         ),
                     ))
 
-                def progress_batch(source_ids: tuple[str, ...]) -> None:
+                def progress_source(source: EventSource) -> None:
                     _progress(
-                        progress, search, phase="EVENT_GRAPH_SOURCE_TIME_BATCH_CHECK",
-                        depth=depth, path=tuple(path_sources),
+                        progress, search, phase="EVENT_GRAPH_SOURCE_TIME_CHECK",
+                        depth=depth, source=source, path=tuple(path_sources),
                         controller_case_id=(
                             None if controller_case is None else controller_case.case_id
                         ),
                         dispatch_case_id=dispatch_case.case_id,
-                        source_ids=list(source_ids),
-                        source_workers=SOURCE_TIME_WORKERS,
+                        solver_threads=DEFAULT_Z3_THREADS,
+                        parent_context_reused=True,
                     )
 
-                precheck = _parallel_source_precheck(
-                    solver, tuple(source_rows),
-                    workers=SOURCE_TIME_WORKERS, progress_batch=progress_batch,
+                precheck = _shared_source_precheck(
+                    solver, tuple(source_rows), progress_one=progress_source,
                 )
                 feasible_source_rows: list[tuple[EventSource, z3.BoolRef]] = []
                 for source, source_formula in source_rows:
@@ -490,7 +475,8 @@ def solve_event_graph(
                         ),
                         dispatch_case_id=dispatch_case.case_id,
                         source_time_result=stage_result,
-                        source_workers=SOURCE_TIME_WORKERS,
+                        solver_threads=DEFAULT_Z3_THREADS,
+                        parent_context_reused=True,
                     )
                     if stage_result == "UNSAT":
                         search.infeasible_edges += 1
@@ -511,7 +497,7 @@ def solve_event_graph(
                     )
                     build_started = perf_counter()
                     step = encode_event_relative_edge(
-                        state, destination, closure, problem.model,
+                        state, destination, closure, dispatch_case.dispatch_state, problem.model,
                         horizon_time=problem.horizon_time,
                         controller_delta=controller_delta,
                         prefix=f"event.graph.edge.{serial}",
@@ -568,8 +554,8 @@ def solve_event_graph(
                     search.at(depth).build_seconds += build_elapsed
 
                     solver.push()
-                    # The exact source-time query was already proved SAT in an
-                    # isolated solver over byte-for-byte equivalent assertions.
+                    # The exact source-time query was already proved SAT as an
+                    # assumption in this same incremental parent context.
                     solver.add(source_formula)
 
                     solver.add(step.silent_service_formula)
@@ -688,29 +674,36 @@ def solve_event_graph(
     overall = "UNSAT"
     current_root_case = z3.BoolVal(True)
     current_root_formula = z3.BoolVal(True)
-    # Target release at the window origin can itself coincide with a controller
-    # activation.  This is the only graph node whose controller phase is not
-    # determined by an incoming canonical source, so split it once and exactly.
+    # The target-window root has exact phase-zero periodic semantics, already
+    # represented linearly by ``event_root_linear_phase_formula``.  Initialize
+    # the controller's next-activation countdown with the same quotient form;
+    # no modulo term remains in the production Event graph.
     for root_enabled in (False, True):
-        current_root_case = (
-            problem.start_state.t % problem.model.agent_period == 0
-            if root_enabled
-            else problem.start_state.t % problem.model.agent_period != 0
-        )
         root_controller_delta = z3.Int(
             f"event.graph.root.controller_delta.{int(root_enabled)}"
         )
-        root_clock_formula = z3.And(
-            root_controller_delta
-            == exact_periodic_countdown(
-                problem.start_state.t, problem.model.agent_period
-            ),
-            root_controller_delta >= 1,
-            root_controller_delta <= int(problem.model.agent_period),
+        root_controller_q = z3.Int(
+            f"event.graph.root.controller_q.{int(root_enabled)}"
         )
-        current_root_formula = z3.And(current_root_case, root_clock_formula)
+        period = int(problem.model.agent_period)
+        if root_enabled:
+            current_root_case = z3.And(
+                root_controller_q >= 0,
+                problem.start_state.t == root_controller_q * period,
+                root_controller_delta == period,
+            )
+        else:
+            current_root_case = z3.And(
+                root_controller_q >= 1,
+                root_controller_delta >= 1,
+                root_controller_delta < period,
+                problem.start_state.t + root_controller_delta
+                == root_controller_q * period,
+            )
+        root_clock_formula = current_root_case
+        current_root_formula = current_root_case
         solver.push()
-        solver.add(current_root_case, root_clock_formula)
+        solver.add(current_root_case)
         root_result, root_elapsed, root_reason = _check(solver)
         search.solver_seconds += root_elapsed
         search.at(0).solver_seconds += root_elapsed

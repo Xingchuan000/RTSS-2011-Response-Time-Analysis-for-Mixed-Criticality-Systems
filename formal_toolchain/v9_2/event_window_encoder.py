@@ -324,7 +324,10 @@ def _window_source_obligations() -> tuple[str, ...]:
         "controller_p5_branch_is_specialized_by_graph_node",
         "release_demand_is_fresh_bounded_per_explicit_release_node",
         "event_candidate_minima_are_exact_scalar_ssa_definitions",
+        "event_root_periodic_phase_uses_exact_linear_quotients_without_modulo",
         "periodic_event_candidates_use_exact_quotient_free_scalar_successors",
+        "p6_dispatch_is_compiled_per_exact_winner_case",
+        "source_time_checks_reuse_the_solved_incremental_parent_context",
         "phase_ssa_shares_only_canonical_frame_fields",
     ]
     rows.append("explicit_event_graph_explores_each_reachable_source_prefix_once")

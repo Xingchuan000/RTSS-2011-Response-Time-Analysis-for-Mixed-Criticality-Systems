@@ -6,8 +6,6 @@ import z3
 
 
 DEFAULT_Z3_THREADS = 3
-SOURCE_TIME_WORKERS = 3
-
 
 def make_solver(*, ctx: z3.Context | None = None, threads: int = DEFAULT_Z3_THREADS) -> z3.Solver:
     solver = z3.Solver(ctx=ctx) if ctx is not None else z3.Solver()
@@ -15,4 +13,4 @@ def make_solver(*, ctx: z3.Context | None = None, threads: int = DEFAULT_Z3_THRE
     return solver
 
 
-__all__ = ["DEFAULT_Z3_THREADS", "SOURCE_TIME_WORKERS", "make_solver"]
+__all__ = ["DEFAULT_Z3_THREADS", "make_solver"]
