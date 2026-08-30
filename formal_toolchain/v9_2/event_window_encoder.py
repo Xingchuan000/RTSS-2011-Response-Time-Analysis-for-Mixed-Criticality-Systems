@@ -13,6 +13,8 @@ from typing import Any, Mapping
 
 import z3
 
+from .solver_runtime import make_solver
+
 from .environment_encoder import (
     declare_event_graph_environment,
     target_release_constraints,
@@ -88,7 +90,7 @@ class EventWindowEncoding:
         return self.event_states[-1]
 
     def smt2(self) -> str:
-        solver = z3.Solver()
+        solver = make_solver()
         solver.add(self.formula)
         return solver.sexpr()
 

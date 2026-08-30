@@ -15,6 +15,8 @@ from typing import Any, Mapping
 
 import z3
 
+from .solver_runtime import make_solver
+
 from .formula_solver import canonical_formula_text
 from .safe_prefix_invariant import SafePrefixInvariant
 from .safe_prefix_reachability import prove_boot_safe_prefix_reachability
@@ -226,7 +228,7 @@ def classify_sat_event_window(
 
     formula_text = canonical_formula_text(encoding.formula)
     formula_hash = sha256(formula_text.encode("utf-8")).hexdigest()
-    solver = z3.Solver()
+    solver = make_solver()
     solver.set(timeout=int(timeout_ms))
     solver.add(encoding.formula)
     result = solver.check()

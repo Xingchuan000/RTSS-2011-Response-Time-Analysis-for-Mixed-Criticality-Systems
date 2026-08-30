@@ -15,6 +15,8 @@ from typing import Any, Mapping
 
 import z3
 
+from .solver_runtime import make_solver
+
 from .environment_encoder import declare_environment
 from .formula_solver import canonical_formula_text
 from .safe_prefix_invariant import SafePrefixInvariant
@@ -181,7 +183,7 @@ def prove_boot_safe_prefix_reachability(
     formula = z3.And(*clauses)
     text = canonical_formula_text(formula)
     formula_hash = sha256(text.encode("utf-8")).hexdigest()
-    solver = z3.Solver()
+    solver = make_solver()
     solver.set(timeout=int(timeout_ms))
     solver.add(formula)
     result = solver.check()

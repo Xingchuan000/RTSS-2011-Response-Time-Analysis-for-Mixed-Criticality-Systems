@@ -9,6 +9,8 @@ from typing import Any
 
 import z3
 
+from .solver_runtime import make_solver
+
 
 @dataclass(frozen=True, slots=True)
 class FormulaReceipt:
@@ -45,7 +47,7 @@ class FormulaReceipt:
 
 
 def canonical_formula_text(formula: z3.BoolRef) -> str:
-    solver = z3.Solver()
+    solver = make_solver()
     solver.add(formula)
     return solver.sexpr()
 
@@ -63,7 +65,7 @@ def solve_formula(
     text = canonical_formula_text(formula)
     canonicalization_seconds = perf_counter() - started
     formula_hash = sha256(text.encode("utf-8")).hexdigest()
-    solver = z3.Solver()
+    solver = make_solver()
     solver.set(timeout=int(timeout_ms))
     solver.add(formula)
     check_started = perf_counter()

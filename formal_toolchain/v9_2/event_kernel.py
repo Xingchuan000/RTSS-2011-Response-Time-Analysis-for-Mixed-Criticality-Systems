@@ -35,7 +35,7 @@ from .transition_encoder import (
 )
 
 
-EVENT_KERNEL_VERSION = "V9_3_RELATIVE_COUNTDOWN_EVENT_GRAPH_V1"
+EVENT_KERNEL_VERSION = "V9_3_DISPATCH_SPECIALIZED_EVENT_GRAPH_V2"
 
 
 def exact_periodic_countdown(t: z3.ArithRef, period: int) -> z3.ArithRef:
@@ -111,6 +111,76 @@ def _slot_index(model: BoundModel, key: tuple[str, int]) -> int:
 
 
 @dataclass(frozen=True, slots=True)
+class DispatchCase:
+    """One exact P6 frontier winner used by the Event-graph outer search."""
+
+    case_id: str
+    selected_key: tuple[str, int] | None
+    formula: z3.BoolRef
+
+    @property
+    def running(self) -> bool:
+        return self.selected_key is not None
+
+
+def enumerate_dispatch_cases(
+    dispatch_state: SymbolicKernelState,
+    model: BoundModel,
+    *,
+    active_task_names: Collection[str] | None = None,
+    protected_task_names: Collection[str] = (),
+) -> tuple[DispatchCase, ...]:
+    """Exact finite partition of P6 frontier outcomes.
+
+    P6 already proves that ``running`` and ``selected_slot`` identify exactly
+    one fixed-priority winner.  The graph search externalizes that finite
+    choice so source-time formulas never need to solve the dispatch mux again.
+    Structurally absent HI extra slots and protected-LO aggregate slot 0 are
+    omitted because their absence is already part of the V9.3 state contract.
+    """
+
+    active = (
+        frozenset(task.name for task in model.tasks)
+        if active_task_names is None else frozenset(active_task_names)
+    )
+    protected = frozenset(protected_task_names)
+    rows: list[DispatchCase] = [DispatchCase(
+        case_id="IDLE",
+        selected_key=None,
+        formula=z3.And(
+            z3.Not(dispatch_state.frontier.running),
+            dispatch_state.frontier.selected_slot == -1,
+        ),
+    )]
+    for task in model.tasks:
+        if task.name not in active:
+            continue
+        if task.criticality == "HI":
+            slots = (0,)
+        elif task.name in protected:
+            slots = (1,)
+        else:
+            slots = tuple(range(model.max_jobs_per_task))
+        for slot in slots:
+            key = (task.name, slot)
+            index = _slot_index(model, key)
+            job = dispatch_state.jobs[key]
+            rows.append(DispatchCase(
+                case_id=f"RUN_{task.name}_{slot}",
+                selected_key=key,
+                formula=z3.And(
+                    dispatch_state.frontier.running,
+                    dispatch_state.frontier.selected_slot == index,
+                    job.present,
+                    job.ready,
+                    z3.Not(job.removed),
+                    job.effective_demand > job.executed_service,
+                ),
+            ))
+    return tuple(rows)
+
+
+@dataclass(frozen=True, slots=True)
 class EventSource:
     """One member of the canonical disjoint next-event source partition.
 
@@ -147,15 +217,11 @@ def enumerate_event_sources(
     rows: list[EventSource] = [EventSource("HORIZON"), EventSource("CONTROLLER")]
     rows.extend(EventSource("RELEASE", task.name) for task in model.tasks if task.name in active)
     for task in model.hi_tasks:
-        if task.name not in active:
-            continue
-        for slot in range(model.max_jobs_per_task):
-            rows.append(EventSource("HI_DEADLINE", task.name, slot))
-    for task in model.tasks:
-        if task.name not in active:
-            continue
-        for slot in range(model.max_jobs_per_task):
-            rows.append(EventSource("COMPLETION", task.name, slot))
+        if task.name in active:
+            rows.append(EventSource("HI_DEADLINE", task.name, 0))
+    # Completion identity is determined by the already-specialized P6
+    # dispatch case, so completion is one generic event source.
+    rows.append(EventSource("COMPLETION"))
     return tuple(rows)
 
 
@@ -179,7 +245,9 @@ class EventCandidateSet:
     release_deltas: tuple[tuple[str, z3.ArithRef], ...]
     controller_delta: z3.ArithRef
     hi_deadline_deltas: tuple[tuple[tuple[str, int], z3.ArithRef], ...]
+    hi_deadline_enabled: tuple[tuple[tuple[str, int], z3.BoolRef], ...]
     completion_delta: z3.ArithRef
+    completion_enabled: z3.BoolRef
     all_deltas: tuple[z3.ArithRef, ...]
     next_delta: z3.ArithRef
     base_definition_formula: z3.BoolRef
@@ -303,6 +371,25 @@ def encode_event_node_closure(
     )
 
 
+def event_source_time_formula(
+    source_state: SymbolicKernelState,
+    candidates: EventCandidateSet,
+    dispatch_state: SymbolicKernelState,
+    model: BoundModel,
+    source: EventSource,
+    *,
+    horizon_time: z3.ArithRef,
+) -> z3.BoolRef:
+    """Cheap exact source-ordering formula over a prebuilt candidate normal form."""
+
+    return z3.And(
+        source_state.t < horizon_time,
+        event_source_partition_formula(candidates, dispatch_state, model, source),
+        candidates.next_delta >= 1,
+        candidates.next_delta <= candidates.horizon_delta,
+    )
+
+
 def encode_event_relative_edge(
     source_state: SymbolicKernelState,
     destination: SymbolicKernelState,
@@ -314,29 +401,32 @@ def encode_event_relative_edge(
     prefix: str,
     event_source: EventSource,
     active_task_names: Collection[str] | None = None,
+    candidates: EventCandidateSet | None = None,
+    selected_job_key: tuple[str, int] | None | str = "SYMBOLIC",
 ) -> EventStepEncoding:
     """Build one exact edge in source-time/service/destination normal form."""
 
     active = None if active_task_names is None else frozenset(active_task_names)
     dispatch_state = closure.dispatch_state
-    candidates = build_event_candidates(
-        dispatch_state,
-        model,
-        horizon_time=horizon_time,
-        controller_delta=controller_delta,
-        prefix=prefix,
-        source=event_source,
-        active_task_names=active,
-    )
+    if candidates is None:
+        candidates = build_event_candidates(
+            dispatch_state,
+            model,
+            horizon_time=horizon_time,
+            controller_delta=controller_delta,
+            prefix=prefix,
+            source=None,
+            active_task_names=active,
+            selected_job_key=selected_job_key,
+        )
     delta = candidates.next_delta
-    source_time = z3.And(
-        source_state.t < horizon_time,
-        candidates.definition_formula,
-        delta >= 1,
-        delta <= candidates.horizon_delta,
+    source_time = event_source_time_formula(
+        source_state, candidates, dispatch_state, model, event_source,
+        horizon_time=horizon_time,
     )
     silent_service = _silent_interval_service(
-        dispatch_state, model, candidates, active_task_names=active
+        dispatch_state, model, candidates, active_task_names=active,
+        selected_job_key=selected_job_key,
     )
     destination_formula = _event_destination_update(
         dispatch_state,
@@ -344,6 +434,7 @@ def encode_event_relative_edge(
         model,
         candidates,
         active_task_names=active,
+        selected_job_key=selected_job_key,
     )
     return EventStepEncoding(
         source=source_state,
@@ -355,8 +446,31 @@ def encode_event_relative_edge(
         source_time_formula=source_time,
         silent_service_formula=silent_service,
         destination_formula=destination_formula,
-        formula=z3.And(closure.formula, source_time, silent_service, destination_formula),
+        formula=z3.And(
+            closure.formula, candidates.base_definition_formula,
+            source_time, silent_service, destination_formula,
+        ),
     )
+
+
+def _canonical_candidate_terms(
+    candidates: EventCandidateSet,
+) -> tuple[tuple[str, z3.ArithRef, z3.BoolRef], ...]:
+    rows: list[tuple[str, z3.ArithRef, z3.BoolRef]] = [
+        ("HORIZON", candidates.horizon_delta, z3.BoolVal(True)),
+        ("CONTROLLER", candidates.controller_delta, z3.BoolVal(True)),
+    ]
+    rows.extend(
+        (f"RELEASE_{name}", delta, z3.BoolVal(True))
+        for name, delta in candidates.release_deltas
+    )
+    enabled_by_key = dict(candidates.hi_deadline_enabled)
+    rows.extend(
+        (f"HI_DEADLINE_{name}_{slot}", delta, enabled_by_key[(name, slot)])
+        for (name, slot), delta in candidates.hi_deadline_deltas
+    )
+    rows.append(("COMPLETION", candidates.completion_delta, candidates.completion_enabled))
+    return tuple(rows)
 
 
 def _source_partition_definition(
@@ -365,46 +479,34 @@ def _source_partition_definition(
     model: BoundModel,
     source: EventSource,
 ) -> z3.BoolRef:
-    """Exact disjoint first-minimum owner over relative event countdowns."""
+    """Exact disjoint first-minimum owner with guarded optional candidates."""
 
-    if source.kind == "HORIZON":
-        chosen, index, guard = candidates.horizon_delta, 0, z3.BoolVal(True)
-    elif source.kind == "CONTROLLER":
-        chosen, index, guard = candidates.controller_delta, 1, z3.BoolVal(True)
-    elif source.kind == "RELEASE":
-        release_index = next(
-            i for i, (task_name, _) in enumerate(candidates.release_deltas)
-            if task_name == source.task_name
-        )
-        chosen = candidates.release_deltas[release_index][1]
-        index = 2 + release_index
-        guard = z3.BoolVal(True)
-    elif source.kind == "HI_DEADLINE":
-        deadline_index = next(
-            i for i, ((task_name, slot), _) in enumerate(candidates.hi_deadline_deltas)
-            if task_name == source.task_name and slot == source.slot
-        )
-        chosen = candidates.hi_deadline_deltas[deadline_index][1]
-        index = 2 + len(candidates.release_deltas) + deadline_index
-        guard = z3.BoolVal(True)
-    elif source.kind == "COMPLETION":
-        if source.task_name is None or source.slot is None:
-            raise KeyError(source.source_id)
-        chosen = candidates.completion_delta
-        index = len(candidates.all_deltas) - 1
-        selected_index = _slot_index(model, (source.task_name, source.slot))
-        guard = dispatch_state.frontier.selected_slot == selected_index
-    else:
-        raise KeyError(source.source_id)
-
-    earlier = candidates.all_deltas[:index]
-    later = candidates.all_deltas[index + 1:]
+    rows = _canonical_candidate_terms(candidates)
+    target_id = source.source_id
+    try:
+        index = next(i for i, (source_id, _, _) in enumerate(rows) if source_id == target_id)
+    except StopIteration as exc:
+        raise KeyError(target_id) from exc
+    _, chosen, chosen_enabled = rows[index]
+    earlier = rows[:index]
+    later = rows[index + 1:]
     return z3.And(
-        guard,
+        chosen_enabled,
         candidates.next_delta == chosen,
-        *(value > chosen for value in earlier),
-        *(value >= chosen for value in later),
+        *(z3.Or(z3.Not(enabled), value > chosen) for _, value, enabled in earlier),
+        *(z3.Or(z3.Not(enabled), value >= chosen) for _, value, enabled in later),
     )
+
+
+def event_source_partition_formula(
+    candidates: EventCandidateSet,
+    dispatch_state: SymbolicKernelState,
+    model: BoundModel,
+    source: EventSource,
+) -> z3.BoolRef:
+    """Public exact source-owner constraint over one shared node candidate set."""
+
+    return _source_partition_definition(candidates, dispatch_state, model, source)
 
 
 def build_event_candidates(
@@ -416,6 +518,7 @@ def build_event_candidates(
     prefix: str,
     source: EventSource | None = None,
     active_task_names: Collection[str] | None = None,
+    selected_job_key: tuple[str, int] | None | str = "SYMBOLIC",
 ) -> EventCandidateSet:
     """Build exact candidates from relative phase/countdown state.
 
@@ -444,50 +547,56 @@ def build_event_candidates(
         release_rows.append((task.name, t + delta))
 
     hi_deadline_delta_rows: list[tuple[tuple[str, int], z3.ArithRef]] = []
+    hi_deadline_enabled_rows: list[tuple[tuple[str, int], z3.BoolRef]] = []
     hi_deadlines: list[tuple[tuple[str, int], z3.ArithRef]] = []
     for task in model.hi_tasks:
         if task.name not in active:
             continue
-        # The symbolic state contract makes every HI slot except slot 0
-        # structurally absent.  Do not serialize dead deadline candidates into
-        # every source-time comparison.
         for slot in (0,):
             job = dispatch_state.jobs[(task.name, slot)]
-            delta = z3.If(
-                z3.And(
-                    job.present, z3.Not(job.removed),
-                    job.executed_service < job.effective_demand,
-                    job.absolute_deadline > t,
-                ),
-                job.absolute_deadline - t,
-                horizon_delta,
+            enabled = z3.And(
+                job.present,
+                z3.Not(job.removed),
+                job.executed_service < job.effective_demand,
+                job.absolute_deadline > t,
             )
+            delta = job.absolute_deadline - t
             hi_deadline_delta_rows.append(((task.name, slot), delta))
+            hi_deadline_enabled_rows.append(((task.name, slot), enabled))
             hi_deadlines.append(((task.name, slot), t + delta))
 
-    completion_terms: list[z3.ArithRef] = []
-    for key, job in dispatch_state.jobs.items():
-        if key[0] not in active:
-            continue
-        task = model.task_by_name[key[0]]
-        if task.criticality == "HI" and key[1] != 0:
-            continue
-        if task.criticality == "LO" and key[1] not in {0, 1}:
-            continue
-        selected_index = _slot_index(model, key)
-        completion_terms.append(z3.If(
-            dispatch_state.frontier.selected_slot == selected_index,
-            job.effective_demand - job.executed_service,
-            0,
-        ))
-    selected_remaining = z3.Sum(*completion_terms) if completion_terms else z3.IntVal(0)
-    completion_delta = z3.If(
-        dispatch_state.frontier.running, selected_remaining, horizon_delta
-    )
+    # Production Event Graph passes a concrete dispatch winner.  Refinement
+    # obligations may leave the winner symbolic, in which case this generic
+    # expression is used only to prove the dispatch-independent identities.
+    if selected_job_key == "SYMBOLIC":
+        completion_terms: list[z3.ArithRef] = []
+        for key, job in dispatch_state.jobs.items():
+            if key[0] not in active:
+                continue
+            task = model.task_by_name[key[0]]
+            if task.criticality == "HI" and key[1] != 0:
+                continue
+            selected_index = _slot_index(model, key)
+            completion_terms.append(z3.If(
+                dispatch_state.frontier.selected_slot == selected_index,
+                job.effective_demand - job.executed_service,
+                0,
+            ))
+        completion_delta = z3.Sum(*completion_terms) if completion_terms else z3.IntVal(0)
+        completion_enabled = dispatch_state.frontier.running
+    elif selected_job_key is None:
+        completion_delta = z3.IntVal(1)
+        completion_enabled = z3.BoolVal(False)
+    else:
+        key = selected_job_key
+        job = dispatch_state.jobs[key]
+        completion_delta = job.effective_demand - job.executed_service
+        completion_enabled = z3.BoolVal(True)
 
     release_deltas = tuple(release_delta_rows)
     releases = tuple(release_rows)
     hi_deadline_deltas = tuple(hi_deadline_delta_rows)
+    hi_deadline_enabled = tuple(hi_deadline_enabled_rows)
     controller = t + controller_delta
     completion = t + completion_delta
     all_deltas = (
@@ -506,6 +615,8 @@ def build_event_candidates(
         controller_delta <= int(model.agent_period),
         *(value >= 1 for _, value in release_deltas),
         *(value <= int(model.task_by_name[name].period) for name, value in release_deltas),
+        *(z3.Implies(enabled, delta >= 1) for (_, delta), (_, enabled) in zip(hi_deadline_deltas, hi_deadline_enabled)),
+        z3.Implies(completion_enabled, completion_delta >= 1),
         next_time == t + next_delta,
     )
     shell = EventCandidateSet(
@@ -515,7 +626,9 @@ def build_event_candidates(
         horizon_delta=horizon_delta, release_deltas=release_deltas,
         controller_delta=controller_delta,
         hi_deadline_deltas=hi_deadline_deltas,
-        completion_delta=completion_delta, all_deltas=tuple(all_deltas),
+        hi_deadline_enabled=hi_deadline_enabled,
+        completion_delta=completion_delta, completion_enabled=completion_enabled,
+        all_deltas=tuple(all_deltas),
         next_delta=next_delta,
         base_definition_formula=base_definition,
         source_definition_formula=z3.BoolVal(True),
@@ -533,7 +646,9 @@ def build_event_candidates(
         horizon_delta=horizon_delta, release_deltas=release_deltas,
         controller_delta=controller_delta,
         hi_deadline_deltas=hi_deadline_deltas,
-        completion_delta=completion_delta, all_deltas=tuple(all_deltas),
+        hi_deadline_enabled=hi_deadline_enabled,
+        completion_delta=completion_delta, completion_enabled=completion_enabled,
+        all_deltas=tuple(all_deltas),
         next_delta=next_delta,
         base_definition_formula=base_definition,
         source_definition_formula=source_definition,
@@ -547,17 +662,30 @@ def _silent_interval_service(
     candidates: EventCandidateSet,
     *,
     active_task_names: Collection[str] | None = None,
+    selected_job_key: tuple[str, int] | None | str = "SYMBOLIC",
 ) -> z3.BoolRef:
     """Only the processor-service side conditions of one silent interval."""
 
     delta = candidates.next_delta
     clauses: list[z3.BoolRef] = []
 
-    selected_remaining_terms: list[z3.BoolRef] = []
     active = (
         frozenset(task.name for task in model.tasks)
         if active_task_names is None else frozenset(active_task_names)
     )
+    if selected_job_key is None:
+        return z3.BoolVal(True)
+    if selected_job_key != "SYMBOLIC":
+        job = dispatch_state.jobs[selected_job_key]
+        return z3.And(
+            job.present,
+            z3.Not(job.removed),
+            job.ready,
+            job.effective_demand > job.executed_service,
+            delta <= job.effective_demand - job.executed_service,
+        )
+
+    selected_remaining_terms: list[z3.BoolRef] = []
     for key, job in dispatch_state.jobs.items():
         if key[0] not in active:
             continue
@@ -573,7 +701,6 @@ def _silent_interval_service(
                 delta <= job.effective_demand - job.executed_service,
             ),
         ))
-
     clauses.extend(selected_remaining_terms)
     # Exact-minimum constraints live once in ``definition_formula`` instead of
     # re-expanding a nested minimum expression at every consumer.
@@ -589,6 +716,7 @@ def _event_destination_update(
     active_guard: z3.BoolRef | None = None,
     stutter_source: SymbolicKernelState | None = None,
     active_task_names: Collection[str] | None = None,
+    selected_job_key: tuple[str, int] | None | str = "SYMBOLIC",
 ) -> z3.BoolRef:
     """Write one event-boundary successor, optionally factoring terminal stutter.
 
@@ -719,7 +847,10 @@ def _event_destination_update(
         other = destination.jobs[key]
         source_job = None if source is None else source.jobs[key]
         index = _slot_index(model, key)
-        selected = dispatch_state.frontier.selected_slot == index
+        if selected_job_key == "SYMBOLIC":
+            selected = dispatch_state.frontier.selected_slot == index
+        else:
+            selected = z3.BoolVal(selected_job_key == key)
         for field_name in job_field_names:
             clauses.append(
                 getattr(other, field_name)
@@ -793,6 +924,7 @@ def encode_event_step_for_source(
 
 __all__ = [
     "EVENT_KERNEL_VERSION",
+    "DispatchCase",
     "EventCandidateSet",
     "EventNodeClosureEncoding",
     "EventSource",
@@ -801,7 +933,10 @@ __all__ = [
     "encode_event_node_closure",
     "encode_event_relative_edge",
     "encode_event_step_for_source",
+    "enumerate_dispatch_cases",
     "enumerate_event_sources",
+    "event_source_partition_formula",
+    "event_source_time_formula",
     "exact_periodic_countdown",
     "state_equality",
 ]
