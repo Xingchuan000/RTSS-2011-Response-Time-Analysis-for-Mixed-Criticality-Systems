@@ -19,6 +19,7 @@ from .event_kernel import (
     EventSource,
     _silent_interval_advance,
     build_event_candidates,
+    exact_periodic_countdown,
     state_equality,
 )
 from .event_window_encoder import derive_finite_event_bound
@@ -129,53 +130,36 @@ def _periodic_counterexample(period: int, prefix: str) -> z3.BoolRef:
     )
 
 
-def _periodic_scalarization_counterexample(
+def _release_countdown_counterexample(
     period: int,
     prefix: str,
 ) -> z3.BoolRef:
-    """Refute mismatch between division reference and quotient-free candidate.
+    """Refute mismatch between P7 ``eta`` countdown and next release time."""
 
-    The production Event kernel represents the next periodic timestamp with a
-    fresh scalar ``nxt`` and integer period index ``k``:
-
-        nxt = k * period
-        t < nxt <= t + period
-
-    For non-negative runtime timestamps this relation has exactly the same
-    unique solution as ``((t / period) + 1) * period``.
-    """
-
-    t = z3.Int(f"{prefix}.t")
-    nxt = z3.Int(f"{prefix}.nxt")
-    index = z3.Int(f"{prefix}.period_index")
     period = int(period)
-    reference_index = (t / period) + 1
-    reference = reference_index * period
-    scalar = z3.And(
-        nxt == index * period,
-        nxt > t,
-        nxt <= t + period,
-    )
+    t = z3.Int(f"{prefix}.t")
+    residue = t % period
+    # After P3 at a release timestamp eta has been reset to zero; otherwise it
+    # is the exact positive residue.  This is precisely the dispatch-state
+    # convention consumed by the production Event candidate builder.
+    eta = z3.If(residue == 0, 0, residue)
+    countdown = period - eta
+    reference = ((t / period) + 1) * period - t
+    return z3.And(t >= 0, countdown != reference)
 
-    # The production ``period_index`` is an existential SSA witness.  The
-    # forward direction may therefore use an arbitrary witness and asks
-    # whether it can select a time different from the division reference.
-    #
-    # For the reverse direction we must *construct* one valid witness for the
-    # reference time.  Using the same free ``index`` under ``Not(scalar)`` is
-    # wrong: the solver can simply choose a deliberately bad index even when
-    # another valid witness exists, producing a spurious SAT counterexample.
-    reference_witness = z3.And(
-        nxt == reference_index * period,
-        nxt > t,
-        nxt <= t + period,
-    )
+
+def _controller_countdown_counterexample(
+    period: int,
+    prefix: str,
+) -> z3.BoolRef:
+    """Refute mismatch in the one-time root controller countdown initializer."""
+
+    period = int(period)
+    t = z3.Int(f"{prefix}.t")
+    reference = ((t / period) + 1) * period - t
     return z3.And(
         t >= 0,
-        z3.Or(
-            z3.And(scalar, nxt != reference),
-            z3.And(nxt == reference, z3.Not(reference_witness)),
-        ),
+        exact_periodic_countdown(t, period) != reference,
     )
 
 
@@ -257,7 +241,9 @@ def _deadline_event_counterexample(
     horizon = z3.Int(f"{prefix}.horizon")
     job = dispatch.jobs[key]
     candidates = build_event_candidates(
-        dispatch, model, horizon_time=horizon, prefix=f"{prefix}.candidates"
+        dispatch, model, horizon_time=horizon,
+        controller_delta=exact_periodic_countdown(dispatch.t, model.agent_period),
+        prefix=f"{prefix}.candidates"
     )
     candidate = dict(candidates.hi_deadlines)[key]
     return z3.And(
@@ -281,7 +267,9 @@ def _terminal_service_event_counterexample(
     index = _slot_index(model, key)
     remaining = job.effective_demand - job.executed_service
     candidates = build_event_candidates(
-        dispatch, model, horizon_time=horizon, prefix=f"{prefix}.candidates"
+        dispatch, model, horizon_time=horizon,
+        controller_delta=exact_periodic_countdown(dispatch.t, model.agent_period),
+        prefix=f"{prefix}.candidates"
     )
     return z3.And(
         candidates.definition_formula,
@@ -317,8 +305,9 @@ def _p7_delta1_counterexample(model: BoundModel) -> z3.BoolRef:
     event_end = declare_state("event.diff.p7.event_end", model)
     horizon = dispatch.t + 1
     candidates = build_event_candidates(
-        dispatch, model, horizon_time=horizon, prefix="event.diff.p7.candidates",
-        source=EventSource("HORIZON"),
+        dispatch, model, horizon_time=horizon,
+        controller_delta=exact_periodic_countdown(dispatch.t, model.agent_period),
+        prefix="event.diff.p7.candidates", source=EventSource("HORIZON"),
     )
     return z3.And(
         dispatch.p == 7,
@@ -478,16 +467,18 @@ def prove_event_refinement(
         ("MICROSTEP_EVENT_DIFFERENTIAL_CONSISTENCY::P7_DELTA1", _p7_delta1_counterexample(model)),
     ]
     for task in model.hi_tasks:
-        for slot in range(model.max_jobs_per_task):
-            formulas.append((
-                f"DEADLINE_EVENT_COVERAGE::{task.name}::{slot}",
-                _deadline_event_counterexample(
-                    model, (task.name, slot),
-                    f"event.refine.deadline.{task.name}.{slot}",
-                ),
-            ))
+        # HI slots >0 are structurally absent in the canonical symbolic state.
+        slot = 0
+        formulas.append((
+            f"DEADLINE_EVENT_COVERAGE::{task.name}::{slot}",
+            _deadline_event_counterexample(
+                model, (task.name, slot),
+                f"event.refine.deadline.{task.name}.{slot}",
+            ),
+        ))
     for task in model.tasks:
-        for slot in range(model.max_jobs_per_task):
+        live_slots = (0,) if task.criticality == "HI" else (0, 1)
+        for slot in live_slots:
             formulas.append((
                 f"TERMINAL_SERVICE_EVENT_COVERAGE::{task.name}::{slot}",
                 _terminal_service_event_counterexample(
@@ -501,9 +492,9 @@ def prove_event_refinement(
             _periodic_counterexample(task.period, f"event.refine.release.{task.name}"),
         ))
         formulas.append((
-            f"PERIODIC_EVENT_CANDIDATE_SCALARIZATION::RELEASE::{task.name}",
-            _periodic_scalarization_counterexample(
-                task.period, f"event.refine.periodic_scalar.release.{task.name}"
+            f"RELATIVE_EVENT_COUNTDOWN_EQUIVALENCE::RELEASE::{task.name}",
+            _release_countdown_counterexample(
+                task.period, f"event.refine.relative.release.{task.name}"
             ),
         ))
     formulas.append((
@@ -511,9 +502,9 @@ def prove_event_refinement(
         _periodic_counterexample(model.agent_period, "event.refine.controller"),
     ))
     formulas.append((
-        "PERIODIC_EVENT_CANDIDATE_SCALARIZATION::CONTROLLER",
-        _periodic_scalarization_counterexample(
-            model.agent_period, "event.refine.periodic_scalar.controller"
+        "RELATIVE_EVENT_COUNTDOWN_EQUIVALENCE::CONTROLLER",
+        _controller_countdown_counterexample(
+            model.agent_period, "event.refine.relative.controller"
         ),
     ))
     formulas.extend(_finite_event_bound_formulas(model))
@@ -550,7 +541,7 @@ def prove_event_refinement(
         "NO_SKIPPED_DISCRETE_EVENT",
         (
             "NEXT_EVENT_EXACT_MINIMUM",
-            "PERIODIC_EVENT_CANDIDATE_SCALARIZATION",
+            "RELATIVE_EVENT_COUNTDOWN_EQUIVALENCE",
             "RELEASE_EVENT_COVERAGE",
             "DEADLINE_EVENT_COVERAGE",
             "TERMINAL_SERVICE_EVENT_COVERAGE",

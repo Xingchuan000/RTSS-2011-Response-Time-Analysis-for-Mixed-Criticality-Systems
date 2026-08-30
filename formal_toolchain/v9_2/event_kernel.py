@@ -35,7 +35,20 @@ from .transition_encoder import (
 )
 
 
-EVENT_KERNEL_VERSION = "V9_3_EXACT_EVENT_GRAPH_SOURCE_SPECIALIZED_V1"
+EVENT_KERNEL_VERSION = "V9_3_RELATIVE_COUNTDOWN_EVENT_GRAPH_V1"
+
+
+def exact_periodic_countdown(t: z3.ArithRef, period: int) -> z3.ArithRef:
+    """Ticks from ``t`` to the next strictly-later phase-zero timestamp.
+
+    Production Event edges use propagated countdown state and do not call this
+    helper.  It is used only to initialize the controller clock at the graph
+    root and by small refinement obligations.
+    """
+
+    period = int(period)
+    residue = t % period
+    return z3.If(residue == 0, period, period - residue)
 
 
 def _job_fields(job: SymbolicJob) -> tuple[z3.ExprRef, ...]:
@@ -87,39 +100,6 @@ def state_equality(left: SymbolicKernelState, right: SymbolicKernelState) -> z3.
     ):
         clauses.extend(a == b for a, b in zip(lhs, rhs))
     return z3.And(*clauses)
-
-
-def _declare_exact_periodic_successor(
-    t: z3.ArithRef,
-    period: int,
-    *,
-    prefix: str,
-) -> tuple[z3.ArithRef, z3.BoolRef]:
-    """Exact quotient-free encoding of the next phase-zero periodic timestamp.
-
-    For positive integer ``period`` there is exactly one multiple ``nxt`` of
-    ``period`` in the half-open interval ``(t, t + period]``.  Introducing an
-    integer period index keeps the relation in linear integer arithmetic:
-
-        nxt = k * period
-        t < nxt <= t + period
-
-    This is formula-equivalent to ``((t / period) + 1) * period`` for the
-    non-negative runtime timestamps used by the Event kernel, while avoiding
-    symbolic integer division in every release/controller candidate.
-    """
-
-    period = int(period)
-    if period <= 0:
-        raise ValueError("period must be positive")
-    period_index = z3.Int(f"{prefix}.period_index")
-    nxt = z3.Int(f"{prefix}.time")
-    definition = z3.And(
-        nxt == period_index * period,
-        nxt > t,
-        nxt <= t + period,
-    )
-    return nxt, definition
 
 
 def _slot_index(model: BoundModel, key: tuple[str, int]) -> int:
@@ -181,7 +161,12 @@ def enumerate_event_sources(
 
 @dataclass(frozen=True, slots=True)
 class EventCandidateSet:
-    """Exact candidate timestamps used by one source-specialized Event edge."""
+    """Exact next-event candidates in relative-countdown normal form.
+
+    Absolute timestamps are retained only for diagnostics/refinement consumers.
+    The source partition itself compares the corresponding ``*_delta`` terms,
+    so no fresh periodic quotient/index variables occur in an Event edge.
+    """
 
     horizon: z3.ArithRef
     releases: tuple[tuple[str, z3.ArithRef], ...]
@@ -190,6 +175,13 @@ class EventCandidateSet:
     completion: z3.ArithRef
     all_candidates: tuple[z3.ArithRef, ...]
     next_time: z3.ArithRef
+    horizon_delta: z3.ArithRef
+    release_deltas: tuple[tuple[str, z3.ArithRef], ...]
+    controller_delta: z3.ArithRef
+    hi_deadline_deltas: tuple[tuple[tuple[str, int], z3.ArithRef], ...]
+    completion_delta: z3.ArithRef
+    all_deltas: tuple[z3.ArithRef, ...]
+    next_delta: z3.ArithRef
     base_definition_formula: z3.BoolRef
     source_definition_formula: z3.BoolRef
     definition_formula: z3.BoolRef
@@ -197,7 +189,7 @@ class EventCandidateSet:
 
 @dataclass(frozen=True, slots=True)
 class EventStepEncoding:
-    """One exact event macro from a P0 event boundary to the next P0 boundary."""
+    """One exact Event edge factored into three independently solvable layers."""
 
     source: SymbolicKernelState
     destination: SymbolicKernelState
@@ -205,8 +197,9 @@ class EventStepEncoding:
     candidates: EventCandidateSet
     delta: z3.ArithRef
     closure_formula: z3.BoolRef
-    time_edge_formula: z3.BoolRef
-    silent_core_formula: z3.BoolRef
+    source_time_formula: z3.BoolRef
+    silent_service_formula: z3.BoolRef
+    destination_formula: z3.BoolRef
     formula: z3.BoolRef
 
 
@@ -310,18 +303,19 @@ def encode_event_node_closure(
     )
 
 
-def encode_event_time_edge(
+def encode_event_relative_edge(
     source_state: SymbolicKernelState,
     destination: SymbolicKernelState,
     closure: EventNodeClosureEncoding,
     model: BoundModel,
     *,
     horizon_time: z3.ArithRef,
+    controller_delta: z3.ArithRef,
     prefix: str,
     event_source: EventSource,
     active_task_names: Collection[str] | None = None,
 ) -> EventStepEncoding:
-    """Append only the next-event minimum and silent service to a closed node."""
+    """Build one exact edge in source-time/service/destination normal form."""
 
     active = None if active_task_names is None else frozenset(active_task_names)
     dispatch_state = closure.dispatch_state
@@ -329,24 +323,27 @@ def encode_event_time_edge(
         dispatch_state,
         model,
         horizon_time=horizon_time,
+        controller_delta=controller_delta,
         prefix=prefix,
         source=event_source,
         active_task_names=active,
     )
-    delta = candidates.next_time - source_state.t
-    silent_core = _silent_interval_core(
+    delta = candidates.next_delta
+    source_time = z3.And(
+        source_state.t < horizon_time,
+        candidates.definition_formula,
+        delta >= 1,
+        delta <= candidates.horizon_delta,
+    )
+    silent_service = _silent_interval_service(
         dispatch_state, model, candidates, active_task_names=active
     )
-    edge_formula = z3.And(
-        source_state.t < horizon_time,
-        silent_core,
-        _event_destination_update(
-            dispatch_state,
-            destination,
-            model,
-            candidates,
-            active_task_names=active,
-        ),
+    destination_formula = _event_destination_update(
+        dispatch_state,
+        destination,
+        model,
+        candidates,
+        active_task_names=active,
     )
     return EventStepEncoding(
         source=source_state,
@@ -355,9 +352,10 @@ def encode_event_time_edge(
         candidates=candidates,
         delta=delta,
         closure_formula=closure.formula,
-        time_edge_formula=edge_formula,
-        silent_core_formula=silent_core,
-        formula=z3.And(closure.formula, edge_formula),
+        source_time_formula=source_time,
+        silent_service_formula=silent_service,
+        destination_formula=destination_formula,
+        formula=z3.And(closure.formula, source_time, silent_service, destination_formula),
     )
 
 
@@ -367,43 +365,43 @@ def _source_partition_definition(
     model: BoundModel,
     source: EventSource,
 ) -> z3.BoolRef:
-    """Exact disjoint first-minimum owner for one next-event source."""
+    """Exact disjoint first-minimum owner over relative event countdowns."""
 
     if source.kind == "HORIZON":
-        chosen, index, guard = candidates.horizon, 0, z3.BoolVal(True)
+        chosen, index, guard = candidates.horizon_delta, 0, z3.BoolVal(True)
     elif source.kind == "CONTROLLER":
-        chosen, index, guard = candidates.controller, 1, z3.BoolVal(True)
+        chosen, index, guard = candidates.controller_delta, 1, z3.BoolVal(True)
     elif source.kind == "RELEASE":
         release_index = next(
-            i for i, (task_name, _) in enumerate(candidates.releases)
+            i for i, (task_name, _) in enumerate(candidates.release_deltas)
             if task_name == source.task_name
         )
-        chosen = candidates.releases[release_index][1]
+        chosen = candidates.release_deltas[release_index][1]
         index = 2 + release_index
         guard = z3.BoolVal(True)
     elif source.kind == "HI_DEADLINE":
         deadline_index = next(
-            i for i, ((task_name, slot), _) in enumerate(candidates.hi_deadlines)
+            i for i, ((task_name, slot), _) in enumerate(candidates.hi_deadline_deltas)
             if task_name == source.task_name and slot == source.slot
         )
-        chosen = candidates.hi_deadlines[deadline_index][1]
-        index = 2 + len(candidates.releases) + deadline_index
+        chosen = candidates.hi_deadline_deltas[deadline_index][1]
+        index = 2 + len(candidates.release_deltas) + deadline_index
         guard = z3.BoolVal(True)
     elif source.kind == "COMPLETION":
         if source.task_name is None or source.slot is None:
             raise KeyError(source.source_id)
-        chosen = candidates.completion
-        index = len(candidates.all_candidates) - 1
+        chosen = candidates.completion_delta
+        index = len(candidates.all_deltas) - 1
         selected_index = _slot_index(model, (source.task_name, source.slot))
         guard = dispatch_state.frontier.selected_slot == selected_index
     else:
         raise KeyError(source.source_id)
 
-    earlier = candidates.all_candidates[:index]
-    later = candidates.all_candidates[index + 1:]
+    earlier = candidates.all_deltas[:index]
+    later = candidates.all_deltas[index + 1:]
     return z3.And(
         guard,
-        candidates.next_time == chosen,
+        candidates.next_delta == chosen,
         *(value > chosen for value in earlier),
         *(value >= chosen for value in later),
     )
@@ -414,16 +412,19 @@ def build_event_candidates(
     model: BoundModel,
     *,
     horizon_time: z3.ArithRef,
+    controller_delta: z3.ArithRef,
     prefix: str,
     source: EventSource | None = None,
     active_task_names: Collection[str] | None = None,
 ) -> EventCandidateSet:
-    """Build candidates with one exact disjoint next-event source fixed.
+    """Build exact candidates from relative phase/countdown state.
 
-    Global ``min`` disjunction is intentionally absent.  Python graph search
-    chooses one source member, and this function enforces that member is the
-    canonical first owner of the mathematical minimum.  Simultaneous physical
-    events are still all processed by the destination P0 closure.
+    P3/P7 already maintains ``eta`` as the exact periodic release age.  At a
+    P7 dispatch boundary, the next release offset is therefore simply
+    ``T_i - eta_i``.  Reconstructing the same timestamp with a fresh integer
+    period index on every edge is redundant and was the dominant Presburger
+    arithmetic hotspot.  Controller phase is supplied by the Event-graph
+    clock and propagated linearly between nodes.
     """
 
     t = dispatch_state.t
@@ -431,70 +432,91 @@ def build_event_candidates(
         frozenset(task.name for task in model.tasks)
         if active_task_names is None else frozenset(active_task_names)
     )
-    periodic_definitions: list[z3.BoolRef] = []
+    horizon_delta = horizon_time - t
+
+    release_delta_rows: list[tuple[str, z3.ArithRef]] = []
     release_rows: list[tuple[str, z3.ArithRef]] = []
     for task in model.tasks:
         if task.name not in active:
             continue
-        release_time, release_definition = _declare_exact_periodic_successor(
-            t, task.period, prefix=f"{prefix}.candidate.release.{task.name}"
-        )
-        release_rows.append((task.name, release_time))
-        periodic_definitions.append(release_definition)
-    releases = tuple(release_rows)
-    controller, controller_definition = _declare_exact_periodic_successor(
-        t, model.agent_period, prefix=f"{prefix}.candidate.controller"
-    )
-    periodic_definitions.append(controller_definition)
+        delta = z3.IntVal(int(task.period)) - dispatch_state.eta[task.name]
+        release_delta_rows.append((task.name, delta))
+        release_rows.append((task.name, t + delta))
 
+    hi_deadline_delta_rows: list[tuple[tuple[str, int], z3.ArithRef]] = []
     hi_deadlines: list[tuple[tuple[str, int], z3.ArithRef]] = []
     for task in model.hi_tasks:
         if task.name not in active:
             continue
-        for slot in range(model.max_jobs_per_task):
+        # The symbolic state contract makes every HI slot except slot 0
+        # structurally absent.  Do not serialize dead deadline candidates into
+        # every source-time comparison.
+        for slot in (0,):
             job = dispatch_state.jobs[(task.name, slot)]
-            candidate = z3.If(
+            delta = z3.If(
                 z3.And(
                     job.present, z3.Not(job.removed),
                     job.executed_service < job.effective_demand,
                     job.absolute_deadline > t,
                 ),
-                job.absolute_deadline,
-                horizon_time,
+                job.absolute_deadline - t,
+                horizon_delta,
             )
-            hi_deadlines.append(((task.name, slot), candidate))
+            hi_deadline_delta_rows.append(((task.name, slot), delta))
+            hi_deadlines.append(((task.name, slot), t + delta))
 
-    completion = z3.Int(f"{prefix}.candidate.completion")
-    completion_rows: list[z3.BoolRef] = [
-        z3.Implies(z3.Not(dispatch_state.frontier.running), completion == horizon_time),
-    ]
+    completion_terms: list[z3.ArithRef] = []
     for key, job in dispatch_state.jobs.items():
         if key[0] not in active:
             continue
+        task = model.task_by_name[key[0]]
+        if task.criticality == "HI" and key[1] != 0:
+            continue
+        if task.criticality == "LO" and key[1] not in {0, 1}:
+            continue
         selected_index = _slot_index(model, key)
-        completion_rows.append(z3.Implies(
+        completion_terms.append(z3.If(
             dispatch_state.frontier.selected_slot == selected_index,
-            completion == t + (job.effective_demand - job.executed_service),
+            job.effective_demand - job.executed_service,
+            0,
         ))
-    completion_definition = z3.And(*completion_rows)
-
-    # HORIZON precedes CONTROLLER deliberately.  A controller activation at the
-    # target horizon is irrelevant because the terminal bad observation stops
-    # after P2.  CONTROLLER precedes every nonterminal source so a graph child
-    # is controller-enabled iff its incoming source is CONTROLLER.
-    all_candidates = (
-        horizon_time,
-        controller,
-        *(value for _, value in releases),
-        *(value for _, value in hi_deadlines),
-        completion,
+    selected_remaining = z3.Sum(*completion_terms) if completion_terms else z3.IntVal(0)
+    completion_delta = z3.If(
+        dispatch_state.frontier.running, selected_remaining, horizon_delta
     )
-    next_time = z3.Int(f"{prefix}.candidate.next_time")
-    base_definition = z3.And(*periodic_definitions, completion_definition)
+
+    release_deltas = tuple(release_delta_rows)
+    releases = tuple(release_rows)
+    hi_deadline_deltas = tuple(hi_deadline_delta_rows)
+    controller = t + controller_delta
+    completion = t + completion_delta
+    all_deltas = (
+        horizon_delta,
+        controller_delta,
+        *(value for _, value in release_deltas),
+        *(value for _, value in hi_deadline_deltas),
+        completion_delta,
+    )
+    all_candidates = tuple(t + value for value in all_deltas)
+    next_delta = z3.Int(f"{prefix}.candidate.next_delta")
+    next_time = t + next_delta
+    base_definition = z3.And(
+        horizon_delta >= 1,
+        controller_delta >= 1,
+        controller_delta <= int(model.agent_period),
+        *(value >= 1 for _, value in release_deltas),
+        *(value <= int(model.task_by_name[name].period) for name, value in release_deltas),
+        next_time == t + next_delta,
+    )
     shell = EventCandidateSet(
         horizon=horizon_time, releases=releases, controller=controller,
-        hi_deadlines=tuple(hi_deadlines), completion=completion,
-        all_candidates=tuple(all_candidates), next_time=next_time,
+        hi_deadlines=hi_deadlines, completion=completion,
+        all_candidates=all_candidates, next_time=next_time,
+        horizon_delta=horizon_delta, release_deltas=release_deltas,
+        controller_delta=controller_delta,
+        hi_deadline_deltas=hi_deadline_deltas,
+        completion_delta=completion_delta, all_deltas=tuple(all_deltas),
+        next_delta=next_delta,
         base_definition_formula=base_definition,
         source_definition_formula=z3.BoolVal(True),
         definition_formula=z3.BoolVal(True),
@@ -506,30 +528,30 @@ def build_event_candidates(
     definition = z3.And(base_definition, source_definition)
     return EventCandidateSet(
         horizon=horizon_time, releases=releases, controller=controller,
-        hi_deadlines=tuple(hi_deadlines), completion=completion,
-        all_candidates=tuple(all_candidates), next_time=next_time,
+        hi_deadlines=hi_deadlines, completion=completion,
+        all_candidates=all_candidates, next_time=next_time,
+        horizon_delta=horizon_delta, release_deltas=release_deltas,
+        controller_delta=controller_delta,
+        hi_deadline_deltas=hi_deadline_deltas,
+        completion_delta=completion_delta, all_deltas=tuple(all_deltas),
+        next_delta=next_delta,
         base_definition_formula=base_definition,
         source_definition_formula=source_definition,
         definition_formula=definition,
     )
 
 
-def _silent_interval_core(
+def _silent_interval_service(
     dispatch_state: SymbolicKernelState,
     model: BoundModel,
     candidates: EventCandidateSet,
     *,
     active_task_names: Collection[str] | None = None,
 ) -> z3.BoolRef:
-    """Destination-free side conditions of an exact silent P7 interval."""
+    """Only the processor-service side conditions of one silent interval."""
 
-    next_time = candidates.next_time
-    delta = next_time - dispatch_state.t
-    clauses: list[z3.BoolRef] = [
-        candidates.definition_formula,
-        delta >= 1,
-        next_time <= candidates.horizon,
-    ]
+    delta = candidates.next_delta
+    clauses: list[z3.BoolRef] = []
 
     selected_remaining_terms: list[z3.BoolRef] = []
     active = (
@@ -591,7 +613,7 @@ def _event_destination_update(
         return z3.If(active_guard, active_value, stutter_value)
 
     next_time = candidates.next_time
-    delta = next_time - dispatch_state.t
+    delta = candidates.next_delta
     source = stutter_source
     clauses: list[z3.BoolRef] = [
         destination.t == choose(next_time, None if source is None else source.t),
@@ -727,7 +749,10 @@ def _silent_interval_advance(
     """Exact quotient of repeated P7 ticks over an event-free interval."""
 
     return z3.And(
-        _silent_interval_core(
+        candidates.definition_formula,
+        candidates.next_delta >= 1,
+        candidates.next_delta <= candidates.horizon_delta,
+        _silent_interval_service(
             dispatch_state, model, candidates, active_task_names=active_task_names
         ),
         _event_destination_update(
@@ -744,36 +769,23 @@ def encode_event_step_for_source(
     env: SymbolicEnvironment,
     *,
     horizon_time: z3.ArithRef,
+    controller_delta: z3.ArithRef,
     prefix: str,
     event_source: EventSource,
     controller_enabled: bool,
     active_task_names: Collection[str] | None = None,
 ) -> EventStepEncoding:
-    """Encode one exact edge of the explicit Event graph.
-
-    ``event_source`` is fixed by host-side graph search.  The arithmetic formula
-    proves that this source is the canonical owner of the exact minimum next
-    timestamp.  ``controller_enabled`` is a graph-node fact: root nodes are
-    split on controller phase, and every later node is enabled exactly when its
-    incoming canonical source was CONTROLLER.
-    """
+    """Compose the exact node closure and relative Event edge."""
 
     closure = encode_event_node_closure(
-        source_state,
-        model,
-        env,
-        prefix=f"{prefix}.closure",
+        source_state, model, env, prefix=f"{prefix}.closure",
         controller_enabled=controller_enabled,
         active_task_names=active_task_names,
     )
-    return encode_event_time_edge(
-        source_state,
-        destination,
-        closure,
-        model,
-        horizon_time=horizon_time,
-        prefix=f"{prefix}.edge",
-        event_source=event_source,
+    return encode_event_relative_edge(
+        source_state, destination, closure, model,
+        horizon_time=horizon_time, controller_delta=controller_delta,
+        prefix=f"{prefix}.edge", event_source=event_source,
         active_task_names=active_task_names,
     )
 
@@ -787,8 +799,9 @@ __all__ = [
     "EventStepEncoding",
     "build_event_candidates",
     "encode_event_node_closure",
-    "encode_event_time_edge",
+    "encode_event_relative_edge",
     "encode_event_step_for_source",
     "enumerate_event_sources",
+    "exact_periodic_countdown",
     "state_equality",
 ]

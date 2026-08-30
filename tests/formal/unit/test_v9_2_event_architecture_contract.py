@@ -26,7 +26,7 @@ def test_event_macro_is_source_specialized_and_controller_branch_specialized():
     closure_calls = _function_calls(kernel, "_exact_p0_to_p7_closure")
     candidate_calls = _function_calls(kernel, "build_event_candidates")
     closure_wrapper_calls = _function_calls(kernel, "encode_event_node_closure")
-    edge_calls = _function_calls(kernel, "encode_event_time_edge")
+    edge_calls = _function_calls(kernel, "encode_event_relative_edge")
     step_calls = _function_calls(kernel, "encode_event_step_for_source")
 
     assert "encode_p5_controller_enabled" in closure_calls
@@ -34,14 +34,14 @@ def test_event_macro_is_source_specialized_and_controller_branch_specialized():
     assert "encode_p5_from_exact_pool" not in text
     assert "ExactControllerPool" not in text
     assert "_source_partition_definition" in candidate_calls
-    assert "_declare_exact_periodic_successor" in candidate_calls
+    assert "_declare_exact_periodic_successor" not in candidate_calls
     assert "_exact_p0_to_p7_closure" in closure_wrapper_calls
     assert {
         "build_event_candidates",
-        "_silent_interval_core",
+        "_silent_interval_service",
         "_event_destination_update",
     } <= edge_calls
-    assert {"encode_event_node_closure", "encode_event_time_edge"} <= step_calls
+    assert {"encode_event_node_closure", "encode_event_relative_edge"} <= step_calls
     assert "def encode_p5_controller_enabled" in transition.read_text(encoding="utf-8")
 
 
@@ -50,8 +50,8 @@ def test_canonical_source_partition_owns_simultaneous_timestamps_once():
     assert 'rows: list[EventSource] = [EventSource("HORIZON"), EventSource("CONTROLLER")]' in kernel
     assert "*(value > chosen for value in earlier)" in kernel
     assert "*(value >= chosen for value in later)" in kernel
-    assert "candidates.next_time == chosen" in kernel
-    assert "Global ``min`` disjunction is intentionally absent" in kernel
+    assert "candidates.next_delta == chosen" in kernel
+    assert "_min_expr" not in kernel
 
 
 def test_event_window_builds_only_graph_root_not_multi_event_unroll():
@@ -75,10 +75,13 @@ def test_explicit_event_graph_solver_owns_combinatorial_search():
     assert "def dfs(" in text
     assert "enumerate_event_sources" in text
     assert "encode_event_node_closure" in text
-    assert "encode_event_time_edge" in text
+    assert "encode_event_relative_edge" in text
     assert "enumerate_controller_policy_cases" in text
     assert "EVENT_GRAPH_NODE_CLOSURE_CHECK" in text
-    assert "EVENT_GRAPH_TIME_EDGE_CHECK" in text
+    assert "EVENT_GRAPH_SOURCE_TIME_CHECK" in text
+    assert "EVENT_GRAPH_SILENT_SERVICE_CHECK" in text
+    assert "EVENT_GRAPH_DESTINATION_CHECK" in text
+    assert "EVENT_GRAPH_TIME_EDGE_CHECK" not in text
     assert "solver.push()" in text and "solver.pop()" in text
     assert "for depth in range(" not in text
     assert "timeout" not in text.lower()
@@ -128,6 +131,11 @@ def test_event_window_uses_lazy_release_demand_and_target_local_ssa_frames():
     assert "def declare_event_graph_environment" in environment
     assert "lazy_release_demands=True" in environment
     assert "if env.lazy_release_demands" in environment
+    graph_env = environment.split("def declare_event_graph_environment", 1)[1].split("def demand_for_time", 1)[0]
+    assert "constraints = (origin >= 0,)" in graph_env
+    assert "modulus = lcm(" not in graph_env
+    assert "periodic_phase_constraints(" not in graph_env
+    assert "origin_time % modulus" not in graph_env
     assert "declare_event_graph_environment" in window
     assert "derive_target_scheduling_projection" in window
     assert "declare_sparse_successor" in symbolic
@@ -136,24 +144,27 @@ def test_event_window_uses_lazy_release_demand_and_target_local_ssa_frames():
     assert "encode_p5_invariant_summary" not in (ROOT / "formal_toolchain/v9_2/event_kernel.py").read_text(encoding="utf-8")
 
 
-def test_periodic_event_candidates_use_quotient_free_exact_successor():
+def test_periodic_event_candidates_use_relative_eta_countdowns():
     kernel = ROOT / "formal_toolchain/v9_2/event_kernel.py"
-    candidate_calls = _function_calls(kernel, "build_event_candidates")
     text = kernel.read_text(encoding="utf-8")
-    assert "_declare_exact_periodic_successor" in candidate_calls
-    assert "period_index * period" in text
-    assert "nxt > t" in text
-    assert "nxt <= t + period" in text
-    assert "_next_periodic_after" not in text
+    function = text.split("def build_event_candidates", 1)[1].split(
+        "def _silent_interval_service", 1
+    )[0]
+    assert "task.period)) - dispatch_state.eta[task.name]" in function
+    assert "controller_delta" in function
+    assert "period_index" not in function
+    assert "_declare_exact_periodic_successor" not in text
 
 
-def test_periodic_scalarization_reverse_direction_uses_constructed_witness():
+def test_relative_countdown_refinement_matches_next_periodic_reference():
     refinement = ROOT / "formal_toolchain/v9_2/event_refinement.py"
     text = refinement.read_text(encoding="utf-8")
-    function = text.split("def _periodic_scalarization_counterexample", 1)[1].split(
-        "def _release_tick_domain_counterexample", 1
+    assert "def _release_countdown_counterexample" in text
+    assert "def _controller_countdown_counterexample" in text
+    assert "RELATIVE_EVENT_COUNTDOWN_EQUIVALENCE" in text
+    assert "PERIODIC_EVENT_CANDIDATE_SCALARIZATION" not in text
+    release = text.split("def _release_countdown_counterexample", 1)[1].split(
+        "def _controller_countdown_counterexample", 1
     )[0]
-    assert "reference_index = (t / period) + 1" in function
-    assert "reference_witness = z3.And(" in function
-    assert "z3.And(nxt == reference, z3.Not(reference_witness))" in function
-    assert "z3.And(nxt == reference, z3.Not(scalar))" not in function
+    assert "countdown = period - eta" in release
+    assert "((t / period) + 1) * period - t" in release

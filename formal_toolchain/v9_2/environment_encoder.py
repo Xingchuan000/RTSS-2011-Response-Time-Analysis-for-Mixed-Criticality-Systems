@@ -143,11 +143,14 @@ def declare_event_graph_environment(
 
     if horizon <= 0:
         raise ValueError("event-graph horizon must be positive")
-    modulus = lcm(model.agent_period, *(task.period for task in model.tasks))
-    residue = z3.Int(f"{prefix}.absolute_time_residue")
+    # The explicit Event graph never consumes the old window-global LCM
+    # residue.  Per-task phase is already represented exactly by ``eta`` in
+    # the root SafePrefix and controller phase is carried separately by the
+    # graph solver.  Keeping ``origin % lcm(all periods)`` here only injects a
+    # huge, semantically dead Presburger term into every graph query.
     origin = z3.Int(f"{prefix}.origin_time")
-    phase = PeriodicPhaseContext(residue, origin, modulus)
-    constraints = periodic_phase_constraints(phase, model, model.agent_period)
+    phase = PeriodicPhaseContext(z3.IntVal(0), origin, 1)
+    constraints = (origin >= 0,)
     return SymbolicEnvironment(
         actual_demands={},
         demand_lookup={},
