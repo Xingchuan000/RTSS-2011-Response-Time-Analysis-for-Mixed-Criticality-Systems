@@ -18,7 +18,7 @@ from typing import Any, Mapping
 
 import z3
 
-from .kernel.formula_solver import FormulaReceipt, solve_formula
+from .kernel.formula_solver import FormulaReceipt, solve_formula, solve_qf_fp_formula
 from .kernel.invariant_templates import budget_bounds
 from .kernel.mask_encoder import encode_safety_margin_min
 from .kernel.numeric_encoder import encode_v11_full_10d_observation
@@ -85,23 +85,50 @@ def _fp64_ema_counterexample(
     return z3.And(domain, bad)
 
 
-def _fp_history_update_counterexample(model: BoundModel) -> z3.BoolRef:
-    """Counterexample to finite widened FP64 EMA domains used by FLOW#."""
+def _fp_history_update_obligations(
+    model: BoundModel,
+) -> tuple[tuple[str, z3.BoolRef, dict[str, Any]], ...]:
+    """Independent exact FP64 closure obligations used by FLOW#.
+
+    Each EMA recurrence has only two symbolic binary64 inputs.  Keeping these
+    recurrences independent is semantically exact and avoids coupling twelve
+    unrelated task histories into one large floating-point bit-blast.
+    """
 
     alpha = float(_cfg(model.feature_config, "ema_alpha", 0.2))
     overrun_alpha = float(_cfg(model.feature_config, "overrun_ema_alpha", 0.1))
-    bad: list[z3.BoolRef] = []
+    rows: list[tuple[str, z3.BoolRef, dict[str, Any]]] = []
     for index, task in enumerate(model.tasks):
         upper = float(task.history_cost_upper)
-        bad.append(_fp64_ema_counterexample(
-            alpha=alpha, sample_upper=upper, state_upper=2.0 * upper,
-            prefix=f"v101.feat.fp.cost.{index}",
+        obligation_id = f"FULL_LEGAL_HISTORY_UPDATE_DOMAIN_CLOSURE::{task.name}::EMA_COST"
+        rows.append((
+            obligation_id,
+            _fp64_ema_counterexample(
+                alpha=alpha, sample_upper=upper, state_upper=2.0 * upper,
+                prefix=f"v101.feat.fp.cost.{index}",
+            ),
+            {
+                "task": task.name,
+                "signal": "ema_cost",
+                "sample_upper": upper,
+                "state_upper": 2.0 * upper,
+                "alpha": alpha,
+            },
         ))
-    bad.append(_fp64_ema_counterexample(
-        alpha=overrun_alpha, sample_upper=1.0, state_upper=2.0,
-        prefix="v101.feat.fp.overrun",
+    rows.append((
+        "FULL_LEGAL_HISTORY_UPDATE_DOMAIN_CLOSURE::OVERRUN_EMA",
+        _fp64_ema_counterexample(
+            alpha=overrun_alpha, sample_upper=1.0, state_upper=2.0,
+            prefix="v101.feat.fp.overrun",
+        ),
+        {
+            "signal": "overrun_ema",
+            "sample_upper": 1.0,
+            "state_upper": 2.0,
+            "alpha": overrun_alpha,
+        },
     ))
-    return z3.Or(*bad)
+    return tuple(rows)
 
 
 def _numeric_domain_counterexample(model: BoundModel) -> z3.BoolRef:
@@ -160,24 +187,41 @@ def prove_full_legal_feature_transfer_basis(
     if risk_scale <= 0.0:
         return FeatureTransferBasis("FAIL", (), "FEATURE_RISK_SCALE_NONPOSITIVE")
 
-    history_receipt = solve_formula(
-        "FULL_LEGAL_HISTORY_UPDATE_DOMAIN_CLOSURE",
-        _fp_history_update_counterexample(model),
-        timeout_ms=timeout_ms,
-    )
-    history_row = _formula_row(
-        history_receipt,
-        explanation=(
-            "exact IEEE-754 binary64 EMA/overrun-EMA updates preserve the widened finite "
-            "FLOW# history envelope (2x sample bound); max/recent remain bounded samples"
-        ),
-    )
-    if history_receipt.result != "UNSAT":
-        return FeatureTransferBasis(
-            "FAIL" if history_receipt.result == "SAT" else "UNRESOLVED",
-            (history_row,),
-            f"FEATURE_TRANSFER_UNRESOLVED:{history_receipt.obligation_id}:{history_receipt.result}",
+    history_rows: list[dict[str, Any]] = []
+    history_hashes: list[str] = []
+    for obligation_id, formula, metadata in _fp_history_update_obligations(model):
+        receipt = solve_qf_fp_formula(
+            obligation_id, formula, timeout_ms=timeout_ms, capture_model=True,
         )
+        row = _formula_row(
+            receipt,
+            explanation=(
+                "exact IEEE-754 binary64 RNE update preserves the widened finite "
+                "FLOW# history envelope for this independent recurrence"
+            ),
+        )
+        row.update(metadata)
+        history_rows.append(row)
+        history_hashes.append(receipt.formula_hash)
+        if receipt.result != "UNSAT":
+            reason = f":{receipt.reason}" if receipt.reason else ""
+            return FeatureTransferBasis(
+                "FAIL" if receipt.result == "SAT" else "UNRESOLVED",
+                tuple(history_rows),
+                f"FEATURE_TRANSFER_UNRESOLVED:{receipt.obligation_id}:{receipt.result}{reason}",
+            )
+
+    history_row = {
+        "obligation_id": "FULL_LEGAL_HISTORY_UPDATE_DOMAIN_CLOSURE",
+        "status": "PASS",
+        "solver_logic": "QF_FP",
+        "child_obligations": [str(row["obligation_id"]) for row in history_rows],
+        "child_formula_hashes": history_hashes,
+        "explanation": (
+            "all independent exact IEEE-754 binary64 EMA/overrun-EMA closure obligations "
+            "are UNSAT; recent/max remain bounded concrete samples"
+        ),
+    }
 
     numeric_receipt = solve_formula(
         "FULL_LEGAL_NUMERIC_OBSERVATION_DOMAIN",
@@ -192,7 +236,7 @@ def prove_full_legal_feature_transfer_basis(
             "quantizer relation cannot emit outside the declared integer output domain"
         ),
     )
-    rows: list[dict[str, Any]] = [history_row, numeric_row]
+    rows: list[dict[str, Any]] = [*history_rows, history_row, numeric_row]
     if numeric_receipt.result != "UNSAT":
         return FeatureTransferBasis(
             "FAIL" if numeric_receipt.result == "SAT" else "UNRESOLVED",

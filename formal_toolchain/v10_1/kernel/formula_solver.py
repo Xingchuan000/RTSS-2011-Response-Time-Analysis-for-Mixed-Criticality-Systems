@@ -52,20 +52,18 @@ def canonical_formula_text(formula: z3.BoolRef) -> str:
     return solver.sexpr()
 
 
-def solve_formula(
+def _solve_with_solver(
     obligation_id: str,
     formula: z3.BoolRef,
     *,
-    timeout_ms: int = 120_000,
-    capture_model: bool = False,
+    solver: z3.Solver,
+    timeout_ms: int,
+    capture_model: bool,
 ) -> FormulaReceipt:
-    """Solve one regenerated formula in a fresh solver instance."""
-
     started = perf_counter()
     text = canonical_formula_text(formula)
     canonicalization_seconds = perf_counter() - started
     formula_hash = sha256(text.encode("utf-8")).hexdigest()
-    solver = make_solver()
     solver.set(timeout=int(timeout_ms))
     solver.add(formula)
     check_started = perf_counter()
@@ -100,4 +98,44 @@ def solve_formula(
     )
 
 
-__all__ = ["FormulaReceipt", "canonical_formula_text", "solve_formula"]
+def solve_formula(
+    obligation_id: str,
+    formula: z3.BoolRef,
+    *,
+    timeout_ms: int = 120_000,
+    capture_model: bool = False,
+) -> FormulaReceipt:
+    """Solve one regenerated formula in a fresh general-purpose solver."""
+
+    return _solve_with_solver(
+        obligation_id, formula, solver=make_solver(), timeout_ms=timeout_ms,
+        capture_model=capture_model,
+    )
+
+
+def solve_qf_fp_formula(
+    obligation_id: str,
+    formula: z3.BoolRef,
+    *,
+    timeout_ms: int = 120_000,
+    capture_model: bool = False,
+) -> FormulaReceipt:
+    """Solve one pure quantifier-free floating-point formula with the QF_FP engine.
+
+    The V10.1 FP64 history obligations are pure QF_FP.  Sending a large
+    disjunction of independent FP recurrences through the generic SMT solver
+    causes avoidable bit-blast coupling and was observed to time out on s313.
+    Keeping each recurrence separate and selecting the exact QF_FP logic is a
+    solver-structure change only; the IEEE-754 formula itself is unchanged.
+    """
+
+    return _solve_with_solver(
+        obligation_id, formula, solver=z3.SolverFor("QF_FP"),
+        timeout_ms=timeout_ms, capture_model=capture_model,
+    )
+
+
+__all__ = [
+    "FormulaReceipt", "canonical_formula_text", "solve_formula",
+    "solve_qf_fp_formula",
+]

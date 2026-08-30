@@ -24,17 +24,16 @@ def _write(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _publish_staging(staging: Path, out: Path) -> str:
-    # Publication is a single atomic-ish directory rename.  Do not copy as a
-    # fallback: a filesystem/handle problem must remain visible to the caller.
-    staging.rename(out)
-    return "RENAMED"
-
-
 def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
                target_recipe: Path | None = None, overwrite: bool = False,
                solver_timeout_ms: int = 120_000) -> tuple[int, dict[str, Any]]:
-    """Freeze -> preflight -> compile -> fresh verify -> report for V10.1."""
+    """Freeze -> preflight -> fresh verify -> report for V10.1.
+
+    This research workflow writes directly to the requested output directory.
+    There is no staging/publication compatibility layer: a failed proof keeps
+    its real receipts at the normal output path, and Windows directory-rename
+    behaviour cannot overwrite the verifier result after verification ends.
+    """
     if solver_timeout_ms <= 0:
         raise ValueError("solver_timeout_ms must be positive")
     code_root = Path(code_root).resolve()
@@ -51,12 +50,9 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
                 return 30, {"workflow_status": "FAILED", "result_status": RESULT_INVALID,
                             "failure_code": "OUTPUT_EXISTS", "proof_route": PROOF_ROUTE}
             shutil.rmtree(out)
-        staging = out.parent / f".{out.name}.staging"
-        if staging.exists():
-            shutil.rmtree(staging)
 
         imported = freeze_seed_workspace_v10_1(
-            seed_dir, tree_variant, staging, code_root=code_root,
+            seed_dir, tree_variant, out, code_root=code_root,
             target_recipe=target_recipe, overwrite=False,
         )
         request = Path(imported["request"])
@@ -64,8 +60,8 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
 
         inspect = run_cli(
             "formal_toolchain.cli.inspect_target",
-            ["--request", str(request), "--source-root", str(code_root), "--out", str(staging / "preflight")],
-            cwd=code_root, log_dir=staging / "logs",
+            ["--request", str(request), "--source-root", str(code_root), "--out", str(out / "preflight")],
+            cwd=code_root, log_dir=out / "logs",
         )
         commands.append(inspect)
         if inspect["returncode"] != 0:
@@ -76,14 +72,14 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
             verify_run = run_cli(
                 "formal_toolchain.cli.verify_bundle",
                 ["--request", str(request),
-                 "--out", str(staging / "verified"), "--source-root", str(code_root),
+                 "--out", str(out / "verified"), "--source-root", str(code_root),
                  "--timeout-ms", str(int(solver_timeout_ms))],
-                cwd=code_root, log_dir=staging / "logs",
+                cwd=code_root, log_dir=out / "logs",
             )
             commands.append(verify_run)
-            summary_path = staging / "verified/proof_summary.json"
+            summary_path = out / "verified/proof_summary.json"
             if not summary_path.is_file():
-                stderr_path = staging / "logs" / "verify_bundle.stderr.log"
+                stderr_path = out / "logs" / "verify_bundle.stderr.log"
                 stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.is_file() else ""
                 tail = "\n".join(stderr_text.rstrip().splitlines()[-12:]) or None
                 summary = {"workflow_status": "FAILED", "result_status": RESULT_UNRESOLVED,
@@ -94,14 +90,15 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
                 summary = json.loads(summary_path.read_text(encoding="utf-8"))
                 report_run = run_cli(
                     "formal_toolchain.cli.render_report",
-                    ["--verified", str(staging / "verified"), "--out", str(staging / "human_readable_report.md")],
-                    cwd=code_root, log_dir=staging / "logs",
+                    ["--verified", str(out / "verified"), "--out", str(out / "human_readable_report.md")],
+                    cwd=code_root, log_dir=out / "logs",
                 )
                 commands.append(report_run)
 
-        _write(staging / "workflow_manifest.json", {
+        _write(out / "workflow_manifest.json", {
             "schema_version": "v10_1_workflow_manifest_v1", "proof_route": PROOF_ROUTE,
             "solver_timeout_ms": int(solver_timeout_ms),
+            "workspace_mode": "DIRECT_OUTPUT",
             "commands": commands,
         })
         result_status = str(summary.get("result_status", RESULT_INVALID))
@@ -118,18 +115,16 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
             "result_status": result_status,
             "failure_code": summary.get("failure_code"),
             "failure_message": summary.get("failure_message"),
-            "verified_summary": "verified/proof_summary.json" if (staging / "verified/proof_summary.json").is_file() else None,
+            "verified_summary": "verified/proof_summary.json" if (out / "verified/proof_summary.json").is_file() else None,
             "exit_code": EXIT_CODES.get(result_status, 30),
+            "workspace_mode": "DIRECT_OUTPUT",
         }
-        _write(staging / "proof_result.json", proof_result)
-        if not (staging / "human_readable_report.md").is_file():
-            (staging / "human_readable_report.md").write_text(
+        _write(out / "proof_result.json", proof_result)
+        if not (out / "human_readable_report.md").is_file():
+            (out / "human_readable_report.md").write_text(
                 f"# V10.1 Formal Proof Report\n\n- result_status: `{result_status}`\n- failure_code: `{summary.get('failure_code')}`\n",
                 encoding="utf-8",
             )
-        publish_mode = _publish_staging(staging, out)
-        proof_result["publish_mode"] = publish_mode
-        _write(out / "proof_result.json", proof_result)
         return int(proof_result["exit_code"]), proof_result
     except (FormalWorkflowError, OSError, ValueError, KeyError) as exc:
         route = exc.route if isinstance(exc, FormalWorkflowError) else RESULT_UNRESOLVED
@@ -140,11 +135,10 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
             "workflow_status": "FAILED", "result_status": route,
             "failure_code": code, "failure_message": str(exc),
             "exit_code": EXIT_CODES.get(route, 20),
+            "workspace_mode": "DIRECT_OUTPUT",
         }
-        if "staging" in locals():
-            staging.mkdir(parents=True, exist_ok=True)
-            failure["staging_preserved"] = True
-            _write(staging / "proof_result.json", failure)
+        out.mkdir(parents=True, exist_ok=True)
+        _write(out / "proof_result.json", failure)
         return int(failure["exit_code"]), failure
     finally:
         os.close(fd)
