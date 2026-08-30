@@ -20,8 +20,9 @@ def readiness_report() -> dict[str, object]:
         "implementation_blocker_count": len(blockers),
         "terminal_routes": {
             "BASE_C_AMC_SEM": {
-                "ready": False,
-                "reason": "exact Zhang-Zheng-Gu 2024 Section 4.1 solver not present; fail-closed to PCSSC",
+                "ready": True,
+                "requires_z3": False,
+                "analysis": "exact Zhang-Zheng-Gu 2024 Section 4.1 Equations (4),(6),(11)-(17)",
             },
             "PCSSC": {
                 "ready": z3_available,

@@ -2,10 +2,9 @@
 
 The deployed runtime is allowed to reduce per-release service relative to the
 paper C-AMC-sem model.  This module proves the reduction side of the BASE
-route.  The paper Section 4.1 schedulability equations are deliberately not
-relabelled from AMC-rtb/AMC-max code: until an exact Section 4.1 implementation
-is present, BASE simply yields NOT_SUFFICIENT and the verifier continues with
-PCSSC.
+route.  The paper Section 4.1 schedulability equations are implemented directly
+in :mod:`formal_toolchain.v10_1.base_section4_1`; AMC-rtb/AMC-max code is not
+used as a substitute.
 """
 
 from __future__ import annotations
@@ -14,6 +13,11 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from .kernel.symbolic_state import BoundModel
+from .base_section4_1 import (
+    Section41ScopeError,
+    bind_paper_taskset,
+    prove_original_c_amc_sem_section4_1,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +37,33 @@ class BaseRefinementResult:
 def check_dynamic_to_base_refinement(model: BoundModel, bindings: Mapping[str, Any]) -> BaseRefinementResult:
     receipts: list[dict[str, Any]] = []
     ok = True
+
+    try:
+        paper_tasks = bind_paper_taskset(model)
+    except Section41ScopeError as exc:
+        receipts.append({
+            "obligation_id": "BASE_C_AMC_SEM_SECTION4_1_TASK_MODEL_SCOPE",
+            "status": "UNRESOLVED",
+            "reason": str(exc),
+        })
+        return BaseRefinementResult(
+            status="FAIL",
+            receipts=tuple(receipts),
+            failure_code="C_AMC_SEM_SCOPE_BINDING_ERROR",
+        )
+    else:
+        receipts.append({
+            "obligation_id": "BASE_C_AMC_SEM_SECTION4_1_TASK_MODEL_SCOPE",
+            "status": "PASS",
+            "constrained_deadlines": all(task.deadline <= task.period for task in paper_tasks),
+            "lo_graceful_degradation": all(
+                task.c_hi <= task.c_lo for task in paper_tasks if task.criticality == "LO"
+            ),
+            "hi_assurance_monotonicity": all(
+                task.c_hi >= task.c_lo for task in paper_tasks if task.criticality == "HI"
+            ),
+        })
+
     for task in model.tasks:
         if task.criticality == "HI":
             normal_cap = min(int(task.actual_demand_upper), int(task.c_lo))
@@ -43,10 +74,14 @@ def check_dynamic_to_base_refinement(model: BoundModel, bindings: Mapping[str, A
             )
         else:
             primary_cap = min(int(task.actual_demand_upper), int(task.budget_upper) + 1)
-            degraded_cap = min(int(task.actual_demand_upper), int(task.degraded_cost or task.c_lo))
+            if task.degraded_cost is None:
+                raise Section41ScopeError(
+                    f"LO task lacks frozen degraded C_HI binding: {task.name}"
+                )
+            degraded_cap = min(int(task.actual_demand_upper), int(task.degraded_cost))
             # The frozen C-AMC-sem runtime's degraded budget is the instantiated
             # paper C_HI_LO value for this deployment scope.
-            paper_hi_lo = int(task.degraded_cost or task.c_lo)
+            paper_hi_lo = int(task.degraded_cost)
             rows = (
                 ("PRIMARY_EFFECTIVE_SERVICE_LE_C_LO", primary_cap, int(task.c_lo)),
                 ("DEGRADED_EFFECTIVE_SERVICE_LE_PAPER_C_HI_LO", degraded_cap, paper_hi_lo),
@@ -121,13 +156,6 @@ def check_dynamic_to_base_refinement(model: BoundModel, bindings: Mapping[str, A
 
 
 def run_original_c_amc_sem_schedulability_test(model: BoundModel) -> dict[str, Any]:
-    del model
-    # No exact implementation of Zhang-Zheng-Gu 2024 Section 4.1 is present in
-    # the supplied source.  In particular amc_py/amc.py contains AMC-rtb/max,
-    # which is not a substitute.  Fail closed and continue to PCSSC.
-    return {
-        "obligation_id": "BASE_C_AMC_SEM_SECTION4_1_CERTIFICATE",
-        "status": "UNRESOLVED",
-        "code": "BASE_C_AMC_SEM_NOT_SUFFICIENT",
-        "reason": "EXACT_ZHANG_ZHENG_GU_2024_SECTION4_1_SOLVER_NOT_PRESENT",
-    }
+    """Run the exact Zhang--Zheng--Gu 2024 Section 4.1 BASE test."""
+
+    return prove_original_c_amc_sem_section4_1(model)

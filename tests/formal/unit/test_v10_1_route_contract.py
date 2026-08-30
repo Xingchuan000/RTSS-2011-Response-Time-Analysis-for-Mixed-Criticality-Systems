@@ -29,6 +29,7 @@ def test_v10_1_terminal_has_no_event_graph_dependency():
 def test_active_source_manifest_points_at_v10_1_terminal_only():
     required = {
         "formal_toolchain/v10_1/verifier.py",
+        "formal_toolchain/v10_1/base_section4_1.py",
         "formal_toolchain/v10_1/controller_macro.py",
         "formal_toolchain/v10_1/pcssc.py",
     }

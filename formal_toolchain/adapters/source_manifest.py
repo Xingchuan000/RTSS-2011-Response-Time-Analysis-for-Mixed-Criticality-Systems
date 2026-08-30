@@ -48,6 +48,7 @@ FORMAL_TARGET_FILES = (
     # the PASS DAG or the semantic source root.
     "formal_toolchain/v10_1/verifier.py",
     "formal_toolchain/v10_1/base_refinement.py",
+    "formal_toolchain/v10_1/base_section4_1.py",
     "formal_toolchain/v10_1/controller_macro.py",
     "formal_toolchain/v10_1/feature_transfer.py",
     "formal_toolchain/v10_1/safe_prefix.py",
