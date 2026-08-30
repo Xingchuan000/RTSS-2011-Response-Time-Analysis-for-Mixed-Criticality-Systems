@@ -275,6 +275,7 @@ def _terminal_service_event_counterexample(
         candidates.definition_formula,
         dispatch.t >= 0,
         dispatch.p == 7,
+        dispatch.frontier.running,
         dispatch.frontier.selected_slot == index,
         job.present,
         job.ready,
