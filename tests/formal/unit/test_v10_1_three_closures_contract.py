@@ -36,15 +36,20 @@ def test_switch_endpoint_and_arrival_correlation_rules_are_explicit():
     assert "HI at u=s may use C_HI" in text
     assert "compatible_release_phases" in text
     assert "EXACT_PERIODIC_RELEASE_PROFILE_COVERAGE::" in text
-    assert '"same_task_carry_future_coupling": True' in text
+    assert '"protected_pre_hi_joint_phase": True' in text
+    assert '"other_profiles_phase_relaxation"' in text
     assert "POLICY_ARRIVAL_CORRELATION_RELAXATION" in text
 
 
-def test_first_bad_controller_start_region_is_not_boot_budget():
+def test_first_bad_controller_start_region_is_boot_reachable_inductive_budget_box():
     text = (ROOT / "formal_toolchain/v10_1/controller_macro.py").read_text(encoding="utf-8")
-    assert "FIRST_BAD_START_BUDGET_WIDENING" in text
-    assert "task.budget_floor" in text and "task.budget_upper" in text
-    assert "task.initial_budget" not in text
+    assert "BOOT_REACHABLE_BUDGET_INVARIANT" in text
+    assert "_boot_reachable_budget_invariant" in text
+    assert "task.initial_budget" in text
+    assert "_join_budget_boxes" in text
+    assert "FIRST_BAD_START_BUDGET_WIDENING" not in text
+    assert "while True:" in text
+    assert "Image(I) subseteq I" in text
 
 
 def test_full_feature_domain_drives_exact_cart_without_narrow_history_reconstruction():

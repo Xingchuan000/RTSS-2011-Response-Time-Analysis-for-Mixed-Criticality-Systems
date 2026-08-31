@@ -1,9 +1,10 @@
-"""Small fail-closed Z3 resource helpers.
+"""Small fail-closed Z3 resource helpers for the research verifier.
 
-The proof semantics are unchanged.  Solvers receive a fresh context so native
-AST allocations can be released after each proof query.  Optional process-wide
-limits are controlled only by environment variables; hitting a limit yields
-``unknown``/an exception and therefore never creates a false PASS.
+The V10.1 proof route intentionally has no wall-clock solver timeout.  A slow
+proof obligation is allowed to finish so solver latency cannot be confused
+with a mathematical UNRESOLVED result.  An optional process-wide memory cap is
+still supported because memory exhaustion remains fail-closed and is not a
+clock-based proof cutoff.
 """
 
 from __future__ import annotations
@@ -25,15 +26,12 @@ def _positive_int_env(name: str) -> int:
     return value
 
 
-def configure_z3(z3: Any) -> int:
-    """Apply optional limits and return the per-solver timeout in ms."""
+def configure_z3(z3: Any) -> None:
+    """Apply the optional process-wide memory cap; never set a time limit."""
 
     memory_mb = _positive_int_env("AMC_FORMAL_Z3_MEMORY_MB")
     if memory_mb:
-        # Z3 documents memory_max_size in MB.  This is fail-closed: resource
-        # exhaustion cannot be interpreted as a proof.
         z3.set_param("memory_max_size", memory_mb)
-    return _positive_int_env("AMC_FORMAL_Z3_TIMEOUT_MS")
 
 
 def new_context(z3: Any) -> Any:
@@ -42,8 +40,5 @@ def new_context(z3: Any) -> Any:
 
 
 def new_solver(z3: Any, *, context: Any) -> Any:
-    timeout_ms = configure_z3(z3)
-    solver = z3.Solver(ctx=context)
-    if timeout_ms:
-        solver.set(timeout=timeout_ms)
-    return solver
+    configure_z3(z3)
+    return z3.Solver(ctx=context)

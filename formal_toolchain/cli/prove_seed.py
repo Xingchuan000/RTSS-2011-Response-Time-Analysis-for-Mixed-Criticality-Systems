@@ -16,8 +16,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, help="default: seed-dir/.formal_proof_v10_1")
     parser.add_argument("--target-recipe", type=Path)
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--solver-timeout-ms", type=int, default=120_000,
-                        help="fresh Z3 timeout for V10.1 source/controller obligations")
+    parser.add_argument("--solver-timeout-ms", type=int, default=0,
+                        help="fresh Z3 timeout in ms; 0 means unlimited (default)")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     output_dir = args.out or (args.seed_dir / ".formal_proof_v10_1")

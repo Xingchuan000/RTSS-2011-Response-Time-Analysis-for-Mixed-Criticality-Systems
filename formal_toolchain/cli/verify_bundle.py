@@ -22,8 +22,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--request", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--source-root", required=True, type=Path)
-    parser.add_argument("--timeout-ms", type=int, default=120_000,
-                        help="fresh Z3 timeout per proof obligation")
+    parser.add_argument("--timeout-ms", type=int, default=0,
+                        help="fresh Z3 timeout per obligation; 0 means unlimited (default)")
     args = parser.parse_args(argv)
     try:
         summary = verify_bundle_v10_1(

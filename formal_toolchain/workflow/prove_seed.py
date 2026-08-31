@@ -26,7 +26,7 @@ def _write(path: Path, value: Any) -> None:
 
 def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
                target_recipe: Path | None = None, overwrite: bool = False,
-               solver_timeout_ms: int = 120_000) -> tuple[int, dict[str, Any]]:
+               solver_timeout_ms: int = 0) -> tuple[int, dict[str, Any]]:
     """Freeze -> preflight -> fresh verify -> report for V10.1.
 
     This research workflow writes directly to the requested output directory.
@@ -34,8 +34,8 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
     its real receipts at the normal output path, and Windows directory-rename
     behaviour cannot overwrite the verifier result after verification ends.
     """
-    if solver_timeout_ms <= 0:
-        raise ValueError("solver_timeout_ms must be positive")
+    if solver_timeout_ms < 0:
+        raise ValueError("solver_timeout_ms must be non-negative; 0 means unlimited")
     code_root = Path(code_root).resolve()
     out = Path(out).resolve()
     lock = out.parent / f".{out.name}.lock"
@@ -98,6 +98,7 @@ def prove_seed(*, seed_dir: Path, tree_variant: str, code_root: Path, out: Path,
         _write(out / "workflow_manifest.json", {
             "schema_version": "v10_1_workflow_manifest_v1", "proof_route": PROOF_ROUTE,
             "solver_timeout_ms": int(solver_timeout_ms),
+            "solver_timeout_policy": "UNLIMITED" if int(solver_timeout_ms) == 0 else "FINITE",
             "workspace_mode": "DIRECT_OUTPUT",
             "commands": commands,
         })

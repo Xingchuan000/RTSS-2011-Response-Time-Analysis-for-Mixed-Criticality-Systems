@@ -32,6 +32,7 @@ class FormulaReceipt:
             "formula_hash": self.formula_hash,
             "solver_version": self.solver_version,
             "timeout_ms": self.timeout_ms,
+            "timeout_policy": "UNLIMITED" if int(self.timeout_ms) == 0 else "FINITE",
         }
         if self.reason is not None:
             row["reason"] = self.reason
@@ -64,7 +65,10 @@ def _solve_with_solver(
     text = canonical_formula_text(formula)
     canonicalization_seconds = perf_counter() - started
     formula_hash = sha256(text.encode("utf-8")).hexdigest()
-    solver.set(timeout=int(timeout_ms))
+    if int(timeout_ms) < 0:
+        raise ValueError("timeout_ms must be non-negative; 0 means unlimited")
+    if int(timeout_ms) > 0:
+        solver.set(timeout=int(timeout_ms))
     solver.add(formula)
     check_started = perf_counter()
     result = solver.check()
@@ -102,7 +106,7 @@ def solve_formula(
     obligation_id: str,
     formula: z3.BoolRef,
     *,
-    timeout_ms: int = 120_000,
+    timeout_ms: int = 0,
     capture_model: bool = False,
 ) -> FormulaReceipt:
     """Solve one regenerated formula in a fresh general-purpose solver."""
@@ -117,7 +121,7 @@ def solve_qf_fp_formula(
     obligation_id: str,
     formula: z3.BoolRef,
     *,
-    timeout_ms: int = 120_000,
+    timeout_ms: int = 0,
     capture_model: bool = False,
 ) -> FormulaReceipt:
     """Solve one pure quantifier-free floating-point formula with the QF_FP engine.

@@ -25,20 +25,20 @@ class _FakeZ3:
 
 def test_z3_resource_limits_are_optional(monkeypatch):
     monkeypatch.delenv("AMC_FORMAL_Z3_MEMORY_MB", raising=False)
-    monkeypatch.delenv("AMC_FORMAL_Z3_TIMEOUT_MS", raising=False)
     z3 = _FakeZ3()
     solver = new_solver(z3, context=object())
     assert z3.global_params == {}
     assert solver.params == {}
 
 
-def test_z3_resource_limits_are_fail_closed_configuration(monkeypatch):
+def test_z3_resource_configuration_keeps_only_memory_cap(monkeypatch):
     monkeypatch.setenv("AMC_FORMAL_Z3_MEMORY_MB", "8192")
+    # A stale timeout environment variable must not impose a proof cutoff.
     monkeypatch.setenv("AMC_FORMAL_Z3_TIMEOUT_MS", "180000")
     z3 = _FakeZ3()
     context = object()
-    assert configure_z3(z3) == 180000
+    assert configure_z3(z3) is None
     solver = new_solver(z3, context=context)
     assert z3.global_params["memory_max_size"] == 8192
     assert solver.ctx is context
-    assert solver.params["timeout"] == 180000
+    assert solver.params == {}

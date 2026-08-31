@@ -23,11 +23,11 @@ def test_exact_periodic_workload_couples_previous_carry_and_future_releases():
     assert "residual_time = int(completion_bound) - age" in text
     assert "future += _weight_at_release(release, cells, weights)" in text
     assert "release += int(task_period)" in text
-    assert "PHASE_COUPLED_CARRY_IN_REFINEMENT" in text
+    assert "PROTECTED_PRE_HI_JOINT_PHASE_REFINEMENT" in text
 
 
 def test_periodic_cross_task_phase_relaxation_is_explicitly_recorded():
     text = (ROOT / "formal_toolchain/v10_1/pcssc.py").read_text(encoding="utf-8")
-    assert "CROSS_TASK_PERIODIC_PHASE_DECOUPLING" in text
+    assert "CROSS_TASK_PERIODIC_PHASE_RELAXATION_OUTSIDE_PROTECTED_PRE_HI" in text
     assert "ONLY_ADDS_CROSS_TASK_PHASE_COMBINATIONS" in text
     assert "PER_TASK_PERIODIC_PHASE_MAX_NOT_REQUIRED_TO_REPRODUCE_FEATURE_HISTORY" in text

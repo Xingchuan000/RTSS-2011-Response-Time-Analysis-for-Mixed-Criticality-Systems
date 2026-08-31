@@ -226,7 +226,7 @@ def prove_universal_conformance(
     model: BoundModel,
     *,
     source_root: Path,
-    timeout_ms: int = 120_000,
+    timeout_ms: int = 0,
 ) -> ConformanceProof:
     try:
         theorem_rows = _theorem_receipts(source_root)

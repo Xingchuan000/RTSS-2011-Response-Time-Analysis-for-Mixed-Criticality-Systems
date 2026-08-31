@@ -16,6 +16,13 @@ from typing import Any, Iterable
 
 from .kernel.carry_in import derive_protected_priority_prefix
 from .base_section4_1 import paper_c_lo_bound
+from .carry_in_envelope import (
+    CarryInEnvelopeUnresolved,
+    CarryTaskSpec,
+    joint_phase_pre_hi_interference,
+    phase_relaxed_lo_entry_carry,
+    phase_relaxed_single_switch_carry,
+)
 from .controller_macro import (
     BudgetInterval,
     ControllerMacroPath,
@@ -255,6 +262,109 @@ def _exact_periodic_task_workload(
     }
 
 
+def _exact_periodic_task_future_only(
+    target: TaskBound,
+    task: TaskBound,
+    *,
+    theta: int,
+    horizon: int,
+    cells: tuple[MacroCell, ...],
+    weights: tuple[int, ...],
+    controller_period: int,
+) -> tuple[int, dict[str, int]]:
+    """Maximum non-negative-time workload; excludes all carry-in by construction."""
+    key = tuple((int(cell.lower), int(cell.upper_exclusive)) for cell in cells)
+    total, phase, carry, future = _exact_periodic_phase_workload_cached(
+        int(target.period), int(task.period), int(controller_period), int(theta),
+        int(horizon), key, tuple(int(v) for v in weights), 0, 0,
+    )
+    if int(carry) != 0 or int(total) != int(future):
+        raise PCSSCUnresolved("FUTURE_ONLY_PERIODIC_PROFILE_HAS_CARRY")
+    return int(future), {
+        "release_phase": int(phase),
+        "future_interference": int(future),
+    }
+
+
+def _carry_task_specs(
+    hp_tasks: tuple[TaskBound, ...], path: ControllerMacroPath
+) -> tuple[CarryTaskSpec, ...]:
+    start = path.boxes[0]
+    rows: list[CarryTaskSpec] = []
+    for task in hp_tasks:
+        if task.criticality == "LO":
+            pre = _primary_cap(task, start[task.name])
+            post = _degraded_cap(task)
+        else:
+            pre = _hi_normal_cap(task)
+            post = _hi_high_cap(task)
+        rows.append(CarryTaskSpec(
+            name=task.name, criticality=task.criticality, period=int(task.period),
+            pre_switch_cap=int(pre), post_switch_cap=int(post),
+        ))
+    return tuple(rows)
+
+
+def _aggregate_carry_bound(
+    model: BoundModel,
+    target: TaskBound,
+    hp_tasks: tuple[TaskBound, ...],
+    path: ControllerMacroPath,
+    *,
+    theta: int,
+    switch_kind: str,
+) -> tuple[int, dict[str, Any]]:
+    specs = _carry_task_specs(hp_tasks, path)
+    try:
+        if switch_kind == "PRE_HI":
+            value, details = phase_relaxed_single_switch_carry(
+                int(target.period), int(model.agent_period), int(theta), specs
+            )
+            basis = "SINGLE_SWITCH_AGGREGATE_BACKLOG_WITH_PER_TASK_PHASE_RELAXATION"
+        else:
+            value, details = phase_relaxed_lo_entry_carry(
+                int(target.period), int(model.agent_period), int(theta), specs
+            )
+            basis = "LO_ENTRY_AGGREGATE_BACKLOG_WITH_PER_TASK_PHASE_RELAXATION"
+    except CarryInEnvelopeUnresolved as exc:
+        raise PCSSCUnresolved(str(exc)) from exc
+    return int(value), {
+        "basis": basis,
+        "carry_in": int(value),
+        **details,
+    }
+
+
+def _joint_pre_hi_interference_if_protected(
+    model: BoundModel,
+    target: TaskBound,
+    hp_tasks: tuple[TaskBound, ...],
+    path: ControllerMacroPath,
+    protected_response_by_task: dict[str, int],
+    *,
+    theta: int,
+    horizon: int,
+) -> tuple[int, dict[str, Any]] | None:
+    if any(task.name not in protected_response_by_task for task in hp_tasks):
+        return None
+    completion = tuple(int(protected_response_by_task[task.name]) for task in hp_tasks)
+    if any(bound <= 0 or bound > int(task.period)
+           for task, bound in zip(hp_tasks, completion)):
+        return None
+    specs = _carry_task_specs(hp_tasks, path)
+    try:
+        value, details = joint_phase_pre_hi_interference(
+            int(target.period), int(model.agent_period), int(theta), int(horizon),
+            specs, completion,
+        )
+    except CarryInEnvelopeUnresolved as exc:
+        raise PCSSCUnresolved(str(exc)) from exc
+    return int(value), {
+        "basis": "JOINT_EXACT_PERIODIC_SINGLE_SWITCH_AGGREGATE_BACKLOG_PLUS_FUTURE",
+        **details,
+    }
+
+
 def _budget_depth_at_release(u: int, controller_times: tuple[int, ...]) -> int:
     # A release exactly at c_k is P3 before P5 and therefore sees the pre-k
     # budget.  Only controller candidates strictly before u affect B_rel.
@@ -466,9 +576,65 @@ def _workload_case(
     controller_times = candidate_controller_times(theta, model.agent_period, horizon)
     cells = _macro_cells(horizon, controller_times, switch)
     target_work = _target_cap(target, classification)
+
+    # PRE_HI has constant post-switch service weights.  If every hp task already
+    # has a single-job completion envelope, retain the common target-release
+    # index across *all* hp tasks and jointly maximize carry plus future work.
+    # This removes the old impossible sum of independently worst carry phases.
+    if switch.kind == "PRE_HI":
+        joint = _joint_pre_hi_interference_if_protected(
+            model, target, hp_tasks, path, protected_response_by_task,
+            theta=theta, horizon=horizon,
+        )
+        if joint is not None:
+            hp_work, aggregate_details = joint
+            return int(target_work + hp_work), {
+                "theta": int(theta),
+                "switch_profile": switch.id,
+                "target_classification": classification,
+                "target_demand": int(target_work),
+                "controller_times": list(controller_times),
+                "carry_in_model": aggregate_details,
+                "interference_model": "JOINT_EXACT_PERIODIC_PRE_HI",
+                "interference": [],
+            }
+
+    carry, carry_details = _aggregate_carry_bound(
+        model, target, hp_tasks, path, theta=theta, switch_kind=switch.kind
+    )
     rows: list[dict[str, Any]] = []
-    total = target_work
+    future_total = 0
     for task in hp_tasks:
+        weights = tuple(
+            _weight_for_cell(task, cell, switch, controller_times, path)
+            for cell in cells
+        )
+        future, phase_details = _exact_periodic_task_future_only(
+            target, task, theta=theta, horizon=horizon, cells=cells, weights=weights,
+            controller_period=model.agent_period,
+        )
+        future_total += int(future)
+        rows.append({
+            "task": task.name,
+            **phase_details,
+            "weights": list(weights),
+            "cells": [[cell.lower, cell.upper_exclusive] for cell in cells],
+            "release_model": "EXACT_PERIODIC_PHASE_ZERO",
+        })
+
+    aggregate_total = int(carry) + int(future_total)
+
+    # Where every LO carry already has a completion theorem, the previous
+    # per-task phase-coupled bound is another independent upper bound.  Taking
+    # the minimum cannot exclude a real execution and preserves any precision
+    # that the aggregate envelope does not improve.
+    legacy_total: int | None = 0
+    legacy_rows: list[dict[str, Any]] = []
+    for task in hp_tasks:
+        if task.criticality == "LO" and task.name not in protected:
+            legacy_total = None
+            legacy_rows = []
+            break
         weights = tuple(
             _weight_for_cell(task, cell, switch, controller_times, path)
             for cell in cells
@@ -479,21 +645,29 @@ def _workload_case(
             protected_response_by_task=protected_response_by_task,
             controller_period=model.agent_period,
         )
-        total += task_work
-        rows.append({
-            "task": task.name,
-            **phase_details,
-            "weights": list(weights),
-            "cells": [[cell.lower, cell.upper_exclusive] for cell in cells],
-            "release_model": "EXACT_PERIODIC_PHASE_ZERO",
-        })
-    return int(total), {
+        legacy_total += int(task_work)
+        legacy_rows.append({"task": task.name, **phase_details})
+
+    if legacy_total is not None and int(legacy_total) < int(aggregate_total):
+        hp_work = int(legacy_total)
+        chosen = "MIN_OF_AGGREGATE_AND_COMPLETION_PHASE_COUPLED:COMPLETION_PHASE_COUPLED"
+    else:
+        hp_work = int(aggregate_total)
+        chosen = "MIN_OF_AGGREGATE_AND_COMPLETION_PHASE_COUPLED:AGGREGATE" if legacy_total is not None else "AGGREGATE"
+
+    return int(target_work + hp_work), {
         "theta": int(theta),
         "switch_profile": switch.id,
         "target_classification": classification,
-        "target_demand": target_work,
+        "target_demand": int(target_work),
         "controller_times": list(controller_times),
+        "carry_in_model": carry_details,
+        "future_interference_total": int(future_total),
+        "aggregate_hp_bound": int(aggregate_total),
+        "completion_phase_coupled_hp_bound": None if legacy_total is None else int(legacy_total),
+        "selected_hp_bound": chosen,
         "interference": rows,
+        "completion_phase_coupled_diagnostic": legacy_rows,
     }
 
 
@@ -619,7 +793,8 @@ def prove_target_pcssc(
                          if task.criticality == "LO" and task.name not in protected]
     receipts.append({
         "obligation_id": f"REACHABLE_CARRY_IN::{target.name}",
-        "status": "PASS" if not unprotected_hp_lo else "UNRESOLVED",
+        "status": "PASS",
+        "route": "R7_SINGLE_SWITCH_AGGREGATE_BACKLOG_ENVELOPE",
         "universal_protected_priority_prefix": list(prefix.task_names),
         "base_section4_1_completion_envelopes_reused": base_reused,
         "effective_completion_envelopes": {
@@ -630,7 +805,10 @@ def prove_target_pcssc(
             task.name: completion_source_by_task[task.name]
             for task in hp_tasks if task.name in completion_source_by_task
         },
-        "unprotected_higher_priority_lo": unprotected_hp_lo,
+        "lo_tasks_without_single_job_completion_envelope": unprotected_hp_lo,
+        "handling_of_unprotected_lo": (
+            "included in aggregate work-conserving backlog; no per-task R<=T premise required"
+        ),
     })
     if base_reused:
         ledger.append({
@@ -643,12 +821,16 @@ def prove_target_pcssc(
             ),
             "soundness_direction": "TIGHTENS_CARRY_IN_WITH_ALREADY_PROVED_COMPLETION_BOUNDS",
         })
-    if unprotected_hp_lo:
-        return TargetCertificate(
-            target.name, "UNRESOLVED", None, "REACHABLE_LO_CARRY_IN_UNRESOLVED",
-            tuple(receipts), tuple(ledger), (),
-        )
-
+    ledger.append({
+        "kind": "R7_SINGLE_SWITCH_AGGREGATE_CARRY_IN",
+        "target": target.name,
+        "effect": (
+            "replace independent per-task carry maxima by one work-conserving aggregate "
+            "backlog over exact-periodic releases and at most one LO-to-HI switch"
+        ),
+        "start_budget_basis": "BOOT_REACHABLE_BUDGET_INVARIANT",
+        "soundness_direction": "SOUND_REACHABLE_BACKLOG_REFINEMENT",
+    })
     theta = controller_phase_residues(target.period, model.agent_period)
     read_features = required_policy_read_features(model)
     max_depth = int(ceil(int(target.deadline) / int(model.agent_period)))
@@ -698,18 +880,25 @@ def prove_target_pcssc(
         {"obligation_id": f"EXACT_PERIODIC_RELEASE_PROFILE_COVERAGE::{target.name}", "status": "PASS",
          "release_model": "EXACT_PERIODIC_PHASE_ZERO",
          "phase_relation": "hp release phase is conditioned on the same target-relative controller theta",
-         "same_task_carry_future_coupling": True},
+         "protected_pre_hi_joint_phase": True,
+         "other_profiles_phase_relaxation": "only adds compatible phase combinations"},
     ))
     ledger.append({
-        "kind": "CROSS_TASK_PERIODIC_PHASE_DECOUPLING",
+        "kind": "CROSS_TASK_PERIODIC_PHASE_RELAXATION_OUTSIDE_PROTECTED_PRE_HI",
         "target": target.name,
-        "effect": "each hp task independently maximizes over phases compatible with the same controller theta",
+        "effect": (
+            "non-PRE_HI and unprotected-PRE_HI aggregate envelopes may choose "
+            "different task phases from the same theta-compatible sets"
+        ),
         "soundness_direction": "ONLY_ADDS_CROSS_TASK_PHASE_COMBINATIONS",
     })
     ledger.append({
-        "kind": "PHASE_COUPLED_CARRY_IN_REFINEMENT",
+        "kind": "PROTECTED_PRE_HI_JOINT_PHASE_REFINEMENT",
         "target": target.name,
-        "effect": "previous-job carry-in and future exact-periodic releases share one task phase; remaining carry-in is bounded by the proved completion horizon",
+        "effect": (
+            "when every hp task has a single-job completion envelope, one target-release "
+            "index jointly determines all hp carry and future release phases"
+        ),
         "soundness_direction": "SOUND_TIGHTENING_FROM_EXACT_PERIODIC_AND_COMPLETION_BINDINGS",
     })
     ledger.append({

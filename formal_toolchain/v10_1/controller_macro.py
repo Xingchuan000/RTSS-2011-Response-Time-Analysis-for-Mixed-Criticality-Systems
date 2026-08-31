@@ -193,7 +193,10 @@ def _controller_image_hull(
         state, model, depth=depth
     )
     solver = make_solver()
-    solver.set(timeout=int(timeout_ms))
+    if int(timeout_ms) < 0:
+        raise ValueError("timeout_ms must be non-negative; 0 means unlimited")
+    if int(timeout_ms) > 0:
+        solver.set(timeout=int(timeout_ms))
     for task in model.tasks:
         interval = before[task.name]
         solver.add(
@@ -229,34 +232,126 @@ def _controller_image_hull(
     return after, receipt
 
 
+def _join_budget_boxes(
+    left: dict[str, BudgetInterval],
+    right: dict[str, BudgetInterval],
+) -> dict[str, BudgetInterval]:
+    if left.keys() != right.keys():
+        raise ControllerMacroUnresolved("CONTROLLER_BUDGET_BOX_DOMAIN_MISMATCH")
+    return {
+        name: BudgetInterval(
+            min(int(left[name].lower), int(right[name].lower)),
+            max(int(left[name].upper), int(right[name].upper)),
+        )
+        for name in left
+    }
+
+
+def _budget_boxes_equal(
+    left: dict[str, BudgetInterval],
+    right: dict[str, BudgetInterval],
+) -> bool:
+    return all(
+        int(left[name].lower) == int(right[name].lower)
+        and int(left[name].upper) == int(right[name].upper)
+        for name in left
+    )
+
+
+def _boot_reachable_budget_invariant(
+    model: BoundModel,
+    *,
+    timeout_ms: int,
+) -> tuple[dict[str, BudgetInterval], tuple[dict[str, Any], ...]]:
+    """Least interval post-fixpoint reachable from the frozen boot budgets.
+
+    Between controller candidates budgets are invariant.  At a candidate the
+    exact integer CART/mask/FirstValid/update relation is applied over the
+    already machine-proved full legal observation domain.  Starting from the
+    concrete boot singleton and repeatedly joining the one-step image therefore
+    computes an ascending chain of sound reachable-budget over-approximations.
+
+    The integer budget lattice is finite.  No iteration cap or widening is
+    needed: termination occurs only when ``Image(I) subseteq I`` is actually
+    established by equality of the interval hull.
+    """
+
+    current = {
+        task.name: BudgetInterval(int(task.initial_budget), int(task.initial_budget))
+        for task in model.tasks
+    }
+    rows: list[dict[str, Any]] = []
+    iteration = 0
+    while True:
+        image, image_receipt = _controller_image_hull(
+            model, current, depth=-(iteration + 1), timeout_ms=timeout_ms
+        )
+        joined = _join_budget_boxes(current, image)
+        rows.append({
+            "obligation_id": f"BOOT_REACHABLE_BUDGET_INVARIANT_STEP::{iteration}",
+            "status": "PASS",
+            "pre_box": {name: value.as_dict() for name, value in current.items()},
+            "one_step_image_hull": {name: value.as_dict() for name, value in image.items()},
+            "joined_box": {name: value.as_dict() for name, value in joined.items()},
+            "controller_image_basis": image_receipt["obligation_id"],
+        })
+        if _budget_boxes_equal(joined, current):
+            rows.append({
+                "obligation_id": "BOOT_REACHABLE_BUDGET_INVARIANT",
+                "status": "PASS",
+                "seed": "frozen concrete initial_runtime_budget vector",
+                "closure": "exact full-feature-domain CART/mask/FirstValid budget image",
+                "postfixed": True,
+                "iterations": int(iteration + 1),
+                "invariant_box": {
+                    name: value.as_dict() for name, value in current.items()
+                },
+                "soundness_argument": (
+                    "boot singleton is included; budgets are unchanged between controller "
+                    "candidates; the final interval box contains its complete guarded "
+                    "controller image, hence induction covers every finite safe prefix"
+                ),
+            })
+            return current, tuple(rows)
+        current = joined
+        iteration += 1
+
+
 def build_controller_macro_path(
     model: BoundModel,
     *,
     max_activations: int,
     timeout_ms: int,
 ) -> ControllerMacroPath:
-    # A first-bad target can be released after an arbitrary safe prefix.  Boot
-    # budgets are therefore not a sound window StartRegion.  Widen to the full
-    # scheduler-SafePrefix budget box; this only adds controller behaviours.
-    start_box = {
-        task.name: BudgetInterval(int(task.budget_floor), int(task.budget_upper))
-        for task in model.tasks
-    }
-    boxes: list[dict[str, BudgetInterval]] = [start_box]
+    # The full-feature controller image is only sound after the machine feature
+    # transfer basis is established, so discharge that dependency before using
+    # the image in the arbitrary-prefix budget invariant.
     receipts: list[dict[str, Any]] = []
-    ledger: list[dict[str, Any]] = [{
-        "kind": "FIRST_BAD_START_BUDGET_WIDENING",
-        "effect": "unknown reachable pre-window budget set -> complete scheduler-SafePrefix legal box",
-        "soundness_direction": "ONLY_ADDS_START_BUDGET_STATES",
-    }]
     read = required_policy_read_features(model)
-
     feature_basis = prove_full_legal_feature_transfer_basis(model, timeout_ms=timeout_ms)
     receipts.extend(feature_basis.receipts)
     if feature_basis.status != "PASS":
         raise ControllerMacroUnresolved(
             feature_basis.failure_code or "FEATURE_TRANSFER_UNRESOLVED"
         )
+
+    # The first-bad target can be released after an arbitrary finite safe
+    # prefix.  Rather than widening its window-start budget to the entire legal
+    # box, prove a boot-seeded controller-closed interval invariant and use that
+    # invariant as the StartRegion.
+    start_box, start_invariant_receipts = _boot_reachable_budget_invariant(
+        model, timeout_ms=timeout_ms
+    )
+    receipts.extend(start_invariant_receipts)
+    boxes: list[dict[str, BudgetInterval]] = [start_box]
+    ledger: list[dict[str, Any]] = [{
+        "kind": "BOOT_REACHABLE_START_BUDGET_INVARIANT",
+        "effect": (
+            "arbitrary first-bad prefix budget is restricted to the least "
+            "boot-seeded interval post-fixpoint of the exact controller image"
+        ),
+        "soundness_direction": "SOUND_INDUCTIVE_REACHABILITY_REFINEMENT",
+    }]
     basis_ids = {str(row.get("obligation_id")) for row in feature_basis.receipts}
 
     def basis_for(feature: str) -> str:
@@ -269,7 +364,7 @@ def build_controller_macro_path(
     receipts.append({
         "obligation_id": "FLOW_START_SOUND",
         "status": "PASS",
-        "budget_flow": "all first-bad SafePrefix budgets covered by [budget_floor,budget_upper]",
+        "budget_flow": "all first-bad budgets covered by boot-seeded controller-closed invariant",
         "history_flow": "separate exact-FP64/full-quantized-domain feature-transfer basis",
         "start_budget_box": {name: row.as_dict() for name, row in start_box.items()},
     })
