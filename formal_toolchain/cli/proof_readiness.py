@@ -1,11 +1,11 @@
-"""Machine-readable readiness for the active V10.1 proof route."""
+"""Machine-readable readiness for the active V10.12 implementation."""
 
 from __future__ import annotations
 
 import importlib.util
 import json
 
-from formal_toolchain.v10_1.constants import PROOF_ROUTE
+from formal_toolchain.v10_1.constants import FRAMEWORK_REVISION, PROOF_ROUTE
 
 
 def readiness_report() -> dict[str, object]:
@@ -14,6 +14,7 @@ def readiness_report() -> dict[str, object]:
     return {
         "schema_version": "v10_1_proof_readiness_v1",
         "proof_route": PROOF_ROUTE,
+        "framework_revision": FRAMEWORK_REVISION,
         "proof_pipeline_ready": z3_available,
         "formal_dependency_z3_available": z3_available,
         "implementation_blockers": blockers,
@@ -27,6 +28,9 @@ def readiness_report() -> dict[str, object]:
             "PCSSC": {
                 "ready": z3_available,
                 "event_graph_required": False,
+                "pointwise_first": True,
+                "case_consistent_fallback": True,
+                "deadline_canonical_case_domain": True,
             },
         },
     }

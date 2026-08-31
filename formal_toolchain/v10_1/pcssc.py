@@ -1,16 +1,19 @@
-"""Policy-Constrained Single-Switch Certificate (PCSSC), V10.11 revision.
+"""Policy-Constrained Single-Switch Certificate (PCSSC), V10.12 revision.
 
 This module never performs release/completion/deadline/dispatch Event-Graph
-search.  It operates on a target response horizon, a common C-AMC-sem switch
-profile, periodic controller candidates, exact-controller budget macro regions,
-and the frozen exact-periodic phase-zero release profile.  No per-case arrival
-solver is allocated.
+search.  It first tries the V10.11 pointwise-max postfix and, only when that
+route is unresolved, evaluates the V10.12 deadline-canonical finite case domain.
+Each fixed case receives its own directly checked postfix; the exported response
+bound is the maximum of those completion bounds, not a forged common postfix.
+No per-case arrival solver is allocated.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from hashlib import sha256
+import json
 from math import ceil
 from typing import Any, Iterable, Mapping
 
@@ -18,8 +21,11 @@ from .kernel.carry_in import derive_protected_priority_prefix
 from .completion_certificates import (
     BASE_COMPLETION_SOURCE,
     PCSSC_COMPLETION_SOURCE,
+    PCSSC_CASE_COMPLETION_THEOREM,
+    PCSSC_POINTWISE_COMPLETION_THEOREM,
     CertifiedCompletionBound,
 )
+from .constants import TARGET_PROVED_PCSSC, TARGET_PROVED_PCSSC_CASE_CONSISTENT
 from .base_section4_1 import paper_c_lo_bound
 from .carry_in_envelope import (
     CarryInEnvelopeUnresolved,
@@ -63,6 +69,32 @@ class MacroCell:
 
 
 @dataclass(frozen=True, slots=True)
+class CaseKey:
+    theta: int
+    switch: SwitchCell
+    target_classification: str
+    canonical_deadline: int
+
+    @property
+    def id(self) -> str:
+        return (
+            f"THETA_{self.theta}__{self.switch.id}__"
+            f"TARGET_{self.target_classification}"
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "case_id": self.id,
+            "theta": int(self.theta),
+            "switch_kind": self.switch.kind,
+            "switch_lower": self.switch.lower,
+            "switch_upper": self.switch.upper,
+            "target_classification": self.target_classification,
+            "canonical_deadline": int(self.canonical_deadline),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TargetCertificate:
     target: str
     status: str
@@ -71,6 +103,8 @@ class TargetCertificate:
     receipts: tuple[dict[str, Any], ...]
     conservatism_ledger: tuple[dict[str, Any], ...]
     tested_horizons: tuple[dict[str, Any], ...]
+    terminal_route: str | None = None
+    completion_theorem_basis: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -78,6 +112,8 @@ class TargetCertificate:
             "status": self.status,
             "response_bound": self.response_bound,
             "failure_code": self.failure_code,
+            "terminal_route": self.terminal_route,
+            "completion_theorem_basis": self.completion_theorem_basis,
             "receipts": list(self.receipts),
             "conservatism_ledger": list(self.conservatism_ledger),
             "tested_horizons": list(self.tested_horizons),
@@ -710,6 +746,322 @@ def _max_workload_at_horizon(
     return int(maximum), argmax, switch_case_count
 
 
+
+def _canonical_switch_partition_receipt(
+    target: TaskBound,
+    theta: int,
+    cells: tuple[SwitchCell, ...],
+) -> dict[str, Any]:
+    deadline = int(target.deadline)
+    expected = 0
+    for cell in cells:
+        if cell.kind != "LO_SWITCH" or cell.lower is None or cell.upper is None:
+            raise PCSSCUnresolved(
+                f"DEADLINE_CANONICAL_SWITCH_PARTITION_INVALID:{target.name}:theta={theta}"
+            )
+        if int(cell.lower) != expected or int(cell.upper) < int(cell.lower):
+            raise PCSSCUnresolved(
+                f"DEADLINE_CANONICAL_SWITCH_PARTITION_GAP:{target.name}:theta={theta}:"
+                f"expected={expected}:cell={cell.id}"
+            )
+        expected = int(cell.upper) + 1
+    if deadline > 0 and expected != deadline:
+        raise PCSSCUnresolved(
+            f"DEADLINE_CANONICAL_SWITCH_PARTITION_INCOMPLETE:{target.name}:theta={theta}:"
+            f"covered_end={expected}:deadline={deadline}"
+        )
+    return {
+        "obligation_id": f"DEADLINE_CANONICAL_SWITCH_PARTITION::{target.name},theta={theta}",
+        "status": "PASS",
+        "canonical_deadline": deadline,
+        "switch_cells": [cell.id for cell in cells],
+        "lo_switch_integer_domain": [0, max(-1, deadline - 1)],
+        "complete": True,
+        "disjoint": True,
+        "constructed_once_at_deadline": True,
+    }
+
+
+def _deadline_canonical_case_domain(
+    model: BoundModel,
+    target: TaskBound,
+    hp_tasks: tuple[TaskBound, ...],
+) -> tuple[tuple[CaseKey, ...], tuple[dict[str, Any], ...], str]:
+    deadline = int(target.deadline)
+    rows: list[CaseKey] = []
+    partition_receipts: list[dict[str, Any]] = []
+    for theta in controller_phase_residues(target.period, model.agent_period):
+        controller_times = candidate_controller_times(theta, model.agent_period, deadline)
+        switch_cells = _switch_cells(deadline, controller_times, hp_tasks)
+        partition_receipts.append(
+            _canonical_switch_partition_receipt(target, int(theta), switch_cells)
+        )
+        profiles = (SwitchCell("PRE_HI"), SwitchCell("LO_NO_SWITCH"), *switch_cells)
+        for switch in profiles:
+            for classification in _valid_target_classes(target, switch):
+                rows.append(CaseKey(
+                    theta=int(theta),
+                    switch=switch,
+                    target_classification=str(classification),
+                    canonical_deadline=deadline,
+                ))
+    rows.sort(key=lambda case: (
+        int(case.theta),
+        case.switch.kind,
+        -1 if case.switch.lower is None else int(case.switch.lower),
+        -1 if case.switch.upper is None else int(case.switch.upper),
+        case.target_classification,
+    ))
+    if not rows:
+        raise PCSSCUnresolved(f"CASE_CONSISTENT_CLASS_DOMAIN_EMPTY:{target.name}")
+    ids = [case.id for case in rows]
+    if len(ids) != len(set(ids)):
+        raise PCSSCUnresolved(f"CASE_CONSISTENT_CLASS_DOMAIN_DUPLICATE:{target.name}")
+    payload = [case.as_dict() for case in rows]
+    domain_hash = sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return tuple(rows), tuple(partition_receipts), domain_hash
+
+
+def _pointwise_postfix_search(
+    model: BoundModel,
+    target: TaskBound,
+    hp_tasks: tuple[TaskBound, ...],
+    path: ControllerMacroPath,
+    protected: set[str],
+    protected_response_by_task: dict[str, int],
+) -> tuple[int | None, list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    tested: list[dict[str, Any]] = []
+    proof_receipts: list[dict[str, Any]] = []
+    deadline = int(target.deadline)
+    R = _initial_horizon(target, hp_tasks, protected)
+    seen: set[int] = set()
+    while True:
+        if R in seen:
+            return None, tested, proof_receipts, f"POINTWISE_CANDIDATE_CYCLE:{target.name}:R={R}"
+        seen.add(R)
+        try:
+            prefix_receipt = _controller_prefix_coverage_receipt(model, target, path, R)
+            workload, argmax, case_count = _max_workload_at_horizon(
+                model, target, path, protected, protected_response_by_task, R
+            )
+        except PCSSCUnresolved as exc:
+            return None, tested, proof_receipts, str(exc)
+        tested.append({
+            "terminal": "POINTWISE",
+            "R": int(R),
+            "W": int(workload),
+            "postfixed": bool(workload <= R),
+            "maximizing_case": argmax,
+            "joint_case_count": int(case_count),
+        })
+        proof_receipts.append(prefix_receipt)
+        if workload <= R:
+            proof_receipts.extend((
+                {"obligation_id": f"WORKLOAD_DOMINANCE::{target.name}", "status": "PASS", "horizon": int(R)},
+                {"obligation_id": f"POSTFIX_RESPONSE_CERTIFICATE::{target.name},R={R}", "status": "PASS", "W": int(workload), "R": int(R)},
+                {"obligation_id": f"HI_TARGET_SAFE::{target.name}", "status": "PASS", "route": "PCSSC_POINTWISE"},
+            ))
+            return int(R), tested, proof_receipts, None
+        if R == deadline:
+            return None, tested, proof_receipts, "POLICY_SINGLE_SWITCH_POINTWISE_POSTFIX_UNRESOLVED"
+        next_R = max(int(R) + 1, int(workload))
+        R = deadline if next_R > deadline else next_R
+
+
+def _case_postfix_search(
+    model: BoundModel,
+    target: TaskBound,
+    hp_tasks: tuple[TaskBound, ...],
+    path: ControllerMacroPath,
+    protected: set[str],
+    protected_response_by_task: dict[str, int],
+    case: CaseKey,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str | None]:
+    deadline = int(target.deadline)
+    R = max(1, min(deadline, int(_target_cap(target, case.target_classification))))
+    path_rows: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    while True:
+        if R in seen:
+            return None, path_rows, f"CASE_CANDIDATE_CYCLE:{case.id}:R={R}"
+        seen.add(R)
+        try:
+            _controller_prefix_coverage_receipt(model, target, path, R)
+            workload, details = _workload_case(
+                model, target, hp_tasks, path, protected, protected_response_by_task,
+                horizon=R, theta=case.theta, switch=case.switch,
+                classification=case.target_classification,
+            )
+        except PCSSCUnresolved as exc:
+            return None, path_rows, str(exc)
+        path_rows.append({"R": int(R), "W": int(workload), "postfixed": bool(workload <= R)})
+        if workload <= R:
+            # Normative direct re-check.  The iteration above is only a candidate generator.
+            try:
+                prefix_receipt = _controller_prefix_coverage_receipt(model, target, path, R)
+                final_workload, final_details = _workload_case(
+                    model, target, hp_tasks, path, protected, protected_response_by_task,
+                    horizon=R, theta=case.theta, switch=case.switch,
+                    classification=case.target_classification,
+                )
+            except PCSSCUnresolved as exc:
+                return None, path_rows, str(exc)
+            if final_workload > R:
+                return None, path_rows, f"CASE_DIRECT_POSTFIX_RECHECK_FAILED:{case.id}:R={R}:W={final_workload}"
+            return {
+                **case.as_dict(),
+                "status": "PASS",
+                "R": int(R),
+                "W": int(final_workload),
+                "postfixed": True,
+                "candidate_path": path_rows,
+                "controller_prefix_receipt": prefix_receipt,
+                "final_case": final_details,
+            }, path_rows, None
+        if R == deadline:
+            return None, path_rows, f"CASE_POSTFIX_NOT_FOUND_BY_DEADLINE:{case.id}:W={workload}:D={deadline}"
+        next_R = max(int(R) + 1, int(workload))
+        R = deadline if next_R > deadline else next_R
+
+
+def _case_consistent_postfix_search(
+    model: BoundModel,
+    target: TaskBound,
+    hp_tasks: tuple[TaskBound, ...],
+    path: ControllerMacroPath,
+    protected: set[str],
+    protected_response_by_task: dict[str, int],
+) -> tuple[int | None, list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    try:
+        domain, partition_receipts, domain_hash = _deadline_canonical_case_domain(
+            model, target, hp_tasks
+        )
+    except PCSSCUnresolved as exc:
+        return None, [], [], str(exc)
+
+    receipts: list[dict[str, Any]] = list(partition_receipts)
+    receipts.extend((
+        {
+            "obligation_id": f"CASE_CONSISTENT_CLASS_DOMAIN::{target.name}",
+            "status": "PASS",
+            "canonical_deadline": int(target.deadline),
+            "canonical_case_count": len(domain),
+            "canonical_case_domain_hash": domain_hash,
+            "case_ids": [case.id for case in domain],
+        },
+        {
+            "obligation_id": f"CASE_HORIZON_STABILITY::{target.name}",
+            "status": "PASS",
+            "fixed_class_fields": ["theta", "switch_cell_at_deadline", "target_classification"],
+            "horizon_indexed_envelope": "controller prefix and workload are recomputed at R without changing the CaseKey",
+            "switch_partition_rebuilt_during_case_recurrence": False,
+        },
+    ))
+
+    case_certificates: list[dict[str, Any]] = []
+    tested: list[dict[str, Any]] = []
+    for case in domain:
+        cert, path_rows, failure = _case_postfix_search(
+            model, target, hp_tasks, path, protected, protected_response_by_task, case
+        )
+        if cert is None:
+            tested.append({
+                "terminal": "CASE_CONSISTENT",
+                **case.as_dict(),
+                "status": "UNRESOLVED",
+                "candidate_path": path_rows,
+                "failure": failure,
+            })
+            return None, tested, receipts, f"CASE_CONSISTENT_PCSSC_UNRESOLVED:{case.id}:{failure}"
+        case_certificates.append(cert)
+        tested.append({
+            "terminal": "CASE_CONSISTENT",
+            **case.as_dict(),
+            "status": "PASS",
+            "R": int(cert["R"]),
+            "W": int(cert["W"]),
+            "candidate_path": cert["candidate_path"],
+        })
+        prefix_receipt = dict(cert["controller_prefix_receipt"])
+        prefix_receipt["case_id"] = case.id
+        receipts.append(prefix_receipt)
+        receipts.extend((
+            {
+                "obligation_id": f"CASE_WORKLOAD_DOMINANCE::{target.name},{case.id},R={cert['R']}",
+                "status": "PASS",
+                "case_id": case.id,
+                "R": int(cert["R"]),
+                "W": int(cert["W"]),
+                "direct_recheck": True,
+            },
+            {
+                "obligation_id": f"CASE_POSTFIX_RESPONSE_CERTIFICATE::{target.name},{case.id},R={cert['R']}",
+                "status": "PASS",
+                "case_id": case.id,
+                "W": int(cert["W"]),
+                "R": int(cert["R"]),
+                "W_le_R_le_D": int(cert["W"]) <= int(cert["R"]) <= int(target.deadline),
+            },
+        ))
+
+    domain_ids = [case.id for case in domain]
+    covered_ids = [str(cert["case_id"]) for cert in case_certificates]
+    missing = sorted(set(domain_ids) - set(covered_ids))
+    duplicates = sorted({case_id for case_id in covered_ids if covered_ids.count(case_id) > 1})
+    if missing or duplicates or len(covered_ids) != len(domain_ids):
+        return None, tested, receipts, (
+            f"CASE_DOMAIN_COVERAGE_FAILED:{target.name}:missing={missing}:duplicates={duplicates}"
+        )
+    Rcert = max(int(cert["R"]) for cert in case_certificates)
+    if Rcert > int(target.deadline):
+        return None, tested, receipts, f"CASE_CONSISTENT_RCERT_EXCEEDS_DEADLINE:{target.name}:R={Rcert}"
+    max_case = max(case_certificates, key=lambda cert: (int(cert["R"]), str(cert["case_id"])))
+    receipts.extend((
+        {
+            "obligation_id": f"CASE_DOMAIN_COVERAGE::{target.name}",
+            "status": "PASS",
+            "canonical_case_count": len(domain_ids),
+            "covered_case_count": len(covered_ids),
+            "missing_case_ids": missing,
+            "duplicate_case_ids": duplicates,
+            "canonical_case_domain_hash": domain_hash,
+        },
+        {
+            "obligation_id": f"ALL_CASES_POSTFIX_COVERED::{target.name}",
+            "status": "PASS",
+            "canonical_case_count": len(domain_ids),
+            "covered_case_count": len(covered_ids),
+            "Rcert": int(Rcert),
+            "max_case_id": str(max_case["case_id"]),
+            "uniform_Rcert_is_common_postfix": False,
+        },
+        {
+            "obligation_id": f"CASE_CONSISTENT_RESPONSE_CERTIFICATE::{target.name},Rcert={Rcert}",
+            "status": "PASS",
+            "Rcert": int(Rcert),
+            "deadline": int(target.deadline),
+            "derivation": "max of per-case completion bounds after exhaustive canonical case coverage",
+            "not_a_global_postfix": True,
+        },
+        {
+            "obligation_id": f"PCSSC_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_12::{target.name}",
+            "status": "PASS",
+            "response_bound": int(Rcert),
+            "premise": f"ALL_CASES_POSTFIX_COVERED::{target.name}",
+            "safe_prefix_completion_contract": True,
+        },
+        {
+            "obligation_id": f"HI_TARGET_SAFE::{target.name}",
+            "status": "PASS",
+            "route": "PCSSC_CASE_CONSISTENT",
+            "response_bound": int(Rcert),
+        },
+    ))
+    return int(Rcert), tested, receipts, None
+
+
 def _initial_horizon(target: TaskBound, hp_tasks: tuple[TaskBound, ...], protected: set[str]) -> int:
     # Candidate generation only.  Soundness never depends on this lower bound:
     # every terminal PASS is checked by W#(R)<=R at the concrete tested R.
@@ -872,9 +1224,13 @@ def prove_target_pcssc(
             "kind": "CROSS_TARGET_PCSSC_COMPLETION_PROPAGATION",
             "target": target.name,
             "tasks": pcssc_reused,
+            "theorem_basis_by_task": {
+                name: certified_completion[name].theorem_basis for name in pcssc_reused
+            },
             "soundness_basis": (
-                "PCSSC_SAFE_PREFIX_COMPLETION_EXPORT_V10_11 plus strict fixed-priority "
-                "forward induction; only fully proved higher-priority Rcert<=D<=T is reused"
+                "each reused PCSSC certificate carries an explicit pointwise-V10.11 or "
+                "case-consistent-V10.12 safe-prefix completion theorem basis; strict "
+                "fixed-priority forward induction permits only fully proved HP Rcert<=D<=T"
             ),
             "soundness_direction": "TIGHTENS_CARRY_IN_AND_PROTECTED_PRE_HI_WITH_PROVED_HP_BOUNDS",
         })
@@ -988,83 +1344,49 @@ def prove_target_pcssc(
         "soundness_direction": "CONTROLLER_HISTORY_FEATURES_WIDENED_WITHOUT_FUTURE_SAFETY_FEEDBACK",
     })
 
-    tested: list[dict[str, Any]] = []
-    R = _initial_horizon(target, hp_tasks, protected)
-    candidates: list[int] = []
-    # Fixed-point-like values are used only as candidate horizons.  We always
-    # separately check the normative post-fixed inequality at each candidate.
-    for _ in range(64):
-        if R not in candidates:
-            candidates.append(R)
-        try:
-            prefix_receipt = _controller_prefix_coverage_receipt(
-                model, target, path, R
-            )
-            workload, argmax, case_count = _max_workload_at_horizon(
-                model, target, path, protected, protected_response_by_task, R
-            )
-        except PCSSCUnresolved as exc:
-            return TargetCertificate(target.name, "UNRESOLVED", None, str(exc),
-                                     tuple(receipts), tuple(ledger), tuple(tested))
-        row = {
-            "R": int(R), "W": int(workload), "postfixed": bool(workload <= R),
-            "maximizing_case": argmax, "joint_case_count": int(case_count),
-        }
-        tested.append(row)
-        receipts.append(prefix_receipt)
-        if workload <= R:
-            receipts.extend((
-                {"obligation_id": f"WORKLOAD_DOMINANCE::{target.name}", "status": "PASS",
-                 "horizon": int(R)},
-                {"obligation_id": f"POSTFIX_RESPONSE_CERTIFICATE::{target.name},R={R}", "status": "PASS",
-                 "W": int(workload), "R": int(R)},
-                {"obligation_id": f"HI_TARGET_SAFE::{target.name}", "status": "PASS",
-                 "route": "PCSSC"},
-            ))
-            return TargetCertificate(target.name, "PASS", int(R), None,
-                                     tuple(receipts), tuple(ledger), tuple(tested))
-        if workload > int(target.deadline):
-            break
-        next_R = max(int(R) + 1, int(workload))
-        if next_R > int(target.deadline):
-            break
-        R = next_R
+    point_bound, point_tested, point_receipts, point_failure = _pointwise_postfix_search(
+        model, target, hp_tasks, path, protected, protected_response_by_task
+    )
+    receipts.extend(point_receipts)
+    if point_bound is not None:
+        return TargetCertificate(
+            target.name, "PASS", int(point_bound), None,
+            tuple(receipts), tuple(ledger), tuple(point_tested),
+            terminal_route=TARGET_PROVED_PCSSC,
+            completion_theorem_basis=PCSSC_POINTWISE_COMPLETION_THEOREM,
+        )
 
-    if int(target.deadline) not in candidates:
-        try:
-            prefix_receipt = _controller_prefix_coverage_receipt(
-                model, target, path, int(target.deadline)
-            )
-            workload, argmax, case_count = _max_workload_at_horizon(
-                model, target, path, protected, protected_response_by_task, int(target.deadline)
-            )
-        except PCSSCUnresolved as exc:
-            return TargetCertificate(target.name, "UNRESOLVED", None, str(exc),
-                                     tuple(receipts), tuple(ledger), tuple(tested))
-        tested.append({
-            "R": int(target.deadline), "W": int(workload),
-            "postfixed": bool(workload <= int(target.deadline)),
-            "maximizing_case": argmax, "joint_case_count": int(case_count),
-        })
-        receipts.append(prefix_receipt)
-        if workload <= int(target.deadline):
-            receipts.extend((
-                {"obligation_id": f"WORKLOAD_DOMINANCE::{target.name}", "status": "PASS",
-                 "horizon": int(target.deadline)},
-                {"obligation_id": f"POSTFIX_RESPONSE_CERTIFICATE::{target.name},R={target.deadline}",
-                 "status": "PASS", "W": int(workload), "R": int(target.deadline)},
-                {"obligation_id": f"HI_TARGET_SAFE::{target.name}", "status": "PASS", "route": "PCSSC"},
-            ))
-            return TargetCertificate(target.name, "PASS", int(target.deadline), None,
-                                     tuple(receipts), tuple(ledger), tuple(tested))
+    receipts.append({
+        "obligation_id": f"POINTWISE_PCSSC_FALLBACK_TRIGGER::{target.name}",
+        "status": "PASS",
+        "pointwise_result": "UNRESOLVED",
+        "pointwise_failure": point_failure,
+        "completion_prefix_mutated": False,
+        "self_completion_exported": False,
+        "controller_macro_rebuilt": False,
+        "r1_rebuilt": False,
+    })
+    case_bound, case_tested, case_receipts, case_failure = _case_consistent_postfix_search(
+        model, target, hp_tasks, path, protected, protected_response_by_task
+    )
+    receipts.extend(case_receipts)
+    tested = [*point_tested, *case_tested]
+    if case_bound is not None:
+        return TargetCertificate(
+            target.name, "PASS", int(case_bound), None,
+            tuple(receipts), tuple(ledger), tuple(tested),
+            terminal_route=TARGET_PROVED_PCSSC_CASE_CONSISTENT,
+            completion_theorem_basis=PCSSC_CASE_COMPLETION_THEOREM,
+        )
 
     return TargetCertificate(
-        target.name, "UNRESOLVED", None, "POLICY_SINGLE_SWITCH_CERTIFICATE_UNRESOLVED",
+        target.name, "UNRESOLVED", None,
+        case_failure or point_failure or "CASE_CONSISTENT_PCSSC_UNRESOLVED",
         tuple(receipts), tuple(ledger), tuple(tested),
     )
 
 
 __all__ = [
-    "MacroCell", "PCSSCUnresolved", "SwitchCell", "TargetCertificate",
+    "CaseKey", "MacroCell", "PCSSCUnresolved", "SwitchCell", "TargetCertificate",
     "prove_target_pcssc",
 ]

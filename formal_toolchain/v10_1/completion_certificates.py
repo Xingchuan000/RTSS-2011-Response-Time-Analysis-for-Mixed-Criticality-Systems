@@ -1,8 +1,8 @@
-"""Priority-ordered certified completion envelopes for V10.11.
+"""Priority-ordered certified completion envelopes for V10.12.
 
 The active implementation remains under ``formal_toolchain.v10_1`` because the
-request/bundle schema is unchanged.  V10.11 adds one proof-DAG edge only:
-completed BASE/PCSSC certificates from *strictly higher-priority* tasks may be
+request/bundle schema is unchanged.  Completed BASE, pointwise-PCSSC, and
+case-consistent-PCSSC certificates from *strictly higher-priority* tasks may be
 reused by a lower-priority PCSSC target.
 
 A certificate is deliberately stronger than a boolean target-safety result: it
@@ -25,7 +25,8 @@ else:
 
 BASE_COMPLETION_SOURCE = "BASE_C_AMC_SEM_SECTION4_1_SUCCESSFUL_PREFIX"
 PCSSC_COMPLETION_SOURCE = "TARGET_PROVED_BY_PCSSC"
-PCSSC_COMPLETION_THEOREM = "PCSSC_SAFE_PREFIX_COMPLETION_EXPORT_V10_11"
+PCSSC_POINTWISE_COMPLETION_THEOREM = "PCSSC_SAFE_PREFIX_COMPLETION_EXPORT_V10_11"
+PCSSC_CASE_COMPLETION_THEOREM = "PCSSC_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_12"
 BASE_COMPLETION_THEOREM = "BASE_SECTION4_1_COMPLETION_EXPORT_V10_11"
 
 
@@ -119,6 +120,7 @@ def export_pcssc_completion_certificate(
     *,
     status: str,
     response_bound: int | None,
+    theorem_basis: str,
 ) -> CertifiedCompletionBound:
     """Turn a completed PCSSC PASS into a downstream completion certificate."""
 
@@ -139,11 +141,18 @@ def export_pcssc_completion_certificate(
         raise CompletionCertificateError(
             f"PCSSC_COMPLETION_EXPORT_REQUIRES_HI:{target_name}"
         )
+    if theorem_basis not in {
+        PCSSC_POINTWISE_COMPLETION_THEOREM,
+        PCSSC_CASE_COMPLETION_THEOREM,
+    }:
+        raise CompletionCertificateError(
+            f"PCSSC_COMPLETION_EXPORT_UNKNOWN_THEOREM:{target_name}:{theorem_basis}"
+        )
     return _validated_certificate(
         task,
         int(response_bound),
         source=PCSSC_COMPLETION_SOURCE,
-        theorem_basis=PCSSC_COMPLETION_THEOREM,
+        theorem_basis=theorem_basis,
     )
 
 
@@ -216,6 +225,8 @@ def completion_prefix_for_target(
 __all__ = [
     "BASE_COMPLETION_SOURCE",
     "PCSSC_COMPLETION_SOURCE",
+    "PCSSC_POINTWISE_COMPLETION_THEOREM",
+    "PCSSC_CASE_COMPLETION_THEOREM",
     "CertifiedCompletionBound",
     "CompletionCertificateError",
     "build_base_completion_certificates",

@@ -18,7 +18,7 @@ from .base_refinement import check_dynamic_to_base_refinement, run_original_c_am
 from .bindings import build_bindings, load_request
 from .constants import (
     FRAMEWORK_REVISION, PRIMARY_CLAIM, PROOF_ROUTE, RESULT_INVALID, RESULT_PROVED, RESULT_UNRESOLVED,
-    SCOPE, TARGET_PROVED_BASE, TARGET_PROVED_PCSSC,
+    SCOPE, TARGET_PROVED_BASE, TARGET_PROVED_PCSSC, TARGET_PROVED_PCSSC_CASE_CONSISTENT,
 )
 from .completion_certificates import (
     CompletionCertificateError,
@@ -343,7 +343,7 @@ def verify_bundle_v10_1(
         _write(out / "proof_summary.json", summary)
         return summary
 
-    # V10.11 exports every successful BASE completion bound into one dynamic
+    # V10.12 exports every successful BASE/PCSSC completion bound into one dynamic
     # priority-ordered certificate map.  Later PCSSC PASS results are appended
     # to the same map, but only after a fully closed target certificate exists.
     try:
@@ -530,10 +530,25 @@ def verify_bundle_v10_1(
         receipts.setdefault("pcssc_targets", []).append(row)
         statuses[f"HI_TARGET_SAFE::{task.name}"] = "PASS" if cert.status == "PASS" else "UNRESOLVED"
         if cert.status == "PASS":
-            statuses[f"TERMINAL_ROUTE::{task.name}"] = TARGET_PROVED_PCSSC
+            if cert.terminal_route not in {TARGET_PROVED_PCSSC, TARGET_PROVED_PCSSC_CASE_CONSISTENT}:
+                statuses[f"HI_TARGET_SAFE::{task.name}"] = "UNRESOLVED"
+                unresolved.append(f"{task.name}:PCSSC_PASS_MISSING_VALID_TERMINAL_ROUTE")
+                row["status"] = "UNRESOLVED"
+                row["completion_export_failure"] = "PCSSC_PASS_MISSING_VALID_TERMINAL_ROUTE"
+                _write(out / "proof_receipts.partial.json", receipts)
+                continue
+            if cert.completion_theorem_basis is None:
+                statuses[f"HI_TARGET_SAFE::{task.name}"] = "UNRESOLVED"
+                unresolved.append(f"{task.name}:PCSSC_PASS_MISSING_COMPLETION_THEOREM_BASIS")
+                row["status"] = "UNRESOLVED"
+                row["completion_export_failure"] = "PCSSC_PASS_MISSING_COMPLETION_THEOREM_BASIS"
+                _write(out / "proof_receipts.partial.json", receipts)
+                continue
+            statuses[f"TERMINAL_ROUTE::{task.name}"] = cert.terminal_route
             try:
                 exported = export_pcssc_completion_certificate(
-                    model, task.name, status=cert.status, response_bound=cert.response_bound
+                    model, task.name, status=cert.status, response_bound=cert.response_bound,
+                    theorem_basis=cert.completion_theorem_basis,
                 )
                 certified_completion_by_task[task.name] = merge_certified_completion(
                     certified_completion_by_task.get(task.name), exported
@@ -596,7 +611,7 @@ def verify_bundle_v10_1(
         "base_route_status": base_sched["status"],
         "base_hi_route_status": str(base_sched.get("hi_safety_status", "UNRESOLVED")),
         "event_graph_in_pass_dependency": False,
-        "terminal_semantics": "BASE_C_AMC_SEM_OR_PCSSC_POSTFIX",
+        "terminal_semantics": "BASE_C_AMC_SEM_OR_PCSSC_POINTWISE_OR_CASE_CONSISTENT_POSTFIX",
     }
     _write(out / "proof_receipts.json", receipts)
     _write(out / "proof_summary.json", summary)
