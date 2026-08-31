@@ -211,6 +211,46 @@ def verify_bundle_v10_1(
         ind_env = declare_environment(
             f"v10.verify.ind.p{phase}.env", model, release_count=1
         )
+        if phase == 7:
+            child_rows: list[dict[str, Any]] = []
+            failed_child: FormulaReceipt | None = None
+            failed_clause: str | None = None
+            for obligation in invariant.p7_clause_inductiveness_obligations(
+                ind_env, prefix="v10.verify.ind"
+            ):
+                child = solve_formula(
+                    obligation.obligation_id, obligation.counterexample,
+                    timeout_ms=timeout_ms, capture_model=True,
+                )
+                child_row = child.as_dict(include_model=child.result == "SAT")
+                child_row["clause_name"] = obligation.clause_name
+                child_row["explanation"] = obligation.explanation
+                child_rows.append(child_row)
+                if child.result != "UNSAT":
+                    failed_child = child
+                    failed_clause = obligation.clause_name
+                    break
+            p7_status = "PASS" if failed_child is None else _receipt_status(failed_child)
+            statuses["SAFE_PREFIX_INDUCTIVE_P7"] = p7_status
+            phase_rows.append({
+                "obligation_id": "SAFE_PREFIX_INDUCTIVE_P7",
+                "result": "UNSAT" if failed_child is None else failed_child.result,
+                "decomposition": "NAMED_POST_INVARIANT_CONJUNCTS_WITH_SPARSE_P7_SSA",
+                "children": child_rows,
+            })
+            if failed_child is not None:
+                statuses["SAFE_PREFIX_INVARIANT_CONDITIONAL_INDUCTIVENESS"] = p7_status
+                receipts["safe_prefix_conditional_inductiveness_by_phase"] = phase_rows
+                summary = _fail_summary(
+                    request, statuses,
+                    code=f"SAFE_PREFIX_INDUCTIVE_P7_{failed_child.result}:{failed_clause}",
+                    binding_root_hash=binding_hash,
+                )
+                _write(out / "proof_receipts.json", receipts)
+                _write(out / "proof_summary.json", summary)
+                return summary
+            continue
+
         inductive = solve_formula(
             f"SAFE_PREFIX_INDUCTIVE_P{phase}",
             invariant.phase_inductiveness_counterexample(
@@ -362,6 +402,10 @@ def verify_bundle_v10_1(
             model, task.name, controller_path,
             priority_assignment_hash=str(bindings["seed_task_binding"]["priority_assignment_hash"]),
             tie_break_hash=str(bindings["seed_task_binding"]["tie_break_hash"]),
+            base_completion_by_task={
+                str(name): int(bound)
+                for name, bound in base_sched.get("completion_bound_by_task", {}).items()
+            },
         )
         row = cert.as_dict()
         target_rows_by_name[task.name] = row

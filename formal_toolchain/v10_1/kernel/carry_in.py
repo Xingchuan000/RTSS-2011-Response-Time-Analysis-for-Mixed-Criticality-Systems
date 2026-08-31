@@ -2,10 +2,10 @@
 
 This module derives the contiguous fixed-priority prefix whose jobs are
 guaranteed to finish no later than their next release under the universal
-per-job execution envelope already bound by the verifier.  V10.1 uses that one
-dominance theorem both to tighten SafePrefix carry-in and, when R_i^U <= D_i,
-to prove the corresponding target FirstBadEventWindow set empty before Event
-formula allocation.
+per-job execution envelope already bound by the verifier.  V10.1 uses that
+dominance theorem to tighten SafePrefix/PCSSC carry-in.  Additional completion
+envelopes already proved by the Section 4.1 BASE prefix are merged by the
+PCSSC terminal; no retired Event-Graph route is involved.
 """
 
 from __future__ import annotations

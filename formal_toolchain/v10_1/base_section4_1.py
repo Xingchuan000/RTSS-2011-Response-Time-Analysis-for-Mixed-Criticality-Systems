@@ -644,7 +644,6 @@ def prove_original_c_amc_sem_section4_1(model: Any) -> dict[str, Any]:
     # that prefix is proved independently of lower-priority tasks: lower
     # priorities cannot delay it under the frozen FPPS correspondence.
     cert_by_name = {row.target.name: row for row in certificate.task_certificates}
-    hi_names = [task.name for task in tasks if task.criticality == "HI"]
     hi_safe_targets: list[str] = []
     hi_unresolved_targets: list[str] = []
     for task in tasks:
@@ -656,10 +655,35 @@ def prove_original_c_amc_sem_section4_1(model: Any) -> dict[str, Any]:
         else:
             hi_unresolved_targets.append(task.name)
 
+    completion_bound_by_task: dict[str, int] = {}
+    completion_bound_basis_by_task: dict[str, dict[str, int]] = {}
+    for row in certificate.task_certificates:
+        if not row.schedulable or row.r_hi is None:
+            continue
+        bound = max(row.r_lo.value, row.r_hi)
+        if bound.denominator != 1:
+            raise Section41ScopeError(
+                f"deployed integer-tick Section 4.1 completion bound became fractional: "
+                f"{row.target.name}:{bound}"
+            )
+        completion_bound_by_task[row.target.name] = int(bound)
+        completion_bound_basis_by_task[row.target.name] = {
+            "R_LO_eq4": int(row.r_lo.value),
+            "R_HI_eq15": int(row.r_hi),
+            "completion_bound": int(bound),
+        }
+
     payload.update({
         "hi_safety_status": "PASS" if not hi_unresolved_targets else "UNRESOLVED",
         "hi_safe_targets": hi_safe_targets,
         "hi_unresolved_targets": hi_unresolved_targets,
+        "completion_bound_by_task": completion_bound_by_task,
+        "completion_bound_basis_by_task": completion_bound_basis_by_task,
+        "completion_bound_rule": (
+            "for every successful Section 4.1 prefix task, dynamic->BASE refinement plus "
+            "max(R_i(LO), R_i(HI)) bounds completion from release; lower-priority tasks "
+            "cannot invalidate this fixed-priority completion envelope"
+        ),
         "hi_prefix_rule": (
             "fixed-priority prefix induction: a BASE-proved HI target appears before "
             "the first failed Section 4.1 task, so every higher-priority task also has "

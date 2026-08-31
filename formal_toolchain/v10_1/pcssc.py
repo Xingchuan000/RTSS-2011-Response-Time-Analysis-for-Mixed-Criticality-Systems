@@ -549,6 +549,7 @@ def prove_target_pcssc(
     *,
     priority_assignment_hash: str,
     tie_break_hash: str,
+    base_completion_by_task: dict[str, int] | None = None,
 ) -> TargetCertificate:
     target = model.task_by_name[target_name]
     if target.criticality != "HI":
@@ -589,16 +590,59 @@ def prove_target_pcssc(
     ))
 
     prefix = derive_protected_priority_prefix(model)
-    protected = set(prefix.task_names)
-    protected_response_by_task = prefix.response_by_task
+    universal_completion = prefix.response_by_task
+    base_completion = {
+        str(name): int(bound) for name, bound in (base_completion_by_task or {}).items()
+        if int(bound) > 0
+    }
+    protected_response_by_task = dict(universal_completion)
+    completion_source_by_task: dict[str, list[str]] = {
+        name: ["UNIVERSAL_RAW_SERVICE_RESPONSE_PREFIX"]
+        for name in universal_completion
+    }
+    for name, bound in base_completion.items():
+        if name not in model.task_by_name:
+            continue
+        old = protected_response_by_task.get(name)
+        if old is None or int(bound) < int(old):
+            protected_response_by_task[name] = int(bound)
+        completion_source_by_task.setdefault(name, []).append(
+            "BASE_C_AMC_SEM_SECTION4_1_SUCCESSFUL_PREFIX"
+        )
+    protected = set(protected_response_by_task)
+    hp_names = {task.name for task in hp_tasks}
+    base_reused = {
+        name: protected_response_by_task[name]
+        for name in sorted(hp_names & set(base_completion))
+    }
     unprotected_hp_lo = [task.name for task in hp_tasks
                          if task.criticality == "LO" and task.name not in protected]
     receipts.append({
         "obligation_id": f"REACHABLE_CARRY_IN::{target.name}",
         "status": "PASS" if not unprotected_hp_lo else "UNRESOLVED",
-        "protected_priority_prefix": list(prefix.task_names),
+        "universal_protected_priority_prefix": list(prefix.task_names),
+        "base_section4_1_completion_envelopes_reused": base_reused,
+        "effective_completion_envelopes": {
+            task.name: int(protected_response_by_task[task.name])
+            for task in hp_tasks if task.name in protected_response_by_task
+        },
+        "completion_envelope_sources": {
+            task.name: completion_source_by_task[task.name]
+            for task in hp_tasks if task.name in completion_source_by_task
+        },
         "unprotected_higher_priority_lo": unprotected_hp_lo,
     })
+    if base_reused:
+        ledger.append({
+            "kind": "BASE_SECTION4_1_COMPLETION_ENVELOPE_REUSE",
+            "target": target.name,
+            "tasks": base_reused,
+            "soundness_basis": (
+                "DYNAMIC_TO_BASE_C_AMC_SEM_TRACE_REFINEMENT plus successful fixed-priority "
+                "Section 4.1 prefix certificate; max(R_LO,R_HI) bounds completion from release"
+            ),
+            "soundness_direction": "TIGHTENS_CARRY_IN_WITH_ALREADY_PROVED_COMPLETION_BOUNDS",
+        })
     if unprotected_hp_lo:
         return TargetCertificate(
             target.name, "UNRESOLVED", None, "REACHABLE_LO_CARRY_IN_UNRESOLVED",

@@ -17,11 +17,21 @@ from .kernel.boot_state import encode_canonical_boot_state
 from .kernel.environment_encoder import SymbolicEnvironment
 from .kernel.invariant_templates import named_psi_clauses
 from .kernel.mask_encoder import encode_action_mask
-from .kernel.symbolic_state import BoundModel, SymbolicKernelState, declare_state
+from .kernel.symbolic_state import (
+    BoundModel, SymbolicKernelState, declare_sparse_successor, declare_state,
+)
 from .kernel.transition_encoder import (
     _copy_history, _frame_state, _phase, encode_phase_step,
 )
 from .kernel.tree_encoder import TreeLeafCase
+
+
+@dataclass(frozen=True, slots=True)
+class SafePrefixClauseObligation:
+    obligation_id: str
+    clause_name: str
+    counterexample: z3.BoolRef
+    explanation: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +205,56 @@ class SchedulerSafePrefixInvariant:
         state = declare_state(prefix, self.model)
         return z3.And(*self.initial_constraints(state), z3.Not(self.formula(state)))
 
+    def p7_clause_inductiveness_obligations(
+        self, env: SymbolicEnvironment, *, prefix: str = "ind.phase",
+    ) -> tuple[SafePrefixClauseObligation, ...]:
+        """Decompose P7 preservation into named post-invariant clauses.
+
+        P7 was the only SafePrefix phase observed to exhibit severe Z3
+        heuristic variance (seconds on most seeds, timeout on s603) even though
+        its transition changes only ``t``, ``eta``, the dispatch frontier and
+        executed-service counters.  This routine keeps the exact same logical
+        obligation but uses a sparse SSA successor for those owned fields and
+        proves each named conjunct of ``Psi(z')`` separately.
+
+        The decomposition is equivalence-preserving:
+
+            A & not(And(C_i))  is SAT  iff  some A & not(C_i) is SAT.
+
+        Hence every child being UNSAT is exactly sufficient for P7
+        inductiveness; no invariant clause is dropped or weakened.
+        """
+
+        state = declare_state(f"{prefix}.p7.z", self.model)
+        next_state = declare_sparse_successor(
+            f"{prefix}.p7.zp", state, self.model, phase=0,
+            mutable=frozenset({"t", "eta", "frontier", "jobs.executed_service"}),
+        )
+        transition = encode_phase_step(state, next_state, self.model, env, phase=7)
+        antecedent = z3.And(
+            *env.constraints,
+            env.phase.origin_time == state.t,
+            self.formula(state),
+            state.hi_miss_ledger == 0,
+            transition,
+            next_state.hi_miss_ledger == 0,
+        )
+        rows: list[SafePrefixClauseObligation] = []
+        for clause_name, clause in named_scheduler_psi_clauses(
+            next_state, self.model
+        ).items():
+            rows.append(SafePrefixClauseObligation(
+                obligation_id=f"SAFE_PREFIX_INDUCTIVE_P7::{clause_name}",
+                clause_name=clause_name,
+                counterexample=z3.And(antecedent, z3.Not(clause)),
+                explanation=(
+                    "exact P7 sparse-SSA preservation of one named SchedulerSafePrefix "
+                    "conjunct; conjunction of all child UNSAT results is equivalent to "
+                    "the monolithic P7 inductiveness UNSAT obligation"
+                ),
+            ))
+        return tuple(rows)
+
     def phase_inductiveness_counterexample(
         self, env: SymbolicEnvironment, phase: int, *, prefix: str = "ind.phase",
         use_p5_summary: bool = False,
@@ -203,7 +263,13 @@ class SchedulerSafePrefixInvariant:
         if not 0 <= phase <= 7:
             raise ValueError("V10_1_PHASE_OUT_OF_RANGE")
         state = declare_state(f"{prefix}.p{phase}.z", self.model)
-        next_state = declare_state(f"{prefix}.p{phase}.zp", self.model)
+        if phase == 7:
+            next_state = declare_sparse_successor(
+                f"{prefix}.p7.zp", state, self.model, phase=0,
+                mutable=frozenset({"t", "eta", "frontier", "jobs.executed_service"}),
+            )
+        else:
+            next_state = declare_state(f"{prefix}.p{phase}.zp", self.model)
         transition = (
             encode_p5_scheduler_summary(state, next_state, self.model)
             if phase == 5 and use_p5_summary
@@ -221,7 +287,7 @@ class SchedulerSafePrefixInvariant:
 
 
 __all__ = [
-    "P5SummaryObligation", "SchedulerSafePrefixInvariant",
+    "P5SummaryObligation", "SafePrefixClauseObligation", "SchedulerSafePrefixInvariant",
     "build_p5_scheduler_summary_soundness_obligations",
     "build_scheduler_psi", "encode_p5_scheduler_summary",
     "named_scheduler_psi_clauses",
