@@ -17,8 +17,15 @@ from .kernel.universal_conformance import prove_universal_conformance
 from .base_refinement import check_dynamic_to_base_refinement, run_original_c_amc_sem_schedulability_test
 from .bindings import build_bindings, load_request
 from .constants import (
-    PRIMARY_CLAIM, PROOF_ROUTE, RESULT_INVALID, RESULT_PROVED, RESULT_UNRESOLVED,
+    FRAMEWORK_REVISION, PRIMARY_CLAIM, PROOF_ROUTE, RESULT_INVALID, RESULT_PROVED, RESULT_UNRESOLVED,
     SCOPE, TARGET_PROVED_BASE, TARGET_PROVED_PCSSC,
+)
+from .completion_certificates import (
+    CompletionCertificateError,
+    build_base_completion_certificates,
+    completion_prefix_for_target,
+    export_pcssc_completion_certificate,
+    merge_certified_completion,
 )
 from .controller_macro import (
     ControllerMacroUnresolved, build_controller_macro_path, max_controller_activations,
@@ -75,6 +82,7 @@ def _fail_summary(
         "tree_variant": request.get("tree_variant"),
         "obligation_statuses": statuses,
         "event_graph_in_pass_dependency": False,
+        "framework_revision": FRAMEWORK_REVISION,
     }
     if binding_root_hash is not None:
         row["binding_root_hash"] = binding_root_hash
@@ -98,6 +106,7 @@ def verify_bundle_v10_1(
     receipts: dict[str, Any] = {
         "schema_version": "v10_1_proof_receipts_v1",
         "proof_route": PROOF_ROUTE,
+        "framework_revision": FRAMEWORK_REVISION,
         "timeout_ms": int(timeout_ms),
         "event_graph_in_pass_dependency": False,
     }
@@ -334,6 +343,43 @@ def verify_bundle_v10_1(
         _write(out / "proof_summary.json", summary)
         return summary
 
+    # V10.11 exports every successful BASE completion bound into one dynamic
+    # priority-ordered certificate map.  Later PCSSC PASS results are appended
+    # to the same map, but only after a fully closed target certificate exists.
+    try:
+        certified_completion_by_task = build_base_completion_certificates(
+            model,
+            {
+                str(name): int(bound)
+                for name, bound in base_sched.get("completion_bound_by_task", {}).items()
+            },
+        )
+    except CompletionCertificateError as exc:
+        statuses["CERTIFIED_COMPLETION_PREFIX_SOUND"] = "UNRESOLVED"
+        summary = _fail_summary(
+            request, statuses, code="CERTIFICATE_SOUNDNESS_OBLIGATION_MISSING",
+            message=str(exc), binding_root_hash=binding_hash,
+        )
+        receipts["certified_completion_propagation_failure"] = str(exc)
+        _write(out / "proof_receipts.json", receipts)
+        _write(out / "proof_summary.json", summary)
+        return summary
+    receipts["certified_completion_propagation"] = {
+        "obligation_id": "CERTIFIED_HP_COMPLETION_PROPAGATION",
+        "status": "PASS",
+        "framework_revision": FRAMEWORK_REVISION,
+        "priority_order": [task.name for task in model.tasks],
+        "initial_base_certificates": {
+            name: certificate.as_dict()
+            for name, certificate in certified_completion_by_task.items()
+        },
+        "pcssc_exports": [],
+        "target_prefix_uses": [],
+        "controller_macro_rebuilds_due_to_propagation": 0,
+    }
+    statuses["CERTIFIED_COMPLETION_PREFIX_SOUND"] = "PASS"
+    statuses["PRIORITY_ORDERED_CERTIFICATE_DAG_ACYCLIC"] = "PASS"
+
     # V10.1 proves HI safety, not all-task deadline schedulability.  The Section
     # 4.1 analyzer runs in fixed-priority order and stops at the first failed
     # task, hence every successful task before that point is a certified FP
@@ -351,22 +397,36 @@ def verify_bundle_v10_1(
             continue
         statuses[f"HI_TARGET_SAFE::{task.name}"] = "PASS"
         statuses[f"TERMINAL_ROUTE::{task.name}"] = TARGET_PROVED_BASE
+        base_completion_certificate = certified_completion_by_task.get(task.name)
         target_rows_by_name[task.name] = {
             "target": task.name,
             "status": "PASS",
             "terminal_route": TARGET_PROVED_BASE,
             "certificate": "ZHANG_ZHENG_GU_2024_SECTION_4_1_HI_PREFIX",
+            "response_bound": (
+                None if base_completion_certificate is None
+                else int(base_completion_certificate.response_bound)
+            ),
+            "completion_certificate": (
+                None if base_completion_certificate is None
+                else base_completion_certificate.as_dict()
+            ),
             "prefix_rule": base_sched.get("hi_prefix_rule"),
         }
 
     if not pending_hi_tasks:
         statuses["ALL_HI_TARGETS_SAFE"] = "PASS"
+        receipts["certified_completion_propagation"]["final_certificates"] = {
+            name: certificate.as_dict()
+            for name, certificate in certified_completion_by_task.items()
+        }
         base_targets = [target_rows_by_name[task.name] for task in model.hi_tasks]
         summary = {
             "schema_version": "v10_1_verified_summary_v1",
             "workflow_status": "PASS",
             "result_status": RESULT_PROVED,
             "proof_route": PROOF_ROUTE,
+            "framework_revision": FRAMEWORK_REVISION,
             "scope": SCOPE,
             "primary_claim": request["primary_claim"],
             "target_id": request["target_id"],
@@ -428,14 +488,42 @@ def verify_bundle_v10_1(
             hi_task_count=len(pending_hi_tasks), deadline=int(task.deadline),
             max_controller_activations=max_controller_activations(task.deadline, model.agent_period),
         )
+        try:
+            completion_prefix = completion_prefix_for_target(
+                model, task.name, certified_completion_by_task
+            )
+        except CompletionCertificateError as exc:
+            statuses["PRIORITY_ORDERED_CERTIFICATE_DAG_ACYCLIC"] = "UNRESOLVED"
+            statuses[f"HI_TARGET_SAFE::{task.name}"] = "UNRESOLVED"
+            unresolved.append(f"{task.name}:{exc}")
+            receipts["certified_completion_propagation"]["status"] = "UNRESOLVED"
+            receipts["certified_completion_propagation"]["target_prefix_uses"].append({
+                "target": task.name, "status": "UNRESOLVED", "failure": str(exc),
+            })
+            target_rows_by_name[task.name] = {
+                "target": task.name,
+                "status": "UNRESOLVED",
+                "response_bound": None,
+                "failure_code": str(exc),
+                "receipts": [],
+                "conservatism_ledger": [],
+                "tested_horizons": [],
+            }
+            _write(out / "proof_receipts.partial.json", receipts)
+            continue
+        receipts["certified_completion_propagation"]["target_prefix_uses"].append({
+            "target": task.name,
+            "status": "PASS",
+            "certificates": {
+                name: certificate.as_dict()
+                for name, certificate in completion_prefix.items()
+            },
+        })
         cert = prove_target_pcssc(
             model, task.name, controller_path,
             priority_assignment_hash=str(bindings["seed_task_binding"]["priority_assignment_hash"]),
             tie_break_hash=str(bindings["seed_task_binding"]["tie_break_hash"]),
-            base_completion_by_task={
-                str(name): int(bound)
-                for name, bound in base_sched.get("completion_bound_by_task", {}).items()
-            },
+            certified_completion_by_task=completion_prefix,
         )
         row = cert.as_dict()
         target_rows_by_name[task.name] = row
@@ -443,11 +531,38 @@ def verify_bundle_v10_1(
         statuses[f"HI_TARGET_SAFE::{task.name}"] = "PASS" if cert.status == "PASS" else "UNRESOLVED"
         if cert.status == "PASS":
             statuses[f"TERMINAL_ROUTE::{task.name}"] = TARGET_PROVED_PCSSC
+            try:
+                exported = export_pcssc_completion_certificate(
+                    model, task.name, status=cert.status, response_bound=cert.response_bound
+                )
+                certified_completion_by_task[task.name] = merge_certified_completion(
+                    certified_completion_by_task.get(task.name), exported
+                )
+            except CompletionCertificateError as exc:
+                statuses[f"CERTIFIED_COMPLETION_SOURCE::{task.name}"] = "UNRESOLVED"
+                statuses[f"HI_TARGET_SAFE::{task.name}"] = "UNRESOLVED"
+                statuses.pop(f"TERMINAL_ROUTE::{task.name}", None)
+                unresolved.append(f"{task.name}:{exc}")
+                receipts["certified_completion_propagation"]["status"] = "UNRESOLVED"
+                row["status"] = "UNRESOLVED"
+                row["completion_export_failure"] = str(exc)
+            else:
+                statuses[f"CERTIFIED_COMPLETION_SOURCE::{task.name}"] = "PASS"
+                row["completion_certificate"] = exported.as_dict()
+                receipts["certified_completion_propagation"]["pcssc_exports"].append({
+                    "obligation_id": f"CERTIFIED_COMPLETION_SOURCE::{task.name}",
+                    "status": "PASS",
+                    **exported.as_dict(),
+                })
         else:
             unresolved.append(f"{task.name}:{cert.failure_code}")
         _write(out / "proof_receipts.partial.json", receipts)
 
     target_rows = [target_rows_by_name[task.name] for task in model.hi_tasks]
+    receipts["certified_completion_propagation"]["final_certificates"] = {
+        name: certificate.as_dict()
+        for name, certificate in certified_completion_by_task.items()
+    }
 
     if unresolved:
         summary = _fail_summary(

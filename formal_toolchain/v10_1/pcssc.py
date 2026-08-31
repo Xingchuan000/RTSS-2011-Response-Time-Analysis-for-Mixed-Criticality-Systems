@@ -1,4 +1,4 @@
-"""Policy-Constrained Single-Switch Certificate (PCSSC) for V10.1.
+"""Policy-Constrained Single-Switch Certificate (PCSSC), V10.11 revision.
 
 This module never performs release/completion/deadline/dispatch Event-Graph
 search.  It operates on a target response horizon, a common C-AMC-sem switch
@@ -12,9 +12,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from math import ceil
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from .kernel.carry_in import derive_protected_priority_prefix
+from .completion_certificates import (
+    BASE_COMPLETION_SOURCE,
+    PCSSC_COMPLETION_SOURCE,
+    CertifiedCompletionBound,
+)
 from .base_section4_1 import paper_c_lo_bound
 from .carry_in_envelope import (
     CarryInEnvelopeUnresolved,
@@ -723,7 +728,7 @@ def prove_target_pcssc(
     *,
     priority_assignment_hash: str,
     tie_break_hash: str,
-    base_completion_by_task: dict[str, int] | None = None,
+    certified_completion_by_task: Mapping[str, CertifiedCompletionBound] | None = None,
 ) -> TargetCertificate:
     target = model.task_by_name[target_name]
     if target.criticality != "HI":
@@ -765,38 +770,79 @@ def prove_target_pcssc(
 
     prefix = derive_protected_priority_prefix(model)
     universal_completion = prefix.response_by_task
-    base_completion = {
-        str(name): int(bound) for name, bound in (base_completion_by_task or {}).items()
-        if int(bound) > 0
-    }
+    certified_completion = dict(certified_completion_by_task or {})
     protected_response_by_task = dict(universal_completion)
     completion_source_by_task: dict[str, list[str]] = {
         name: ["UNIVERSAL_RAW_SERVICE_RESPONSE_PREFIX"]
         for name in universal_completion
     }
-    for name, bound in base_completion.items():
-        if name not in model.task_by_name:
-            continue
+    for name, certificate in certified_completion.items():
+        task = model.task_by_name.get(name)
+        if task is None or certificate.task != name:
+            return TargetCertificate(
+                target.name, "UNRESOLVED", None,
+                f"CERTIFIED_COMPLETION_BINDING_MISMATCH:{name}",
+                tuple(receipts), tuple(ledger), (),
+            )
+        if int(task.priority) >= int(target.priority):
+            return TargetCertificate(
+                target.name, "UNRESOLVED", None,
+                f"PRIORITY_ORDERED_CERTIFICATE_DAG_VIOLATION:{name}->{target.name}",
+                tuple(receipts), tuple(ledger), (),
+            )
+        if (
+            certificate.priority != int(task.priority)
+            or certificate.deadline != int(task.deadline)
+            or certificate.period != int(task.period)
+            or certificate.response_bound <= 0
+            or certificate.response_bound > int(task.deadline)
+            or int(task.deadline) > int(task.period)
+        ):
+            return TargetCertificate(
+                target.name, "UNRESOLVED", None,
+                f"CERTIFIED_COMPLETION_CERTIFICATE_INVALID:{name}",
+                tuple(receipts), tuple(ledger), (),
+            )
         old = protected_response_by_task.get(name)
-        if old is None or int(bound) < int(old):
-            protected_response_by_task[name] = int(bound)
-        completion_source_by_task.setdefault(name, []).append(
-            "BASE_C_AMC_SEM_SECTION4_1_SUCCESSFUL_PREFIX"
-        )
+        if old is None or int(certificate.response_bound) < int(old):
+            protected_response_by_task[name] = int(certificate.response_bound)
+        completion_source_by_task.setdefault(name, []).append(certificate.source)
     protected = set(protected_response_by_task)
     hp_names = {task.name for task in hp_tasks}
+    certified_reused = {
+        name: int(certified_completion[name].response_bound)
+        for name in sorted(hp_names & set(certified_completion))
+    }
     base_reused = {
-        name: protected_response_by_task[name]
-        for name in sorted(hp_names & set(base_completion))
+        name: certified_reused[name]
+        for name in certified_reused
+        if certified_completion[name].source == BASE_COMPLETION_SOURCE
+    }
+    pcssc_reused = {
+        name: certified_reused[name]
+        for name in certified_reused
+        if certified_completion[name].source == PCSSC_COMPLETION_SOURCE
     }
     unprotected_hp_lo = [task.name for task in hp_tasks
                          if task.criticality == "LO" and task.name not in protected]
+    receipts.append({
+        "obligation_id": f"CERTIFIED_COMPLETION_PREFIX_SOUND::{target.name}",
+        "status": "PASS",
+        "strict_higher_priority_only": True,
+        "target_priority": int(target.priority),
+        "certificates": {
+            name: certified_completion[name].as_dict()
+            for name in sorted(certified_reused, key=lambda item: model.task_by_name[item].priority)
+        },
+    })
     receipts.append({
         "obligation_id": f"REACHABLE_CARRY_IN::{target.name}",
         "status": "PASS",
         "route": "R7_SINGLE_SWITCH_AGGREGATE_BACKLOG_ENVELOPE",
         "universal_protected_priority_prefix": list(prefix.task_names),
         "base_section4_1_completion_envelopes_reused": base_reused,
+        "pcssc_completion_envelopes_reused": pcssc_reused,
+        "certified_completion_envelopes_reused": certified_reused,
         "effective_completion_envelopes": {
             task.name: int(protected_response_by_task[task.name])
             for task in hp_tasks if task.name in protected_response_by_task
@@ -820,6 +866,31 @@ def prove_target_pcssc(
                 "Section 4.1 prefix certificate; max(R_LO,R_HI) bounds completion from release"
             ),
             "soundness_direction": "TIGHTENS_CARRY_IN_WITH_ALREADY_PROVED_COMPLETION_BOUNDS",
+        })
+    if pcssc_reused:
+        ledger.append({
+            "kind": "CROSS_TARGET_PCSSC_COMPLETION_PROPAGATION",
+            "target": target.name,
+            "tasks": pcssc_reused,
+            "soundness_basis": (
+                "PCSSC_SAFE_PREFIX_COMPLETION_EXPORT_V10_11 plus strict fixed-priority "
+                "forward induction; only fully proved higher-priority Rcert<=D<=T is reused"
+            ),
+            "soundness_direction": "TIGHTENS_CARRY_IN_AND_PROTECTED_PRE_HI_WITH_PROVED_HP_BOUNDS",
+        })
+    for name in sorted(certified_reused, key=lambda item: model.task_by_name[item].priority):
+        certificate = certified_completion[name]
+        receipts.append({
+            "obligation_id": f"CROSS_TARGET_COMPLETION_BOUND_REUSE::{name}::{target.name}",
+            "status": "PASS",
+            "source_task": name,
+            "target_task": target.name,
+            "response_bound": int(certificate.response_bound),
+            "source": certificate.source,
+            "theorem_basis": certificate.theorem_basis,
+            "source_priority": int(certificate.priority),
+            "target_priority": int(target.priority),
+            "acyclic": int(certificate.priority) < int(target.priority),
         })
     ledger.append({
         "kind": "R7_SINGLE_SWITCH_AGGREGATE_CARRY_IN",

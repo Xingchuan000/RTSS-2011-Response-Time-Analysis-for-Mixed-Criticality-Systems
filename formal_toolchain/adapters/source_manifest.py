@@ -50,6 +50,7 @@ FORMAL_TARGET_FILES = (
     "formal_toolchain/v10_1/base_refinement.py",
     "formal_toolchain/v10_1/base_section4_1.py",
     "formal_toolchain/v10_1/controller_macro.py",
+    "formal_toolchain/v10_1/completion_certificates.py",
     "formal_toolchain/v10_1/carry_in_envelope.py",
     "formal_toolchain/v10_1/feature_transfer.py",
     "formal_toolchain/v10_1/safe_prefix.py",

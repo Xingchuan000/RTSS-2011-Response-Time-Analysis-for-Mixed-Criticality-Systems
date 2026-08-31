@@ -59,14 +59,17 @@ def test_section4_1_receipt_exports_successful_prefix_completion_envelopes():
         assert result["completion_bound_by_task"][name] == row["completion_bound"]
 
 
-def test_pcssc_merges_base_completion_envelopes_before_carry_in_gate():
+def test_pcssc_merges_certified_completion_envelopes_before_carry_in_gate():
     pcssc = (ROOT / "formal_toolchain/v10_1/pcssc.py").read_text(encoding="utf-8")
     verifier = (ROOT / "formal_toolchain/v10_1/verifier.py").read_text(encoding="utf-8")
-    assert "base_completion_by_task" in pcssc
-    assert "BASE_C_AMC_SEM_SECTION4_1_SUCCESSFUL_PREFIX" in pcssc
+    completion = (ROOT / "formal_toolchain/v10_1/completion_certificates.py").read_text(encoding="utf-8")
+    assert "certified_completion_by_task" in pcssc
+    assert "BASE_C_AMC_SEM_SECTION4_1_SUCCESSFUL_PREFIX" in completion
     assert "base_section4_1_completion_envelopes_reused" in pcssc
+    assert "pcssc_completion_envelopes_reused" in pcssc
     assert "effective_completion_envelopes" in pcssc
     assert "BASE_SECTION4_1_COMPLETION_ENVELOPE_REUSE" in pcssc
+    assert "CROSS_TARGET_PCSSC_COMPLETION_PROPAGATION" in pcssc
     assert 'base_sched.get("completion_bound_by_task", {})' in verifier
 
 
