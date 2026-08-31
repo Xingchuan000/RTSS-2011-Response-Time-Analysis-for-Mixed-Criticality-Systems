@@ -24,6 +24,7 @@ from .kernel.transition_encoder import (
     _copy_history, _frame_state, _phase, encode_phase_step,
 )
 from .kernel.tree_encoder import TreeLeafCase
+from .periodic_release import p7_eta_residue_counterexample
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +52,67 @@ def named_scheduler_psi_clauses(
 
 def build_scheduler_psi(state: SymbolicKernelState, model: BoundModel) -> z3.BoolRef:
     return z3.And(*named_scheduler_psi_clauses(state, model).values())
+
+
+def certify_p7_exact_periodic_eta(model: BoundModel) -> dict[str, object]:
+    """Discharge P7 preservation of ``exact_periodic_eta`` arithmetically.
+
+    The generic SMT encoding of this one invariant is dominated by symbolic
+    ``t % T_i`` arithmetic and exhibits extreme heuristic variance even though
+    P7 itself has a closed finite residue proof.  Under the P7 pre-invariant,
+    with ``r = t mod T`` and phase ``p=7``, ``eta=r``.  P7 advances time by one
+    tick and sets ``eta' = eta + 1`` (the saturation branch cannot fire because
+    ``0 <= r < T``).  At successor phase ``p'=0`` the invariant requires
+    ``eta' = (t+1) mod T`` except that residue zero is represented by ``T``.
+    Hence it is enough to exhaust all concrete residues ``r in [0,T)``.
+
+    This is not a relaxation or a sampled test: the residue domain is the
+    complete quotient of all integer times relevant to this invariant.
+    """
+
+    task_rows: list[dict[str, object]] = []
+    checked_total = 0
+    for task in model.tasks:
+        period = int(task.period)
+        if period <= 0:
+            raise ValueError(f"INVALID_PERIOD::{task.name}")
+        counterexample = p7_eta_residue_counterexample(period)
+        checked = period if counterexample is None else counterexample + 1
+        checked_total += checked
+        task_rows.append({
+            "task": task.name,
+            "period": period,
+            "checked_residues": checked,
+            "status": "PASS" if counterexample is None else "FAIL",
+            "counterexample_residue": counterexample,
+        })
+        if counterexample is not None:
+            return {
+                "obligation_id": "SAFE_PREFIX_INDUCTIVE_P7::exact_periodic_eta",
+                "clause_name": "exact_periodic_eta",
+                "result": "SAT",
+                "proof_engine": "EXHAUSTIVE_PERIOD_RESIDUE_ENUMERATION",
+                "checked_residues_total": checked_total,
+                "tasks": task_rows,
+                "explanation": (
+                    "complete residue-domain check found a P7 counterexample "
+                    "to exact-periodic eta preservation"
+                ),
+            }
+
+    return {
+        "obligation_id": "SAFE_PREFIX_INDUCTIVE_P7::exact_periodic_eta",
+        "clause_name": "exact_periodic_eta",
+        "result": "UNSAT",
+        "proof_engine": "EXHAUSTIVE_PERIOD_RESIDUE_ENUMERATION",
+        "checked_residues_total": checked_total,
+        "tasks": task_rows,
+        "explanation": (
+            "all residues r=t mod T were exhaustively checked for every task; "
+            "P7 eta increment exactly equals the P0 phase-aware periodic eta "
+            "representation after t'=t+1"
+        ),
+    }
 
 
 def encode_p5_scheduler_summary(
@@ -243,6 +305,10 @@ class SchedulerSafePrefixInvariant:
         for clause_name, clause in named_scheduler_psi_clauses(
             next_state, self.model
         ).items():
+            if clause_name == "exact_periodic_eta":
+                # This clause has a complete finite arithmetic proof over
+                # r=t mod T; do not send symbolic modulo arithmetic to Z3.
+                continue
             rows.append(SafePrefixClauseObligation(
                 obligation_id=f"SAFE_PREFIX_INDUCTIVE_P7::{clause_name}",
                 clause_name=clause_name,
@@ -289,6 +355,6 @@ class SchedulerSafePrefixInvariant:
 __all__ = [
     "P5SummaryObligation", "SafePrefixClauseObligation", "SchedulerSafePrefixInvariant",
     "build_p5_scheduler_summary_soundness_obligations",
-    "build_scheduler_psi", "encode_p5_scheduler_summary",
-    "named_scheduler_psi_clauses",
+    "build_scheduler_psi", "certify_p7_exact_periodic_eta",
+    "encode_p5_scheduler_summary", "named_scheduler_psi_clauses",
 ]

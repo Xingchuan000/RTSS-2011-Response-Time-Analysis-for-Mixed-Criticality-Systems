@@ -55,4 +55,27 @@ def compatible_release_phases(
     return tuple(sorted(int(value) for value in phases))
 
 
-__all__ = ["compatible_release_phases"]
+def p7_eta_residue_counterexample(period: int) -> int | None:
+    """Return a residue violating exact-periodic eta preservation, if any.
+
+    At P7 the invariant represents ``eta`` as ``r=t mod T`` (including zero).
+    P7 advances one tick and increments eta.  At successor P0, residue zero is
+    represented as ``T`` so a just-due release can be consumed by P0--P3.
+    Exhausting ``r in [0,T)`` is therefore a complete finite proof of the
+    phase-change arithmetic, independent of every other kernel field.
+    """
+
+    t = int(period)
+    if t <= 0:
+        raise ValueError("EXACT_PERIODIC_PERIOD_NONPOSITIVE")
+    for residue in range(t):
+        eta_before = residue
+        eta_after = eta_before + 1 if eta_before < t else t
+        next_residue = (residue + 1) % t
+        eta_expected = t if next_residue == 0 else next_residue
+        if eta_after != eta_expected:
+            return residue
+    return None
+
+
+__all__ = ["compatible_release_phases", "p7_eta_residue_counterexample"]

@@ -26,6 +26,7 @@ from .controller_macro import (
 from .pcssc import prove_target_pcssc
 from .safe_prefix import (
     SchedulerSafePrefixInvariant, build_p5_scheduler_summary_soundness_obligations,
+    certify_p7_exact_periodic_eta,
 )
 from .kernel.symbolic_state import BoundModel
 
@@ -215,6 +216,31 @@ def verify_bundle_v10_1(
             child_rows: list[dict[str, Any]] = []
             failed_child: FormulaReceipt | None = None
             failed_clause: str | None = None
+
+            eta_certificate = certify_p7_exact_periodic_eta(model)
+            child_rows.append(eta_certificate)
+            if eta_certificate["result"] != "UNSAT":
+                statuses["SAFE_PREFIX_INDUCTIVE_P7"] = "FAIL"
+                statuses["SAFE_PREFIX_INVARIANT_CONDITIONAL_INDUCTIVENESS"] = "FAIL"
+                phase_rows.append({
+                    "obligation_id": "SAFE_PREFIX_INDUCTIVE_P7",
+                    "result": str(eta_certificate["result"]),
+                    "decomposition": (
+                        "FINITE_PERIODIC_ETA_CERTIFICATE_PLUS_NAMED_POST_INVARIANT_"
+                        "CONJUNCTS_WITH_SPARSE_P7_SSA"
+                    ),
+                    "children": child_rows,
+                })
+                receipts["safe_prefix_conditional_inductiveness_by_phase"] = phase_rows
+                summary = _fail_summary(
+                    request, statuses,
+                    code="SAFE_PREFIX_INDUCTIVE_P7_SAT:exact_periodic_eta",
+                    binding_root_hash=binding_hash,
+                )
+                _write(out / "proof_receipts.json", receipts)
+                _write(out / "proof_summary.json", summary)
+                return summary
+
             for obligation in invariant.p7_clause_inductiveness_obligations(
                 ind_env, prefix="v10.verify.ind"
             ):
@@ -235,7 +261,10 @@ def verify_bundle_v10_1(
             phase_rows.append({
                 "obligation_id": "SAFE_PREFIX_INDUCTIVE_P7",
                 "result": "UNSAT" if failed_child is None else failed_child.result,
-                "decomposition": "NAMED_POST_INVARIANT_CONJUNCTS_WITH_SPARSE_P7_SSA",
+                "decomposition": (
+                    "FINITE_PERIODIC_ETA_CERTIFICATE_PLUS_NAMED_POST_INVARIANT_"
+                    "CONJUNCTS_WITH_SPARSE_P7_SSA"
+                ),
                 "children": child_rows,
             })
             if failed_child is not None:

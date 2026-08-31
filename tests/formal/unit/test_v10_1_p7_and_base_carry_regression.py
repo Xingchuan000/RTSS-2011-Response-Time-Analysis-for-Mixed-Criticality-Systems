@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from formal_toolchain.v10_1.base_section4_1 import prove_original_c_amc_sem_section4_1
+from formal_toolchain.v10_1.periodic_release import p7_eta_residue_counterexample
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -13,8 +14,19 @@ def test_p7_induction_is_clause_decomposed_and_uses_sparse_successor():
     assert "declare_sparse_successor" in safe
     assert 'mutable=frozenset({"t", "eta", "frontier", "jobs.executed_service"})' in safe
     assert "A & not(And(C_i))" in safe
-    assert "NAMED_POST_INVARIANT_CONJUNCTS_WITH_SPARSE_P7_SSA" in verifier
+    assert "CONJUNCTS_WITH_SPARSE_P7_SSA" in verifier
     assert 'SAFE_PREFIX_INDUCTIVE_P7::{clause_name}' in safe
+
+
+def test_p7_exact_periodic_eta_uses_complete_finite_residue_proof_not_smt():
+    safe = (ROOT / "formal_toolchain/v10_1/safe_prefix.py").read_text(encoding="utf-8")
+    verifier = (ROOT / "formal_toolchain/v10_1/verifier.py").read_text(encoding="utf-8")
+    assert 'clause_name == "exact_periodic_eta"' in safe
+    assert "p7_eta_residue_counterexample" in safe
+    assert "EXHAUSTIVE_PERIOD_RESIDUE_ENUMERATION" in safe
+    assert "certify_p7_exact_periodic_eta(model)" in verifier
+    for period in (1, 2, 3, 5, 17, 5500, 100000):
+        assert p7_eta_residue_counterexample(period) is None
 
 
 def test_section4_1_receipt_exports_successful_prefix_completion_envelopes():
