@@ -256,18 +256,43 @@ def verify_bundle_v10_1(
     base_sched = run_original_c_amc_sem_schedulability_test(model)
     receipts["base_c_amc_sem"]["section4_1"] = base_sched
     statuses["BASE_C_AMC_SEM_SECTION4_1_CERTIFICATE"] = str(base_sched["status"])
-    if base_sched["status"] == "PASS":
-        base_targets = [
-            {
-                "target": task.name, "status": "PASS", "terminal_route": TARGET_PROVED_BASE,
-                "certificate": "ZHANG_ZHENG_GU_2024_SECTION_4_1",
-            }
-            for task in model.hi_tasks
-        ]
-        for task in model.hi_tasks:
-            statuses[f"HI_TARGET_SAFE::{task.name}"] = "PASS"
-            statuses[f"TERMINAL_ROUTE::{task.name}"] = TARGET_PROVED_BASE
+    if base_sched["status"] not in {"PASS", "UNRESOLVED", "FAIL"}:
+        summary = _fail_summary(
+            request, statuses, code="BASE_C_AMC_SEM_CERTIFICATE_STATUS_INVALID",
+            message=str(base_sched["status"]), binding_root_hash=binding_hash,
+        )
+        _write(out / "proof_receipts.json", receipts)
+        _write(out / "proof_summary.json", summary)
+        return summary
+
+    # V10.1 proves HI safety, not all-task deadline schedulability.  The Section
+    # 4.1 analyzer runs in fixed-priority order and stops at the first failed
+    # task, hence every successful task before that point is a certified FP
+    # prefix.  A lower-priority LO failure cannot invalidate an already-proved
+    # higher-priority HI target.
+    base_safe_names = set(str(name) for name in base_sched.get("hi_safe_targets", ()))
+    pending_hi_tasks = tuple(task for task in model.hi_tasks if task.name not in base_safe_names)
+    statuses["BASE_C_AMC_SEM_HI_PREFIX_CERTIFICATE"] = (
+        "PASS" if not pending_hi_tasks else "UNRESOLVED"
+    )
+
+    target_rows_by_name: dict[str, dict[str, Any]] = {}
+    for task in model.hi_tasks:
+        if task.name not in base_safe_names:
+            continue
+        statuses[f"HI_TARGET_SAFE::{task.name}"] = "PASS"
+        statuses[f"TERMINAL_ROUTE::{task.name}"] = TARGET_PROVED_BASE
+        target_rows_by_name[task.name] = {
+            "target": task.name,
+            "status": "PASS",
+            "terminal_route": TARGET_PROVED_BASE,
+            "certificate": "ZHANG_ZHENG_GU_2024_SECTION_4_1_HI_PREFIX",
+            "prefix_rule": base_sched.get("hi_prefix_rule"),
+        }
+
+    if not pending_hi_tasks:
         statuses["ALL_HI_TARGETS_SAFE"] = "PASS"
+        base_targets = [target_rows_by_name[task.name] for task in model.hi_tasks]
         summary = {
             "schema_version": "v10_1_verified_summary_v1",
             "workflow_status": "PASS",
@@ -282,26 +307,21 @@ def verify_bundle_v10_1(
             "binding_root_hash": binding_hash,
             "obligation_statuses": statuses,
             "target_certificates": base_targets,
-            "base_route_status": "PASS",
+            "base_route_status": base_sched["status"],
+            "base_hi_route_status": "PASS",
             "event_graph_in_pass_dependency": False,
-            "terminal_semantics": "BASE_C_AMC_SEM_SECTION4_1",
+            "terminal_semantics": "BASE_C_AMC_SEM_SECTION4_1_HI_PREFIX",
         }
         _write(out / "proof_receipts.json", receipts)
         _write(out / "proof_summary.json", summary)
         _write_progress(out, "COMPLETE", result_status=RESULT_PROVED)
         return summary
-    if base_sched["status"] not in {"UNRESOLVED", "FAIL"}:
-        summary = _fail_summary(
-            request, statuses, code="BASE_C_AMC_SEM_CERTIFICATE_STATUS_INVALID",
-            message=str(base_sched["status"]), binding_root_hash=binding_hash,
-        )
-        _write(out / "proof_receipts.json", receipts)
-        _write(out / "proof_summary.json", summary)
-        return summary
-    # FAIL/UNRESOLVED of the sufficient BASE test does not imply unsafety; the
-    # proof continues to the less conservative PCSSC route.
 
-    max_deadline = max(int(task.deadline) for task in model.hi_tasks)
+    # A full-task BASE failure is only a sufficient-test failure.  Already
+    # BASE-proved HI targets are retained; PCSSC is constructed only for HI
+    # targets that were not covered by the successful priority prefix.
+
+    max_deadline = max(int(task.deadline) for task in pending_hi_tasks)
     max_depth = max_controller_activations(max_deadline, model.agent_period)
     _write_progress(out, "BUILD_CONTROLLER_MACRO", max_controller_activations=max_depth)
     try:
@@ -331,12 +351,11 @@ def verify_bundle_v10_1(
     statuses["FULL_LEGAL_FEATURE_DOMAIN_REACHABILITY_BRIDGE"] = "PASS"
     statuses["GUARDED_FIRSTVALID_CONTROLLER_IMAGE_SOUND"] = "PASS"
 
-    target_rows: list[dict[str, Any]] = []
     unresolved: list[str] = []
-    for index, task in enumerate(model.hi_tasks):
+    for index, task in enumerate(pending_hi_tasks):
         _write_progress(
             out, "PCSSC_TARGET", task=task.name, task_index=index,
-            hi_task_count=len(model.hi_tasks), deadline=int(task.deadline),
+            hi_task_count=len(pending_hi_tasks), deadline=int(task.deadline),
             max_controller_activations=max_controller_activations(task.deadline, model.agent_period),
         )
         cert = prove_target_pcssc(
@@ -345,7 +364,7 @@ def verify_bundle_v10_1(
             tie_break_hash=str(bindings["seed_task_binding"]["tie_break_hash"]),
         )
         row = cert.as_dict()
-        target_rows.append(row)
+        target_rows_by_name[task.name] = row
         receipts.setdefault("pcssc_targets", []).append(row)
         statuses[f"HI_TARGET_SAFE::{task.name}"] = "PASS" if cert.status == "PASS" else "UNRESOLVED"
         if cert.status == "PASS":
@@ -354,6 +373,8 @@ def verify_bundle_v10_1(
             unresolved.append(f"{task.name}:{cert.failure_code}")
         _write(out / "proof_receipts.partial.json", receipts)
 
+    target_rows = [target_rows_by_name[task.name] for task in model.hi_tasks]
+
     if unresolved:
         summary = _fail_summary(
             request, statuses, code="POLICY_SINGLE_SWITCH_CERTIFICATE_UNRESOLVED",
@@ -361,6 +382,7 @@ def verify_bundle_v10_1(
         )
         summary["target_certificates"] = target_rows
         summary["base_route_status"] = base_sched["status"]
+        summary["base_hi_route_status"] = str(base_sched.get("hi_safety_status", "UNRESOLVED"))
         _write(out / "proof_receipts.json", receipts)
         _write(out / "proof_summary.json", summary)
         _write_progress(out, "COMPLETE", result_status=RESULT_UNRESOLVED,
@@ -383,6 +405,7 @@ def verify_bundle_v10_1(
         "obligation_statuses": statuses,
         "target_certificates": target_rows,
         "base_route_status": base_sched["status"],
+        "base_hi_route_status": str(base_sched.get("hi_safety_status", "UNRESOLVED")),
         "event_graph_in_pass_dependency": False,
         "terminal_semantics": "BASE_C_AMC_SEM_OR_PCSSC_POSTFIX",
     }

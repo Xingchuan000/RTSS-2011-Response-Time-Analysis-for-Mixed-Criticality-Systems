@@ -188,3 +188,55 @@ def test_verifier_facing_failure_is_unresolved_not_unsafe():
     assert result["status"] == "UNRESOLVED"
     assert result["code"] == "BASE_C_AMC_SEM_NOT_SUFFICIENT"
     assert result["all_tasks_schedulable"] is False
+
+
+def test_hi_prefix_certificate_survives_lower_priority_lo_failure():
+    from types import SimpleNamespace
+    from formal_toolchain.v10_1.base_section4_1 import prove_original_c_amc_sem_section4_1
+
+    model = SimpleNamespace(
+        tasks=(
+            SimpleNamespace(
+                name="hi0", priority=0, period=10, deadline=10,
+                criticality="HI", c_lo=1, c_hi=2, degraded_cost=None,
+                actual_demand_upper=2,
+            ),
+            # Lower-priority LO task is intentionally unschedulable.  It cannot
+            # interfere with hi0 and must not invalidate the HI-only claim.
+            SimpleNamespace(
+                name="lo_bad", priority=1, period=10, deadline=10,
+                criticality="LO", c_lo=9, c_hi=9, degraded_cost=9,
+                actual_demand_upper=9,
+            ),
+        )
+    )
+    result = prove_original_c_amc_sem_section4_1(model)
+    assert result["status"] == "UNRESOLVED"
+    assert result["all_tasks_schedulable"] is False
+    assert result["hi_safety_status"] == "PASS"
+    assert result["hi_safe_targets"] == ["hi0"]
+    assert result["hi_unresolved_targets"] == []
+
+
+def test_hi_prefix_certificate_does_not_jump_over_failed_higher_priority_task():
+    from types import SimpleNamespace
+    from formal_toolchain.v10_1.base_section4_1 import prove_original_c_amc_sem_section4_1
+
+    model = SimpleNamespace(
+        tasks=(
+            SimpleNamespace(
+                name="lo_bad", priority=0, period=10, deadline=10,
+                criticality="LO", c_lo=11, c_hi=11, degraded_cost=11,
+                actual_demand_upper=11,
+            ),
+            SimpleNamespace(
+                name="hi1", priority=1, period=20, deadline=20,
+                criticality="HI", c_lo=1, c_hi=2, degraded_cost=None,
+                actual_demand_upper=2,
+            ),
+        )
+    )
+    result = prove_original_c_amc_sem_section4_1(model)
+    assert result["hi_safety_status"] == "UNRESOLVED"
+    assert result["hi_safe_targets"] == []
+    assert result["hi_unresolved_targets"] == ["hi1"]

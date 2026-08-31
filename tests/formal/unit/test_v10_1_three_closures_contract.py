@@ -34,7 +34,9 @@ def test_switch_endpoint_and_arrival_correlation_rules_are_explicit():
     text = (ROOT / "formal_toolchain/v10_1/pcssc.py").read_text(encoding="utf-8")
     assert "LO at u=s is primary" in text
     assert "HI at u=s may use C_HI" in text
-    assert "for a in range(q)" in text and "for b in range(a, q)" in text
+    assert "compatible_release_phases" in text
+    assert "EXACT_PERIODIC_RELEASE_PROFILE_COVERAGE::" in text
+    assert '"same_task_carry_future_coupling": True' in text
     assert "POLICY_ARRIVAL_CORRELATION_RELAXATION" in text
 
 

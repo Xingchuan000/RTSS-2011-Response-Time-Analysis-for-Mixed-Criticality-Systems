@@ -635,6 +635,39 @@ def prove_original_c_amc_sem_section4_1(model: Any) -> dict[str, Any]:
     tasks = bind_paper_taskset(model)
     certificate = compute_section4_1_certificate(tasks)
     payload = certificate.as_dict()
+
+    # The paper's taskset-level statement is conjunctive over all tasks, but
+    # V10.1's primary claim is HI safety only.  Section 4.1 is evaluated in
+    # fixed-priority order and ``compute_section4_1_certificate`` stops at the
+    # first failed task.  Consequently every successful certificate before
+    # that point forms a schedulable fixed-priority prefix.  Any HI target in
+    # that prefix is proved independently of lower-priority tasks: lower
+    # priorities cannot delay it under the frozen FPPS correspondence.
+    cert_by_name = {row.target.name: row for row in certificate.task_certificates}
+    hi_names = [task.name for task in tasks if task.criticality == "HI"]
+    hi_safe_targets: list[str] = []
+    hi_unresolved_targets: list[str] = []
+    for task in tasks:
+        if task.criticality != "HI":
+            continue
+        row = cert_by_name.get(task.name)
+        if row is not None and row.schedulable:
+            hi_safe_targets.append(task.name)
+        else:
+            hi_unresolved_targets.append(task.name)
+
+    payload.update({
+        "hi_safety_status": "PASS" if not hi_unresolved_targets else "UNRESOLVED",
+        "hi_safe_targets": hi_safe_targets,
+        "hi_unresolved_targets": hi_unresolved_targets,
+        "hi_prefix_rule": (
+            "fixed-priority prefix induction: a BASE-proved HI target appears before "
+            "the first failed Section 4.1 task, so every higher-priority task also has "
+            "a schedulable Section 4.1 certificate; lower-priority failures cannot "
+            "interfere with the target under FPPS"
+        ),
+    })
+
     if certificate.schedulable:
         payload.update(
             {
@@ -646,8 +679,10 @@ def prove_original_c_amc_sem_section4_1(model: Any) -> dict[str, Any]:
     else:
         payload.update(
             {
-                # Failure of this sufficient BASE test is not a proof of
-                # deployed unsafety.  V10.1 must continue to PCSSC.
+                # Failure of the all-task sufficient BASE test is not a proof
+                # of deployed unsafety.  HI targets that lie in the successful
+                # priority prefix remain valid BASE terminal certificates; only
+                # unresolved HI targets continue to PCSSC.
                 "status": "UNRESOLVED",
                 "code": "BASE_C_AMC_SEM_NOT_SUFFICIENT",
                 "reason": "SECTION4_1_DEADLINE_TEST_NOT_SATISFIED",

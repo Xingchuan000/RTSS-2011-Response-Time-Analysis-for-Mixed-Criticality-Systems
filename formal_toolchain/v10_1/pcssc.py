@@ -3,7 +3,8 @@
 This module never performs release/completion/deadline/dispatch Event-Graph
 search.  It operates on a target response horizon, a common C-AMC-sem switch
 profile, periodic controller candidates, exact-controller budget macro regions,
-and an integer arrival-count polytope with all contiguous-interval constraints.
+and the frozen exact-periodic phase-zero release profile.  No per-case arrival
+solver is allocated.
 """
 
 from __future__ import annotations
@@ -13,10 +14,7 @@ from functools import lru_cache
 from math import ceil
 from typing import Any, Iterable
 
-import z3
-
 from .kernel.carry_in import derive_protected_priority_prefix
-from .kernel.solver_runtime import make_solver
 from .base_section4_1 import paper_c_lo_bound
 from .controller_macro import (
     BudgetInterval,
@@ -26,6 +24,7 @@ from .controller_macro import (
     required_policy_read_features,
 )
 from .kernel.symbolic_state import BoundModel, TaskBound
+from .periodic_release import compatible_release_phases
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,54 +152,107 @@ def _controller_prefix_coverage_receipt(
     }
 
 
-def _arrmax(period: int, lower: int, upper_exclusive: int) -> int:
-    if upper_exclusive <= lower:
-        return 0
-    return 1 + (int(upper_exclusive) - 1 - int(lower)) // int(period)
+
+def _weight_at_release(
+    release: int, cells: tuple[MacroCell, ...], weights: tuple[int, ...]
+) -> int:
+    for cell, weight in zip(cells, weights):
+        if int(cell.lower) <= int(release) < int(cell.upper_exclusive):
+            return int(weight)
+    raise PCSSCUnresolved(f"EXACT_PERIODIC_RELEASE_OUTSIDE_MACRO_CELLS:{release}")
 
 
-@lru_cache(maxsize=32768)
-def _maximize_counts_cached(
-    period: int,
+
+@lru_cache(maxsize=131072)
+def _exact_periodic_phase_workload_cached(
+    target_period: int,
+    task_period: int,
+    controller_period: int,
+    theta: int,
+    horizon: int,
     cells_key: tuple[tuple[int, int], ...],
     weights: tuple[int, ...],
-) -> int:
-    q = len(cells_key)
-    if q != len(weights):
-        raise ValueError("ARRIVAL_COUNT_CELL_WEIGHT_DIMENSION_MISMATCH")
-    if q == 0:
-        return 0
-    counts = [z3.Int(f"n_{period}_{q}_{index}") for index in range(q)]
-    solver = make_solver()
-    for value in counts:
-        solver.add(value >= 0)
-    for a in range(q):
-        for b in range(a, q):
-            lower = cells_key[a][0]
-            upper = cells_key[b][1]
-            solver.add(z3.Sum(*counts[a:b + 1]) <= _arrmax(period, lower, upper))
-    objective = z3.Sum(*(counts[index] * int(weights[index]) for index in range(q)))
-    total = _arrmax(period, cells_key[0][0], cells_key[-1][1])
-    lo = 0
-    hi = total * (max(weights) if weights else 0)
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        solver.push()
-        solver.add(objective >= mid)
-        result = solver.check()
-        solver.pop()
-        if result == z3.unknown:
-            raise PCSSCUnresolved(f"ARRIVAL_COUNT_OPTIMIZER_UNKNOWN:{solver.reason_unknown()}")
-        if result == z3.sat:
-            lo = mid
+    raw_carry_cap: int,
+    completion_bound: int,
+) -> tuple[int, int, int, int]:
+    """Return max(total, phase, carry, future) for one hp task.
+
+    This cache contains no solver state.  It is a direct enumeration of the
+    finite exact-periodic phase orbit compatible with the fixed controller
+    phase.  Cross-task phases are intentionally de-coupled later; that only
+    adds combinations and is recorded in the conservatism ledger.
+    """
+
+    cells = tuple(MacroCell(lo, hi) for lo, hi in cells_key)
+    try:
+        phases = compatible_release_phases(
+            int(target_period), int(task_period), int(controller_period), int(theta)
+        )
+    except ValueError as exc:
+        raise PCSSCUnresolved(str(exc)) from exc
+    best_total = -1
+    best_phase = 0
+    best_carry = 0
+    best_future = 0
+    for phase in phases:
+        if phase == 0:
+            carry = 0
         else:
-            hi = mid - 1
-    return int(lo)
+            age = int(task_period) - int(phase)
+            residual_time = int(completion_bound) - age
+            carry = 0 if residual_time <= 0 else min(int(raw_carry_cap), int(residual_time))
+        future = 0
+        release = int(phase)
+        while release < int(horizon):
+            future += _weight_at_release(release, cells, weights)
+            release += int(task_period)
+        total = carry + future
+        if total > best_total:
+            best_total = total
+            best_phase = int(phase)
+            best_carry = int(carry)
+            best_future = int(future)
+    if best_total < 0:
+        raise PCSSCUnresolved("EXACT_PERIODIC_PHASE_PROFILE_EMPTY")
+    return best_total, best_phase, best_carry, best_future
 
 
-def maximize_weighted_counts(task: TaskBound, cells: tuple[MacroCell, ...], weights: tuple[int, ...]) -> int:
+def _exact_periodic_task_workload(
+    target: TaskBound,
+    task: TaskBound,
+    *,
+    theta: int,
+    horizon: int,
+    cells: tuple[MacroCell, ...],
+    weights: tuple[int, ...],
+    switch_kind: str,
+    protected: set[str],
+    protected_response_by_task: dict[str, int],
+    controller_period: int,
+) -> tuple[int, dict[str, int]]:
+    raw_carry = _carry_in_bound(task, switch_kind, protected)
+    if task.criticality == "LO":
+        response = protected_response_by_task.get(task.name)
+        if response is None:
+            raise PCSSCUnresolved(f"REACHABLE_LO_CARRY_IN_UNRESOLVED:{task.name}")
+        completion_bound = int(response)
+    else:
+        completion_bound = int(task.deadline)
+        response = protected_response_by_task.get(task.name)
+        if response is not None:
+            completion_bound = min(completion_bound, int(response))
     key = tuple((int(cell.lower), int(cell.upper_exclusive)) for cell in cells)
-    return _maximize_counts_cached(int(task.period), key, tuple(int(v) for v in weights))
+    total, phase, carry, future = _exact_periodic_phase_workload_cached(
+        int(target.period), int(task.period), int(controller_period), int(theta),
+        int(horizon), key, tuple(int(v) for v in weights), int(raw_carry),
+        int(completion_bound),
+    )
+    return int(total), {
+        "release_phase": int(phase),
+        "carry_in": int(carry),
+        "future_interference": int(future),
+        "completion_bound": int(completion_bound),
+    }
 
 
 def _budget_depth_at_release(u: int, controller_times: tuple[int, ...]) -> int:
@@ -258,7 +310,8 @@ def _switch_breakpoints(
     """Precision-only scalar breakpoints; missing points cannot make the proof unsound.
 
     The resulting switch cells still cover every integer s.  Period/controller
-    translated multiples reduce W-ARR floor changes inside a relaxed Sigma.
+    translated multiples reduce switch-side ambiguity for periodic releases
+    inside a relaxed Sigma.
     """
     if horizon <= 1:
         return ()
@@ -277,8 +330,8 @@ def _switch_breakpoints(
         for anchor in anchors:
             # Include translated period multiples on both sides of each
             # controller/response boundary.  These are precision breakpoints
-            # for ArrMax floor changes; the Sigma cover is sound even if the
-            # set is later coarsened.
+            # for periodic release/switch-side changes; the Sigma cover is
+            # sound even if the set is later coarsened.
             k_min = (1 - int(anchor) - (T - 1)) // T
             k_max = (int(horizon) - 1 - int(anchor)) // T
             for k in range(k_min, k_max + 1):
@@ -403,6 +456,7 @@ def _workload_case(
     hp_tasks: tuple[TaskBound, ...],
     path: ControllerMacroPath,
     protected: set[str],
+    protected_response_by_task: dict[str, int],
     *,
     horizon: int,
     theta: int,
@@ -415,19 +469,23 @@ def _workload_case(
     rows: list[dict[str, Any]] = []
     total = target_work
     for task in hp_tasks:
-        carry = _carry_in_bound(task, switch.kind, protected)
         weights = tuple(
             _weight_for_cell(task, cell, switch, controller_times, path)
             for cell in cells
         )
-        future = maximize_weighted_counts(task, cells, weights)
-        total += carry + future
+        task_work, phase_details = _exact_periodic_task_workload(
+            target, task, theta=theta, horizon=horizon, cells=cells, weights=weights,
+            switch_kind=switch.kind, protected=protected,
+            protected_response_by_task=protected_response_by_task,
+            controller_period=model.agent_period,
+        )
+        total += task_work
         rows.append({
             "task": task.name,
-            "carry_in": carry,
-            "future_interference": future,
+            **phase_details,
             "weights": list(weights),
             "cells": [[cell.lower, cell.upper_exclusive] for cell in cells],
+            "release_model": "EXACT_PERIODIC_PHASE_ZERO",
         })
     return int(total), {
         "theta": int(theta),
@@ -444,6 +502,7 @@ def _max_workload_at_horizon(
     target: TaskBound,
     path: ControllerMacroPath,
     protected: set[str],
+    protected_response_by_task: dict[str, int],
     horizon: int,
 ) -> tuple[int, dict[str, Any], int]:
     target_index = next(index for index, task in enumerate(model.tasks) if task.name == target.name)
@@ -460,7 +519,7 @@ def _max_workload_at_horizon(
             for classification in _valid_target_classes(target, switch):
                 switch_case_count += 1
                 value, details = _workload_case(
-                    model, target, hp_tasks, path, protected,
+                    model, target, hp_tasks, path, protected, protected_response_by_task,
                     horizon=horizon, theta=theta, switch=switch,
                     classification=classification,
                 )
@@ -531,6 +590,7 @@ def prove_target_pcssc(
 
     prefix = derive_protected_priority_prefix(model)
     protected = set(prefix.task_names)
+    protected_response_by_task = prefix.response_by_task
     unprotected_hp_lo = [task.name for task in hp_tasks
                          if task.criticality == "LO" and task.name not in protected]
     receipts.append({
@@ -591,18 +651,27 @@ def prove_target_pcssc(
         {"obligation_id": f"SINGLE_SWITCH_PROFILE_COVERAGE::{target.name}", "status": "PASS",
          "profiles": ["PRE_HI", "LO_NO_SWITCH", "LO_SWITCH(Sigma)"],
          "lo_endpoint": "u=s uses primary", "hi_endpoint": "u=s may use C_HI"},
-        {"obligation_id": f"ARRIVAL_COUNT_CONTIGUOUS_INTERVAL_CONSTRAINTS::{target.name}", "status": "PASS",
-         "release_abstraction": "sporadic min-separation superset of bound exact-periodic releases"},
+        {"obligation_id": f"EXACT_PERIODIC_RELEASE_PROFILE_COVERAGE::{target.name}", "status": "PASS",
+         "release_model": "EXACT_PERIODIC_PHASE_ZERO",
+         "phase_relation": "hp release phase is conditioned on the same target-relative controller theta",
+         "same_task_carry_future_coupling": True},
     ))
     ledger.append({
-        "kind": "PERIODIC_TO_SPORADIC_ARRIVAL_WIDENING",
+        "kind": "CROSS_TASK_PERIODIC_PHASE_DECOUPLING",
         "target": target.name,
-        "soundness_direction": "ONLY_ADDS_RELEASE_COUNT_VECTORS",
+        "effect": "each hp task independently maximizes over phases compatible with the same controller theta",
+        "soundness_direction": "ONLY_ADDS_CROSS_TASK_PHASE_COMBINATIONS",
+    })
+    ledger.append({
+        "kind": "PHASE_COUPLED_CARRY_IN_REFINEMENT",
+        "target": target.name,
+        "effect": "previous-job carry-in and future exact-periodic releases share one task phase; remaining carry-in is bounded by the proved completion horizon",
+        "soundness_direction": "SOUND_TIGHTENING_FROM_EXACT_PERIODIC_AND_COMPLETION_BINDINGS",
     })
     ledger.append({
         "kind": "POLICY_ARRIVAL_CORRELATION_RELAXATION",
         "target": target.name,
-        "soundness_direction": "COUNT_OPTIMIZER_NOT_REQUIRED_TO_REPRODUCE_FEATURE_HISTORY",
+        "soundness_direction": "PER_TASK_PERIODIC_PHASE_MAX_NOT_REQUIRED_TO_REPRODUCE_FEATURE_HISTORY",
     })
     ledger.append({
         "kind": "SWITCH_CELL_RELAXATION",
@@ -628,7 +697,7 @@ def prove_target_pcssc(
                 model, target, path, R
             )
             workload, argmax, case_count = _max_workload_at_horizon(
-                model, target, path, protected, R
+                model, target, path, protected, protected_response_by_task, R
             )
         except PCSSCUnresolved as exc:
             return TargetCertificate(target.name, "UNRESOLVED", None, str(exc),
@@ -663,7 +732,7 @@ def prove_target_pcssc(
                 model, target, path, int(target.deadline)
             )
             workload, argmax, case_count = _max_workload_at_horizon(
-                model, target, path, protected, int(target.deadline)
+                model, target, path, protected, protected_response_by_task, int(target.deadline)
             )
         except PCSSCUnresolved as exc:
             return TargetCertificate(target.name, "UNRESOLVED", None, str(exc),
@@ -693,5 +762,5 @@ def prove_target_pcssc(
 
 __all__ = [
     "MacroCell", "PCSSCUnresolved", "SwitchCell", "TargetCertificate",
-    "maximize_weighted_counts", "prove_target_pcssc",
+    "prove_target_pcssc",
 ]
