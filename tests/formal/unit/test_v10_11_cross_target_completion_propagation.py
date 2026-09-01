@@ -135,6 +135,7 @@ def test_pcssc_records_cross_target_reuse_and_safe_prefix_theorem_basis():
     completion_text = (ROOT / "formal_toolchain/v10_1/completion_certificates.py").read_text(encoding="utf-8")
     assert "PCSSC_SAFE_PREFIX_COMPLETION_EXPORT_V10_11" in completion_text
     assert "PCSSC_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_12" in completion_text
+    assert "PCSSC_CASE_CONDITIONED_SAFE_PREFIX_COMPLETION_EXPORT_V10_13" in completion_text
     assert "PRIORITY_ORDERED_CERTIFICATE_DAG_VIOLATION" in text
 
 

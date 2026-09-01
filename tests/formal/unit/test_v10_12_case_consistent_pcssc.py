@@ -43,7 +43,7 @@ def test_v10_12_deadline_canonical_domain_is_stable_complete_and_unique():
         model, target, hp
     )
 
-    assert FRAMEWORK_REVISION == "V10.12_CASE_CONSISTENT_PCSSC_POSTFIX"
+    assert FRAMEWORK_REVISION == "V10.13_CASE_CONDITIONED_JOINT_CARRY_FUTURE"
     assert domain
     assert len({case.id for case in domain}) == len(domain)
     assert all(case.canonical_deadline == target.deadline for case in domain)

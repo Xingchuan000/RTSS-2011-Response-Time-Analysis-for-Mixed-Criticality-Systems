@@ -2,7 +2,7 @@
 
 The active implementation remains under ``formal_toolchain.v10_1`` because the
 request/bundle schema is unchanged.  Completed BASE, pointwise-PCSSC, and
-case-consistent-PCSSC certificates from *strictly higher-priority* tasks may be
+case-consistent-PCSSC and V10.13 conditioned-carry certificates from *strictly higher-priority* tasks may be
 reused by a lower-priority PCSSC target.
 
 A certificate is deliberately stronger than a boolean target-safety result: it
@@ -27,6 +27,9 @@ BASE_COMPLETION_SOURCE = "BASE_C_AMC_SEM_SECTION4_1_SUCCESSFUL_PREFIX"
 PCSSC_COMPLETION_SOURCE = "TARGET_PROVED_BY_PCSSC"
 PCSSC_POINTWISE_COMPLETION_THEOREM = "PCSSC_SAFE_PREFIX_COMPLETION_EXPORT_V10_11"
 PCSSC_CASE_COMPLETION_THEOREM = "PCSSC_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_12"
+PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM = (
+    "PCSSC_CASE_CONDITIONED_SAFE_PREFIX_COMPLETION_EXPORT_V10_13"
+)
 BASE_COMPLETION_THEOREM = "BASE_SECTION4_1_COMPLETION_EXPORT_V10_11"
 
 
@@ -144,6 +147,7 @@ def export_pcssc_completion_certificate(
     if theorem_basis not in {
         PCSSC_POINTWISE_COMPLETION_THEOREM,
         PCSSC_CASE_COMPLETION_THEOREM,
+        PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM,
     }:
         raise CompletionCertificateError(
             f"PCSSC_COMPLETION_EXPORT_UNKNOWN_THEOREM:{target_name}:{theorem_basis}"
@@ -227,6 +231,7 @@ __all__ = [
     "PCSSC_COMPLETION_SOURCE",
     "PCSSC_POINTWISE_COMPLETION_THEOREM",
     "PCSSC_CASE_COMPLETION_THEOREM",
+    "PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM",
     "CertifiedCompletionBound",
     "CompletionCertificateError",
     "build_base_completion_certificates",

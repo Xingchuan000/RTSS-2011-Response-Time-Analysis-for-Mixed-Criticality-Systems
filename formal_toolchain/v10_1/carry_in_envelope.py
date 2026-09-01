@@ -67,6 +67,7 @@ def _utilization(specs: tuple[CarryTaskSpec, ...], *, post: bool) -> Fraction:
     )
 
 
+@lru_cache(maxsize=4096)
 def _busy_period_upper(specs: tuple[CarryTaskSpec, ...], *, post: bool) -> int:
     """Synchronous-release busy-period upper bound.
 
@@ -415,6 +416,84 @@ def phase_relaxed_lo_entry_carry(
     }
 
 
+@lru_cache(maxsize=131072)
+def fixed_phase_lo_entry_backlog(
+    specs: tuple[CarryTaskSpec, ...], phases: tuple[int, ...]
+) -> tuple[int, dict[str, int]]:
+    """Exact-joint-phase aggregate carry at a LO-entry target release.
+
+    ``phases`` is the single phase vector induced by one concrete target-release
+    index.  Carry is work pending strictly before relative time zero, so a
+    release exactly at zero is excluded.  For any continuously-busy suffix
+    ending at zero, unfinished work is bounded by arrival demand minus processor
+    supply.  With fixed periodic phases, that expression can change its demand
+    only when the left endpoint crosses a release; evaluating those finite
+    boundary ages is therefore complete for the aggregate backlog maximum.
+    """
+    if len(specs) != len(phases):
+        raise ValueError("CARRY_PHASE_DIMENSION_MISMATCH")
+    if not specs:
+        return 0, {"busy_horizon": 0, "candidate_lengths": 0, "witness_length": 0}
+    for spec, phase in zip(specs, phases):
+        if not (0 <= int(phase) < int(spec.period)):
+            raise ValueError("CARRY_PHASE_OUT_OF_RANGE")
+
+    busy = _busy_period_upper(specs, post=False)
+    ages = {1}
+    for spec, phase in zip(specs, phases):
+        age = int(spec.period) if int(phase) == 0 else int(spec.period) - int(phase)
+        while age <= int(busy):
+            ages.add(int(age))
+            age += int(spec.period)
+
+    best = 0
+    witness = 0
+    for length in sorted(ages):
+        demand = sum(
+            _count_releases(int(phase), int(spec.period), -int(length), 0)
+            * int(spec.pre_switch_cap)
+            for spec, phase in zip(specs, phases)
+        )
+        backlog = int(demand) - int(length)
+        if backlog > best:
+            best = int(backlog)
+            witness = int(length)
+    return max(0, int(best)), {
+        "busy_horizon": int(busy),
+        "candidate_lengths": len(ages),
+        "witness_length": int(witness),
+    }
+
+
+@lru_cache(maxsize=4096)
+def target_release_joint_phase_orbit(
+    target_period: int,
+    controller_period: int,
+    theta: int,
+    specs: tuple[CarryTaskSpec, ...],
+) -> tuple[tuple[int, tuple[int, ...]], ...]:
+    """Finite exact-periodic joint phase orbit for one target/controller theta.
+
+    Each row is ``(q, phases)`` where all higher-priority phases are generated
+    from the *same* target-release index.  This is the correlation that V10.13
+    preserves when combining carry-in with future interference.
+    """
+    if not specs:
+        return ((0, ()),)
+    n0, q_step = _target_release_progression(
+        int(target_period), int(controller_period), int(theta)
+    )
+    cycle = _joint_q_cycle(int(target_period), int(q_step), specs)
+    rows: list[tuple[int, tuple[int, ...]]] = []
+    for q in range(int(cycle)):
+        n = int(n0) + int(q) * int(q_step)
+        phases = tuple(
+            (-int(n) * int(target_period)) % int(spec.period) for spec in specs
+        )
+        rows.append((int(q), phases))
+    return tuple(rows)
+
+
 @lru_cache(maxsize=8192)
 def phase_relaxed_single_switch_carry(
     target_period: int,
@@ -503,6 +582,8 @@ __all__ = [
     "CarryInEnvelopeUnresolved",
     "CarryTaskSpec",
     "fixed_phase_single_switch_backlog",
+    "fixed_phase_lo_entry_backlog",
+    "target_release_joint_phase_orbit",
     "joint_phase_pre_hi_interference",
     "phase_relaxed_lo_entry_carry",
     "phase_relaxed_single_switch_carry",

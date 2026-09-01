@@ -19,6 +19,7 @@ from .bindings import build_bindings, load_request
 from .constants import (
     FRAMEWORK_REVISION, PRIMARY_CLAIM, PROOF_ROUTE, RESULT_INVALID, RESULT_PROVED, RESULT_UNRESOLVED,
     SCOPE, TARGET_PROVED_BASE, TARGET_PROVED_PCSSC, TARGET_PROVED_PCSSC_CASE_CONSISTENT,
+    TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY,
 )
 from .completion_certificates import (
     CompletionCertificateError,
@@ -530,7 +531,11 @@ def verify_bundle_v10_1(
         receipts.setdefault("pcssc_targets", []).append(row)
         statuses[f"HI_TARGET_SAFE::{task.name}"] = "PASS" if cert.status == "PASS" else "UNRESOLVED"
         if cert.status == "PASS":
-            if cert.terminal_route not in {TARGET_PROVED_PCSSC, TARGET_PROVED_PCSSC_CASE_CONSISTENT}:
+            if cert.terminal_route not in {
+                TARGET_PROVED_PCSSC,
+                TARGET_PROVED_PCSSC_CASE_CONSISTENT,
+                TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY,
+            }:
                 statuses[f"HI_TARGET_SAFE::{task.name}"] = "UNRESOLVED"
                 unresolved.append(f"{task.name}:PCSSC_PASS_MISSING_VALID_TERMINAL_ROUTE")
                 row["status"] = "UNRESOLVED"

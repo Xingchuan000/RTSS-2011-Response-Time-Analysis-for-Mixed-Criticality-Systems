@@ -1,4 +1,4 @@
-"""Machine-readable readiness for the active V10.12 implementation."""
+"""Machine-readable readiness for the active V10.13 implementation."""
 
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ def readiness_report() -> dict[str, object]:
                 "event_graph_required": False,
                 "pointwise_first": True,
                 "case_consistent_fallback": True,
+                "case_conditioned_joint_carry_future_fallback": True,
                 "deadline_canonical_case_domain": True,
             },
         },

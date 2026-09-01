@@ -1,11 +1,11 @@
-"""Policy-Constrained Single-Switch Certificate (PCSSC), V10.12 revision.
+"""Policy-Constrained Single-Switch Certificate (PCSSC), V10.13 revision.
 
-This module never performs release/completion/deadline/dispatch Event-Graph
-search.  It first tries the V10.11 pointwise-max postfix and, only when that
-route is unresolved, evaluates the V10.12 deadline-canonical finite case domain.
-Each fixed case receives its own directly checked postfix; the exported response
-bound is the maximum of those completion bounds, not a forged common postfix.
-No per-case arrival solver is allocated.
+The fast routes remain BASE/V10.11 pointwise/V10.12 case-consistent.  Only a
+V10.12 LO-entry canonical case that reaches the deadline without a postfix is
+refined by V10.13: carry-in and future interference are maximized over one
+shared exact-periodic target-release index instead of independently selected
+phase witnesses.  This is finite integer arithmetic; Event Graph search and
+full execution-history BMC remain outside the PASS dependency.
 """
 
 from __future__ import annotations
@@ -22,15 +22,22 @@ from .completion_certificates import (
     BASE_COMPLETION_SOURCE,
     PCSSC_COMPLETION_SOURCE,
     PCSSC_CASE_COMPLETION_THEOREM,
+    PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM,
     PCSSC_POINTWISE_COMPLETION_THEOREM,
     CertifiedCompletionBound,
 )
-from .constants import TARGET_PROVED_PCSSC, TARGET_PROVED_PCSSC_CASE_CONSISTENT
+from .constants import (
+    TARGET_PROVED_PCSSC,
+    TARGET_PROVED_PCSSC_CASE_CONSISTENT,
+    TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY,
+)
 from .base_section4_1 import paper_c_lo_bound
 from .carry_in_envelope import (
     CarryInEnvelopeUnresolved,
     CarryTaskSpec,
+    fixed_phase_lo_entry_backlog,
     joint_phase_pre_hi_interference,
+    target_release_joint_phase_orbit,
     phase_relaxed_lo_entry_carry,
     phase_relaxed_single_switch_carry,
 )
@@ -712,6 +719,158 @@ def _workload_case(
     }
 
 
+def _fixed_phase_future_only(
+    task: TaskBound,
+    *,
+    phase: int,
+    horizon: int,
+    cells: tuple[MacroCell, ...],
+    weights: tuple[int, ...],
+) -> int:
+    if not (0 <= int(phase) < int(task.period)):
+        raise PCSSCUnresolved(f"EXACT_PERIODIC_PHASE_OUT_OF_RANGE:{task.name}:{phase}")
+    total = 0
+    release = int(phase)
+    while release < int(horizon):
+        total += _weight_at_release(int(release), cells, weights)
+        release += int(task.period)
+    return int(total)
+
+
+def _case_conditioned_joint_phase_interference(
+    model: BoundModel,
+    target: TaskBound,
+    hp_tasks: tuple[TaskBound, ...],
+    path: ControllerMacroPath,
+    *,
+    horizon: int,
+    theta: int,
+    switch: SwitchCell,
+) -> tuple[int, dict[str, Any]]:
+    """V10.13 LO-entry carry/future bound with one shared release index.
+
+    V10.12 may independently maximize the LO-entry carry phase and each
+    higher-priority future-interference phase.  Exact periodic phase-zero
+    releases imply that all of those phases come from one target-release index.
+    This routine enumerates that finite joint orbit and maximizes
+    ``carry(q) + future(q)`` without reconstructing an Event Graph.
+    """
+    if switch.kind not in {"LO_NO_SWITCH", "LO_SWITCH"}:
+        raise PCSSCUnresolved("CASE_CONDITIONED_CARRY_REQUIRES_LO_ENTRY")
+
+    controller_times = candidate_controller_times(theta, model.agent_period, horizon)
+    cells = _macro_cells(horizon, controller_times, switch)
+    specs = _carry_task_specs(hp_tasks, path)
+    weights_by_task = tuple(
+        tuple(
+            _weight_for_cell(task, cell, switch, controller_times, path)
+            for cell in cells
+        )
+        for task in hp_tasks
+    )
+    orbit = target_release_joint_phase_orbit(
+        int(target.period), int(model.agent_period), int(theta), specs
+    )
+    maximum = -1
+    witness_q = 0
+    witness_carry = 0
+    witness_future = 0
+    witness_phases: tuple[int, ...] = ()
+    witness_carry_details: dict[str, int] = {}
+    witness_future_rows: list[dict[str, int | str]] = []
+
+    for q, phases in orbit:
+        carry, carry_details = fixed_phase_lo_entry_backlog(specs, phases)
+        future = 0
+        future_rows: list[dict[str, int | str]] = []
+        for task, phase, weights in zip(hp_tasks, phases, weights_by_task):
+            task_future = _fixed_phase_future_only(
+                task, phase=int(phase), horizon=int(horizon), cells=cells, weights=weights
+            )
+            future += int(task_future)
+            future_rows.append({
+                "task": task.name,
+                "release_phase": int(phase),
+                "future_interference": int(task_future),
+            })
+        value = int(carry) + int(future)
+        if value > maximum:
+            maximum = int(value)
+            witness_q = int(q)
+            witness_carry = int(carry)
+            witness_future = int(future)
+            witness_phases = tuple(int(value) for value in phases)
+            witness_carry_details = dict(carry_details)
+            witness_future_rows = future_rows
+
+    if maximum < 0:
+        raise PCSSCUnresolved(f"CASE_CONDITIONED_JOINT_PHASE_ORBIT_EMPTY:{target.name}")
+    return int(maximum), {
+        "basis": "V10_13_CASE_CONDITIONED_JOINT_TARGET_RELEASE_PHASE",
+        "theta": int(theta),
+        "switch_profile": switch.id,
+        "joint_phase_cycle": len(orbit),
+        "witness_q": int(witness_q),
+        "witness_phases": list(witness_phases),
+        "carry_in": int(witness_carry),
+        "future": int(witness_future),
+        "joint_hp_bound": int(maximum),
+        "carry_details": witness_carry_details,
+        "future_rows": witness_future_rows,
+        "same_target_release_index_for_carry_and_future": True,
+    }
+
+
+def _workload_case_conditioned_v10_13(
+    model: BoundModel,
+    target: TaskBound,
+    hp_tasks: tuple[TaskBound, ...],
+    path: ControllerMacroPath,
+    protected: set[str],
+    protected_response_by_task: dict[str, int],
+    *,
+    horizon: int,
+    theta: int,
+    switch: SwitchCell,
+    classification: str,
+) -> tuple[int, dict[str, Any]]:
+    legacy, legacy_details = _workload_case(
+        model, target, hp_tasks, path, protected, protected_response_by_task,
+        horizon=horizon, theta=theta, switch=switch, classification=classification,
+    )
+    if switch.kind not in {"LO_NO_SWITCH", "LO_SWITCH"}:
+        return int(legacy), {
+            **legacy_details,
+            "v10_13_refinement_applicable": False,
+        }
+    joint_hp, joint_details = _case_conditioned_joint_phase_interference(
+        model, target, hp_tasks, path,
+        horizon=horizon, theta=theta, switch=switch,
+    )
+    target_work = _target_cap(target, classification)
+    refined = int(target_work) + int(joint_hp)
+    if refined <= int(legacy):
+        return int(refined), {
+            "theta": int(theta),
+            "switch_profile": switch.id,
+            "target_classification": classification,
+            "target_demand": int(target_work),
+            "selected_hp_bound": "V10_13_CASE_CONDITIONED_JOINT_PHASE",
+            "case_conditioned_joint_phase": joint_details,
+            "v10_12_workload_upper": int(legacy),
+            "v10_13_workload_upper": int(refined),
+            "sound_intersection": "MIN_OF_TWO_INDEPENDENT_SOUND_UPPER_BOUNDS",
+        }
+    return int(legacy), {
+        **legacy_details,
+        "v10_13_refinement_applicable": True,
+        "case_conditioned_joint_phase": joint_details,
+        "v10_12_workload_upper": int(legacy),
+        "v10_13_workload_upper": int(refined),
+        "sound_intersection": "MIN_OF_TWO_INDEPENDENT_SOUND_UPPER_BOUNDS",
+    }
+
+
 def _max_workload_at_horizon(
     model: BoundModel,
     target: TaskBound,
@@ -926,6 +1085,75 @@ def _case_postfix_search(
         R = deadline if next_R > deadline else next_R
 
 
+def _case_conditioned_postfix_search_v10_13(
+    model: BoundModel,
+    target: TaskBound,
+    hp_tasks: tuple[TaskBound, ...],
+    path: ControllerMacroPath,
+    protected: set[str],
+    protected_response_by_task: dict[str, int],
+    case: CaseKey,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str | None]:
+    if case.switch.kind not in {"LO_NO_SWITCH", "LO_SWITCH"}:
+        return None, [], f"V10_13_CASE_CONDITIONED_CARRY_NOT_APPLICABLE:{case.id}"
+    deadline = int(target.deadline)
+    R = max(1, min(deadline, int(_target_cap(target, case.target_classification))))
+    path_rows: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    while True:
+        if R in seen:
+            return None, path_rows, f"V10_13_CASE_CANDIDATE_CYCLE:{case.id}:R={R}"
+        seen.add(R)
+        try:
+            _controller_prefix_coverage_receipt(model, target, path, R)
+            workload, details = _workload_case_conditioned_v10_13(
+                model, target, hp_tasks, path, protected, protected_response_by_task,
+                horizon=R, theta=case.theta, switch=case.switch,
+                classification=case.target_classification,
+            )
+        except PCSSCUnresolved as exc:
+            return None, path_rows, str(exc)
+        path_rows.append({
+            "R": int(R),
+            "W": int(workload),
+            "postfixed": bool(workload <= R),
+            "selected_hp_bound": details.get("selected_hp_bound"),
+        })
+        if workload <= R:
+            try:
+                prefix_receipt = _controller_prefix_coverage_receipt(model, target, path, R)
+                final_workload, final_details = _workload_case_conditioned_v10_13(
+                    model, target, hp_tasks, path, protected, protected_response_by_task,
+                    horizon=R, theta=case.theta, switch=case.switch,
+                    classification=case.target_classification,
+                )
+            except PCSSCUnresolved as exc:
+                return None, path_rows, str(exc)
+            if final_workload > R:
+                return None, path_rows, (
+                    f"V10_13_CASE_DIRECT_POSTFIX_RECHECK_FAILED:{case.id}:"
+                    f"R={R}:W={final_workload}"
+                )
+            return {
+                **case.as_dict(),
+                "status": "PASS",
+                "R": int(R),
+                "W": int(final_workload),
+                "postfixed": True,
+                "candidate_path": path_rows,
+                "controller_prefix_receipt": prefix_receipt,
+                "final_case": final_details,
+                "case_theorem_basis": "V10_13_CASE_CONDITIONED_CARRY_FUTURE",
+            }, path_rows, None
+        if R == deadline:
+            return None, path_rows, (
+                f"V10_13_CASE_POSTFIX_NOT_FOUND_BY_DEADLINE:{case.id}:"
+                f"W={workload}:D={deadline}"
+            )
+        next_R = max(int(R) + 1, int(workload))
+        R = deadline if next_R > deadline else next_R
+
+
 def _case_consistent_postfix_search(
     model: BoundModel,
     target: TaskBound,
@@ -967,14 +1195,47 @@ def _case_consistent_postfix_search(
             model, target, hp_tasks, path, protected, protected_response_by_task, case
         )
         if cert is None:
-            tested.append({
-                "terminal": "CASE_CONSISTENT",
-                **case.as_dict(),
-                "status": "UNRESOLVED",
-                "candidate_path": path_rows,
-                "failure": failure,
+            legacy_failure = failure
+            if not str(legacy_failure or "").startswith("CASE_POSTFIX_NOT_FOUND_BY_DEADLINE:"):
+                tested.append({
+                    "terminal": "CASE_CONSISTENT",
+                    **case.as_dict(),
+                    "status": "UNRESOLVED",
+                    "candidate_path": path_rows,
+                    "failure": legacy_failure,
+                    "v10_13_refinement_attempted": False,
+                })
+                return None, tested, receipts, (
+                    f"CASE_CONSISTENT_PCSSC_UNRESOLVED:{case.id}:{legacy_failure}"
+                )
+            refined, refined_rows, refined_failure = _case_conditioned_postfix_search_v10_13(
+                model, target, hp_tasks, path, protected, protected_response_by_task, case
+            )
+            if refined is None:
+                tested.append({
+                    "terminal": "CASE_CONSISTENT",
+                    **case.as_dict(),
+                    "status": "UNRESOLVED",
+                    "candidate_path": path_rows,
+                    "v10_12_failure": legacy_failure,
+                    "v10_13_candidate_path": refined_rows,
+                    "failure": refined_failure,
+                })
+                return None, tested, receipts, (
+                    f"CASE_CONSISTENT_PCSSC_UNRESOLVED:{case.id}:"
+                    f"V10_12={legacy_failure}:V10_13={refined_failure}"
+                )
+            cert = refined
+            path_rows = refined_rows
+            receipts.append({
+                "obligation_id": f"CASE_CONDITIONED_CARRY_FUTURE_REFINEMENT::{target.name},{case.id}",
+                "status": "PASS",
+                "case_id": case.id,
+                "legacy_failure": legacy_failure,
+                "theorem_basis": "V10_13_CASE_CONDITIONED_JOINT_TARGET_RELEASE_PHASE",
+                "same_target_release_index_for_carry_and_future": True,
+                "event_graph_used": False,
             })
-            return None, tested, receipts, f"CASE_CONSISTENT_PCSSC_UNRESOLVED:{case.id}:{failure}"
         case_certificates.append(cert)
         tested.append({
             "terminal": "CASE_CONSISTENT",
@@ -983,6 +1244,7 @@ def _case_consistent_postfix_search(
             "R": int(cert["R"]),
             "W": int(cert["W"]),
             "candidate_path": cert["candidate_path"],
+            "case_theorem_basis": cert.get("case_theorem_basis", "V10_12_CASE_CONSISTENT"),
         })
         prefix_receipt = dict(cert["controller_prefix_receipt"])
         prefix_receipt["case_id"] = case.id
@@ -995,6 +1257,7 @@ def _case_consistent_postfix_search(
                 "R": int(cert["R"]),
                 "W": int(cert["W"]),
                 "direct_recheck": True,
+                "case_theorem_basis": cert.get("case_theorem_basis", "V10_12_CASE_CONSISTENT"),
             },
             {
                 "obligation_id": f"CASE_POSTFIX_RESPONSE_CERTIFICATE::{target.name},{case.id},R={cert['R']}",
@@ -1018,6 +1281,10 @@ def _case_consistent_postfix_search(
     if Rcert > int(target.deadline):
         return None, tested, receipts, f"CASE_CONSISTENT_RCERT_EXCEEDS_DEADLINE:{target.name}:R={Rcert}"
     max_case = max(case_certificates, key=lambda cert: (int(cert["R"]), str(cert["case_id"])))
+    v10_13_cases = [
+        str(cert["case_id"]) for cert in case_certificates
+        if cert.get("case_theorem_basis") == "V10_13_CASE_CONDITIONED_CARRY_FUTURE"
+    ]
     receipts.extend((
         {
             "obligation_id": f"CASE_DOMAIN_COVERAGE::{target.name}",
@@ -1036,6 +1303,8 @@ def _case_consistent_postfix_search(
             "Rcert": int(Rcert),
             "max_case_id": str(max_case["case_id"]),
             "uniform_Rcert_is_common_postfix": False,
+            "v10_13_conditioned_case_count": len(v10_13_cases),
+            "v10_13_conditioned_case_ids": v10_13_cases,
         },
         {
             "obligation_id": f"CASE_CONSISTENT_RESPONSE_CERTIFICATE::{target.name},Rcert={Rcert}",
@@ -1046,16 +1315,24 @@ def _case_consistent_postfix_search(
             "not_a_global_postfix": True,
         },
         {
-            "obligation_id": f"PCSSC_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_12::{target.name}",
+            "obligation_id": (
+                f"PCSSC_CASE_CONDITIONED_SAFE_PREFIX_COMPLETION_EXPORT_V10_13::{target.name}"
+                if v10_13_cases else
+                f"PCSSC_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_12::{target.name}"
+            ),
             "status": "PASS",
             "response_bound": int(Rcert),
             "premise": f"ALL_CASES_POSTFIX_COVERED::{target.name}",
             "safe_prefix_completion_contract": True,
+            "v10_13_conditioned_cases": v10_13_cases,
         },
         {
             "obligation_id": f"HI_TARGET_SAFE::{target.name}",
             "status": "PASS",
-            "route": "PCSSC_CASE_CONSISTENT",
+            "route": (
+                "PCSSC_CASE_CONDITIONED_CARRY_V10_13" if v10_13_cases
+                else "PCSSC_CASE_CONSISTENT"
+            ),
             "response_bound": int(Rcert),
         },
     ))
@@ -1372,11 +1649,36 @@ def prove_target_pcssc(
     receipts.extend(case_receipts)
     tested = [*point_tested, *case_tested]
     if case_bound is not None:
+        used_v10_13 = any(
+            str(row.get("obligation_id", "")).startswith(
+                f"PCSSC_CASE_CONDITIONED_SAFE_PREFIX_COMPLETION_EXPORT_V10_13::{target.name}"
+            )
+            for row in case_receipts
+        )
+        if used_v10_13:
+            ledger.append({
+                "kind": "V10_13_CASE_CONDITIONED_CARRY_FUTURE_COUPLING",
+                "target": target.name,
+                "effect": (
+                    "for V10.12-unresolved LO-entry canonical cases, maximize carry-in "
+                    "and future interference over one shared exact-periodic target-release "
+                    "index instead of independently maximizing their phase witnesses"
+                ),
+                "scope": "generic LO-entry LO_NO_SWITCH/LO_SWITCH cases",
+                "event_graph_required": False,
+                "soundness_direction": "REMOVES_ONLY_IMPOSSIBLE_CROSS_PHASE_COMBINATIONS",
+            })
         return TargetCertificate(
             target.name, "PASS", int(case_bound), None,
             tuple(receipts), tuple(ledger), tuple(tested),
-            terminal_route=TARGET_PROVED_PCSSC_CASE_CONSISTENT,
-            completion_theorem_basis=PCSSC_CASE_COMPLETION_THEOREM,
+            terminal_route=(
+                TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY
+                if used_v10_13 else TARGET_PROVED_PCSSC_CASE_CONSISTENT
+            ),
+            completion_theorem_basis=(
+                PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM
+                if used_v10_13 else PCSSC_CASE_COMPLETION_THEOREM
+            ),
         )
 
     return TargetCertificate(
