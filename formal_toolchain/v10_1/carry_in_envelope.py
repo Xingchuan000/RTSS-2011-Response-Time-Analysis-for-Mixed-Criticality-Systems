@@ -292,6 +292,107 @@ def _future_post_switch_work(
     return int(total)
 
 
+def target_release_joint_phase_parameters(
+    target_period: int,
+    controller_period: int,
+    theta: int,
+    specs: tuple[CarryTaskSpec, ...],
+) -> tuple[int, int, int]:
+    """Return ``(n0, q_step, cycle)`` for the exact joint HP phase orbit.
+
+    The parameters are intentionally exposed as pure integer data so later
+    certificate layers can stream the orbit without materializing every phase
+    vector in memory.
+    """
+    n0, q_step = _target_release_progression(
+        int(target_period), int(controller_period), int(theta)
+    )
+    cycle = _joint_q_cycle(int(target_period), int(q_step), specs)
+    return int(n0), int(q_step), int(cycle)
+
+
+def target_release_joint_phases_at_q(
+    target_period: int,
+    specs: tuple[CarryTaskSpec, ...],
+    *,
+    n0: int,
+    q_step: int,
+    q: int,
+) -> tuple[int, ...]:
+    n = int(n0) + int(q) * int(q_step)
+    return tuple(
+        (-int(n) * int(target_period)) % int(spec.period) for spec in specs
+    )
+
+
+def fixed_phase_pre_hi_carry(
+    specs: tuple[CarryTaskSpec, ...],
+    phases: tuple[int, ...],
+    completion_bounds: tuple[int, ...] | None = None,
+) -> tuple[int, dict[str, int]]:
+    """PRE_HI carry bound for one fixed exact joint phase vector.
+
+    This part is horizon-independent.  Keeping it separate lets V10.14 compute
+    it once per streamed phase subcase instead of retaining a large cache or
+    recomputing the same single-switch backlog at every response candidate.
+    """
+    if len(specs) != len(phases):
+        raise ValueError("CARRY_PHASE_DIMENSION_MISMATCH")
+    if completion_bounds is not None:
+        if len(specs) != len(completion_bounds):
+            raise ValueError("COMPLETION_BOUND_DIMENSION_MISMATCH")
+        if any(int(bound) <= 0 or int(bound) > int(spec.period)
+               for spec, bound in zip(specs, completion_bounds)):
+            raise CarryInEnvelopeUnresolved("COMPLETION_ENVELOPE_NOT_SINGLE_JOB")
+
+    aggregate_carry, carry_details = fixed_phase_single_switch_backlog(specs, phases)
+    completion_carry: int | None = None
+    carry = int(aggregate_carry)
+    if completion_bounds is not None:
+        completion_carry = _independent_completion_carry(
+            specs, phases, completion_bounds
+        )
+        carry = min(int(carry), int(completion_carry))
+    return int(carry), {
+        "carry_in": int(carry),
+        "aggregate_carry_bound": int(aggregate_carry),
+        "completion_carry_bound": (
+            -1 if completion_carry is None else int(completion_carry)
+        ),
+        "carry_witness_length": int(carry_details.get("witness_length", 0)),
+    }
+
+
+def fixed_phase_post_switch_future_work(
+    specs: tuple[CarryTaskSpec, ...],
+    phases: tuple[int, ...],
+    horizon: int,
+) -> int:
+    """Exact-periodic post-switch future work for one fixed phase vector."""
+    if len(specs) != len(phases):
+        raise ValueError("CARRY_PHASE_DIMENSION_MISMATCH")
+    return int(_future_post_switch_work(specs, phases, int(horizon)))
+
+
+def fixed_phase_pre_hi_interference(
+    specs: tuple[CarryTaskSpec, ...],
+    phases: tuple[int, ...],
+    horizon: int,
+    completion_bounds: tuple[int, ...] | None = None,
+) -> tuple[int, dict[str, int]]:
+    """PRE_HI HP interference for one fixed exact joint phase vector.
+
+    The single-switch aggregate backlog is sound without completion envelopes.
+    When a complete single-job completion prefix is available, intersecting it
+    with the aggregate carry bound is an independent sound tightening.
+    """
+    carry, details = fixed_phase_pre_hi_carry(
+        specs, phases, completion_bounds
+    )
+    future = fixed_phase_post_switch_future_work(specs, phases, int(horizon))
+    return int(carry) + int(future), {**details, "future": int(future)}
+
+
 @lru_cache(maxsize=4096)
 def joint_phase_pre_hi_interference(
     target_period: int,
@@ -305,22 +406,14 @@ def joint_phase_pre_hi_interference(
 
     A single target-release index determines *all* higher-priority phases.  We
     enumerate its finite modular orbit, not the Cartesian product of per-task
-    phases.  For each joint phase, aggregate single-switch backlog is intersected
-    with the already-proved per-task completion carry envelope; taking the
-    minimum is sound because both independently dominate the same real carry-in.
+    phases.  This V10.12/V10.13 aggregate keeps the maximum over ``q`` at one
+    horizon; V10.14 may instead keep ``q`` fixed across a response recurrence.
     """
-    if len(specs) != len(completion_bounds):
-        raise ValueError("COMPLETION_BOUND_DIMENSION_MISMATCH")
     if not specs:
         return 0, {"joint_phase_cycle": 1, "witness_q": 0, "carry_in": 0, "future": 0}
-    if any(int(bound) <= 0 or int(bound) > int(spec.period)
-           for spec, bound in zip(specs, completion_bounds)):
-        raise CarryInEnvelopeUnresolved("COMPLETION_ENVELOPE_NOT_SINGLE_JOB")
-
-    n0, q_step = _target_release_progression(
-        int(target_period), int(controller_period), int(theta)
+    n0, q_step, cycle = target_release_joint_phase_parameters(
+        int(target_period), int(controller_period), int(theta), specs
     )
-    cycle = _joint_q_cycle(int(target_period), int(q_step), specs)
     maximum = -1
     witness_q = 0
     witness_carry = 0
@@ -329,24 +422,19 @@ def joint_phase_pre_hi_interference(
     witness_completion = 0
 
     for q in range(int(cycle)):
-        n = int(n0) + int(q) * int(q_step)
-        phases = tuple(
-            (-int(n) * int(target_period)) % int(spec.period) for spec in specs
+        phases = target_release_joint_phases_at_q(
+            int(target_period), specs, n0=n0, q_step=q_step, q=q
         )
-        aggregate_carry, _ = fixed_phase_single_switch_backlog(specs, phases)
-        completion_carry = _independent_completion_carry(
-            specs, phases, completion_bounds
+        value, details = fixed_phase_pre_hi_interference(
+            specs, phases, int(horizon), completion_bounds
         )
-        carry = min(int(aggregate_carry), int(completion_carry))
-        future = _future_post_switch_work(specs, phases, int(horizon))
-        value = int(carry) + int(future)
-        if value > maximum:
-            maximum = value
+        if int(value) > maximum:
+            maximum = int(value)
             witness_q = int(q)
-            witness_carry = int(carry)
-            witness_future = int(future)
-            witness_aggregate = int(aggregate_carry)
-            witness_completion = int(completion_carry)
+            witness_carry = int(details["carry_in"])
+            witness_future = int(details["future"])
+            witness_aggregate = int(details["aggregate_carry_bound"])
+            witness_completion = int(details["completion_carry_bound"])
 
     if maximum < 0:
         raise CarryInEnvelopeUnresolved("JOINT_PERIODIC_CARRY_ORBIT_EMPTY")
@@ -583,6 +671,11 @@ __all__ = [
     "CarryTaskSpec",
     "fixed_phase_single_switch_backlog",
     "fixed_phase_lo_entry_backlog",
+    "fixed_phase_pre_hi_carry",
+    "fixed_phase_post_switch_future_work",
+    "fixed_phase_pre_hi_interference",
+    "target_release_joint_phase_parameters",
+    "target_release_joint_phases_at_q",
     "target_release_joint_phase_orbit",
     "joint_phase_pre_hi_interference",
     "phase_relaxed_lo_entry_carry",

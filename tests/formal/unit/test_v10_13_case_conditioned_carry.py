@@ -106,7 +106,7 @@ def test_v10_13_case_postfix_fallback_can_close_a_v10_12_failed_case(monkeypatch
 
 
 def test_v10_13_identifiers_are_distinct_and_exportable():
-    assert FRAMEWORK_REVISION == "V10.13_CASE_CONDITIONED_JOINT_CARRY_FUTURE"
+    assert FRAMEWORK_REVISION == "V10.14_PRE_HI_PHASE_CONSISTENT_POSTFIX"
     assert TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY.endswith("V10_13")
     assert PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM.endswith("V10_13")
 

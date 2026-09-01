@@ -20,6 +20,7 @@ from .constants import (
     FRAMEWORK_REVISION, PRIMARY_CLAIM, PROOF_ROUTE, RESULT_INVALID, RESULT_PROVED, RESULT_UNRESOLVED,
     SCOPE, TARGET_PROVED_BASE, TARGET_PROVED_PCSSC, TARGET_PROVED_PCSSC_CASE_CONSISTENT,
     TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY,
+    TARGET_PROVED_PCSSC_REFINED_CASES_V10_14,
 )
 from .completion_certificates import (
     CompletionCertificateError,
@@ -535,6 +536,7 @@ def verify_bundle_v10_1(
                 TARGET_PROVED_PCSSC,
                 TARGET_PROVED_PCSSC_CASE_CONSISTENT,
                 TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY,
+                TARGET_PROVED_PCSSC_REFINED_CASES_V10_14,
             }:
                 statuses[f"HI_TARGET_SAFE::{task.name}"] = "UNRESOLVED"
                 unresolved.append(f"{task.name}:PCSSC_PASS_MISSING_VALID_TERMINAL_ROUTE")
@@ -616,7 +618,7 @@ def verify_bundle_v10_1(
         "base_route_status": base_sched["status"],
         "base_hi_route_status": str(base_sched.get("hi_safety_status", "UNRESOLVED")),
         "event_graph_in_pass_dependency": False,
-        "terminal_semantics": "BASE_C_AMC_SEM_OR_PCSSC_POINTWISE_OR_CASE_CONSISTENT_POSTFIX",
+        "terminal_semantics": "BASE_OR_PCSSC_POINTWISE_OR_CASE_CONSISTENT_WITH_V10_13_LO_ENTRY_AND_V10_14_PRE_HI_PHASE_REFINEMENTS",
     }
     _write(out / "proof_receipts.json", receipts)
     _write(out / "proof_summary.json", summary)
