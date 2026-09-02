@@ -43,7 +43,7 @@ def test_v10_12_deadline_canonical_domain_is_stable_complete_and_unique():
         model, target, hp
     )
 
-    assert FRAMEWORK_REVISION == "V10.14_PRE_HI_PHASE_CONSISTENT_POSTFIX"
+    assert FRAMEWORK_REVISION == "V10.16_ADAPTIVE_PHASE_BLOCK_PCSSC"
     assert domain
     assert len({case.id for case in domain}) == len(domain)
     assert all(case.canonical_deadline == target.deadline for case in domain)
@@ -83,11 +83,11 @@ def test_case_consistent_terminal_aggregates_per_case_completion_bounds(monkeypa
     monkeypatch.setattr(pcssc, "_workload_case", fake_workload)
     monkeypatch.setattr(
         pcssc,
-        "_pre_hi_phase_consistent_postfix_search_v10_14",
+        "_phase_block_postfix_search_v10_16",
         lambda *args, **kwargs: (
             None,
             [],
-            "V10_14_PRE_HI_PHASE_POSTFIX_NOT_FOUND_BY_DEADLINE:test",
+            "PHASE_BLOCK_REFINEMENT_INSUFFICIENT:test",
         ),
     )
     bound, tested, receipts, failure = pcssc._case_consistent_postfix_search(
@@ -121,11 +121,11 @@ def test_case_consistent_terminal_fails_closed_if_one_fixed_case_has_no_postfix(
     monkeypatch.setattr(pcssc, "_workload_case", fake_workload)
     monkeypatch.setattr(
         pcssc,
-        "_pre_hi_phase_consistent_postfix_search_v10_14",
+        "_phase_block_postfix_search_v10_16",
         lambda *args, **kwargs: (
             None,
             [],
-            "V10_14_PRE_HI_PHASE_POSTFIX_NOT_FOUND_BY_DEADLINE:test",
+            "PHASE_BLOCK_REFINEMENT_INSUFFICIENT:test",
         ),
     )
     bound, tested, receipts, failure = pcssc._case_consistent_postfix_search(

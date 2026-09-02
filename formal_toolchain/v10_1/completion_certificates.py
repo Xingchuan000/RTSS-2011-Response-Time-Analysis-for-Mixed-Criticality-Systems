@@ -1,8 +1,8 @@
-"""Priority-ordered certified completion envelopes through V10.14.
+"""Priority-ordered certified completion envelopes through V10.16.
 
 The active implementation remains under ``formal_toolchain.v10_1`` because the
 request/bundle schema is unchanged.  Completed BASE, pointwise-PCSSC, V10.12
-case-consistent, V10.13 conditioned-carry, and V10.14 refined-case certificates
+case-consistent, V10.13 conditioned-carry, and V10.16 adaptive-phase-block certificates
 from *strictly higher-priority* tasks may be reused by a lower-priority PCSSC
 target.
 
@@ -31,8 +31,8 @@ PCSSC_CASE_COMPLETION_THEOREM = "PCSSC_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_12
 PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM = (
     "PCSSC_CASE_CONDITIONED_SAFE_PREFIX_COMPLETION_EXPORT_V10_13"
 )
-PCSSC_REFINED_CASE_COMPLETION_THEOREM_V10_14 = (
-    "PCSSC_REFINED_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_14"
+PCSSC_REFINED_CASE_COMPLETION_THEOREM_V10_16 = (
+    "PCSSC_REFINED_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_16"
 )
 BASE_COMPLETION_THEOREM = "BASE_SECTION4_1_COMPLETION_EXPORT_V10_11"
 
@@ -152,7 +152,7 @@ def export_pcssc_completion_certificate(
         PCSSC_POINTWISE_COMPLETION_THEOREM,
         PCSSC_CASE_COMPLETION_THEOREM,
         PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM,
-        PCSSC_REFINED_CASE_COMPLETION_THEOREM_V10_14,
+        PCSSC_REFINED_CASE_COMPLETION_THEOREM_V10_16,
     }:
         raise CompletionCertificateError(
             f"PCSSC_COMPLETION_EXPORT_UNKNOWN_THEOREM:{target_name}:{theorem_basis}"

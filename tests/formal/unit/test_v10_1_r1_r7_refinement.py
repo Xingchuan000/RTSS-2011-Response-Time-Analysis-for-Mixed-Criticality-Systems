@@ -28,7 +28,8 @@ def test_r7_removes_unprotected_lo_early_exit_and_routes_through_aggregate_backl
     assert "included in aggregate work-conserving backlog" in text
     assert "phase_relaxed_single_switch_carry" in text
     assert "phase_relaxed_lo_entry_carry" in text
-    assert "JOINT_EXACT_PERIODIC_PRE_HI" in text
+    assert "phase_block_r7_carry_upper" in text
+    assert "PHASE_BLOCK_WORKLOAD_LIFTING_SOUND::" in text
     assert 'target.name, "UNRESOLVED", None, "REACHABLE_LO_CARRY_IN_UNRESOLVED"' not in text
 
 

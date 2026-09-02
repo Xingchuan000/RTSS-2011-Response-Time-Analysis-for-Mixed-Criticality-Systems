@@ -35,9 +35,9 @@ def test_switch_endpoint_and_arrival_correlation_rules_are_explicit():
     assert "LO at u=s is primary" in text
     assert "HI at u=s may use C_HI" in text
     assert "compatible_release_phases" in text
-    assert "EXACT_PERIODIC_RELEASE_PROFILE_COVERAGE::" in text
-    assert '"protected_pre_hi_joint_phase": True' in text
-    assert '"other_profiles_phase_relaxation"' in text
+    assert "P0_RELEASE_DOMAIN_EXACT_PERIODIC_PHASE_ZERO" in text
+    assert "release_generator_source_hash" in text
+    assert "V10_16_ADAPTIVE_PHASE_BLOCK_PCSSC" in text
     assert "POLICY_ARRIVAL_CORRELATION_RELAXATION" in text
 
 

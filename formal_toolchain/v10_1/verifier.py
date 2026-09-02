@@ -20,7 +20,7 @@ from .constants import (
     FRAMEWORK_REVISION, PRIMARY_CLAIM, PROOF_ROUTE, RESULT_INVALID, RESULT_PROVED, RESULT_UNRESOLVED,
     SCOPE, TARGET_PROVED_BASE, TARGET_PROVED_PCSSC, TARGET_PROVED_PCSSC_CASE_CONSISTENT,
     TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY,
-    TARGET_PROVED_PCSSC_REFINED_CASES_V10_14,
+    TARGET_PROVED_PCSSC_REFINED_CASES_V10_16,
 )
 from .completion_certificates import (
     CompletionCertificateError,
@@ -525,6 +525,13 @@ def verify_bundle_v10_1(
             model, task.name, controller_path,
             priority_assignment_hash=str(bindings["seed_task_binding"]["priority_assignment_hash"]),
             tie_break_hash=str(bindings["seed_task_binding"]["tie_break_hash"]),
+            release_model=str(bindings["environment_binding"]["domain"]["release_model"]),
+            release_model_hash=str(bindings["environment_binding"]["release_model_hash"]),
+            release_domain_hash=str(bindings["environment_binding"]["release_domain_hash"]),
+            source_manifest_semantic_hash=str(bindings["source_manifest_semantic_hash"]),
+            release_generator_source_hash=str(
+                bindings["p0_event_order_binding"]["source_hashes"]["event_runtime"]
+            ),
             certified_completion_by_task=completion_prefix,
         )
         row = cert.as_dict()
@@ -536,7 +543,7 @@ def verify_bundle_v10_1(
                 TARGET_PROVED_PCSSC,
                 TARGET_PROVED_PCSSC_CASE_CONSISTENT,
                 TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY,
-                TARGET_PROVED_PCSSC_REFINED_CASES_V10_14,
+                TARGET_PROVED_PCSSC_REFINED_CASES_V10_16,
             }:
                 statuses[f"HI_TARGET_SAFE::{task.name}"] = "UNRESOLVED"
                 unresolved.append(f"{task.name}:PCSSC_PASS_MISSING_VALID_TERMINAL_ROUTE")
@@ -618,7 +625,7 @@ def verify_bundle_v10_1(
         "base_route_status": base_sched["status"],
         "base_hi_route_status": str(base_sched.get("hi_safety_status", "UNRESOLVED")),
         "event_graph_in_pass_dependency": False,
-        "terminal_semantics": "BASE_OR_PCSSC_POINTWISE_OR_CASE_CONSISTENT_WITH_V10_13_LO_ENTRY_AND_V10_14_PRE_HI_PHASE_REFINEMENTS",
+        "terminal_semantics": "BASE_OR_PCSSC_POINTWISE_OR_CASE_CONSISTENT_WITH_V10_13_LO_ENTRY_AND_V10_16_ADAPTIVE_PRE_HI_PHASE_BLOCK_REFINEMENT",
     }
     _write(out / "proof_receipts.json", receipts)
     _write(out / "proof_summary.json", summary)

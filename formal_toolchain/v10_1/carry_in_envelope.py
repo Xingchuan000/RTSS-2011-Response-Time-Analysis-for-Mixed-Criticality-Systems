@@ -42,6 +42,46 @@ class CarryTaskSpec:
             raise ValueError("CARRY_TASK_BOUND_INVALID")
 
 
+@dataclass(frozen=True, slots=True)
+class PhaseBlockProjection:
+    """Symbolic task-local phase projection for one congruence block.
+
+    The concrete phase set is exactly ``{r + k*g | 0 <= k < count}``, where
+    ``r=phase_residue`` and ``g=phase_stride``.  Keeping this representation
+    symbolic avoids materializing a task-local phase tuple and, critically,
+    never allocates or iterates the global joint period.
+    """
+
+    task: str
+    period: int
+    q_period: int
+    block_modulus: int
+    block_residue: int
+    phase_residue: int
+    phase_stride: int
+    phase_count: int
+
+    @property
+    def first_release_age(self) -> int:
+        return (
+            int(self.phase_stride) - int(self.phase_residue)
+            if int(self.phase_residue)
+            else int(self.phase_stride)
+        )
+
+    def as_dict(self) -> dict[str, int | str]:
+        return {
+            "task": self.task,
+            "period": int(self.period),
+            "q_period": int(self.q_period),
+            "block_modulus": int(self.block_modulus),
+            "block_residue": int(self.block_residue),
+            "phase_residue": int(self.phase_residue),
+            "phase_stride": int(self.phase_stride),
+            "phase_count": int(self.phase_count),
+        }
+
+
 class CarryInEnvelopeUnresolved(RuntimeError):
     pass
 
@@ -252,6 +292,10 @@ def _target_release_progression(
 def _joint_q_cycle(
     target_period: int, q_step: int, specs: tuple[CarryTaskSpec, ...]
 ) -> int:
+    # V10.16 normative convention: lcm(empty)=1, hence the highest-priority
+    # target has the singleton root phase domain Z_1={0}.
+    if not specs:
+        return 1
     cycle = 1
     for spec in specs:
         delta = (int(q_step) * int(target_period)) % int(spec.period)
@@ -332,9 +376,8 @@ def fixed_phase_pre_hi_carry(
 ) -> tuple[int, dict[str, int]]:
     """PRE_HI carry bound for one fixed exact joint phase vector.
 
-    This part is horizon-independent.  Keeping it separate lets V10.14 compute
-    it once per streamed phase subcase instead of retaining a large cache or
-    recomputing the same single-switch backlog at every response candidate.
+    This horizon-independent helper is retained as a fixed-phase audit oracle
+    for validating V10.16 block dominance; it is not a default PRE_HI terminal.
     """
     if len(specs) != len(phases):
         raise ValueError("CARRY_PHASE_DIMENSION_MISMATCH")
@@ -391,61 +434,6 @@ def fixed_phase_pre_hi_interference(
     )
     future = fixed_phase_post_switch_future_work(specs, phases, int(horizon))
     return int(carry) + int(future), {**details, "future": int(future)}
-
-
-@lru_cache(maxsize=4096)
-def joint_phase_pre_hi_interference(
-    target_period: int,
-    controller_period: int,
-    theta: int,
-    horizon: int,
-    specs: tuple[CarryTaskSpec, ...],
-    completion_bounds: tuple[int, ...],
-) -> tuple[int, dict[str, int]]:
-    """Joint exact-periodic PRE_HI interference for a completion-protected prefix.
-
-    A single target-release index determines *all* higher-priority phases.  We
-    enumerate its finite modular orbit, not the Cartesian product of per-task
-    phases.  This V10.12/V10.13 aggregate keeps the maximum over ``q`` at one
-    horizon; V10.14 may instead keep ``q`` fixed across a response recurrence.
-    """
-    if not specs:
-        return 0, {"joint_phase_cycle": 1, "witness_q": 0, "carry_in": 0, "future": 0}
-    n0, q_step, cycle = target_release_joint_phase_parameters(
-        int(target_period), int(controller_period), int(theta), specs
-    )
-    maximum = -1
-    witness_q = 0
-    witness_carry = 0
-    witness_future = 0
-    witness_aggregate = 0
-    witness_completion = 0
-
-    for q in range(int(cycle)):
-        phases = target_release_joint_phases_at_q(
-            int(target_period), specs, n0=n0, q_step=q_step, q=q
-        )
-        value, details = fixed_phase_pre_hi_interference(
-            specs, phases, int(horizon), completion_bounds
-        )
-        if int(value) > maximum:
-            maximum = int(value)
-            witness_q = int(q)
-            witness_carry = int(details["carry_in"])
-            witness_future = int(details["future"])
-            witness_aggregate = int(details["aggregate_carry_bound"])
-            witness_completion = int(details["completion_carry_bound"])
-
-    if maximum < 0:
-        raise CarryInEnvelopeUnresolved("JOINT_PERIODIC_CARRY_ORBIT_EMPTY")
-    return int(maximum), {
-        "joint_phase_cycle": int(cycle),
-        "witness_q": int(witness_q),
-        "carry_in": int(witness_carry),
-        "future": int(witness_future),
-        "aggregate_carry_bound": int(witness_aggregate),
-        "completion_carry_bound": int(witness_completion),
-    }
 
 
 def _candidate_ages_from_phase_sets(
@@ -551,6 +539,191 @@ def fixed_phase_lo_entry_backlog(
         "candidate_lengths": len(ages),
         "witness_length": int(witness),
     }
+
+
+def phase_block_task_projection(
+    target_period: int,
+    q_step: int,
+    n0: int,
+    spec: CarryTaskSpec,
+    *,
+    block_modulus: int,
+    block_residue: int,
+) -> PhaseBlockProjection:
+    """Return the complete task-local V10.16 projection without q enumeration."""
+
+    ti = int(target_period)
+    step = int(q_step)
+    period = int(spec.period)
+    modulus = int(block_modulus)
+    residue = int(block_residue)
+    if modulus <= 0 or residue < 0 or residue >= modulus:
+        raise CarryInEnvelopeUnresolved("PHASE_BLOCK_INVALID_CONGRUENCE")
+
+    q_period = period // gcd(period, step * ti)
+    phase_stride = gcd(period, modulus * step * ti)
+    phase_count = period // phase_stride
+    expected_count = q_period // gcd(q_period, modulus)
+    if phase_count != expected_count:
+        raise CarryInEnvelopeUnresolved("PHASE_BLOCK_PROJECTION_ARITHMETIC_MISMATCH")
+
+    n = int(n0) + residue * step
+    base_phase = (-n * ti) % period
+    phase_residue = int(base_phase) % int(phase_stride)
+    return PhaseBlockProjection(
+        task=spec.name,
+        period=period,
+        q_period=int(q_period),
+        block_modulus=modulus,
+        block_residue=residue,
+        phase_residue=int(phase_residue),
+        phase_stride=int(phase_stride),
+        phase_count=int(phase_count),
+    )
+
+
+def phase_block_task_projections(
+    target_period: int,
+    q_step: int,
+    n0: int,
+    specs: tuple[CarryTaskSpec, ...],
+    *,
+    block_modulus: int,
+    block_residue: int,
+) -> tuple[PhaseBlockProjection, ...]:
+    return tuple(
+        phase_block_task_projection(
+            int(target_period), int(q_step), int(n0), spec,
+            block_modulus=int(block_modulus), block_residue=int(block_residue),
+        )
+        for spec in specs
+    )
+
+
+def phase_block_r7_carry_upper(
+    specs: tuple[CarryTaskSpec, ...],
+    projections: tuple[PhaseBlockProjection, ...],
+) -> tuple[int, dict[str, int | str]]:
+    """Count-monotone R7 single-switch carry lifting for one phase block.
+
+    For every task projection, all possible pre-zero release ages form one
+    arithmetic congruence class.  At each possible boundary we lift the fixed-
+    phase release-group coordinates independently.  This is exactly the allowed
+    V10.16 relaxation: it may combine coordinates produced by different q values
+    inside the block, but it cannot under-approximate any concrete fixed-q R7
+    group.  The fixed-phase linear-time switch-prefix recurrence is then reused.
+    """
+
+    if len(specs) != len(projections):
+        raise ValueError("PHASE_BLOCK_PROJECTION_DIMENSION_MISMATCH")
+    if not specs:
+        return 0, {
+            "candidate_domain_kind": "PROVED_BOUNDARY_UNION",
+            "candidate_boundary_count": 0,
+            "busy_horizon": 0,
+            "witness_length": 0,
+        }
+
+    _, _, horizon = _transition_busy_upper(specs)
+    groups: dict[int, list[int]] = {}
+    for spec, projection in zip(specs, projections):
+        if spec.name != projection.task or int(spec.period) != int(projection.period):
+            raise ValueError("PHASE_BLOCK_PROJECTION_TASK_MISMATCH")
+        delta = int(spec.pre_switch_cap) - int(spec.post_switch_cap)
+        # If the task projection is not singleton, absence of a release at this
+        # boundary is also possible for some q in the block; max(0,delta) is the
+        # sound coordinate-wise upper.  A singleton projection retains a negative
+        # HI delta and therefore recovers fixed-phase precision under refinement.
+        lifted_delta = int(delta) if int(projection.phase_count) == 1 else max(0, int(delta))
+        lifted_lo_endpoint = (
+            int(lifted_delta) if spec.criticality == "LO" else 0
+        )
+        first = int(projection.first_release_age)
+        stride = int(projection.phase_stride)
+        for age in range(first, int(horizon) + 1, stride):
+            row = groups.setdefault(int(age), [0, 0, 0])
+            row[0] += int(spec.post_switch_cap)
+            row[1] += int(lifted_delta)
+            row[2] += int(lifted_lo_endpoint)
+
+    post_demand = 0
+    max_switch_delta = 0
+    best = 0
+    witness = 0
+    for age in sorted(groups):
+        group_post, group_delta, group_lo_endpoint = groups[age]
+        post_demand += int(group_post)
+        max_switch_delta = max(
+            0,
+            int(group_lo_endpoint),
+            int(group_delta),
+            int(group_delta) + int(max_switch_delta),
+        )
+        backlog = int(post_demand) + int(max_switch_delta) - int(age)
+        if backlog > best:
+            best = int(backlog)
+            witness = int(age)
+
+    return max(0, int(best)), {
+        "candidate_domain_kind": "PROVED_BOUNDARY_UNION",
+        "candidate_boundary_count": len(groups),
+        "busy_horizon": int(horizon),
+        "witness_length": int(witness),
+    }
+
+
+def phase_block_completion_carry_upper(
+    specs: tuple[CarryTaskSpec, ...],
+    projections: tuple[PhaseBlockProjection, ...],
+    completion_bounds: tuple[int, ...],
+) -> int:
+    """Independent block-level completion carry upper bound.
+
+    Each task takes the worst predecessor age over its *complete* task-local
+    projection.  The sum is an independent sound upper bound and is refinement
+    monotone because child projections are subsets of parent projections.
+    """
+
+    if len(specs) != len(projections) or len(specs) != len(completion_bounds):
+        raise ValueError("PHASE_BLOCK_COMPLETION_DIMENSION_MISMATCH")
+    total = 0
+    for spec, projection, completion in zip(specs, projections, completion_bounds):
+        if int(completion) <= 0 or int(completion) > int(spec.period):
+            raise CarryInEnvelopeUnresolved("COMPLETION_ENVELOPE_NOT_SINGLE_JOB")
+        # Singleton phase zero has no predecessor carry at relative time zero.
+        if (
+            int(projection.phase_count) == 1
+            and int(projection.phase_residue) == 0
+        ):
+            continue
+        age = int(projection.first_release_age)
+        residual_time = int(completion) - int(age)
+        if residual_time > 0:
+            raw = max(int(spec.pre_switch_cap), int(spec.post_switch_cap))
+            total += min(int(raw), int(residual_time))
+    return int(total)
+
+
+def phase_block_post_switch_future_upper(
+    specs: tuple[CarryTaskSpec, ...],
+    projections: tuple[PhaseBlockProjection, ...],
+    horizon: int,
+) -> int:
+    """Exact max-count lifting of PRE_HI post-switch future work."""
+
+    if len(specs) != len(projections):
+        raise ValueError("PHASE_BLOCK_PROJECTION_DIMENSION_MISMATCH")
+    total = 0
+    upper = int(horizon)
+    for spec, projection in zip(specs, projections):
+        # The symbolic projection is {r+k*g}; r is its smallest phase, so it
+        # maximizes the release count in the half-open interval [0,R).
+        phase = int(projection.phase_residue)
+        if phase >= upper:
+            continue
+        jobs = ((upper - 1 - phase) // int(spec.period)) + 1
+        total += int(jobs) * int(spec.post_switch_cap)
+    return int(total)
 
 
 @lru_cache(maxsize=4096)
@@ -669,6 +842,12 @@ def phase_relaxed_single_switch_carry(
 __all__ = [
     "CarryInEnvelopeUnresolved",
     "CarryTaskSpec",
+    "PhaseBlockProjection",
+    "phase_block_task_projection",
+    "phase_block_task_projections",
+    "phase_block_r7_carry_upper",
+    "phase_block_completion_carry_upper",
+    "phase_block_post_switch_future_upper",
     "fixed_phase_single_switch_backlog",
     "fixed_phase_lo_entry_backlog",
     "fixed_phase_pre_hi_carry",
@@ -677,7 +856,6 @@ __all__ = [
     "target_release_joint_phase_parameters",
     "target_release_joint_phases_at_q",
     "target_release_joint_phase_orbit",
-    "joint_phase_pre_hi_interference",
     "phase_relaxed_lo_entry_carry",
     "phase_relaxed_single_switch_carry",
 ]

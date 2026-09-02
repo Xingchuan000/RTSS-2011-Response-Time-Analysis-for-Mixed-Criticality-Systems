@@ -1,12 +1,12 @@
-"""Policy-Constrained Single-Switch Certificate (PCSSC), V10.14 revision.
+"""Policy-Constrained Single-Switch Certificate (PCSSC), V10.16 revision.
 
-The fast routes remain BASE/V10.11 pointwise/V10.12 case-consistent.  Only
-V10.12 LO-entry canonical cases may be refined by V10.13 joint carry/future
-phase coupling.  V10.14 additionally refines a V10.12-unresolved PRE_HI case by
-keeping the exact target-release joint phase fixed across that phase subcase's
-response recurrence, then aggregating the finite per-phase completion bounds.
-All refinements remain finite integer arithmetic; Event Graph search and full
-execution-history BMC remain outside the PASS dependency.
+The fast BASE/V10.11 pointwise/V10.12 case-consistent routes and the V10.13
+LO-entry refinement are retained.  A V10.12-unresolved PRE_HI case now uses the
+V10.16 Adaptive Phase-Block PCSSC theorem: the joint q-period is never enumerated
+by the formal terminal.  Congruence blocks are refined only when their lifted
+R7/future workload has no deadline postfix, with complete task-local projections
+represented symbolically by gcd arithmetic.  Event Graph search and exact-history
+BMC remain outside the PASS dependency.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from .completion_certificates import (
     PCSSC_COMPLETION_SOURCE,
     PCSSC_CASE_COMPLETION_THEOREM,
     PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM,
-    PCSSC_REFINED_CASE_COMPLETION_THEOREM_V10_14,
+    PCSSC_REFINED_CASE_COMPLETION_THEOREM_V10_16,
     PCSSC_POINTWISE_COMPLETION_THEOREM,
     CertifiedCompletionBound,
 )
@@ -32,20 +32,21 @@ from .constants import (
     TARGET_PROVED_PCSSC,
     TARGET_PROVED_PCSSC_CASE_CONSISTENT,
     TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY,
-    TARGET_PROVED_PCSSC_REFINED_CASES_V10_14,
+    TARGET_PROVED_PCSSC_REFINED_CASES_V10_16,
 )
 from .base_section4_1 import paper_c_lo_bound
 from .carry_in_envelope import (
     CarryInEnvelopeUnresolved,
     CarryTaskSpec,
+    PhaseBlockProjection,
     fixed_phase_lo_entry_backlog,
-    fixed_phase_pre_hi_carry,
-    fixed_phase_post_switch_future_work,
     fixed_phase_pre_hi_interference,
-    joint_phase_pre_hi_interference,
+    phase_block_completion_carry_upper,
+    phase_block_post_switch_future_upper,
+    phase_block_r7_carry_upper,
+    phase_block_task_projections,
     target_release_joint_phase_orbit,
     target_release_joint_phase_parameters,
-    target_release_joint_phases_at_q,
     phase_relaxed_lo_entry_carry,
     phase_relaxed_single_switch_carry,
 )
@@ -107,6 +108,32 @@ class CaseKey:
             "target_classification": self.target_classification,
             "canonical_deadline": int(self.canonical_deadline),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseBlock:
+    modulus: int
+    residue: int
+    depth: int
+    parent_id: str | None = None
+    split_factor: int | None = None
+
+    @property
+    def id(self) -> str:
+        return f"M{int(self.modulus)}_A{int(self.residue)}"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "block_id": self.id,
+            "M": int(self.modulus),
+            "a": int(self.residue),
+            "depth": int(self.depth),
+            "parent_id": self.parent_id,
+            "split_factor": self.split_factor,
+        }
+
+
+PHASE_BLOCK_MAX_LEAVES = 512
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,36 +418,6 @@ def _aggregate_carry_bound(
     }
 
 
-def _joint_pre_hi_interference_if_protected(
-    model: BoundModel,
-    target: TaskBound,
-    hp_tasks: tuple[TaskBound, ...],
-    path: ControllerMacroPath,
-    protected_response_by_task: dict[str, int],
-    *,
-    theta: int,
-    horizon: int,
-) -> tuple[int, dict[str, Any]] | None:
-    if any(task.name not in protected_response_by_task for task in hp_tasks):
-        return None
-    completion = tuple(int(protected_response_by_task[task.name]) for task in hp_tasks)
-    if any(bound <= 0 or bound > int(task.period)
-           for task, bound in zip(hp_tasks, completion)):
-        return None
-    specs = _carry_task_specs(hp_tasks, path)
-    try:
-        value, details = joint_phase_pre_hi_interference(
-            int(target.period), int(model.agent_period), int(theta), int(horizon),
-            specs, completion,
-        )
-    except CarryInEnvelopeUnresolved as exc:
-        raise PCSSCUnresolved(str(exc)) from exc
-    return int(value), {
-        "basis": "JOINT_EXACT_PERIODIC_SINGLE_SWITCH_AGGREGATE_BACKLOG_PLUS_FUTURE",
-        **details,
-    }
-
-
 def _budget_depth_at_release(u: int, controller_times: tuple[int, ...]) -> int:
     # A release exactly at c_k is P3 before P5 and therefore sees the pre-k
     # budget.  Only controller candidates strictly before u affect B_rel.
@@ -632,28 +629,6 @@ def _workload_case(
     controller_times = candidate_controller_times(theta, model.agent_period, horizon)
     cells = _macro_cells(horizon, controller_times, switch)
     target_work = _target_cap(target, classification)
-
-    # PRE_HI has constant post-switch service weights.  If every hp task already
-    # has a single-job completion envelope, retain the common target-release
-    # index across *all* hp tasks and jointly maximize carry plus future work.
-    # This removes the old impossible sum of independently worst carry phases.
-    if switch.kind == "PRE_HI":
-        joint = _joint_pre_hi_interference_if_protected(
-            model, target, hp_tasks, path, protected_response_by_task,
-            theta=theta, horizon=horizon,
-        )
-        if joint is not None:
-            hp_work, aggregate_details = joint
-            return int(target_work + hp_work), {
-                "theta": int(theta),
-                "switch_profile": switch.id,
-                "target_classification": classification,
-                "target_demand": int(target_work),
-                "controller_times": list(controller_times),
-                "carry_in_model": aggregate_details,
-                "interference_model": "JOINT_EXACT_PERIODIC_PRE_HI",
-                "interference": [],
-            }
 
     carry, carry_details = _aggregate_carry_bound(
         model, target, hp_tasks, path, theta=theta, switch_kind=switch.kind
@@ -1163,7 +1138,231 @@ def _case_conditioned_postfix_search_v10_13(
 
 
 
-def _pre_hi_phase_consistent_postfix_search_v10_14(
+def _stable_hash(value: Any) -> str:
+    return sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _small_prime_factors(value: int) -> tuple[int, ...]:
+    n = int(value)
+    factors: list[int] = []
+    divisor = 2
+    while divisor * divisor <= n:
+        if n % divisor == 0:
+            factors.append(int(divisor))
+            while n % divisor == 0:
+                n //= divisor
+        divisor = 3 if divisor == 2 else divisor + 2
+    if n > 1:
+        factors.append(int(n))
+    return tuple(factors)
+
+
+def _phase_block_split_factor(
+    block: PhaseBlock,
+    projections: tuple[PhaseBlockProjection, ...],
+    specs: tuple[CarryTaskSpec, ...],
+    *,
+    joint_period: int,
+    current_leaf_count: int,
+) -> int | None:
+    """Choose a low-branching split that shrinks high-work task projections."""
+
+    remaining = int(joint_period) // int(block.modulus)
+    candidates: set[int] = set()
+    for projection in projections:
+        if int(projection.phase_count) > 1:
+            candidates.update(_small_prime_factors(int(projection.phase_count)))
+
+    best_factor: int | None = None
+    best_score: tuple[int, int, int] | None = None
+    for factor in sorted(candidates):
+        if factor <= 1 or remaining % factor != 0:
+            continue
+        if int(current_leaf_count) + int(factor) - 1 > PHASE_BLOCK_MAX_LEAVES:
+            continue
+        impact = 0
+        for spec, projection in zip(specs, projections):
+            count = int(projection.phase_count)
+            if count % int(factor) == 0:
+                reduction = count - count // int(factor)
+                weight = max(int(spec.pre_switch_cap), int(spec.post_switch_cap), 1)
+                impact += int(reduction) * int(weight)
+        if impact <= 0:
+            continue
+        score = (
+            (int(impact) * 1_000_000) // max(1, int(factor) - 1),
+            int(impact),
+            -int(factor),
+        )
+        if best_score is None or score > best_score:
+            best_score = score
+            best_factor = int(factor)
+    return best_factor
+
+
+def _phase_block_children(block: PhaseBlock, factor: int, joint_period: int) -> tuple[PhaseBlock, ...]:
+    modulus = int(block.modulus)
+    residue = int(block.residue)
+    d = int(factor)
+    if d <= 1 or int(joint_period) % modulus != 0 or (int(joint_period) // modulus) % d != 0:
+        raise PCSSCUnresolved(f"PHASE_BLOCK_INVALID_SPLIT:{block.id}:d={d}")
+    child_modulus = modulus * d
+    return tuple(
+        PhaseBlock(
+            modulus=int(child_modulus),
+            residue=int(residue + r * modulus),
+            depth=int(block.depth) + 1,
+            parent_id=block.id,
+            split_factor=d,
+        )
+        for r in range(d)
+    )
+
+
+def _verify_phase_block_leaf_tree(
+    root: PhaseBlock,
+    leaves: tuple[PhaseBlock, ...],
+    children_by_parent: Mapping[str, tuple[PhaseBlock, ...]],
+    joint_period: int,
+) -> bool:
+    leaf_ids = {leaf.id for leaf in leaves}
+    if len(leaf_ids) != len(leaves):
+        return False
+    visited_leaves: set[str] = set()
+    visited_nodes: set[str] = set()
+
+    def walk(node: PhaseBlock) -> bool:
+        if node.id in visited_nodes:
+            return False
+        visited_nodes.add(node.id)
+        if int(node.modulus) <= 0 or int(joint_period) % int(node.modulus) != 0:
+            return False
+        if int(node.residue) < 0 or int(node.residue) >= int(node.modulus):
+            return False
+        children = children_by_parent.get(node.id)
+        if children is None:
+            if node.id not in leaf_ids:
+                return False
+            visited_leaves.add(node.id)
+            return True
+        if node.id in leaf_ids or not children:
+            return False
+        factor = len(children)
+        expected = _phase_block_children(node, factor, int(joint_period))
+        if tuple((c.modulus, c.residue) for c in children) != tuple(
+            (c.modulus, c.residue) for c in expected
+        ):
+            return False
+        return all(walk(child) for child in children)
+
+    return walk(root) and visited_leaves == leaf_ids
+
+
+def _phase_block_binding(
+    target: TaskBound,
+    case: CaseKey,
+    specs: tuple[CarryTaskSpec, ...],
+    projections: tuple[PhaseBlockProjection, ...],
+    carry_details: Mapping[str, Any],
+    *,
+    carry_mode: str,
+    completion_bounds: tuple[int, ...] | None,
+) -> dict[str, str]:
+    if completion_bounds is not None and len(completion_bounds) != len(specs):
+        raise ValueError("PHASE_BLOCK_COMPLETION_BINDING_DIMENSION_MISMATCH")
+    service_binding = [
+        {
+            "task": spec.name,
+            "criticality": spec.criticality,
+            "period": int(spec.period),
+            "pre": int(spec.pre_switch_cap),
+            "post": int(spec.post_switch_cap),
+            "completion_bound": (
+                None if completion_bounds is None else int(completion_bounds[index])
+            ),
+        }
+        for index, spec in enumerate(specs)
+    ]
+    target_binding = {
+        "task": target.name,
+        "classification": case.target_classification,
+        "service_cap": int(_target_cap(target, case.target_classification)),
+    }
+    projection_binding = [projection.as_dict() for projection in projections]
+    carry_formula_hash = _stable_hash({
+        "formula": "V10_16_R7_BOUNDARY_GROUP_COUNT_LIFT",
+        "operator": "post_demand + max_switch_delta - age",
+        "candidate_domain": "COMPLETE_PROJECTION_BOUNDARY_UNION",
+    })
+    future_formula_hash = _stable_hash({
+        "formula": "V10_16_PRE_HI_FUTURE_NBAR",
+        "interval": "[0,R)",
+        "coefficient": "post_switch_cap_nonnegative",
+    })
+    endpoint_binding_hash = _stable_hash({
+        "carry": "pending strictly before relative zero",
+        "future": "half_open_[0,R)",
+        "LO_release_at_switch": "primary_pre_switch_cap",
+        "HI_release_at_switch": "post_switch_cap",
+    })
+    service_cap_binding_hash = _stable_hash({
+        "target": target_binding,
+        "ahead": service_binding,
+    })
+    case_key_hash = _stable_hash(case.as_dict())
+    count_coordinate_map_hash = _stable_hash(projection_binding)
+    candidate_domain_hash = _stable_hash({
+        "kind": carry_details.get("candidate_domain_kind"),
+        "busy_horizon": int(carry_details.get("busy_horizon", 0)),
+        "projection_age_classes": [
+            {
+                "task": projection.task,
+                "first": int(projection.first_release_age),
+                "stride": int(projection.phase_stride),
+            }
+            for projection in projections
+        ],
+    })
+    monotonicity_check_hash = _stable_hash({
+        "carry": "group coordinates enter through + and max; lifted negative optional coordinates use a pointwise upper",
+        "future": "arrival count multiplied only by nonnegative post_switch_cap",
+        "count_coordinates": "complete symbolic task-local projection",
+    })
+    noncount_phase_input_binding_hash = _stable_hash({
+        "case_key": case.as_dict(),
+        "target": target_binding,
+        "service_binding": service_binding,
+        "hidden_q_dependent_inputs": [],
+    })
+    formula_hash = _stable_hash({
+        "carry_formula_hash": carry_formula_hash,
+        "future_formula_hash": future_formula_hash,
+        "endpoint_binding_hash": endpoint_binding_hash,
+        "service_cap_binding_hash": service_cap_binding_hash,
+        "case_key_hash": case_key_hash,
+        "count_coordinate_map_hash": count_coordinate_map_hash,
+        "candidate_domain_hash": candidate_domain_hash,
+        "monotonicity_check_hash": monotonicity_check_hash,
+        "noncount_phase_input_binding_hash": noncount_phase_input_binding_hash,
+        "carry_mode": carry_mode,
+    })
+    return {
+        "formula_hash": formula_hash,
+        "carry_formula_hash": carry_formula_hash,
+        "future_formula_hash": future_formula_hash,
+        "endpoint_binding_hash": endpoint_binding_hash,
+        "service_cap_binding_hash": service_cap_binding_hash,
+        "case_key_hash": case_key_hash,
+        "count_coordinate_map_hash": count_coordinate_map_hash,
+        "candidate_domain_hash": candidate_domain_hash,
+        "monotonicity_check_hash": monotonicity_check_hash,
+        "noncount_phase_input_binding_hash": noncount_phase_input_binding_hash,
+    }
+
+
+def _phase_block_postfix_search_v10_16(
     model: BoundModel,
     target: TaskBound,
     hp_tasks: tuple[TaskBound, ...],
@@ -1171,155 +1370,296 @@ def _pre_hi_phase_consistent_postfix_search_v10_14(
     protected_response_by_task: dict[str, int],
     case: CaseKey,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str | None]:
-    """V10.14 PRE_HI refinement with one fixed joint release phase per recurrence.
+    """V10.16 adaptive PRE_HI phase-block terminal without global-q enumeration."""
 
-    V10.12 already uses one target-release index to couple all HP phases at a
-    *single* horizon, but then maximizes that index again when the response
-    candidate changes.  A concrete target job has one immutable release index,
-    so V10.14 enumerates the finite joint phase orbit and gives every phase
-    subcase its own directly checked postfix before aggregating completion
-    bounds.  The enumeration is streamed; no full orbit/history table is kept.
-    """
     if case.switch.kind != "PRE_HI":
-        return None, [], f"V10_14_PRE_HI_PHASE_CONSISTENT_NOT_APPLICABLE:{case.id}"
+        return None, [], f"V10_16_PHASE_BLOCK_NOT_APPLICABLE:{case.id}"
 
     specs = _carry_task_specs(hp_tasks, path)
     completion_bounds: tuple[int, ...] | None = None
-    if all(task.name in protected_response_by_task for task in hp_tasks):
-        candidate = tuple(
-            int(protected_response_by_task[task.name]) for task in hp_tasks
-        )
-        if all(
-            0 < int(bound) <= int(task.period)
-            for task, bound in zip(hp_tasks, candidate)
-        ):
+    if hp_tasks and all(task.name in protected_response_by_task for task in hp_tasks):
+        candidate = tuple(int(protected_response_by_task[task.name]) for task in hp_tasks)
+        if all(0 < int(bound) <= int(task.period) for task, bound in zip(hp_tasks, candidate)):
             completion_bounds = candidate
 
     try:
-        n0, q_step, cycle = target_release_joint_phase_parameters(
+        n0, q_step, joint_period = target_release_joint_phase_parameters(
             int(target.period), int(model.agent_period), int(case.theta), specs
         )
     except CarryInEnvelopeUnresolved as exc:
         return None, [], str(exc)
-    if int(cycle) <= 0:
-        return None, [], f"V10_14_PRE_HI_PHASE_DOMAIN_EMPTY:{case.id}"
+    if int(joint_period) <= 0:
+        return None, [], f"V10_16_PHASE_BLOCK_DOMAIN_EMPTY:{case.id}"
 
+    root = PhaseBlock(modulus=1, residue=0, depth=0)
     deadline = int(target.deadline)
     target_work = int(_target_cap(target, case.target_classification))
-    maximum_response = 0
-    worst_q = -1
-    worst_phases: tuple[int, ...] = ()
-    worst_final_workload = 0
-    worst_path: list[dict[str, Any]] = []
-    max_candidate_steps = 0
-    digest = sha256()
+    pending: list[PhaseBlock] = [root]
+    passed: dict[str, tuple[PhaseBlock, dict[str, Any]]] = {}
+    children_by_parent: dict[str, tuple[PhaseBlock, ...]] = {}
+    split_receipts: list[dict[str, Any]] = []
+    block_attempts: list[dict[str, Any]] = []
 
-    for q in range(int(cycle)):
-        phases = target_release_joint_phases_at_q(
-            int(target.period), specs, n0=int(n0), q_step=int(q_step), q=int(q)
-        )
+    while pending:
+        block = pending.pop()
         try:
-            fixed_carry, carry_details = fixed_phase_pre_hi_carry(
-                specs, phases, completion_bounds
+            projections = phase_block_task_projections(
+                int(target.period), int(q_step), int(n0), specs,
+                block_modulus=int(block.modulus), block_residue=int(block.residue),
             )
-        except CarryInEnvelopeUnresolved as exc:
-            return None, [], str(exc)
+            carry_r7, carry_details = phase_block_r7_carry_upper(specs, projections)
+            carry_comp: int | None = None
+            if completion_bounds is not None:
+                carry_comp = phase_block_completion_carry_upper(
+                    specs, projections, completion_bounds
+                )
+            carry_cert = (
+                min(int(carry_r7), int(carry_comp))
+                if carry_comp is not None else int(carry_r7)
+            )
+            carry_mode = (
+                "R7_INTERSECT_COMPLETION" if carry_comp is not None else "R7_ONLY"
+            )
+            binding = _phase_block_binding(
+                target, case, specs, projections, carry_details,
+                carry_mode=carry_mode, completion_bounds=completion_bounds,
+            )
+        except (CarryInEnvelopeUnresolved, ValueError) as exc:
+            return None, block_attempts, str(exc)
 
         R = max(1, min(deadline, target_work))
         seen: set[int] = set()
-        q_path: list[dict[str, Any]] = []
+        candidate_path: list[dict[str, Any]] = []
         final_workload = -1
-
         while True:
             if R in seen:
-                return None, q_path, (
-                    f"V10_14_PRE_HI_PHASE_CANDIDATE_CYCLE:{case.id}:q={q}:R={R}"
+                return None, block_attempts, (
+                    f"V10_16_PHASE_BLOCK_CANDIDATE_CYCLE:{case.id}:{block.id}:R={R}"
                 )
             seen.add(int(R))
-            future = fixed_phase_post_switch_future_work(specs, phases, int(R))
-            workload = int(target_work) + int(fixed_carry) + int(future)
-            q_path.append({
+            future = phase_block_post_switch_future_upper(specs, projections, int(R))
+            workload = int(target_work) + int(carry_cert) + int(future)
+            candidate_path.append({
                 "R": int(R),
                 "W": int(workload),
                 "postfixed": bool(workload <= R),
-                "carry_in": int(fixed_carry),
-                "future": int(future),
+                "carry_r7_B": int(carry_r7),
+                "carry_comp_B": carry_comp,
+                "carry_cert_B": int(carry_cert),
+                "future_B": int(future),
             })
-
             if workload <= R:
-                # Direct recheck of the same fixed-q formula.  The recurrence is
-                # only a candidate generator; this equality is the certificate
-                # check that supports PASS.
-                final_future = fixed_phase_post_switch_future_work(
-                    specs, phases, int(R)
+                final_future = phase_block_post_switch_future_upper(
+                    specs, projections, int(R)
                 )
-                final_workload = (
-                    int(target_work) + int(fixed_carry) + int(final_future)
-                )
-                if final_workload > R:
-                    return None, q_path, (
-                        f"V10_14_PRE_HI_PHASE_DIRECT_POSTFIX_RECHECK_FAILED:"
-                        f"{case.id}:q={q}:R={R}:W={final_workload}"
+                final_workload = int(target_work) + int(carry_cert) + int(final_future)
+                if final_workload > int(R):
+                    return None, block_attempts, (
+                        f"V10_16_PHASE_BLOCK_DIRECT_POSTFIX_RECHECK_FAILED:"
+                        f"{case.id}:{block.id}:R={R}:W={final_workload}"
                     )
                 break
-
             if R == deadline:
-                return None, q_path, (
-                    f"V10_14_PRE_HI_PHASE_POSTFIX_NOT_FOUND_BY_DEADLINE:"
-                    f"{case.id}:q={q}:W={workload}:D={deadline}:phases={list(phases)}"
-                )
+                break
             next_R = max(int(R) + 1, int(workload))
             R = deadline if next_R > deadline else next_R
 
-        max_candidate_steps = max(int(max_candidate_steps), len(q_path))
-        digest.update(json.dumps({
-            "q": int(q),
-            "phases": list(int(value) for value in phases),
-            "R": int(R),
-            "W": int(final_workload),
-        }, sort_keys=True, separators=(",", ":")).encode("utf-8"))
-        if (
-            int(R) > int(maximum_response)
-            or (int(R) == int(maximum_response) and int(q) > int(worst_q))
-        ):
-            maximum_response = int(R)
-            worst_q = int(q)
-            worst_phases = tuple(int(value) for value in phases)
-            worst_final_workload = int(final_workload)
-            worst_path = list(q_path)
+        if final_workload >= 0:
+            leaf_receipts: list[dict[str, Any]] = [{
+                "obligation_id": (
+                    f"PHASE_BLOCK_WORKLOAD_LIFTING_SOUND::{target.name},"
+                    f"{case.id},{binding['formula_hash']}"
+                ),
+                "status": "PASS",
+                "case_id": case.id,
+                **block.as_dict(),
+                **binding,
+                "candidate_domain_kind": carry_details["candidate_domain_kind"],
+                "count_coordinate_mapping": "SYMBOLIC_GCD_TASK_LOCAL_PROJECTION",
+                "noncount_phase_inputs_fully_bound": True,
+            }, {
+                "obligation_id": f"PHASE_BLOCK_R7_CARRY_DOMINANCE::{case.id},{block.id}",
+                "status": "PASS",
+                **block.as_dict(),
+                "carry_r7_B": int(carry_r7),
+                "candidate_domain_hash": binding["candidate_domain_hash"],
+                "boundary_union_complete_for_all_fixed_q_maximizers": True,
+            }, {
+                "obligation_id": f"PHASE_BLOCK_FUTURE_DOMINANCE::{case.id},{block.id}",
+                "status": "PASS",
+                **block.as_dict(),
+                "future_at_postfix": int(final_workload - target_work - carry_cert),
+                "count_projection_hash": binding["count_coordinate_map_hash"],
+            }]
+            if carry_comp is not None:
+                leaf_receipts.append({
+                    "obligation_id": f"PHASE_BLOCK_COMPLETION_CARRY_SOUND::{case.id},{block.id}",
+                    "status": "PASS",
+                    **block.as_dict(),
+                    "completion_carry_B": int(carry_comp),
+                    "construction": "SUM_OF_PER_TASK_MAX_RESIDUAL_OVER_COMPLETE_BLOCK_PROJECTION",
+                })
+            leaf_receipts.append({
+                "obligation_id": f"PHASE_BLOCK_POSTFIX::{case.id},{block.id}",
+                "status": "PASS",
+                **block.as_dict(),
+                "R_B": int(R),
+                "W_B_R_B": int(final_workload),
+                "formula_hash": binding["formula_hash"],
+                "count_projection_hash": binding["count_coordinate_map_hash"],
+                "candidate_domain_hash": binding["candidate_domain_hash"],
+                "carry_mode": carry_mode,
+                "direct_recheck": True,
+                "W_le_R_le_D": int(final_workload) <= int(R) <= deadline,
+            })
+            cert = {
+                **block.as_dict(),
+                "R": int(R),
+                "W": int(final_workload),
+                "candidate_path": candidate_path,
+                "projections": [projection.as_dict() for projection in projections],
+                "formula_hash": binding["formula_hash"],
+                "count_projection_hash": binding["count_coordinate_map_hash"],
+                "candidate_domain_hash": binding["candidate_domain_hash"],
+                "carry_mode": carry_mode,
+                "carry_r7_B": int(carry_r7),
+                "carry_comp_B": carry_comp,
+                "carry_cert_B": int(carry_cert),
+                "receipts": leaf_receipts,
+            }
+            passed[block.id] = (block, cert)
+            block_attempts.append({
+                **block.as_dict(), "status": "PASS", "R": int(R), "W": int(final_workload),
+                "projection_sizes": [int(p.phase_count) for p in projections],
+                "candidate_steps": len(candidate_path),
+            })
+            continue
 
-    if maximum_response <= 0 or maximum_response > deadline:
-        return None, worst_path, (
-            f"V10_14_PRE_HI_PHASE_RCERT_INVALID:{case.id}:R={maximum_response}:D={deadline}"
+        block_attempts.append({
+            **block.as_dict(), "status": "FAILED_BLOCK",
+            "W_at_D": int(candidate_path[-1]["W"]),
+            "projection_sizes": [int(p.phase_count) for p in projections],
+            "candidate_steps": len(candidate_path),
+        })
+        active_leaf_count = len(passed) + len(pending) + 1
+        factor = _phase_block_split_factor(
+            block, projections, specs, joint_period=int(joint_period),
+            current_leaf_count=int(active_leaf_count),
         )
+        if factor is None:
+            return None, block_attempts, (
+                f"PHASE_BLOCK_REFINEMENT_INSUFFICIENT:{case.id}:{block.id}:NO_LEGAL_SPLIT"
+            )
+        try:
+            children = _phase_block_children(block, int(factor), int(joint_period))
+        except PCSSCUnresolved as exc:
+            return None, block_attempts, str(exc)
+        children_by_parent[block.id] = children
+        split_receipts.append({
+            "obligation_id": f"PHASE_BLOCK_SPLIT::{case.id},{block.id}",
+            "status": "PASS",
+            "case_id": case.id,
+            "parent": block.as_dict(),
+            "split_factor": int(factor),
+            "children": [child.as_dict() for child in children],
+            "parent_equals_disjoint_union_children": True,
+        })
+        pending.extend(reversed(children))
 
+    final_leaves = tuple(block for block, _ in passed.values())
+    if not final_leaves or not _verify_phase_block_leaf_tree(
+        root, final_leaves, children_by_parent, int(joint_period)
+    ):
+        return None, block_attempts, f"PHASE_BLOCK_LEAF_COVERAGE_FAILED:{case.id}"
+
+    leaf_certs = [cert for _, cert in passed.values()]
+    maximum_response = max(int(cert["R"]) for cert in leaf_certs)
+    if maximum_response <= 0 or maximum_response > deadline:
+        return None, block_attempts, (
+            f"V10_16_PHASE_BLOCK_RCERT_INVALID:{case.id}:R={maximum_response}:D={deadline}"
+        )
+    worst = max(leaf_certs, key=lambda cert: (int(cert["R"]), str(cert["block_id"])))
     try:
         prefix_receipt = _controller_prefix_coverage_receipt(
             model, target, path, int(maximum_response)
         )
     except PCSSCUnresolved as exc:
-        return None, worst_path, str(exc)
+        return None, block_attempts, str(exc)
+
+    leaf_digest = _stable_hash([
+        {
+            "block_id": cert["block_id"],
+            "M": cert["M"],
+            "a": cert["a"],
+            "R": cert["R"],
+            "W": cert["W"],
+            "formula_hash": cert["formula_hash"],
+        }
+        for cert in sorted(leaf_certs, key=lambda row: (int(row["M"]), int(row["a"])))
+    ])
+    leaf_receipts = [
+        receipt for cert in leaf_certs for receipt in cert["receipts"]
+    ]
+    phase_receipts = [{
+        "obligation_id": f"PHASE_BLOCK_ROOT_DOMAIN::{case.id}",
+        "status": "PASS",
+        "case_id": case.id,
+        "Q": int(joint_period),
+        "root": root.as_dict(),
+        "lcm_empty_convention": 1,
+        "empty_ahead": not bool(specs),
+        "global_q_enumerated": False,
+        "structural_plan": {
+            "max_leaf_count": PHASE_BLOCK_MAX_LEAVES,
+            "termination_measure": "every split increases active leaf count by at least one",
+            "split_factors": "prime factors of current task-local projection periods",
+        },
+    }, *split_receipts, *leaf_receipts, {
+        "obligation_id": f"PHASE_BLOCK_LEAF_COVERAGE::{case.id}",
+        "status": "PASS",
+        "case_id": case.id,
+        "Q": int(joint_period),
+        "leaf_count": len(final_leaves),
+        "leaf_digest_sha256": leaf_digest,
+        "verified_by_legal_split_induction": True,
+    }, {
+        "obligation_id": f"ALL_PHASE_BLOCKS_POSTFIX::{case.id}",
+        "status": "PASS",
+        "case_id": case.id,
+        "leaf_count": len(final_leaves),
+        "R_case": int(maximum_response),
+        "uniform_R_case_is_common_postfix": False,
+    }, {
+        "obligation_id": f"PHASE_BLOCK_RESPONSE_CERTIFICATE::{case.id}",
+        "status": "PASS",
+        "case_id": case.id,
+        "R": int(maximum_response),
+        "R_le_D": int(maximum_response) <= deadline,
+        "derivation": "max of all final phase-block completion bounds",
+        "not_a_common_block_postfix": True,
+    }]
 
     return {
         **case.as_dict(),
         "status": "PASS",
         "R": int(maximum_response),
-        "W": int(worst_final_workload),
-        "W_scope": "WORST_RESPONSE_PHASE_SUBCASE_AT_ITS_OWN_POSTFIX",
+        "W": int(worst["W"]),
+        "W_scope": "WORST_RESPONSE_PHASE_BLOCK_AT_ITS_OWN_POSTFIX",
         "postfixed": True,
-        "candidate_path": worst_path,
+        "candidate_path": block_attempts,
         "controller_prefix_receipt": prefix_receipt,
-        "case_theorem_basis": "V10_14_PRE_HI_PHASE_CONSISTENT",
-        "phase_subcase_count": int(cycle),
-        "phase_subcase_covered_count": int(cycle),
-        "phase_subcase_digest_sha256": digest.hexdigest(),
-        "phase_subcase_max_candidate_steps": int(max_candidate_steps),
-        "worst_phase_q": int(worst_q),
-        "worst_phase_vector": list(worst_phases),
-        "worst_phase_final_workload": int(worst_final_workload),
+        "case_theorem_basis": "V10_16_ADAPTIVE_PHASE_BLOCK",
+        "phase_block_joint_period": int(joint_period),
+        "phase_block_leaf_count": len(final_leaves),
+        "phase_block_leaf_digest_sha256": leaf_digest,
+        "worst_phase_block": str(worst["block_id"]),
+        "worst_phase_block_final_workload": int(worst["W"]),
         "uniform_R_is_common_postfix": False,
         "completion_prefix_used": completion_bounds is not None,
-    }, worst_path, None
+        "phase_block_receipts": phase_receipts,
+        "global_q_enumerated": False,
+    }, block_attempts, None
+
 
 def _case_consistent_postfix_search(
     model: BoundModel,
@@ -1377,11 +1717,11 @@ def _case_consistent_postfix_search(
                 )
             if case.switch.kind == "PRE_HI":
                 refined, refined_rows, refined_failure = (
-                    _pre_hi_phase_consistent_postfix_search_v10_14(
+                    _phase_block_postfix_search_v10_16(
                         model, target, hp_tasks, path, protected_response_by_task, case
                     )
                 )
-                refinement_version = "V10_14"
+                refinement_version = "V10_16"
             else:
                 refined, refined_rows, refined_failure = _case_conditioned_postfix_search_v10_13(
                     model, target, hp_tasks, path, protected, protected_response_by_task, case
@@ -1404,19 +1744,21 @@ def _case_consistent_postfix_search(
                 )
             cert = refined
             path_rows = refined_rows
-            if refinement_version == "V10_14":
+            if refinement_version == "V10_16":
                 receipts.append({
-                    "obligation_id": f"PRE_HI_PHASE_CONSISTENT_REFINEMENT::{target.name},{case.id}",
+                    "obligation_id": f"ADAPTIVE_PHASE_BLOCK_REFINEMENT::{target.name},{case.id}",
                     "status": "PASS",
                     "case_id": case.id,
                     "legacy_failure": legacy_failure,
-                    "theorem_basis": "V10_14_PRE_HI_FIXED_TARGET_RELEASE_PHASE",
-                    "phase_subcase_count": int(cert["phase_subcase_count"]),
-                    "phase_subcase_covered_count": int(cert["phase_subcase_covered_count"]),
-                    "phase_subcase_digest_sha256": cert["phase_subcase_digest_sha256"],
+                    "theorem_basis": "V10_16_ADAPTIVE_PHASE_BLOCK_PCSSC",
+                    "phase_block_joint_period": int(cert["phase_block_joint_period"]),
+                    "phase_block_leaf_count": int(cert["phase_block_leaf_count"]),
+                    "phase_block_leaf_digest_sha256": cert["phase_block_leaf_digest_sha256"],
+                    "global_q_enumerated": False,
                     "uniform_R_is_common_postfix": False,
                     "event_graph_used": False,
                 })
+                receipts.extend(cert["phase_block_receipts"])
             else:
                 receipts.append({
                     "obligation_id": f"CASE_CONDITIONED_CARRY_FUTURE_REFINEMENT::{target.name},{case.id}",
@@ -1438,50 +1780,20 @@ def _case_consistent_postfix_search(
             "candidate_path": cert["candidate_path"],
             "case_theorem_basis": theorem_basis,
         }
-        if theorem_basis == "V10_14_PRE_HI_PHASE_CONSISTENT":
+        if theorem_basis == "V10_16_ADAPTIVE_PHASE_BLOCK":
             tested_row.update({
-                "phase_subcase_count": int(cert["phase_subcase_count"]),
-                "phase_subcase_covered_count": int(cert["phase_subcase_covered_count"]),
-                "phase_subcase_digest_sha256": cert["phase_subcase_digest_sha256"],
-                "worst_phase_q": int(cert["worst_phase_q"]),
-                "worst_phase_vector": list(cert["worst_phase_vector"]),
+                "phase_block_joint_period": int(cert["phase_block_joint_period"]),
+                "phase_block_leaf_count": int(cert["phase_block_leaf_count"]),
+                "phase_block_leaf_digest_sha256": cert["phase_block_leaf_digest_sha256"],
+                "worst_phase_block": cert["worst_phase_block"],
                 "uniform_R_is_common_postfix": False,
+                "global_q_enumerated": False,
             })
         tested.append(tested_row)
         prefix_receipt = dict(cert["controller_prefix_receipt"])
         prefix_receipt["case_id"] = case.id
         receipts.append(prefix_receipt)
-        if theorem_basis == "V10_14_PRE_HI_PHASE_CONSISTENT":
-            receipts.extend((
-                {
-                    "obligation_id": f"PRE_HI_PHASE_SUBCASE_DOMAIN_COVERAGE::{target.name},{case.id}",
-                    "status": "PASS",
-                    "case_id": case.id,
-                    "phase_subcase_count": int(cert["phase_subcase_count"]),
-                    "covered_phase_subcase_count": int(cert["phase_subcase_covered_count"]),
-                    "coverage_digest_sha256": cert["phase_subcase_digest_sha256"],
-                    "streamed_without_materializing_full_history_table": True,
-                },
-                {
-                    "obligation_id": f"ALL_PRE_HI_PHASE_SUBCASES_POSTFIX::{target.name},{case.id}",
-                    "status": "PASS",
-                    "case_id": case.id,
-                    "R_case": int(cert["R"]),
-                    "worst_phase_q": int(cert["worst_phase_q"]),
-                    "worst_phase_final_workload": int(cert["worst_phase_final_workload"]),
-                    "uniform_R_case_is_common_postfix": False,
-                },
-                {
-                    "obligation_id": f"PRE_HI_PHASE_CONSISTENT_RESPONSE_CERTIFICATE::{target.name},{case.id},R={cert['R']}",
-                    "status": "PASS",
-                    "case_id": case.id,
-                    "R": int(cert["R"]),
-                    "R_le_D": int(cert["R"]) <= int(target.deadline),
-                    "derivation": "max of exhaustively checked fixed-joint-phase PRE_HI completion bounds",
-                    "not_a_common_phase_postfix": True,
-                },
-            ))
-        else:
+        if theorem_basis != "V10_16_ADAPTIVE_PHASE_BLOCK":
             receipts.extend((
                 {
                     "obligation_id": f"CASE_WORKLOAD_DOMINANCE::{target.name},{case.id},R={cert['R']}",
@@ -1518,9 +1830,9 @@ def _case_consistent_postfix_search(
         str(cert["case_id"]) for cert in case_certificates
         if cert.get("case_theorem_basis") == "V10_13_CASE_CONDITIONED_CARRY_FUTURE"
     ]
-    v10_14_cases = [
+    v10_16_cases = [
         str(cert["case_id"]) for cert in case_certificates
-        if cert.get("case_theorem_basis") == "V10_14_PRE_HI_PHASE_CONSISTENT"
+        if cert.get("case_theorem_basis") == "V10_16_ADAPTIVE_PHASE_BLOCK"
     ]
     receipts.extend((
         {
@@ -1542,8 +1854,8 @@ def _case_consistent_postfix_search(
             "uniform_Rcert_is_common_postfix": False,
             "v10_13_conditioned_case_count": len(v10_13_cases),
             "v10_13_conditioned_case_ids": v10_13_cases,
-            "v10_14_pre_hi_phase_case_count": len(v10_14_cases),
-            "v10_14_pre_hi_phase_case_ids": v10_14_cases,
+            "v10_16_adaptive_phase_block_case_count": len(v10_16_cases),
+            "v10_16_adaptive_phase_block_case_ids": v10_16_cases,
         },
         {
             "obligation_id": f"CASE_CONSISTENT_RESPONSE_CERTIFICATE::{target.name},Rcert={Rcert}",
@@ -1555,8 +1867,8 @@ def _case_consistent_postfix_search(
         },
         {
             "obligation_id": (
-                f"PCSSC_REFINED_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_14::{target.name}"
-                if v10_14_cases else
+                f"PCSSC_REFINED_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_16::{target.name}"
+                if v10_16_cases else
                 f"PCSSC_CASE_CONDITIONED_SAFE_PREFIX_COMPLETION_EXPORT_V10_13::{target.name}"
                 if v10_13_cases else
                 f"PCSSC_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_12::{target.name}"
@@ -1566,13 +1878,13 @@ def _case_consistent_postfix_search(
             "premise": f"ALL_CASES_POSTFIX_COVERED::{target.name}",
             "safe_prefix_completion_contract": True,
             "v10_13_conditioned_cases": v10_13_cases,
-            "v10_14_pre_hi_phase_cases": v10_14_cases,
+            "v10_16_adaptive_phase_block_cases": v10_16_cases,
         },
         {
             "obligation_id": f"HI_TARGET_SAFE::{target.name}",
             "status": "PASS",
             "route": (
-                "PCSSC_REFINED_CASES_V10_14" if v10_14_cases
+                "PCSSC_REFINED_CASES_V10_16" if v10_16_cases
                 else "PCSSC_CASE_CONDITIONED_CARRY_V10_13" if v10_13_cases
                 else "PCSSC_CASE_CONSISTENT"
             ),
@@ -1600,6 +1912,11 @@ def prove_target_pcssc(
     *,
     priority_assignment_hash: str,
     tie_break_hash: str,
+    release_model: str,
+    release_model_hash: str,
+    release_domain_hash: str,
+    source_manifest_semantic_hash: str,
+    release_generator_source_hash: str,
     certified_completion_by_task: Mapping[str, CertifiedCompletionBound] | None = None,
 ) -> TargetCertificate:
     target = model.task_by_name[target_name]
@@ -1607,6 +1924,22 @@ def prove_target_pcssc(
         raise ValueError("PCSSC_TARGET_MUST_BE_HI")
     receipts: list[dict[str, Any]] = []
     ledger: list[dict[str, Any]] = list(path.conservatism_ledger)
+
+    if release_model != "EXACT_PERIODIC_PHASE_ZERO":
+        return TargetCertificate(
+            target.name, "UNRESOLVED", None,
+            "P0_RELEASE_DOMAIN_EXACT_PERIODIC_PHASE_ZERO_MISSING", (), (), (),
+        )
+    receipts.append({
+        "obligation_id": "P0_RELEASE_DOMAIN_EXACT_PERIODIC_PHASE_ZERO",
+        "status": "PASS",
+        "release_model": release_model,
+        "release_model_hash": release_model_hash,
+        "release_domain_hash": release_domain_hash,
+        "source_manifest_semantic_hash": source_manifest_semantic_hash,
+        "release_generator_source_hash": release_generator_source_hash,
+        "binding": "actual frozen event runtime release generator plus admissible-environment release domain",
+    })
 
     if target.deadline > target.period:
         return TargetCertificate(target.name, "UNRESOLVED", None,
@@ -1629,7 +1962,10 @@ def prove_target_pcssc(
          "priority_assignment_hash": priority_assignment_hash,
          "tie_break_hash": tie_break_hash},
         {"obligation_id": f"EFFECTIVE_AHEAD_SET_SOUND::{target.name}", "status": "PASS",
-         "hp_eff": [task.name for task in hp_tasks]},
+         "hp_eff": [task.name for task in hp_tasks],
+         "strict_hp": [task.name for task in hp_tasks],
+         "hp_eff_equals_strict_hp": True,
+         "proof": "UNIQUE_PRIORITY_IMPLIES_HP_EFF_EQ_STRICT_HP"},
         {"obligation_id": "FIXED_PRIORITY_PREEMPTIVE_WORK_CONSERVING", "status": "PASS",
          "basis": "frozen P0 dispatch/runtime conformance"},
         {"obligation_id": "NO_SELF_SUSPENSION", "status": "PASS"},
@@ -1824,29 +2160,16 @@ def prove_target_pcssc(
         {"obligation_id": f"SINGLE_SWITCH_PROFILE_COVERAGE::{target.name}", "status": "PASS",
          "profiles": ["PRE_HI", "LO_NO_SWITCH", "LO_SWITCH(Sigma)"],
          "lo_endpoint": "u=s uses primary", "hi_endpoint": "u=s may use C_HI"},
-        {"obligation_id": f"EXACT_PERIODIC_RELEASE_PROFILE_COVERAGE::{target.name}", "status": "PASS",
-         "release_model": "EXACT_PERIODIC_PHASE_ZERO",
-         "phase_relation": "hp release phase is conditioned on the same target-relative controller theta",
-         "protected_pre_hi_joint_phase": True,
-         "other_profiles_phase_relaxation": "only adds compatible phase combinations"},
     ))
     ledger.append({
-        "kind": "CROSS_TASK_PERIODIC_PHASE_RELAXATION_OUTSIDE_PROTECTED_PRE_HI",
+        "kind": "FAST_ROUTE_CROSS_TASK_PERIODIC_PHASE_RELAXATION",
         "target": target.name,
         "effect": (
-            "non-PRE_HI and unprotected-PRE_HI aggregate envelopes may choose "
-            "different task phases from the same theta-compatible sets"
+            "pointwise/V10.12 fast-route aggregate envelopes may choose different "
+            "theta-compatible task phases; PRE_HI cases that need correlation are "
+            "deferred to the V10.16 adaptive phase-block terminal"
         ),
         "soundness_direction": "ONLY_ADDS_CROSS_TASK_PHASE_COMBINATIONS",
-    })
-    ledger.append({
-        "kind": "PROTECTED_PRE_HI_JOINT_PHASE_REFINEMENT",
-        "target": target.name,
-        "effect": (
-            "when every hp task has a single-job completion envelope, one target-release "
-            "index jointly determines all hp carry and future release phases"
-        ),
-        "soundness_direction": "SOUND_TIGHTENING_FROM_EXACT_PERIODIC_AND_COMPLETION_BINDINGS",
     })
     ledger.append({
         "kind": "POLICY_ARRIVAL_CORRELATION_RELAXATION",
@@ -1892,9 +2215,9 @@ def prove_target_pcssc(
     receipts.extend(case_receipts)
     tested = [*point_tested, *case_tested]
     if case_bound is not None:
-        used_v10_14 = any(
+        used_v10_16 = any(
             str(row.get("obligation_id", "")).startswith(
-                f"PCSSC_REFINED_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_14::{target.name}"
+                f"PCSSC_REFINED_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_16::{target.name}"
             )
             for row in case_receipts
         )
@@ -1917,31 +2240,32 @@ def prove_target_pcssc(
                 "event_graph_required": False,
                 "soundness_direction": "REMOVES_ONLY_IMPOSSIBLE_CROSS_PHASE_COMBINATIONS",
             })
-        if used_v10_14:
+        if used_v10_16:
             ledger.append({
-                "kind": "V10_14_PRE_HI_PHASE_CONSISTENT_POSTFIX",
+                "kind": "V10_16_ADAPTIVE_PHASE_BLOCK_PCSSC",
                 "target": target.name,
                 "effect": (
-                    "for a V10.12-unresolved PRE_HI canonical case, keep one exact "
-                    "target-release joint HP phase fixed across each response recurrence, "
-                    "prove every finite phase subcase separately, then aggregate R bounds"
+                    "replace global joint-q PRE_HI enumeration by adaptive congruence blocks; "
+                    "lift R7 carry and future counts over complete task-local gcd projections, "
+                    "directly recheck every final block postfix, then aggregate leaf bounds"
                 ),
-                "scope": "generic PRE_HI canonical cases",
+                "scope": "generic PRE_HI canonical cases under exact-periodic phase-zero releases",
                 "event_graph_required": False,
-                "soundness_direction": "REMOVES_ONLY_CROSS_HORIZON_PHASE_WITNESS_SWITCHING",
+                "global_q_enumerated": False,
+                "soundness_direction": "BLOCK_LIFTING_DOMINATES_EVERY_MEMBER_AND_REFINEMENT_ONLY_PARTITIONS_THE_SAME_DOMAIN",
             })
         return TargetCertificate(
             target.name, "PASS", int(case_bound), None,
             tuple(receipts), tuple(ledger), tuple(tested),
             terminal_route=(
-                TARGET_PROVED_PCSSC_REFINED_CASES_V10_14
-                if used_v10_14 else
+                TARGET_PROVED_PCSSC_REFINED_CASES_V10_16
+                if used_v10_16 else
                 TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY
                 if used_v10_13 else TARGET_PROVED_PCSSC_CASE_CONSISTENT
             ),
             completion_theorem_basis=(
-                PCSSC_REFINED_CASE_COMPLETION_THEOREM_V10_14
-                if used_v10_14 else
+                PCSSC_REFINED_CASE_COMPLETION_THEOREM_V10_16
+                if used_v10_16 else
                 PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM
                 if used_v10_13 else PCSSC_CASE_COMPLETION_THEOREM
             ),
