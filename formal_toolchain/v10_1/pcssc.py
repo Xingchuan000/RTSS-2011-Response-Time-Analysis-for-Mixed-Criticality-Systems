@@ -39,14 +39,15 @@ from .carry_in_envelope import (
     CarryInEnvelopeUnresolved,
     CarryTaskSpec,
     PhaseBlockProjection,
+    exact_joint_lo_entry_max_with_periodic_future,
     fixed_phase_lo_entry_backlog,
     fixed_phase_pre_hi_interference,
     phase_block_completion_carry_upper,
     phase_block_post_switch_future_upper,
     phase_block_r7_carry_upper,
     phase_block_task_projections,
-    target_release_joint_phase_orbit,
     target_release_joint_phase_parameters,
+    target_release_joint_phases_at_q,
     phase_relaxed_lo_entry_carry,
     phase_relaxed_single_switch_carry,
 )
@@ -735,8 +736,10 @@ def _case_conditioned_joint_phase_interference(
     V10.12 may independently maximize the LO-entry carry phase and each
     higher-priority future-interference phase.  Exact periodic phase-zero
     releases imply that all of those phases come from one target-release index.
-    This routine enumerates that finite joint orbit and maximizes
-    ``carry(q) + future(q)`` without reconstructing an Event Graph.
+    The mathematical V10.13 maximum remains exact, but the implementation does
+    not enumerate or materialize the global joint orbit.  Task-local q-periods
+    are decomposed into independent coprime CRT components and only those small
+    component periods are scanned.
     """
     if switch.kind not in {"LO_NO_SWITCH", "LO_SWITCH"}:
         raise PCSSCUnresolved("CASE_CONDITIONED_CARRY_REQUIRES_LO_ENTRY")
@@ -751,50 +754,83 @@ def _case_conditioned_joint_phase_interference(
         )
         for task in hp_tasks
     )
-    orbit = target_release_joint_phase_orbit(
+    n0, q_step, joint_cycle = target_release_joint_phase_parameters(
         int(target.period), int(model.agent_period), int(theta), specs
     )
-    maximum = -1
-    witness_q = 0
-    witness_carry = 0
-    witness_future = 0
-    witness_phases: tuple[int, ...] = ()
-    witness_carry_details: dict[str, int] = {}
-    witness_future_rows: list[dict[str, int | str]] = []
-
-    for q, phases in orbit:
-        carry, carry_details = fixed_phase_lo_entry_backlog(specs, phases)
-        future = 0
-        future_rows: list[dict[str, int | str]] = []
-        for task, phase, weights in zip(hp_tasks, phases, weights_by_task):
-            task_future = _fixed_phase_future_only(
-                task, phase=int(phase), horizon=int(horizon), cells=cells, weights=weights
+    root_projections = phase_block_task_projections(
+        int(target.period),
+        int(q_step),
+        int(n0),
+        specs,
+        block_modulus=1,
+        block_residue=0,
+    )
+    future_by_task_q_residue: list[tuple[int, ...]] = []
+    for task, spec, projection, weights in zip(
+        hp_tasks, specs, root_projections, weights_by_task
+    ):
+        task_future: list[int] = []
+        for q_residue in range(int(projection.q_period)):
+            n = int(n0) + int(q_residue) * int(q_step)
+            phase = (-int(n) * int(target.period)) % int(spec.period)
+            task_future.append(
+                _fixed_phase_future_only(
+                    task,
+                    phase=int(phase),
+                    horizon=int(horizon),
+                    cells=cells,
+                    weights=weights,
+                )
             )
-            future += int(task_future)
-            future_rows.append({
-                "task": task.name,
-                "release_phase": int(phase),
-                "future_interference": int(task_future),
-            })
-        value = int(carry) + int(future)
-        if value > maximum:
-            maximum = int(value)
-            witness_q = int(q)
-            witness_carry = int(carry)
-            witness_future = int(future)
-            witness_phases = tuple(int(value) for value in phases)
-            witness_carry_details = dict(carry_details)
-            witness_future_rows = future_rows
+        future_by_task_q_residue.append(tuple(task_future))
 
-    if maximum < 0:
-        raise PCSSCUnresolved(f"CASE_CONDITIONED_JOINT_PHASE_ORBIT_EMPTY:{target.name}")
+    maximum, exact_details = exact_joint_lo_entry_max_with_periodic_future(
+        int(target.period),
+        int(q_step),
+        int(n0),
+        specs,
+        tuple(future_by_task_q_residue),
+    )
+    witness_q = int(exact_details["witness_q"])
+    witness_phases = target_release_joint_phases_at_q(
+        int(target.period),
+        specs,
+        n0=int(n0),
+        q_step=int(q_step),
+        q=int(witness_q),
+    )
+    witness_carry, witness_carry_details = fixed_phase_lo_entry_backlog(
+        specs, witness_phases
+    )
+    witness_future = 0
+    witness_future_rows: list[dict[str, int | str]] = []
+    for task, phase, weights in zip(hp_tasks, witness_phases, weights_by_task):
+        task_future = _fixed_phase_future_only(
+            task,
+            phase=int(phase),
+            horizon=int(horizon),
+            cells=cells,
+            weights=weights,
+        )
+        witness_future += int(task_future)
+        witness_future_rows.append({
+            "task": task.name,
+            "release_phase": int(phase),
+            "future_interference": int(task_future),
+        })
+
     return int(maximum), {
         "basis": "V10_13_CASE_CONDITIONED_JOINT_TARGET_RELEASE_PHASE",
         "theta": int(theta),
         "switch_profile": switch.id,
-        "joint_phase_cycle": len(orbit),
+        "joint_phase_cycle": int(joint_cycle),
+        "joint_phase_evaluation": "EXACT_CRT_COMPONENT_FACTORIZATION",
+        "component_periods": list(exact_details["component_periods"]),
+        "component_tasks": [list(row) for row in exact_details["component_tasks"]],
+        "carry_candidate_lengths": int(exact_details["candidate_lengths"]),
+        "residues_per_candidate": int(exact_details["residues_per_candidate"]),
         "witness_q": int(witness_q),
-        "witness_phases": list(witness_phases),
+        "witness_phases": [int(value) for value in witness_phases],
         "carry_in": int(witness_carry),
         "future": int(witness_future),
         "joint_hp_bound": int(maximum),

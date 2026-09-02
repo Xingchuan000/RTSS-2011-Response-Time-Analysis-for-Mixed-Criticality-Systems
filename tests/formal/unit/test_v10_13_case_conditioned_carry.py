@@ -1,5 +1,7 @@
 import sys
 import types
+from math import gcd
+import inspect
 
 _fake_z3_added = "z3" not in sys.modules
 if _fake_z3_added:
@@ -7,8 +9,10 @@ if _fake_z3_added:
 
 from formal_toolchain.v10_1.carry_in_envelope import (
     CarryTaskSpec,
+    exact_joint_lo_entry_max_with_periodic_future,
     fixed_phase_lo_entry_backlog,
-    target_release_joint_phase_orbit,
+    target_release_joint_phase_parameters,
+    target_release_joint_phases_at_q,
 )
 from formal_toolchain.v10_1 import pcssc
 from formal_toolchain.v10_1.completion_certificates import (
@@ -36,20 +40,103 @@ def test_fixed_phase_lo_entry_backlog_excludes_release_at_zero():
     assert details["busy_horizon"] > 0
 
 
-def test_joint_phase_orbit_uses_one_target_release_index_for_all_tasks():
+def test_joint_phase_coordinates_use_one_target_release_index_for_all_tasks():
     specs = (
         CarryTaskSpec("a", "HI", 7, 2, 4),
         CarryTaskSpec("b", "LO", 9, 3, 1),
     )
-    orbit = target_release_joint_phase_orbit(12, 5, 0, specs)
-    assert orbit
-    for q, phases in orbit:
+    n0, step, cycle = target_release_joint_phase_parameters(12, 5, 0, specs)
+    assert cycle > 0
+    for q in range(cycle):
+        phases = target_release_joint_phases_at_q(
+            12, specs, n0=n0, q_step=step, q=q
+        )
         assert len(phases) == 2
         assert 0 <= phases[0] < 7
         assert 0 <= phases[1] < 9
         # The row is generated from a single target release index, not a
         # Cartesian product of independently selected task phases.
         assert isinstance(q, int)
+
+
+def test_exact_crt_factorization_matches_bruteforce_v10_13_maximum():
+    specs = (
+        CarryTaskSpec("a", "HI", 6, 2, 3),
+        CarryTaskSpec("b", "LO", 10, 3, 1),
+        CarryTaskSpec("c", "HI", 7, 1, 2),
+    )
+    target_period = 13
+    controller_period = 5
+    theta = 0
+    n0, step, cycle = target_release_joint_phase_parameters(
+        target_period, controller_period, theta, specs
+    )
+
+    q_periods = tuple(
+        spec.period // gcd(spec.period, step * target_period)
+        for spec in specs
+    )
+    # Synthetic exact future tables.  The helper is agnostic to how each
+    # task-local future value was obtained; it only requires Q_j periodicity.
+    future_tables = tuple(
+        tuple((index + 1) * ((r * 3 + index) % 5) for r in range(q_period))
+        for index, q_period in enumerate(q_periods)
+    )
+
+    optimized, details = exact_joint_lo_entry_max_with_periodic_future(
+        target_period, step, n0, specs, future_tables
+    )
+
+    brute = -1
+    for q in range(cycle):
+        phases = target_release_joint_phases_at_q(
+            target_period, specs, n0=n0, q_step=step, q=q
+        )
+        carry, _ = fixed_phase_lo_entry_backlog(specs, phases)
+        future = sum(
+            future_tables[index][q % q_periods[index]]
+            for index in range(len(specs))
+        )
+        brute = max(brute, carry + future)
+
+    assert optimized == brute
+    witness_q = details["witness_q"]
+    phases = target_release_joint_phases_at_q(
+        target_period, specs, n0=n0, q_step=step, q=witness_q
+    )
+    carry, _ = fixed_phase_lo_entry_backlog(specs, phases)
+    future = sum(
+        future_tables[index][witness_q % q_periods[index]]
+        for index in range(len(specs))
+    )
+    assert carry + future == optimized
+
+
+def test_exact_crt_factorization_avoids_large_global_joint_cycle():
+    # q-periods are exactly 9,14,29,33,9,9,53,7 when target_period is coprime
+    # to these task periods and q_step=1.  Their global lcm is 2,130,282, but
+    # the dependency components have periods only 99,14,29,53.
+    periods = (9, 14, 29, 33, 9, 9, 53, 7)
+    specs = tuple(
+        CarryTaskSpec(f"t{index}", "HI", period, 0, 0)
+        for index, period in enumerate(periods)
+    )
+    future_tables = tuple(tuple(0 for _ in range(period)) for period in periods)
+    value, details = exact_joint_lo_entry_max_with_periodic_future(
+        1, 1, 0, specs, future_tables
+    )
+    assert value == 0
+    assert details["joint_phase_cycle"] == 2_130_282
+    assert sorted(details["component_periods"]) == [14, 29, 53, 99]
+    assert details["residues_per_candidate"] == 195
+
+
+def test_v10_13_terminal_does_not_materialize_or_scan_global_joint_q():
+    source = inspect.getsource(pcssc._case_conditioned_joint_phase_interference)
+    helper = inspect.getsource(exact_joint_lo_entry_max_with_periodic_future)
+    assert "target_release_joint_phase_orbit" not in source
+    assert "range(int(joint_cycle))" not in source
+    assert "range(int(joint_cycle))" not in helper
 
 
 def test_v10_13_case_postfix_fallback_can_close_a_v10_12_failed_case(monkeypatch):
