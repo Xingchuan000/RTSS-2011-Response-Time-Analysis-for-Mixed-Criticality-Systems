@@ -70,7 +70,7 @@ def test_case_consistent_terminal_aggregates_per_case_completion_bounds(monkeypa
         },
     )
 
-    def fake_workload(model, target, hp_tasks, path, protected, response, *, horizon, theta, switch, classification):
+    def fake_workload(cache, model, target, hp_tasks, path, protected, response, *, horizon, theta, switch, classification):
         # Each fixed class has its own constant completion demand.  No common
         # postfix theorem is needed; the formal terminal aggregates max R_case.
         demand = 5 + (theta % 3) + (2 if classification == "ABNORMAL" else 0)
@@ -81,15 +81,27 @@ def test_case_consistent_terminal_aggregates_per_case_completion_bounds(monkeypa
         }
 
     monkeypatch.setattr(pcssc, "_workload_case", fake_workload)
-    monkeypatch.setattr(
-        pcssc,
-        "_phase_block_postfix_search_v10_16",
-        lambda *args, **kwargs: (
-            None,
-            [],
-            "PHASE_BLOCK_REFINEMENT_INSUFFICIENT:test",
-        ),
-    )
+    def fake_phase_block(*args, **kwargs):
+        case = args[-1]
+        demand = 5 + (case.theta % 3) + (2 if case.target_classification == "ABNORMAL" else 0)
+        cert = {
+            **case.as_dict(),
+            "status": "PASS",
+            "R": demand,
+            "W": demand,
+            "candidate_path": [{"block_id": "M1_A0", "status": "PASS"}],
+            "controller_prefix_receipt": {"obligation_id": "PREFIX", "status": "PASS"},
+            "case_theorem_basis": "V10_16_ADAPTIVE_PHASE_BLOCK",
+            "phase_block_joint_period": 1,
+            "phase_block_leaf_count": 1,
+            "phase_block_leaf_digest_sha256": "a" * 64,
+            "worst_phase_block": "M1_A0",
+            "phase_block_receipts": [],
+            "global_q_enumerated": False,
+        }
+        return cert, cert["candidate_path"], None
+
+    monkeypatch.setattr(pcssc, "_phase_block_postfix_search_v10_16", fake_phase_block)
     bound, tested, receipts, failure = pcssc._case_consistent_postfix_search(
         model, target, hp, object(), set(), {}
     )
@@ -100,7 +112,7 @@ def test_case_consistent_terminal_aggregates_per_case_completion_bounds(monkeypa
     ids = {row["obligation_id"] for row in receipts}
     assert f"ALL_CASES_POSTFIX_COVERED::{target.name}" in ids
     assert any(value.startswith(f"CASE_CONSISTENT_RESPONSE_CERTIFICATE::{target.name},") for value in ids)
-    assert any(value.startswith("PCSSC_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_12::") for value in ids)
+    assert any(value.startswith("PCSSC_REFINED_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_16::") for value in ids)
 
 
 def test_case_consistent_terminal_fails_closed_if_one_fixed_case_has_no_postfix(monkeypatch):
@@ -113,7 +125,7 @@ def test_case_consistent_terminal_fails_closed_if_one_fixed_case_has_no_postfix(
         lambda model, target, path, horizon: {"obligation_id": "PREFIX", "status": "PASS"},
     )
 
-    def fake_workload(model, target, hp_tasks, path, protected, response, *, horizon, theta, switch, classification):
+    def fake_workload(cache, model, target, hp_tasks, path, protected, response, *, horizon, theta, switch, classification):
         if switch.kind == "PRE_HI" and classification == "ABNORMAL":
             return target.deadline + 1, {"bad": True}
         return 1, {"bad": False}

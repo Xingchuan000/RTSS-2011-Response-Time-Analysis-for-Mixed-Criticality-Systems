@@ -1,12 +1,10 @@
 """Policy-Constrained Single-Switch Certificate (PCSSC), V10.16 revision.
 
-The fast BASE/V10.11 pointwise/V10.12 case-consistent routes and the V10.13
-LO-entry refinement are retained.  A V10.12-unresolved PRE_HI case now uses the
-V10.16 Adaptive Phase-Block PCSSC theorem: the joint q-period is never enumerated
-by the formal terminal.  Congruence blocks are refined only when their lifted
-R7/future workload has no deadline postfix, with complete task-local projections
-represented symbolically by gcd arithmetic.  Event Graph search and exact-history
-BMC remain outside the PASS dependency.
+The BASE route is followed by the canonical case-consistent PCSSC terminal.
+PRE_HI cases go directly to the V10.16 Adaptive Phase-Block theorem; the obsolete
+pointwise and phase-relaxed PRE_HI prepasses are not part of the production proof
+path.  LO-entry cases retain the V10.12 fast bound and V10.13 exact joint-phase
+refinement.  Event Graph search and exact-history BMC remain outside PASS.
 """
 
 from __future__ import annotations
@@ -25,11 +23,9 @@ from .completion_certificates import (
     PCSSC_CASE_COMPLETION_THEOREM,
     PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM,
     PCSSC_REFINED_CASE_COMPLETION_THEOREM_V10_16,
-    PCSSC_POINTWISE_COMPLETION_THEOREM,
     CertifiedCompletionBound,
 )
 from .constants import (
-    TARGET_PROVED_PCSSC,
     TARGET_PROVED_PCSSC_CASE_CONSISTENT,
     TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY,
     TARGET_PROVED_PCSSC_REFINED_CASES_V10_16,
@@ -49,7 +45,6 @@ from .carry_in_envelope import (
     target_release_joint_phase_parameters,
     target_release_joint_phases_at_q,
     phase_relaxed_lo_entry_carry,
-    phase_relaxed_single_switch_carry,
 )
 from .controller_macro import (
     BudgetInterval,
@@ -167,6 +162,27 @@ class PCSSCUnresolved(RuntimeError):
     pass
 
 
+@dataclass(slots=True)
+class _TargetWorkloadCache:
+    """Target-local cache for deterministic LO-entry proof primitives.
+
+    The cache lifetime is exactly one target-level case-consistent proof.  It
+    never stores solver state and never changes the theorem selected for a
+    case.  Final postfix checks still rebuild the top-level workload identity;
+    only deterministic higher-priority subexpressions are reused.
+    """
+
+    controller_prefix_by_horizon: dict[int, dict[str, Any]]
+    lo_entry_carry_by_theta: dict[int, tuple[int, dict[str, Any]]]
+    v10_13_joint_hp_by_case_horizon: dict[
+        tuple[int, int, SwitchCell], tuple[int, dict[str, Any]]
+    ]
+
+    @classmethod
+    def empty(cls) -> "_TargetWorkloadCache":
+        return cls({}, {}, {})
+
+
 def _feature_basis_id(feature: str) -> str:
     if feature.startswith("budget::"):
         return f"FULL_LEGAL_BUDGET_FEATURE_DOMAIN_SOUND::{feature.split('::', 1)[1]}"
@@ -241,6 +257,22 @@ def _controller_prefix_coverage_receipt(
             "timestamps c_k<R and never prunes by W(R), target completion or future actions"
         ),
     }
+
+
+def _controller_prefix_coverage_receipt_cached(
+    cache: _TargetWorkloadCache,
+    model: BoundModel,
+    target: TaskBound,
+    path: ControllerMacroPath,
+    horizon: int,
+) -> dict[str, Any]:
+    key = int(horizon)
+    cached = cache.controller_prefix_by_horizon.get(key)
+    if cached is not None:
+        return cached
+    receipt = _controller_prefix_coverage_receipt(model, target, path, key)
+    cache.controller_prefix_by_horizon[key] = receipt
+    return receipt
 
 
 
@@ -389,31 +421,23 @@ def _carry_task_specs(
     return tuple(rows)
 
 
-def _aggregate_carry_bound(
+def _lo_entry_aggregate_carry_bound(
     model: BoundModel,
     target: TaskBound,
     hp_tasks: tuple[TaskBound, ...],
     path: ControllerMacroPath,
     *,
     theta: int,
-    switch_kind: str,
 ) -> tuple[int, dict[str, Any]]:
     specs = _carry_task_specs(hp_tasks, path)
     try:
-        if switch_kind == "PRE_HI":
-            value, details = phase_relaxed_single_switch_carry(
-                int(target.period), int(model.agent_period), int(theta), specs
-            )
-            basis = "SINGLE_SWITCH_AGGREGATE_BACKLOG_WITH_PER_TASK_PHASE_RELAXATION"
-        else:
-            value, details = phase_relaxed_lo_entry_carry(
-                int(target.period), int(model.agent_period), int(theta), specs
-            )
-            basis = "LO_ENTRY_AGGREGATE_BACKLOG_WITH_PER_TASK_PHASE_RELAXATION"
+        value, details = phase_relaxed_lo_entry_carry(
+            int(target.period), int(model.agent_period), int(theta), specs
+        )
     except CarryInEnvelopeUnresolved as exc:
         raise PCSSCUnresolved(str(exc)) from exc
     return int(value), {
-        "basis": basis,
+        "basis": "LO_ENTRY_AGGREGATE_BACKLOG_WITH_PER_TASK_PHASE_RELAXATION",
         "carry_in": int(value),
         **details,
     }
@@ -615,6 +639,7 @@ def _valid_target_classes(target: TaskBound, switch: SwitchCell) -> tuple[str, .
 
 
 def _workload_case(
+    cache: _TargetWorkloadCache,
     model: BoundModel,
     target: TaskBound,
     hp_tasks: tuple[TaskBound, ...],
@@ -631,11 +656,18 @@ def _workload_case(
     cells = _macro_cells(horizon, controller_times, switch)
     target_work = _target_cap(target, classification)
 
-    carry, carry_details = _aggregate_carry_bound(
-        model, target, hp_tasks, path, theta=theta, switch_kind=switch.kind
-    )
+    carry_cached = cache.lo_entry_carry_by_theta.get(int(theta))
+    if carry_cached is None:
+        carry_cached = _lo_entry_aggregate_carry_bound(
+            model, target, hp_tasks, path, theta=int(theta)
+        )
+        cache.lo_entry_carry_by_theta[int(theta)] = carry_cached
+    carry, carry_details = carry_cached
+
     rows: list[dict[str, Any]] = []
     future_total = 0
+    legacy_total: int | None = 0
+    legacy_rows: list[dict[str, Any]] = []
     for task in hp_tasks:
         weights = tuple(
             _weight_for_cell(task, cell, switch, controller_times, path)
@@ -653,24 +685,12 @@ def _workload_case(
             "cells": [[cell.lower, cell.upper_exclusive] for cell in cells],
             "release_model": "EXACT_PERIODIC_PHASE_ZERO",
         })
-
-    aggregate_total = int(carry) + int(future_total)
-
-    # Where every LO carry already has a completion theorem, the previous
-    # per-task phase-coupled bound is another independent upper bound.  Taking
-    # the minimum cannot exclude a real execution and preserves any precision
-    # that the aggregate envelope does not improve.
-    legacy_total: int | None = 0
-    legacy_rows: list[dict[str, Any]] = []
-    for task in hp_tasks:
+        if legacy_total is None:
+            continue
         if task.criticality == "LO" and task.name not in protected:
             legacy_total = None
             legacy_rows = []
-            break
-        weights = tuple(
-            _weight_for_cell(task, cell, switch, controller_times, path)
-            for cell in cells
-        )
+            continue
         task_work, phase_details = _exact_periodic_task_workload(
             target, task, theta=theta, horizon=horizon, cells=cells, weights=weights,
             switch_kind=switch.kind, protected=protected,
@@ -680,12 +700,17 @@ def _workload_case(
         legacy_total += int(task_work)
         legacy_rows.append({"task": task.name, **phase_details})
 
+    aggregate_total = int(carry) + int(future_total)
+
     if legacy_total is not None and int(legacy_total) < int(aggregate_total):
         hp_work = int(legacy_total)
         chosen = "MIN_OF_AGGREGATE_AND_COMPLETION_PHASE_COUPLED:COMPLETION_PHASE_COUPLED"
     else:
         hp_work = int(aggregate_total)
-        chosen = "MIN_OF_AGGREGATE_AND_COMPLETION_PHASE_COUPLED:AGGREGATE" if legacy_total is not None else "AGGREGATE"
+        chosen = (
+            "MIN_OF_AGGREGATE_AND_COMPLETION_PHASE_COUPLED:AGGREGATE"
+            if legacy_total is not None else "AGGREGATE"
+        )
 
     return int(target_work + hp_work), {
         "theta": int(theta),
@@ -722,6 +747,7 @@ def _fixed_phase_future_only(
 
 
 def _case_conditioned_joint_phase_interference(
+    cache: _TargetWorkloadCache,
     model: BoundModel,
     target: TaskBound,
     hp_tasks: tuple[TaskBound, ...],
@@ -743,6 +769,11 @@ def _case_conditioned_joint_phase_interference(
     """
     if switch.kind not in {"LO_NO_SWITCH", "LO_SWITCH"}:
         raise PCSSCUnresolved("CASE_CONDITIONED_CARRY_REQUIRES_LO_ENTRY")
+
+    cache_key = (int(horizon), int(theta), switch)
+    cached = cache.v10_13_joint_hp_by_case_horizon.get(cache_key)
+    if cached is not None:
+        return cached
 
     controller_times = candidate_controller_times(theta, model.agent_period, horizon)
     cells = _macro_cells(horizon, controller_times, switch)
@@ -819,7 +850,7 @@ def _case_conditioned_joint_phase_interference(
             "future_interference": int(task_future),
         })
 
-    return int(maximum), {
+    result = (int(maximum), {
         "basis": "V10_13_CASE_CONDITIONED_JOINT_TARGET_RELEASE_PHASE",
         "theta": int(theta),
         "switch_profile": switch.id,
@@ -837,10 +868,13 @@ def _case_conditioned_joint_phase_interference(
         "carry_details": witness_carry_details,
         "future_rows": witness_future_rows,
         "same_target_release_index_for_carry_and_future": True,
-    }
+    })
+    cache.v10_13_joint_hp_by_case_horizon[cache_key] = result
+    return result
 
 
 def _workload_case_conditioned_v10_13(
+    cache: _TargetWorkloadCache,
     model: BoundModel,
     target: TaskBound,
     hp_tasks: tuple[TaskBound, ...],
@@ -854,16 +888,11 @@ def _workload_case_conditioned_v10_13(
     classification: str,
 ) -> tuple[int, dict[str, Any]]:
     legacy, legacy_details = _workload_case(
-        model, target, hp_tasks, path, protected, protected_response_by_task,
+        cache, model, target, hp_tasks, path, protected, protected_response_by_task,
         horizon=horizon, theta=theta, switch=switch, classification=classification,
     )
-    if switch.kind not in {"LO_NO_SWITCH", "LO_SWITCH"}:
-        return int(legacy), {
-            **legacy_details,
-            "v10_13_refinement_applicable": False,
-        }
     joint_hp, joint_details = _case_conditioned_joint_phase_interference(
-        model, target, hp_tasks, path,
+        cache, model, target, hp_tasks, path,
         horizon=horizon, theta=theta, switch=switch,
     )
     target_work = _target_cap(target, classification)
@@ -888,41 +917,6 @@ def _workload_case_conditioned_v10_13(
         "v10_13_workload_upper": int(refined),
         "sound_intersection": "MIN_OF_TWO_INDEPENDENT_SOUND_UPPER_BOUNDS",
     }
-
-
-def _max_workload_at_horizon(
-    model: BoundModel,
-    target: TaskBound,
-    path: ControllerMacroPath,
-    protected: set[str],
-    protected_response_by_task: dict[str, int],
-    horizon: int,
-) -> tuple[int, dict[str, Any], int]:
-    target_index = next(index for index, task in enumerate(model.tasks) if task.name == target.name)
-    hp_tasks = tuple(model.tasks[:target_index])
-    thetas = controller_phase_residues(target.period, model.agent_period)
-    maximum = -1
-    argmax: dict[str, Any] = {}
-    switch_case_count = 0
-    for theta in thetas:
-        controller_times = candidate_controller_times(theta, model.agent_period, horizon)
-        profiles: list[SwitchCell] = [SwitchCell("PRE_HI"), SwitchCell("LO_NO_SWITCH")]
-        profiles.extend(_switch_cells(horizon, controller_times, hp_tasks))
-        for switch in profiles:
-            for classification in _valid_target_classes(target, switch):
-                switch_case_count += 1
-                value, details = _workload_case(
-                    model, target, hp_tasks, path, protected, protected_response_by_task,
-                    horizon=horizon, theta=theta, switch=switch,
-                    classification=classification,
-                )
-                if value > maximum:
-                    maximum = value
-                    argmax = details
-    if maximum < 0:
-        raise PCSSCUnresolved(f"CERTIFICATE_START_COVERAGE_EMPTY:{target.name}")
-    return int(maximum), argmax, switch_case_count
-
 
 
 def _canonical_switch_partition_receipt(
@@ -1002,53 +996,8 @@ def _deadline_canonical_case_domain(
     return tuple(rows), tuple(partition_receipts), domain_hash
 
 
-def _pointwise_postfix_search(
-    model: BoundModel,
-    target: TaskBound,
-    hp_tasks: tuple[TaskBound, ...],
-    path: ControllerMacroPath,
-    protected: set[str],
-    protected_response_by_task: dict[str, int],
-) -> tuple[int | None, list[dict[str, Any]], list[dict[str, Any]], str | None]:
-    tested: list[dict[str, Any]] = []
-    proof_receipts: list[dict[str, Any]] = []
-    deadline = int(target.deadline)
-    R = _initial_horizon(target, hp_tasks, protected)
-    seen: set[int] = set()
-    while True:
-        if R in seen:
-            return None, tested, proof_receipts, f"POINTWISE_CANDIDATE_CYCLE:{target.name}:R={R}"
-        seen.add(R)
-        try:
-            prefix_receipt = _controller_prefix_coverage_receipt(model, target, path, R)
-            workload, argmax, case_count = _max_workload_at_horizon(
-                model, target, path, protected, protected_response_by_task, R
-            )
-        except PCSSCUnresolved as exc:
-            return None, tested, proof_receipts, str(exc)
-        tested.append({
-            "terminal": "POINTWISE",
-            "R": int(R),
-            "W": int(workload),
-            "postfixed": bool(workload <= R),
-            "maximizing_case": argmax,
-            "joint_case_count": int(case_count),
-        })
-        proof_receipts.append(prefix_receipt)
-        if workload <= R:
-            proof_receipts.extend((
-                {"obligation_id": f"WORKLOAD_DOMINANCE::{target.name}", "status": "PASS", "horizon": int(R)},
-                {"obligation_id": f"POSTFIX_RESPONSE_CERTIFICATE::{target.name},R={R}", "status": "PASS", "W": int(workload), "R": int(R)},
-                {"obligation_id": f"HI_TARGET_SAFE::{target.name}", "status": "PASS", "route": "PCSSC_POINTWISE"},
-            ))
-            return int(R), tested, proof_receipts, None
-        if R == deadline:
-            return None, tested, proof_receipts, "POLICY_SINGLE_SWITCH_POINTWISE_POSTFIX_UNRESOLVED"
-        next_R = max(int(R) + 1, int(workload))
-        R = deadline if next_R > deadline else next_R
-
-
 def _case_postfix_search(
+    cache: _TargetWorkloadCache,
     model: BoundModel,
     target: TaskBound,
     hp_tasks: tuple[TaskBound, ...],
@@ -1060,15 +1009,11 @@ def _case_postfix_search(
     deadline = int(target.deadline)
     R = max(1, min(deadline, int(_target_cap(target, case.target_classification))))
     path_rows: list[dict[str, Any]] = []
-    seen: set[int] = set()
     while True:
-        if R in seen:
-            return None, path_rows, f"CASE_CANDIDATE_CYCLE:{case.id}:R={R}"
-        seen.add(R)
         try:
-            _controller_prefix_coverage_receipt(model, target, path, R)
+            _controller_prefix_coverage_receipt_cached(cache, model, target, path, R)
             workload, details = _workload_case(
-                model, target, hp_tasks, path, protected, protected_response_by_task,
+                cache, model, target, hp_tasks, path, protected, protected_response_by_task,
                 horizon=R, theta=case.theta, switch=case.switch,
                 classification=case.target_classification,
             )
@@ -1078,9 +1023,11 @@ def _case_postfix_search(
         if workload <= R:
             # Normative direct re-check.  The iteration above is only a candidate generator.
             try:
-                prefix_receipt = _controller_prefix_coverage_receipt(model, target, path, R)
+                prefix_receipt = _controller_prefix_coverage_receipt_cached(
+                    cache, model, target, path, R
+                )
                 final_workload, final_details = _workload_case(
-                    model, target, hp_tasks, path, protected, protected_response_by_task,
+                    cache, model, target, hp_tasks, path, protected, protected_response_by_task,
                     horizon=R, theta=case.theta, switch=case.switch,
                     classification=case.target_classification,
                 )
@@ -1105,6 +1052,7 @@ def _case_postfix_search(
 
 
 def _case_conditioned_postfix_search_v10_13(
+    cache: _TargetWorkloadCache,
     model: BoundModel,
     target: TaskBound,
     hp_tasks: tuple[TaskBound, ...],
@@ -1118,15 +1066,11 @@ def _case_conditioned_postfix_search_v10_13(
     deadline = int(target.deadline)
     R = max(1, min(deadline, int(_target_cap(target, case.target_classification))))
     path_rows: list[dict[str, Any]] = []
-    seen: set[int] = set()
     while True:
-        if R in seen:
-            return None, path_rows, f"V10_13_CASE_CANDIDATE_CYCLE:{case.id}:R={R}"
-        seen.add(R)
         try:
-            _controller_prefix_coverage_receipt(model, target, path, R)
+            _controller_prefix_coverage_receipt_cached(cache, model, target, path, R)
             workload, details = _workload_case_conditioned_v10_13(
-                model, target, hp_tasks, path, protected, protected_response_by_task,
+                cache, model, target, hp_tasks, path, protected, protected_response_by_task,
                 horizon=R, theta=case.theta, switch=case.switch,
                 classification=case.target_classification,
             )
@@ -1140,9 +1084,11 @@ def _case_conditioned_postfix_search_v10_13(
         })
         if workload <= R:
             try:
-                prefix_receipt = _controller_prefix_coverage_receipt(model, target, path, R)
+                prefix_receipt = _controller_prefix_coverage_receipt_cached(
+                    cache, model, target, path, R
+                )
                 final_workload, final_details = _workload_case_conditioned_v10_13(
-                    model, target, hp_tasks, path, protected, protected_response_by_task,
+                    cache, model, target, hp_tasks, path, protected, protected_response_by_task,
                     horizon=R, theta=case.theta, switch=case.switch,
                     classification=case.target_classification,
                 )
@@ -1296,16 +1242,16 @@ def _verify_phase_block_leaf_tree(
     return walk(root) and visited_leaves == leaf_ids
 
 
-def _phase_block_binding(
+def _phase_block_binding_context(
     target: TaskBound,
     case: CaseKey,
     specs: tuple[CarryTaskSpec, ...],
-    projections: tuple[PhaseBlockProjection, ...],
-    carry_details: Mapping[str, Any],
     *,
     carry_mode: str,
     completion_bounds: tuple[int, ...] | None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
+    """Precompute the case/spec-static part of the V10.16 formula identity."""
+
     if completion_bounds is not None and len(completion_bounds) != len(specs):
         raise ValueError("PHASE_BLOCK_COMPLETION_BINDING_DIMENSION_MISMATCH")
     service_binding = [
@@ -1326,7 +1272,6 @@ def _phase_block_binding(
         "classification": case.target_classification,
         "service_cap": int(_target_cap(target, case.target_classification)),
     }
-    projection_binding = [projection.as_dict() for projection in projections]
     carry_formula_hash = _stable_hash({
         "formula": "V10_16_R7_BOUNDARY_GROUP_COUNT_LIFT",
         "operator": "post_demand + max_switch_delta - age",
@@ -1348,6 +1293,37 @@ def _phase_block_binding(
         "ahead": service_binding,
     })
     case_key_hash = _stable_hash(case.as_dict())
+    monotonicity_check_hash = _stable_hash({
+        "carry": "group coordinates enter through + and max; lifted negative optional coordinates use a pointwise upper",
+        "future": "arrival count multiplied only by nonnegative post_switch_cap",
+        "count_coordinates": "complete symbolic task-local projection",
+    })
+    noncount_phase_input_binding_hash = _stable_hash({
+        "case_key": case.as_dict(),
+        "target": target_binding,
+        "service_binding": service_binding,
+        "hidden_q_dependent_inputs": [],
+    })
+    return {
+        "carry_mode": carry_mode,
+        "carry_formula_hash": carry_formula_hash,
+        "future_formula_hash": future_formula_hash,
+        "endpoint_binding_hash": endpoint_binding_hash,
+        "service_cap_binding_hash": service_cap_binding_hash,
+        "case_key_hash": case_key_hash,
+        "monotonicity_check_hash": monotonicity_check_hash,
+        "noncount_phase_input_binding_hash": noncount_phase_input_binding_hash,
+    }
+
+
+def _phase_block_binding(
+    projections: tuple[PhaseBlockProjection, ...],
+    carry_details: Mapping[str, Any],
+    context: Mapping[str, Any],
+) -> dict[str, str]:
+    """Bind only the projection-dependent part of one PASS-leaf formula."""
+
+    projection_binding = [projection.as_dict() for projection in projections]
     count_coordinate_map_hash = _stable_hash(projection_binding)
     candidate_domain_hash = _stable_hash({
         "kind": carry_details.get("candidate_domain_kind"),
@@ -1361,42 +1337,30 @@ def _phase_block_binding(
             for projection in projections
         ],
     })
-    monotonicity_check_hash = _stable_hash({
-        "carry": "group coordinates enter through + and max; lifted negative optional coordinates use a pointwise upper",
-        "future": "arrival count multiplied only by nonnegative post_switch_cap",
-        "count_coordinates": "complete symbolic task-local projection",
-    })
-    noncount_phase_input_binding_hash = _stable_hash({
-        "case_key": case.as_dict(),
-        "target": target_binding,
-        "service_binding": service_binding,
-        "hidden_q_dependent_inputs": [],
-    })
     formula_hash = _stable_hash({
-        "carry_formula_hash": carry_formula_hash,
-        "future_formula_hash": future_formula_hash,
-        "endpoint_binding_hash": endpoint_binding_hash,
-        "service_cap_binding_hash": service_cap_binding_hash,
-        "case_key_hash": case_key_hash,
+        "carry_formula_hash": context["carry_formula_hash"],
+        "future_formula_hash": context["future_formula_hash"],
+        "endpoint_binding_hash": context["endpoint_binding_hash"],
+        "service_cap_binding_hash": context["service_cap_binding_hash"],
+        "case_key_hash": context["case_key_hash"],
         "count_coordinate_map_hash": count_coordinate_map_hash,
         "candidate_domain_hash": candidate_domain_hash,
-        "monotonicity_check_hash": monotonicity_check_hash,
-        "noncount_phase_input_binding_hash": noncount_phase_input_binding_hash,
-        "carry_mode": carry_mode,
+        "monotonicity_check_hash": context["monotonicity_check_hash"],
+        "noncount_phase_input_binding_hash": context["noncount_phase_input_binding_hash"],
+        "carry_mode": context["carry_mode"],
     })
     return {
         "formula_hash": formula_hash,
-        "carry_formula_hash": carry_formula_hash,
-        "future_formula_hash": future_formula_hash,
-        "endpoint_binding_hash": endpoint_binding_hash,
-        "service_cap_binding_hash": service_cap_binding_hash,
-        "case_key_hash": case_key_hash,
+        "carry_formula_hash": str(context["carry_formula_hash"]),
+        "future_formula_hash": str(context["future_formula_hash"]),
+        "endpoint_binding_hash": str(context["endpoint_binding_hash"]),
+        "service_cap_binding_hash": str(context["service_cap_binding_hash"]),
+        "case_key_hash": str(context["case_key_hash"]),
         "count_coordinate_map_hash": count_coordinate_map_hash,
         "candidate_domain_hash": candidate_domain_hash,
-        "monotonicity_check_hash": monotonicity_check_hash,
-        "noncount_phase_input_binding_hash": noncount_phase_input_binding_hash,
+        "monotonicity_check_hash": str(context["monotonicity_check_hash"]),
+        "noncount_phase_input_binding_hash": str(context["noncount_phase_input_binding_hash"]),
     }
-
 
 def _phase_block_postfix_search_v10_16(
     model: BoundModel,
@@ -1406,7 +1370,13 @@ def _phase_block_postfix_search_v10_16(
     protected_response_by_task: dict[str, int],
     case: CaseKey,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str | None]:
-    """V10.16 adaptive PRE_HI phase-block terminal without global-q enumeration."""
+    """V10.16 adaptive PRE_HI phase-block terminal without global-q enumeration.
+
+    Numeric search stays deliberately compact.  Formula/hash receipts are
+    materialized only for final PASS leaves; failed internal nodes never build
+    certificate JSON.  Final leaves retain only the fields needed for response
+    aggregation and the normative V10.16 leaf identity.
+    """
 
     if case.switch.kind != "PRE_HI":
         return None, [], f"V10_16_PHASE_BLOCK_NOT_APPLICABLE:{case.id}"
@@ -1417,6 +1387,16 @@ def _phase_block_postfix_search_v10_16(
         candidate = tuple(int(protected_response_by_task[task.name]) for task in hp_tasks)
         if all(0 < int(bound) <= int(task.period) for task, bound in zip(hp_tasks, candidate)):
             completion_bounds = candidate
+
+    carry_mode = (
+        "R7_INTERSECT_COMPLETION" if completion_bounds is not None else "R7_ONLY"
+    )
+    try:
+        binding_context = _phase_block_binding_context(
+            target, case, specs, carry_mode=carry_mode, completion_bounds=completion_bounds
+        )
+    except ValueError as exc:
+        return None, [], str(exc)
 
     try:
         n0, q_step, joint_period = target_release_joint_phase_parameters(
@@ -1431,9 +1411,10 @@ def _phase_block_postfix_search_v10_16(
     deadline = int(target.deadline)
     target_work = int(_target_cap(target, case.target_classification))
     pending: list[PhaseBlock] = [root]
-    passed: dict[str, tuple[PhaseBlock, dict[str, Any]]] = {}
+    passed: dict[str, dict[str, Any]] = {}
     children_by_parent: dict[str, tuple[PhaseBlock, ...]] = {}
     split_receipts: list[dict[str, Any]] = []
+    leaf_receipts: list[dict[str, Any]] = []
     block_attempts: list[dict[str, Any]] = []
 
     while pending:
@@ -1453,38 +1434,21 @@ def _phase_block_postfix_search_v10_16(
                 min(int(carry_r7), int(carry_comp))
                 if carry_comp is not None else int(carry_r7)
             )
-            carry_mode = (
-                "R7_INTERSECT_COMPLETION" if carry_comp is not None else "R7_ONLY"
-            )
-            binding = _phase_block_binding(
-                target, case, specs, projections, carry_details,
-                carry_mode=carry_mode, completion_bounds=completion_bounds,
-            )
         except (CarryInEnvelopeUnresolved, ValueError) as exc:
             return None, block_attempts, str(exc)
 
         R = max(1, min(deadline, target_work))
-        seen: set[int] = set()
-        candidate_path: list[dict[str, Any]] = []
+        candidate_steps = 0
         final_workload = -1
+        workload_at_deadline = -1
+        final_future = -1
         while True:
-            if R in seen:
-                return None, block_attempts, (
-                    f"V10_16_PHASE_BLOCK_CANDIDATE_CYCLE:{case.id}:{block.id}:R={R}"
-                )
-            seen.add(int(R))
+            candidate_steps += 1
             future = phase_block_post_switch_future_upper(specs, projections, int(R))
             workload = int(target_work) + int(carry_cert) + int(future)
-            candidate_path.append({
-                "R": int(R),
-                "W": int(workload),
-                "postfixed": bool(workload <= R),
-                "carry_r7_B": int(carry_r7),
-                "carry_comp_B": carry_comp,
-                "carry_cert_B": int(carry_cert),
-                "future_B": int(future),
-            })
             if workload <= R:
+                # Normative V10.16 direct recheck: recompute the same leaf formula
+                # at the candidate postfix rather than trusting recurrence state.
                 final_future = phase_block_post_switch_future_upper(
                     specs, projections, int(R)
                 )
@@ -1496,12 +1460,24 @@ def _phase_block_postfix_search_v10_16(
                     )
                 break
             if R == deadline:
+                workload_at_deadline = int(workload)
                 break
             next_R = max(int(R) + 1, int(workload))
             R = deadline if next_R > deadline else next_R
 
         if final_workload >= 0:
-            leaf_receipts: list[dict[str, Any]] = [{
+            try:
+                binding = _phase_block_binding(
+                    projections, carry_details, binding_context
+                )
+            except ValueError as exc:
+                return None, block_attempts, str(exc)
+
+            # One lifting receipt plus one postfix receipt is sufficient.  The
+            # lifting receipt already binds the R7 candidate domain and future
+            # count formula, so separate per-leaf R7/FUTURE duplicate receipts
+            # add no proof information and previously dominated JSON volume.
+            leaf_receipts.append({
                 "obligation_id": (
                     f"PHASE_BLOCK_WORKLOAD_LIFTING_SOUND::{target.name},"
                     f"{case.id},{binding['formula_hash']}"
@@ -1513,20 +1489,11 @@ def _phase_block_postfix_search_v10_16(
                 "candidate_domain_kind": carry_details["candidate_domain_kind"],
                 "count_coordinate_mapping": "SYMBOLIC_GCD_TASK_LOCAL_PROJECTION",
                 "noncount_phase_inputs_fully_bound": True,
-            }, {
-                "obligation_id": f"PHASE_BLOCK_R7_CARRY_DOMINANCE::{case.id},{block.id}",
-                "status": "PASS",
-                **block.as_dict(),
                 "carry_r7_B": int(carry_r7),
-                "candidate_domain_hash": binding["candidate_domain_hash"],
+                "carry_cert_B": int(carry_cert),
+                "future_at_postfix": int(final_future),
                 "boundary_union_complete_for_all_fixed_q_maximizers": True,
-            }, {
-                "obligation_id": f"PHASE_BLOCK_FUTURE_DOMINANCE::{case.id},{block.id}",
-                "status": "PASS",
-                **block.as_dict(),
-                "future_at_postfix": int(final_workload - target_work - carry_cert),
-                "count_projection_hash": binding["count_coordinate_map_hash"],
-            }]
+            })
             if carry_comp is not None:
                 leaf_receipts.append({
                     "obligation_id": f"PHASE_BLOCK_COMPLETION_CARRY_SOUND::{case.id},{block.id}",
@@ -1548,34 +1515,24 @@ def _phase_block_postfix_search_v10_16(
                 "direct_recheck": True,
                 "W_le_R_le_D": int(final_workload) <= int(R) <= deadline,
             })
-            cert = {
+            passed[block.id] = {
                 **block.as_dict(),
                 "R": int(R),
                 "W": int(final_workload),
-                "candidate_path": candidate_path,
-                "projections": [projection.as_dict() for projection in projections],
                 "formula_hash": binding["formula_hash"],
-                "count_projection_hash": binding["count_coordinate_map_hash"],
-                "candidate_domain_hash": binding["candidate_domain_hash"],
-                "carry_mode": carry_mode,
-                "carry_r7_B": int(carry_r7),
-                "carry_comp_B": carry_comp,
-                "carry_cert_B": int(carry_cert),
-                "receipts": leaf_receipts,
             }
-            passed[block.id] = (block, cert)
             block_attempts.append({
                 **block.as_dict(), "status": "PASS", "R": int(R), "W": int(final_workload),
                 "projection_sizes": [int(p.phase_count) for p in projections],
-                "candidate_steps": len(candidate_path),
+                "candidate_steps": int(candidate_steps),
             })
             continue
 
         block_attempts.append({
             **block.as_dict(), "status": "FAILED_BLOCK",
-            "W_at_D": int(candidate_path[-1]["W"]),
+            "W_at_D": int(workload_at_deadline),
             "projection_sizes": [int(p.phase_count) for p in projections],
-            "candidate_steps": len(candidate_path),
+            "candidate_steps": int(candidate_steps),
         })
         active_leaf_count = len(passed) + len(pending) + 1
         factor = _phase_block_split_factor(
@@ -1583,8 +1540,19 @@ def _phase_block_postfix_search_v10_16(
             current_leaf_count=int(active_leaf_count),
         )
         if factor is None:
+            mathematical_candidates = {
+                prime
+                for projection in projections
+                if int(projection.phase_count) > 1
+                for prime in _small_prime_factors(int(projection.phase_count))
+                if int(joint_period) // int(block.modulus) % int(prime) == 0
+            }
+            reason = (
+                "STRUCTURAL_LEAF_BUDGET_EXHAUSTED"
+                if mathematical_candidates else "NO_LEGAL_SPLIT"
+            )
             return None, block_attempts, (
-                f"PHASE_BLOCK_REFINEMENT_INSUFFICIENT:{case.id}:{block.id}:NO_LEGAL_SPLIT"
+                f"PHASE_BLOCK_REFINEMENT_INSUFFICIENT:{case.id}:{block.id}:{reason}"
             )
         try:
             children = _phase_block_children(block, int(factor), int(joint_period))
@@ -1595,20 +1563,29 @@ def _phase_block_postfix_search_v10_16(
             "obligation_id": f"PHASE_BLOCK_SPLIT::{case.id},{block.id}",
             "status": "PASS",
             "case_id": case.id,
-            "parent": block.as_dict(),
+            "parent_block_id": block.id,
+            "parent_M": int(block.modulus),
+            "parent_a": int(block.residue),
             "split_factor": int(factor),
-            "children": [child.as_dict() for child in children],
+            "child_modulus": int(block.modulus) * int(factor),
+            "child_count": int(factor),
             "parent_equals_disjoint_union_children": True,
         })
         pending.extend(reversed(children))
 
-    final_leaves = tuple(block for block, _ in passed.values())
+    final_leaves = tuple(
+        PhaseBlock(
+            modulus=int(cert["M"]), residue=int(cert["a"]), depth=int(cert["depth"]),
+            parent_id=cert["parent_id"], split_factor=cert["split_factor"],
+        )
+        for cert in passed.values()
+    )
     if not final_leaves or not _verify_phase_block_leaf_tree(
         root, final_leaves, children_by_parent, int(joint_period)
     ):
         return None, block_attempts, f"PHASE_BLOCK_LEAF_COVERAGE_FAILED:{case.id}"
 
-    leaf_certs = [cert for _, cert in passed.values()]
+    leaf_certs = list(passed.values())
     maximum_response = max(int(cert["R"]) for cert in leaf_certs)
     if maximum_response <= 0 or maximum_response > deadline:
         return None, block_attempts, (
@@ -1633,9 +1610,6 @@ def _phase_block_postfix_search_v10_16(
         }
         for cert in sorted(leaf_certs, key=lambda row: (int(row["M"]), int(row["a"])))
     ])
-    leaf_receipts = [
-        receipt for cert in leaf_certs for receipt in cert["receipts"]
-    ]
     phase_receipts = [{
         "obligation_id": f"PHASE_BLOCK_ROOT_DOMAIN::{case.id}",
         "status": "PASS",
@@ -1647,7 +1621,7 @@ def _phase_block_postfix_search_v10_16(
         "global_q_enumerated": False,
         "structural_plan": {
             "max_leaf_count": PHASE_BLOCK_MAX_LEAVES,
-            "termination_measure": "every split increases active leaf count by at least one",
+            "termination_measure": "bounded active leaf partition",
             "split_factors": "prime factors of current task-local projection periods",
         },
     }, *split_receipts, *leaf_receipts, {
@@ -1696,7 +1670,6 @@ def _phase_block_postfix_search_v10_16(
         "global_q_enumerated": False,
     }, block_attempts, None
 
-
 def _case_consistent_postfix_search(
     model: BoundModel,
     target: TaskBound,
@@ -1731,71 +1704,79 @@ def _case_consistent_postfix_search(
         },
     ))
 
+    cache = _TargetWorkloadCache.empty()
     case_certificates: list[dict[str, Any]] = []
     tested: list[dict[str, Any]] = []
     for case in domain:
-        cert, path_rows, failure = _case_postfix_search(
-            model, target, hp_tasks, path, protected, protected_response_by_task, case
-        )
-        if cert is None:
-            legacy_failure = failure
-            if not str(legacy_failure or "").startswith("CASE_POSTFIX_NOT_FOUND_BY_DEADLINE:"):
+        if case.switch.kind == "PRE_HI":
+            cert, path_rows, failure = _phase_block_postfix_search_v10_16(
+                model, target, hp_tasks, path, protected_response_by_task, case
+            )
+            if cert is None:
                 tested.append({
                     "terminal": "CASE_CONSISTENT",
                     **case.as_dict(),
                     "status": "UNRESOLVED",
-                    "candidate_path": path_rows,
-                    "failure": legacy_failure,
-                    "v10_13_refinement_attempted": False,
+                    "refinement_version": "V10_16",
+                    "refinement_candidate_path": path_rows,
+                    "failure": failure,
                 })
                 return None, tested, receipts, (
-                    f"CASE_CONSISTENT_PCSSC_UNRESOLVED:{case.id}:{legacy_failure}"
+                    f"CASE_CONSISTENT_PCSSC_UNRESOLVED:{case.id}:V10_16={failure}"
                 )
-            if case.switch.kind == "PRE_HI":
-                refined, refined_rows, refined_failure = (
-                    _phase_block_postfix_search_v10_16(
-                        model, target, hp_tasks, path, protected_response_by_task, case
+            receipts.append({
+                "obligation_id": f"ADAPTIVE_PHASE_BLOCK_REFINEMENT::{target.name},{case.id}",
+                "status": "PASS",
+                "case_id": case.id,
+                "theorem_basis": "V10_16_ADAPTIVE_PHASE_BLOCK_PCSSC",
+                "phase_block_joint_period": int(cert["phase_block_joint_period"]),
+                "phase_block_leaf_count": int(cert["phase_block_leaf_count"]),
+                "phase_block_leaf_digest_sha256": cert["phase_block_leaf_digest_sha256"],
+                "global_q_enumerated": False,
+                "uniform_R_is_common_postfix": False,
+                "event_graph_used": False,
+                "legacy_pre_hi_prepass_removed": True,
+            })
+            receipts.extend(cert["phase_block_receipts"])
+        else:
+            cert, path_rows, failure = _case_postfix_search(
+                cache, model, target, hp_tasks, path, protected,
+                protected_response_by_task, case
+            )
+            if cert is None:
+                legacy_failure = failure
+                if not str(legacy_failure or "").startswith("CASE_POSTFIX_NOT_FOUND_BY_DEADLINE:"):
+                    tested.append({
+                        "terminal": "CASE_CONSISTENT",
+                        **case.as_dict(),
+                        "status": "UNRESOLVED",
+                        "candidate_path": path_rows,
+                        "failure": legacy_failure,
+                        "v10_13_refinement_attempted": False,
+                    })
+                    return None, tested, receipts, (
+                        f"CASE_CONSISTENT_PCSSC_UNRESOLVED:{case.id}:{legacy_failure}"
                     )
+                cert, refined_rows, refined_failure = _case_conditioned_postfix_search_v10_13(
+                    cache, model, target, hp_tasks, path, protected,
+                    protected_response_by_task, case
                 )
-                refinement_version = "V10_16"
-            else:
-                refined, refined_rows, refined_failure = _case_conditioned_postfix_search_v10_13(
-                    model, target, hp_tasks, path, protected, protected_response_by_task, case
-                )
-                refinement_version = "V10_13"
-            if refined is None:
-                tested.append({
-                    "terminal": "CASE_CONSISTENT",
-                    **case.as_dict(),
-                    "status": "UNRESOLVED",
-                    "candidate_path": path_rows,
-                    "v10_12_failure": legacy_failure,
-                    "refinement_version": refinement_version,
-                    "refinement_candidate_path": refined_rows,
-                    "failure": refined_failure,
-                })
-                return None, tested, receipts, (
-                    f"CASE_CONSISTENT_PCSSC_UNRESOLVED:{case.id}:"
-                    f"V10_12={legacy_failure}:{refinement_version}={refined_failure}"
-                )
-            cert = refined
-            path_rows = refined_rows
-            if refinement_version == "V10_16":
-                receipts.append({
-                    "obligation_id": f"ADAPTIVE_PHASE_BLOCK_REFINEMENT::{target.name},{case.id}",
-                    "status": "PASS",
-                    "case_id": case.id,
-                    "legacy_failure": legacy_failure,
-                    "theorem_basis": "V10_16_ADAPTIVE_PHASE_BLOCK_PCSSC",
-                    "phase_block_joint_period": int(cert["phase_block_joint_period"]),
-                    "phase_block_leaf_count": int(cert["phase_block_leaf_count"]),
-                    "phase_block_leaf_digest_sha256": cert["phase_block_leaf_digest_sha256"],
-                    "global_q_enumerated": False,
-                    "uniform_R_is_common_postfix": False,
-                    "event_graph_used": False,
-                })
-                receipts.extend(cert["phase_block_receipts"])
-            else:
+                if cert is None:
+                    tested.append({
+                        "terminal": "CASE_CONSISTENT",
+                        **case.as_dict(),
+                        "status": "UNRESOLVED",
+                        "candidate_path": path_rows,
+                        "v10_12_failure": legacy_failure,
+                        "refinement_version": "V10_13",
+                        "refinement_candidate_path": refined_rows,
+                        "failure": refined_failure,
+                    })
+                    return None, tested, receipts, (
+                        f"CASE_CONSISTENT_PCSSC_UNRESOLVED:{case.id}:"
+                        f"V10_12={legacy_failure}:V10_13={refined_failure}"
+                    )
+                path_rows = refined_rows
                 receipts.append({
                     "obligation_id": f"CASE_CONDITIONED_CARRY_FUTURE_REFINEMENT::{target.name},{case.id}",
                     "status": "PASS",
@@ -1928,17 +1909,6 @@ def _case_consistent_postfix_search(
         },
     ))
     return int(Rcert), tested, receipts, None
-
-
-def _initial_horizon(target: TaskBound, hp_tasks: tuple[TaskBound, ...], protected: set[str]) -> int:
-    # Candidate generation only.  Soundness never depends on this lower bound:
-    # every terminal PASS is checked by W#(R)<=R at the concrete tested R.
-    base = _hi_high_cap(target)
-    for task in hp_tasks:
-        if task.criticality == "LO" and task.name not in protected:
-            continue
-        base += int(task.actual_demand_upper)
-    return max(1, min(int(target.deadline), int(base)))
 
 
 def prove_target_pcssc(
@@ -2201,9 +2171,8 @@ def prove_target_pcssc(
         "kind": "FAST_ROUTE_CROSS_TASK_PERIODIC_PHASE_RELAXATION",
         "target": target.name,
         "effect": (
-            "pointwise/V10.12 fast-route aggregate envelopes may choose different "
-            "theta-compatible task phases; PRE_HI cases that need correlation are "
-            "deferred to the V10.16 adaptive phase-block terminal"
+            "V10.12 LO-entry aggregate envelopes may choose different theta-compatible "
+            "task phases; PRE_HI canonical cases are handled directly by V10.16"
         ),
         "soundness_direction": "ONLY_ADDS_CROSS_TASK_PHASE_COMBINATIONS",
     })
@@ -2223,33 +2192,11 @@ def prove_target_pcssc(
         "soundness_direction": "CONTROLLER_HISTORY_FEATURES_WIDENED_WITHOUT_FUTURE_SAFETY_FEEDBACK",
     })
 
-    point_bound, point_tested, point_receipts, point_failure = _pointwise_postfix_search(
-        model, target, hp_tasks, path, protected, protected_response_by_task
-    )
-    receipts.extend(point_receipts)
-    if point_bound is not None:
-        return TargetCertificate(
-            target.name, "PASS", int(point_bound), None,
-            tuple(receipts), tuple(ledger), tuple(point_tested),
-            terminal_route=TARGET_PROVED_PCSSC,
-            completion_theorem_basis=PCSSC_POINTWISE_COMPLETION_THEOREM,
-        )
-
-    receipts.append({
-        "obligation_id": f"POINTWISE_PCSSC_FALLBACK_TRIGGER::{target.name}",
-        "status": "PASS",
-        "pointwise_result": "UNRESOLVED",
-        "pointwise_failure": point_failure,
-        "completion_prefix_mutated": False,
-        "self_completion_exported": False,
-        "controller_macro_rebuilt": False,
-        "r1_rebuilt": False,
-    })
     case_bound, case_tested, case_receipts, case_failure = _case_consistent_postfix_search(
         model, target, hp_tasks, path, protected, protected_response_by_task
     )
     receipts.extend(case_receipts)
-    tested = [*point_tested, *case_tested]
+    tested = list(case_tested)
     if case_bound is not None:
         used_v10_16 = any(
             str(row.get("obligation_id", "")).startswith(

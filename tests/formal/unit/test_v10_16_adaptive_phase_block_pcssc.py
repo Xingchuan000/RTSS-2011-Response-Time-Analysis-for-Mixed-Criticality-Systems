@@ -198,10 +198,8 @@ def test_v10_16_outer_case_aggregation_exports_only_unified_target_bound(monkeyp
     monkeypatch.setattr(
         pcssc,
         "_case_postfix_search",
-        lambda *args, **kwargs: (
-            None,
-            [{"R": 10, "W": 11, "postfixed": False}],
-            f"CASE_POSTFIX_NOT_FOUND_BY_DEADLINE:{case.id}:W=11:D=10",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("PRE_HI must not execute the legacy V10.12 prepass")
         ),
     )
     phase_receipts = [{
@@ -267,13 +265,15 @@ def test_v10_16_formula_hash_binds_completion_bounds_and_target_cap():
         "candidate_domain_kind": "PROVED_BOUNDARY_UNION",
         "busy_horizon": 5,
     }
-    b1 = pcssc._phase_block_binding(
-        Target(), _case(), (spec,), projections, details,
+    c1 = pcssc._phase_block_binding_context(
+        Target(), _case(), (spec,),
         carry_mode="R7_INTERSECT_COMPLETION", completion_bounds=(3,),
     )
-    b2 = pcssc._phase_block_binding(
-        Target(), _case(), (spec,), projections, details,
+    c2 = pcssc._phase_block_binding_context(
+        Target(), _case(), (spec,),
         carry_mode="R7_INTERSECT_COMPLETION", completion_bounds=(4,),
     )
+    b1 = pcssc._phase_block_binding(projections, details, c1)
+    b2 = pcssc._phase_block_binding(projections, details, c2)
     assert b1["service_cap_binding_hash"] != b2["service_cap_binding_hash"]
     assert b1["formula_hash"] != b2["formula_hash"]

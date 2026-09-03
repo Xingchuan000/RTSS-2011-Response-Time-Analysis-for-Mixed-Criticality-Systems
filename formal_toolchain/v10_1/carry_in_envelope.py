@@ -162,6 +162,7 @@ def _arbitrary_phase_backlog_upper(
     return max(0, int(best))
 
 
+@lru_cache(maxsize=4096)
 def _transition_busy_upper(specs: tuple[CarryTaskSpec, ...]) -> tuple[int, int, int]:
     """Return (pre_busy, pre_backlog, total_single_switch_busy_upper)."""
     pre_busy = _busy_period_upper(specs, post=False)
@@ -369,59 +370,31 @@ def target_release_joint_phases_at_q(
     )
 
 
-def exact_joint_lo_entry_max_with_periodic_future(
+@dataclass(frozen=True, slots=True)
+class _ExactJointLoEntryCarryPlan:
+    q_periods: tuple[int, ...]
+    components: tuple[tuple[int, tuple[int, ...]], ...]
+    joint_cycle: int
+    ordered_lengths: tuple[int, ...]
+    phase_tables: tuple[tuple[int, ...], ...]
+    component_carry_rows: tuple[tuple[tuple[int, ...], ...], ...]
+
+
+@lru_cache(maxsize=128)
+def _exact_joint_lo_entry_carry_plan(
     target_period: int,
     q_step: int,
     n0: int,
     specs: tuple[CarryTaskSpec, ...],
-    future_by_task_q_residue: tuple[tuple[int, ...], ...],
-) -> tuple[int, dict[str, int | tuple[int, ...] | tuple[tuple[str, ...], ...]]]:
-    """Evaluate the V10.13 joint carry/future maximum exactly without global-Q enumeration.
-
-    The V10.13 quantity is unchanged::
-
-        max_q [ B_LO(q) + F(q) ].
-
-    For fixed ``q``, ``B_LO(q)`` is itself a maximum over finite carry-boundary
-    lengths.  Maxima commute, so the same value is obtained by taking the finite
-    union of all possible carry boundaries first and then maximizing over ``q``.
-
-    Each task contribution depends only on ``q mod Q_j``.  Tasks whose ``Q_j``
-    share a prime factor are grouped into one dependency component.  Distinct
-    component periods are pairwise coprime, therefore the Chinese Remainder
-    Theorem makes their maximizing residues independent.  We enumerate only
-    each component period, never the global joint period ``lcm_j Q_j``.
-
-    ``future_by_task_q_residue[j][r]`` must contain the exact future
-    interference of task ``j`` for any joint-orbit index with
-    ``q % Q_j == r``.
-    """
-    if len(specs) != len(future_by_task_q_residue):
-        raise ValueError("JOINT_PERIODIC_FUTURE_DIMENSION_MISMATCH")
-    if not specs:
-        return 0, {
-            "joint_phase_cycle": 1,
-            "candidate_lengths": 1,
-            "component_periods": (),
-            "component_tasks": (),
-            "residues_per_candidate": 0,
-            "witness_q": 0,
-            "witness_length": 0,
-        }
-
+) -> _ExactJointLoEntryCarryPlan:
+    """Precompute the horizon/switch-independent half of V10.13 exactly."""
     ti = int(target_period)
     step = int(q_step)
     base = int(n0)
     q_periods = tuple(
         int(spec.period) // gcd(int(spec.period), step * ti) for spec in specs
     )
-    for period, table in zip(q_periods, future_by_task_q_residue):
-        if len(table) != int(period):
-            raise ValueError("JOINT_PERIODIC_FUTURE_PERIOD_MISMATCH")
 
-    # Connected components under gcd(Q_a,Q_b)>1 are exactly the groups whose
-    # task-local residue choices are coupled.  Component LCMs are pairwise
-    # coprime; otherwise a shared prime would have connected the components.
     remaining = set(range(len(specs)))
     components: list[tuple[int, tuple[int, ...]]] = []
     while remaining:
@@ -445,23 +418,15 @@ def exact_joint_lo_entry_max_with_periodic_future(
             component_period = lcm(int(component_period), int(q_periods[index]))
         components.append((int(component_period), member_tuple))
     components.sort(key=lambda row: row[1][0])
+    component_tuple = tuple(components)
 
     joint_cycle = 1
     for period in q_periods:
         joint_cycle = lcm(int(joint_cycle), int(period))
 
-    # The union of fixed-q carry candidates can be generated symbolically from
-    # the root phase projection.  Adding candidates belonging to other q values
-    # does not change a fixed-q backlog maximum: between its own release
-    # boundaries arrival demand is constant while ``-L`` strictly decreases.
     busy = _busy_period_upper(specs, post=False)
     projections = phase_block_task_projections(
-        ti,
-        step,
-        base,
-        specs,
-        block_modulus=1,
-        block_residue=0,
+        ti, step, base, specs, block_modulus=1, block_residue=0,
     )
     candidate_lengths = {0, 1}
     for projection in projections:
@@ -480,32 +445,93 @@ def exact_joint_lo_entry_max_with_periodic_future(
         for spec, q_period in zip(specs, q_periods)
     )
 
-    best_value = -1
-    best_length = 0
-    best_component_residues: tuple[int, ...] = tuple(0 for _ in components)
-    residues_per_candidate = sum(int(period) for period, _ in components)
-
+    component_carry_rows: list[tuple[tuple[int, ...], ...]] = []
     for length in ordered_lengths:
-        component_residues: list[int] = []
-        value = -int(length)
-        for component_period, member_indices in components:
-            component_best = -1
-            component_argmax = 0
+        length_rows: list[tuple[int, ...]] = []
+        for component_period, member_indices in component_tuple:
+            values: list[int] = []
             for residue in range(int(component_period)):
                 subtotal = 0
                 for index in member_indices:
                     local = int(residue) % int(q_periods[index])
                     phase = int(phase_tables[index][local])
-                    subtotal += (
-                        _count_releases(
-                            phase,
-                            int(specs[index].period),
-                            -int(length),
-                            0,
-                        )
-                        * int(specs[index].pre_switch_cap)
-                        + int(future_by_task_q_residue[index][local])
-                    )
+                    subtotal += _count_releases(
+                        phase, int(specs[index].period), -int(length), 0
+                    ) * int(specs[index].pre_switch_cap)
+                values.append(int(subtotal))
+            length_rows.append(tuple(values))
+        component_carry_rows.append(tuple(length_rows))
+
+    return _ExactJointLoEntryCarryPlan(
+        q_periods=tuple(int(value) for value in q_periods),
+        components=component_tuple,
+        joint_cycle=int(joint_cycle),
+        ordered_lengths=ordered_lengths,
+        phase_tables=phase_tables,
+        component_carry_rows=tuple(component_carry_rows),
+    )
+
+
+def exact_joint_lo_entry_max_with_periodic_future(
+    target_period: int,
+    q_step: int,
+    n0: int,
+    specs: tuple[CarryTaskSpec, ...],
+    future_by_task_q_residue: tuple[tuple[int, ...], ...],
+) -> tuple[int, dict[str, int | tuple[int, ...] | tuple[tuple[str, ...], ...]]]:
+    """Evaluate the unchanged V10.13 exact joint maximum without global-Q enumeration.
+
+    Carry-phase structure is independent of the response horizon and switch
+    cell, so it is precomputed once per target/controller phase and reused.
+    Future interference remains an exact input of every invocation.
+    """
+    if len(specs) != len(future_by_task_q_residue):
+        raise ValueError("JOINT_PERIODIC_FUTURE_DIMENSION_MISMATCH")
+    if not specs:
+        return 0, {
+            "joint_phase_cycle": 1,
+            "candidate_lengths": 1,
+            "component_periods": (),
+            "component_tasks": (),
+            "residues_per_candidate": 0,
+            "witness_q": 0,
+            "witness_length": 0,
+        }
+
+    plan = _exact_joint_lo_entry_carry_plan(
+        int(target_period), int(q_step), int(n0), specs
+    )
+    for period, table in zip(plan.q_periods, future_by_task_q_residue):
+        if len(table) != int(period):
+            raise ValueError("JOINT_PERIODIC_FUTURE_PERIOD_MISMATCH")
+
+    component_future_rows: list[tuple[int, ...]] = []
+    for component_period, member_indices in plan.components:
+        values: list[int] = []
+        for residue in range(int(component_period)):
+            subtotal = 0
+            for index in member_indices:
+                subtotal += int(
+                    future_by_task_q_residue[index][
+                        int(residue) % int(plan.q_periods[index])
+                    ]
+                )
+            values.append(int(subtotal))
+        component_future_rows.append(tuple(values))
+
+    best_value = -1
+    best_length = 0
+    best_component_residues: tuple[int, ...] = tuple(0 for _ in plan.components)
+    for length_index, length in enumerate(plan.ordered_lengths):
+        value = -int(length)
+        component_residues: list[int] = []
+        for component_index, (component_period, _) in enumerate(plan.components):
+            carry_row = plan.component_carry_rows[length_index][component_index]
+            future_row = component_future_rows[component_index]
+            component_best = -1
+            component_argmax = 0
+            for residue in range(int(component_period)):
+                subtotal = int(carry_row[residue]) + int(future_row[residue])
                 if subtotal > component_best:
                     component_best = int(subtotal)
                     component_argmax = int(residue)
@@ -516,11 +542,9 @@ def exact_joint_lo_entry_max_with_periodic_future(
             best_length = int(length)
             best_component_residues = tuple(component_residues)
 
-    # Reconstruct one concrete global joint-orbit witness from the independently
-    # maximizing component residues.  Component moduli are pairwise coprime.
     witness_q = 0
     witness_modulus = 1
-    for (component_period, _), residue in zip(components, best_component_residues):
+    for (component_period, _), residue in zip(plan.components, best_component_residues):
         modulus = int(component_period)
         if modulus == 1:
             continue
@@ -532,14 +556,14 @@ def exact_joint_lo_entry_max_with_periodic_future(
         witness_q %= int(witness_modulus)
 
     return int(best_value), {
-        "joint_phase_cycle": int(joint_cycle),
-        "candidate_lengths": len(ordered_lengths),
-        "component_periods": tuple(int(period) for period, _ in components),
+        "joint_phase_cycle": int(plan.joint_cycle),
+        "candidate_lengths": len(plan.ordered_lengths),
+        "component_periods": tuple(int(period) for period, _ in plan.components),
         "component_tasks": tuple(
             tuple(specs[index].name for index in member_indices)
-            for _, member_indices in components
+            for _, member_indices in plan.components
         ),
-        "residues_per_candidate": int(residues_per_candidate),
+        "residues_per_candidate": sum(int(period) for period, _ in plan.components),
         "witness_q": int(witness_q),
         "witness_length": int(best_length),
     }

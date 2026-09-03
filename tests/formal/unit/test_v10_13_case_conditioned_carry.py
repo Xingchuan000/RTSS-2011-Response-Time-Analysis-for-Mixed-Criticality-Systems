@@ -182,6 +182,7 @@ def test_v10_13_case_postfix_fallback_can_close_a_v10_12_failed_case(monkeypatch
         ),
     )
     cert, path, failure = pcssc._case_conditioned_postfix_search_v10_13(
+        pcssc._TargetWorkloadCache.empty(),
         object(), Target(), (), object(), set(), {}, Case()
     )
     assert failure is None
@@ -249,3 +250,128 @@ def test_v10_13_is_not_used_as_a_soundness_error_fallback(monkeypatch):
     assert called["refined"] is False
     assert "CONTROLLER_PREFIX_COVERAGE_UNRESOLVED" in failure
     assert tested[0]["v10_13_refinement_attempted"] is False
+
+
+def test_target_local_v10_13_cache_reuses_joint_hp_across_direct_recheck(monkeypatch):
+    class Target:
+        name = "hi0"
+        period = 20
+        deadline = 20
+        c_lo = 5
+        c_hi = 8
+        actual_demand_min = 1
+        actual_demand_upper = 8
+
+    class Model:
+        agent_period = 10
+
+    class Path:
+        boxes = ({},)
+
+    switch = pcssc.SwitchCell("LO_SWITCH", 0, 0)
+    calls = {"exact": 0}
+
+    monkeypatch.setattr(pcssc, "candidate_controller_times", lambda *args: ())
+    monkeypatch.setattr(pcssc, "_macro_cells", lambda *args: (pcssc.MacroCell(0, 20),))
+    monkeypatch.setattr(pcssc, "_carry_task_specs", lambda *args: ())
+    monkeypatch.setattr(pcssc, "target_release_joint_phase_parameters", lambda *args: (0, 1, 1))
+    monkeypatch.setattr(pcssc, "phase_block_task_projections", lambda *args, **kwargs: ())
+    monkeypatch.setattr(pcssc, "target_release_joint_phases_at_q", lambda *args, **kwargs: ())
+    monkeypatch.setattr(pcssc, "fixed_phase_lo_entry_backlog", lambda *args, **kwargs: (0, {}))
+
+    def exact(*args, **kwargs):
+        calls["exact"] += 1
+        return 7, {
+            "witness_q": 0,
+            "component_periods": (),
+            "component_tasks": (),
+            "candidate_lengths": 1,
+            "residues_per_candidate": 0,
+        }
+
+    monkeypatch.setattr(pcssc, "exact_joint_lo_entry_max_with_periodic_future", exact)
+    cache = pcssc._TargetWorkloadCache.empty()
+    first = pcssc._case_conditioned_joint_phase_interference(
+        cache, Model(), Target(), (), Path(), horizon=12, theta=0, switch=switch
+    )
+    second = pcssc._case_conditioned_joint_phase_interference(
+        cache, Model(), Target(), (), Path(), horizon=12, theta=0, switch=switch
+    )
+    assert first == second
+    assert calls["exact"] == 1
+
+
+def test_lo_entry_carry_cache_is_shared_by_target_classifications(monkeypatch):
+    class Target:
+        name = "hi0"
+        period = 20
+        deadline = 20
+        c_lo = 5
+        c_hi = 8
+        actual_demand_min = 1
+        actual_demand_upper = 8
+
+    class Model:
+        agent_period = 10
+
+    class Path:
+        boxes = ({},)
+
+    calls = {"carry": 0}
+    monkeypatch.setattr(pcssc, "candidate_controller_times", lambda *args: ())
+    monkeypatch.setattr(pcssc, "_macro_cells", lambda *args: (pcssc.MacroCell(0, 12),))
+
+    def carry(*args, **kwargs):
+        calls["carry"] += 1
+        return 3, {"basis": "TEST", "carry_in": 3}
+
+    monkeypatch.setattr(pcssc, "_lo_entry_aggregate_carry_bound", carry)
+    cache = pcssc._TargetWorkloadCache.empty()
+    normal, _ = pcssc._workload_case(
+        cache, Model(), Target(), (), Path(), set(), {},
+        horizon=12, theta=0, switch=pcssc.SwitchCell("LO_SWITCH", 0, 0),
+        classification="NORMAL",
+    )
+    abnormal, _ = pcssc._workload_case(
+        cache, Model(), Target(), (), Path(), set(), {},
+        horizon=12, theta=0, switch=pcssc.SwitchCell("LO_SWITCH", 0, 0),
+        classification="ABNORMAL",
+    )
+    assert normal == 5
+    assert abnormal == 8
+    assert calls["carry"] == 1
+
+
+
+def test_exact_crt_carry_plan_is_reused_across_future_tables(monkeypatch):
+    import formal_toolchain.v10_1.carry_in_envelope as carry
+
+    specs = (
+        CarryTaskSpec("a", "HI", 9, 2, 3),
+        CarryTaskSpec("b", "LO", 14, 2, 1),
+        CarryTaskSpec("c", "HI", 29, 1, 2),
+    )
+    n0, step, _ = target_release_joint_phase_parameters(25, 8, 0, specs)
+    q_periods = tuple(
+        spec.period // gcd(spec.period, step * 25) for spec in specs
+    )
+    future_a = tuple(tuple(0 for _ in range(period)) for period in q_periods)
+    future_b = tuple(
+        tuple((index + residue) % 4 for residue in range(period))
+        for index, period in enumerate(q_periods)
+    )
+
+    carry._exact_joint_lo_entry_carry_plan.cache_clear()
+    calls = {"count": 0}
+    original = carry._count_releases
+
+    def counted(*args, **kwargs):
+        calls["count"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(carry, "_count_releases", counted)
+    exact_joint_lo_entry_max_with_periodic_future(25, step, n0, specs, future_a)
+    after_first = calls["count"]
+    exact_joint_lo_entry_max_with_periodic_future(25, step, n0, specs, future_b)
+    assert after_first > 0
+    assert calls["count"] == after_first

@@ -1,4 +1,4 @@
-"""Machine-readable readiness for the active V10.14 implementation."""
+"""Machine-readable readiness for the active V10.16 implementation."""
 
 from __future__ import annotations
 
@@ -28,10 +28,9 @@ def readiness_report() -> dict[str, object]:
             "PCSSC": {
                 "ready": z3_available,
                 "event_graph_required": False,
-                "pointwise_first": True,
-                "case_consistent_fallback": True,
-                "case_conditioned_joint_carry_future_fallback": True,
-                "pre_hi_phase_consistent_fallback": True,
+                "canonical_case_consistent_terminal": True,
+                "pre_hi_direct_v10_16_phase_blocks": True,
+                "lo_entry_v10_13_refinement": True,
                 "deadline_canonical_case_domain": True,
             },
         },
