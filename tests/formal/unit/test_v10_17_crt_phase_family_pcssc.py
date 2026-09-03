@@ -441,3 +441,139 @@ def test_v10_17_crt_search_schedules_root_probe_and_nonroot_recurrence(monkeypat
     assert calls[0] == (1, 0, False)
     assert {row for row in calls[1:]} == {(2, 0, True), (2, 1, True)}
     assert cert["crt_phase_family_terminal_count"] == 2
+
+
+def test_v10_17_structural_budget_forces_crt_within_hard_arithmetic_budget(monkeypatch):
+    """The eager threshold orders search; it must not disable a legal terminal."""
+
+    spec = CarryTaskSpec("hp", "HI", 4, 1, 1)
+    monkeypatch.setattr(pcssc, "PHASE_BLOCK_MAX_LEAVES", 2)
+    monkeypatch.setattr(pcssc, "_carry_task_specs", lambda *args: (spec,))
+    monkeypatch.setattr(pcssc, "_target_cap", lambda *args: 4)
+    monkeypatch.setattr(
+        pcssc,
+        "target_release_joint_phase_parameters",
+        lambda *args, **kwargs: (0, 1, 4),
+    )
+    monkeypatch.setattr(pcssc, "phase_block_task_projections", real_phase_block_task_projections)
+    monkeypatch.setattr(
+        pcssc,
+        "phase_block_r7_carry_upper",
+        lambda *args: (
+            20,
+            {
+                "candidate_domain_kind": "PROVED_BOUNDARY_UNION",
+                "busy_horizon": 4,
+                "candidate_boundary_count": 1,
+                "witness_length": 1,
+            },
+        ),
+    )
+    monkeypatch.setattr(pcssc, "phase_block_post_switch_future_upper", lambda *args: 0)
+    monkeypatch.setattr(
+        pcssc,
+        "_controller_prefix_coverage_receipt",
+        lambda *args, **kwargs: {"obligation_id": "PREFIX", "status": "PASS"},
+    )
+    monkeypatch.setattr(
+        pcssc,
+        "crt_phase_family_plan",
+        lambda *args, **kwargs: types.SimpleNamespace(
+            streaming_residue_work=pcssc.CRT_PHASE_FAMILY_EAGER_STREAMING_RESIDUE_WORK + 1
+        ),
+    )
+
+    calls = []
+
+    def fake_crt(*args, **kwargs):
+        block = args[3]
+        recurrence = kwargs["recurrence_after_deadline_failure"]
+        calls.append((block.modulus, block.residue, recurrence))
+        if not recurrence:
+            return None, [{"stage": "DEADLINE_DIRECT_PROBE"}], "CRT_PHASE_FAMILY_POSTFIX_FAIL"
+        return ({
+            **block.as_dict(),
+            "terminal_type": "CRT_PHASE_FAMILY",
+            "R": 7,
+            "W": 7,
+            "formula_hash": f"f{block.residue}",
+            "candidate_steps": 2,
+            "family_size": 2,
+            "component_periods": [2],
+            "streaming_residue_work": pcssc.CRT_PHASE_FAMILY_EAGER_STREAMING_RESIDUE_WORK + 1,
+            "receipts": [{
+                "obligation_id": f"CRT_PHASE_FAMILY_DIRECT_POSTFIX::{block.id}",
+                "status": "PASS",
+            }],
+        }, [{"stage": "CANDIDATE_RECURRENCE"}], None)
+
+    monkeypatch.setattr(pcssc, "_crt_phase_family_postfix_search_v10_17", fake_crt)
+
+    class Target:
+        name = "hi0"
+        period = 1
+        deadline = 10
+        priority = 1
+        criticality = "HI"
+        actual_demand_upper = 4
+        c_lo = 2
+        c_hi = 4
+
+    class HP:
+        name = "hp"
+        period = 4
+        priority = 0
+        criticality = "HI"
+
+    model = _Model()
+    model.tasks = (HP(), Target())
+    cert, attempts, failure = pcssc._phase_block_postfix_search_v10_17(
+        model, Target(), (HP(),), object(), {}, _case()
+    )
+
+    assert failure is None
+    assert cert is not None
+    assert calls[0] == (1, 0, False)
+    assert {row for row in calls[1:]} == {(2, 0, True), (2, 1, True)}
+    forced = [row for row in attempts if row.get("status") == "PASS_CRT_PHASE_FAMILY"]
+    assert len(forced) == 2
+    assert {row["crt_activation"] for row in forced} == {
+        "STRUCTURAL_BLOCKED_HARD_BUDGET_TERMINAL"
+    }
+
+
+def test_v10_17_s603_hi2_theta2000_final_family_is_hard_budget_terminal():
+    """Regression for the E2E family that was skipped by the eager threshold."""
+
+    specs = (
+        CarryTaskSpec("mc_sd_hi_4", "HI", 9000, 35, 115),
+        CarryTaskSpec("mc_sd_lo_2", "LO", 14000, 398, 198),
+        CarryTaskSpec("mc_sd_hi_1", "HI", 14500, 2256, 5285),
+        CarryTaskSpec("mc_sd_lo_3", "LO", 16500, 1905, 862),
+        CarryTaskSpec("mc_sd_lo_4", "LO", 22500, 1768, 860),
+        CarryTaskSpec("mc_sd_hi_5", "HI", 22500, 927, 2690),
+        CarryTaskSpec("mc_sd_hi_0", "HI", 26500, 2043, 2742),
+        CarryTaskSpec("mc_sd_lo_1", "LO", 35000, 1771, 694),
+        CarryTaskSpec("mc_sd_hi_3", "HI", 39500, 1477, 2226),
+    )
+    n0, q_step, joint_period = target_release_joint_phase_parameters(
+        59000, 25000, 2000, specs
+    )
+    assert (n0, q_step, joint_period) == (22, 25, 168292278)
+
+    plan = crt_phase_family_plan(
+        59000, q_step, n0, specs, joint_period, 2130282, 2610
+    )
+    assert plan.family_size == 79
+    assert plan.restricted_periods == (1, 1, 1, 1, 1, 1, 1, 1, 79)
+    assert plan.streaming_residue_work == 3112679
+    assert plan.streaming_residue_work > pcssc.CRT_PHASE_FAMILY_EAGER_STREAMING_RESIDUE_WORK
+    assert plan.streaming_residue_work <= pcssc.CRT_PHASE_FAMILY_MAX_STREAMING_RESIDUE_WORK
+
+    family_max, details = exact_crt_phase_family_pre_hi_max(
+        59000, q_step, n0, specs, joint_period, 2130282, 2610, 59000
+    )
+    assert family_max == 48242
+    assert family_max + 1531 == 49773
+    assert family_max + 1531 <= 59000
+    assert details["witness_reevaluation"] == family_max

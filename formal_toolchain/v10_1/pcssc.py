@@ -1949,11 +1949,12 @@ def _phase_block_postfix_search_v10_17(
             })
             continue
 
-        # V10.17 family compression is a peer terminal, not a last-resort
-        # escape from the structural budget.  Once the cheap lifted block fails,
-        # try the exact family at R=D.  A family failure only means this block is
-        # too coarse for a common postfix; if a legal split exists the exact
-        # partition is refined and proof search continues.
+        # V10.17 family compression is a peer terminal.  The eager arithmetic
+        # threshold controls search order only: while a structural split remains
+        # available, expensive non-root families are refined first.  If the
+        # finite structural plan cannot split this block, any CRT plan still
+        # inside the theorem's hard arithmetic budget must be tried as a terminal
+        # before the case may become UNRESOLVED.
         active_leaf_count = len(passed) + len(pending) + 1
         mathematical_candidates = {
             prime
@@ -1978,7 +1979,7 @@ def _phase_block_postfix_search_v10_17(
                 )
             except CarryInEnvelopeUnresolved as exc:
                 crt_failure = str(exc)
-        try_crt_family = bool(
+        eager_crt_family = bool(
             crt_plan is not None
             and (
                 int(block.depth) == 0
@@ -1986,6 +1987,20 @@ def _phase_block_postfix_search_v10_17(
                 <= CRT_PHASE_FAMILY_EAGER_STREAMING_RESIDUE_WORK
             )
         )
+        structural_blocked = bool(mathematical_candidates and factor is None)
+        forced_terminal_crt = bool(
+            structural_blocked
+            and crt_plan is not None
+            and int(crt_plan.streaming_residue_work)
+            <= CRT_PHASE_FAMILY_MAX_STREAMING_RESIDUE_WORK
+        )
+        try_crt_family = bool(eager_crt_family or forced_terminal_crt)
+        if structural_blocked and crt_plan is not None and not forced_terminal_crt:
+            crt_failure = (
+                f"CRT_FAMILY_ARITHMETIC_PLAN_EXHAUSTED:{case.id}:{block.id}:"
+                f"streaming_residue_work={crt_plan.streaming_residue_work}:"
+                f"limit={CRT_PHASE_FAMILY_MAX_STREAMING_RESIDUE_WORK}"
+            )
         if try_crt_family:
             crt_terminal, crt_rows, crt_failure = _crt_phase_family_postfix_search_v10_17(
                 target, case, specs, block,
@@ -1993,10 +2008,13 @@ def _phase_block_postfix_search_v10_17(
                 runtime_total_order_hash=str(runtime_total_order_hash),
                 controller_period=int(model.agent_period),
                 recurrence_after_deadline_failure=bool(
-                    int(block.depth) > 0
-                    and crt_plan is not None
-                    and int(crt_plan.streaming_residue_work)
-                    <= CRT_PHASE_FAMILY_EAGER_STREAMING_RESIDUE_WORK
+                    forced_terminal_crt
+                    or (
+                        int(block.depth) > 0
+                        and crt_plan is not None
+                        and int(crt_plan.streaming_residue_work)
+                        <= CRT_PHASE_FAMILY_EAGER_STREAMING_RESIDUE_WORK
+                    )
                 ),
             )
             if crt_terminal is not None:
@@ -2011,7 +2029,11 @@ def _phase_block_postfix_search_v10_17(
                     "lifted_W_at_D": int(workload_at_deadline),
                     "crt_candidate_path": crt_rows,
                     "family_size": int(crt_terminal["family_size"]),
-                    "crt_activation": "ROOT_OR_EAGER_STREAMING_PLAN",
+                    "crt_activation": (
+                        "STRUCTURAL_BLOCKED_HARD_BUDGET_TERMINAL"
+                        if forced_terminal_crt
+                        else "ROOT_OR_EAGER_STREAMING_PLAN"
+                    ),
                     "component_periods": list(crt_terminal["component_periods"]),
                     "streaming_residue_work": int(crt_terminal["streaming_residue_work"]),
                     "structural_leaf_count": int(active_leaf_count),
