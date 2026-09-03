@@ -1,4 +1,4 @@
-"""Machine-readable readiness for the active V10.16 implementation."""
+"""Machine-readable readiness for the active V10.17 implementation."""
 
 from __future__ import annotations
 
@@ -29,7 +29,8 @@ def readiness_report() -> dict[str, object]:
                 "ready": z3_available,
                 "event_graph_required": False,
                 "canonical_case_consistent_terminal": True,
-                "pre_hi_direct_v10_16_phase_blocks": True,
+                "pre_hi_v10_17_mixed_phase_terminals": True,
+                "crt_phase_family_terminal": True,
                 "lo_entry_v10_13_refinement": True,
                 "deadline_canonical_case_domain": True,
             },

@@ -43,7 +43,7 @@ def test_v10_12_deadline_canonical_domain_is_stable_complete_and_unique():
         model, target, hp
     )
 
-    assert FRAMEWORK_REVISION == "V10.16_ADAPTIVE_PHASE_BLOCK_PCSSC"
+    assert FRAMEWORK_REVISION == "V10.17_CRT_PHASE_FAMILY_TERMINAL"
     assert domain
     assert len({case.id for case in domain}) == len(domain)
     assert all(case.canonical_deadline == target.deadline for case in domain)
@@ -91,7 +91,7 @@ def test_case_consistent_terminal_aggregates_per_case_completion_bounds(monkeypa
             "W": demand,
             "candidate_path": [{"block_id": "M1_A0", "status": "PASS"}],
             "controller_prefix_receipt": {"obligation_id": "PREFIX", "status": "PASS"},
-            "case_theorem_basis": "V10_16_ADAPTIVE_PHASE_BLOCK",
+            "case_theorem_basis": "V10_17_MIXED_PHASE_TERMINAL",
             "phase_block_joint_period": 1,
             "phase_block_leaf_count": 1,
             "phase_block_leaf_digest_sha256": "a" * 64,
@@ -101,7 +101,7 @@ def test_case_consistent_terminal_aggregates_per_case_completion_bounds(monkeypa
         }
         return cert, cert["candidate_path"], None
 
-    monkeypatch.setattr(pcssc, "_phase_block_postfix_search_v10_16", fake_phase_block)
+    monkeypatch.setattr(pcssc, "_phase_block_postfix_search_v10_17", fake_phase_block)
     bound, tested, receipts, failure = pcssc._case_consistent_postfix_search(
         model, target, hp, object(), set(), {}
     )
@@ -112,7 +112,7 @@ def test_case_consistent_terminal_aggregates_per_case_completion_bounds(monkeypa
     ids = {row["obligation_id"] for row in receipts}
     assert f"ALL_CASES_POSTFIX_COVERED::{target.name}" in ids
     assert any(value.startswith(f"CASE_CONSISTENT_RESPONSE_CERTIFICATE::{target.name},") for value in ids)
-    assert any(value.startswith("PCSSC_REFINED_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_16::") for value in ids)
+    assert any(value.startswith("GUARDED_SAFE_PREFIX_COMPLETION_EXPORT::") for value in ids)
 
 
 def test_case_consistent_terminal_fails_closed_if_one_fixed_case_has_no_postfix(monkeypatch):
@@ -133,7 +133,7 @@ def test_case_consistent_terminal_fails_closed_if_one_fixed_case_has_no_postfix(
     monkeypatch.setattr(pcssc, "_workload_case", fake_workload)
     monkeypatch.setattr(
         pcssc,
-        "_phase_block_postfix_search_v10_16",
+        "_phase_block_postfix_search_v10_17",
         lambda *args, **kwargs: (
             None,
             [],

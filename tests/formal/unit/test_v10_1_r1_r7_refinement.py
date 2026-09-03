@@ -29,7 +29,7 @@ def test_r7_removes_unprotected_lo_early_exit_and_routes_through_aggregate_backl
     assert "phase_relaxed_single_switch_carry" not in text
     assert "phase_relaxed_lo_entry_carry" in text
     assert "phase_block_r7_carry_upper" in text
-    assert "PRE_HI canonical cases are handled directly by V10.16" in text
+    assert "PRE_HI canonical cases are handled directly by the V10.17 mixed terminal" in text
     assert "PHASE_BLOCK_WORKLOAD_LIFTING_SOUND::" in text
     assert 'target.name, "UNRESOLVED", None, "REACHABLE_LO_CARRY_IN_UNRESOLVED"' not in text
 

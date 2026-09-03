@@ -1,15 +1,11 @@
-"""Priority-ordered certified completion envelopes through V10.16.
+"""Priority-ordered completion certificates for the V10.17 proof route.
 
-The active implementation remains under ``formal_toolchain.v10_1`` because the
-request/bundle schema is unchanged.  Completed BASE, pointwise-PCSSC, V10.12
-case-consistent, V10.13 conditioned-carry, and V10.16 adaptive-phase-block certificates
-from *strictly higher-priority* tasks may be reused by a lower-priority PCSSC
-target.
-
-A certificate is deliberately stronger than a boolean target-safety result: it
-carries an explicit response/completion upper bound and is accepted only when
-``0 < R <= D <= T``.  The verifier constructs the map in canonical fixed-
-priority order, which makes cross-target reuse acyclic by construction.
+BASE certificates are unconditional task-specific completion bounds.  PCSSC
+certificates export the guarded safe-prefix theorem ``SPComp`` and therefore
+are *not* an unconditional future invariant.  The verifier may propagate such
+certificates down the strict fixed-priority DAG, but a lower-priority proof may
+consume one for workload tightening only through an explicit prefix-local use
+proof.
 """
 
 from __future__ import annotations
@@ -26,15 +22,10 @@ else:
 
 BASE_COMPLETION_SOURCE = "BASE_C_AMC_SEM_SECTION4_1_SUCCESSFUL_PREFIX"
 PCSSC_COMPLETION_SOURCE = "TARGET_PROVED_BY_PCSSC"
-PCSSC_POINTWISE_COMPLETION_THEOREM = "PCSSC_SAFE_PREFIX_COMPLETION_EXPORT_V10_11"
-PCSSC_CASE_COMPLETION_THEOREM = "PCSSC_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_12"
-PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM = (
-    "PCSSC_CASE_CONDITIONED_SAFE_PREFIX_COMPLETION_EXPORT_V10_13"
+PCSSC_GUARDED_COMPLETION_THEOREM_V10_17 = (
+    "GUARDED_SAFE_PREFIX_COMPLETION_EXPORT_V10_17"
 )
-PCSSC_REFINED_CASE_COMPLETION_THEOREM_V10_16 = (
-    "PCSSC_REFINED_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_16"
-)
-BASE_COMPLETION_THEOREM = "BASE_SECTION4_1_COMPLETION_EXPORT_V10_11"
+BASE_COMPLETION_THEOREM = "BASE_UNCONDITIONAL_COMPLETION_EXPORT_V10_17"
 
 
 class CompletionCertificateError(ValueError):
@@ -148,12 +139,7 @@ def export_pcssc_completion_certificate(
         raise CompletionCertificateError(
             f"PCSSC_COMPLETION_EXPORT_REQUIRES_HI:{target_name}"
         )
-    if theorem_basis not in {
-        PCSSC_POINTWISE_COMPLETION_THEOREM,
-        PCSSC_CASE_COMPLETION_THEOREM,
-        PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM,
-        PCSSC_REFINED_CASE_COMPLETION_THEOREM_V10_16,
-    }:
+    if theorem_basis != PCSSC_GUARDED_COMPLETION_THEOREM_V10_17:
         raise CompletionCertificateError(
             f"PCSSC_COMPLETION_EXPORT_UNKNOWN_THEOREM:{target_name}:{theorem_basis}"
         )
@@ -169,7 +155,13 @@ def merge_certified_completion(
     current: CertifiedCompletionBound | None,
     candidate: CertifiedCompletionBound,
 ) -> CertifiedCompletionBound:
-    """Keep the tighter of two independently sound bounds for one task."""
+    """Merge one task without weakening completion theorem semantics.
+
+    An unconditional BASE certificate and a guarded PCSSC certificate are not
+    ordered solely by their numeric response bounds: the BASE theorem has the
+    stronger domain.  Keep it whenever the sources differ.  Bounds from the
+    same theorem class may be compared numerically.
+    """
 
     if current is None:
         return candidate
@@ -182,6 +174,8 @@ def merge_certified_completion(
             raise CompletionCertificateError(
                 f"CERTIFIED_COMPLETION_MERGE_BINDING_MISMATCH:{candidate.task}:{field_name}"
             )
+    if current.source != candidate.source:
+        return current if current.source == BASE_COMPLETION_SOURCE else candidate
     return candidate if candidate.response_bound < current.response_bound else current
 
 
@@ -234,9 +228,7 @@ def completion_prefix_for_target(
 __all__ = [
     "BASE_COMPLETION_SOURCE",
     "PCSSC_COMPLETION_SOURCE",
-    "PCSSC_POINTWISE_COMPLETION_THEOREM",
-    "PCSSC_CASE_COMPLETION_THEOREM",
-    "PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM",
+    "PCSSC_GUARDED_COMPLETION_THEOREM_V10_17",
     "CertifiedCompletionBound",
     "CompletionCertificateError",
     "build_base_completion_certificates",

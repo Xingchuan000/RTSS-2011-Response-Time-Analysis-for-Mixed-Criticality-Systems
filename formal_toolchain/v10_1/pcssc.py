@@ -1,7 +1,8 @@
-"""Policy-Constrained Single-Switch Certificate (PCSSC), V10.16 revision.
+"""Policy-Constrained Single-Switch Certificate (PCSSC), V10.17 revision.
 
 The BASE route is followed by the canonical case-consistent PCSSC terminal.
-PRE_HI cases go directly to the V10.16 Adaptive Phase-Block theorem; the obsolete
+PRE_HI cases use V10.16 lifted blocks plus the V10.17 exact CRT phase-family
+terminal; the obsolete
 pointwise and phase-relaxed PRE_HI prepasses are not part of the production proof
 path.  LO-entry cases retain the V10.12 fast bound and V10.13 exact joint-phase
 refinement.  Event Graph search and exact-history BMC remain outside PASS.
@@ -20,21 +21,22 @@ from .kernel.carry_in import derive_protected_priority_prefix
 from .completion_certificates import (
     BASE_COMPLETION_SOURCE,
     PCSSC_COMPLETION_SOURCE,
-    PCSSC_CASE_COMPLETION_THEOREM,
-    PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM,
-    PCSSC_REFINED_CASE_COMPLETION_THEOREM_V10_16,
+    PCSSC_GUARDED_COMPLETION_THEOREM_V10_17,
     CertifiedCompletionBound,
 )
 from .constants import (
     TARGET_PROVED_PCSSC_CASE_CONSISTENT,
     TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY,
-    TARGET_PROVED_PCSSC_REFINED_CASES_V10_16,
+    TARGET_PROVED_PCSSC_MIXED_PHASE_TERMINALS_V10_17,
 )
 from .base_section4_1 import paper_c_lo_bound
 from .carry_in_envelope import (
     CarryInEnvelopeUnresolved,
     CarryTaskSpec,
+    CRTPhaseFamilyPlan,
     PhaseBlockProjection,
+    crt_phase_family_plan,
+    exact_crt_phase_family_pre_hi_max,
     exact_joint_lo_entry_max_with_periodic_future,
     fixed_phase_lo_entry_backlog,
     fixed_phase_pre_hi_interference,
@@ -45,6 +47,7 @@ from .carry_in_envelope import (
     target_release_joint_phase_parameters,
     target_release_joint_phases_at_q,
     phase_relaxed_lo_entry_carry,
+    prehistory_finite_bound,
 )
 from .controller_macro import (
     BudgetInterval,
@@ -130,6 +133,8 @@ class PhaseBlock:
 
 
 PHASE_BLOCK_MAX_LEAVES = 512
+CRT_PHASE_FAMILY_MAX_STREAMING_RESIDUE_WORK = 20_000_000
+CRT_PHASE_FAMILY_EAGER_STREAMING_RESIDUE_WORK = 2_200_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -1362,7 +1367,414 @@ def _phase_block_binding(
         "noncount_phase_input_binding_hash": str(context["noncount_phase_input_binding_hash"]),
     }
 
-def _phase_block_postfix_search_v10_16(
+
+def _crt_phase_family_binding(
+    target: TaskBound,
+    case: CaseKey,
+    specs: tuple[CarryTaskSpec, ...],
+    block: PhaseBlock,
+    plan: CRTPhaseFamilyPlan,
+    prehistory_bound: int,
+    prehistory_details: Mapping[str, Any],
+    runtime_total_order_hash: str,
+    controller_period: int,
+    n0: int,
+    q_step: int,
+) -> dict[str, str]:
+    service_binding = [
+        {
+            "task": spec.name,
+            "criticality": spec.criticality,
+            "period": int(spec.period),
+            "pre": int(spec.pre_switch_cap),
+            "post": int(spec.post_switch_cap),
+        }
+        for spec in specs
+    ]
+    ahead_set_hash = _stable_hash([spec.name for spec in specs])
+    timebase_hash = _stable_hash({
+        "unit": "INTEGER_RUNTIME_TICK",
+        "target_period": int(target.period),
+        "controller_period": int(controller_period),
+        "ahead_periods": [int(spec.period) for spec in specs],
+        "target_release_progression_n0": int(n0),
+        "target_release_progression_q_step": int(q_step),
+        "rounding": "NONE",
+    })
+    endpoint_hash = _stable_hash({
+        "carry_interval": "strictly_before_relative_zero",
+        "future_interval": "half_open_[0,R)",
+        "LO_release_at_switch": "pre_switch_cap",
+        "HI_release_at_switch": "post_switch_cap",
+        "switch_cells": "INTEGER_ENDPOINT_OR_OPEN_GAP",
+    })
+    prehistory_hash = _stable_hash({
+        "H_pre": int(prehistory_bound),
+        "proof": dict(prehistory_details),
+        "production_busy_horizon": int(plan.production_busy_horizon),
+        "canonical_busy_horizon": int(plan.busy_horizon),
+    })
+    candidate_domain_hash = _stable_hash({
+        "grammar": "V10_17_R7_COMMON_FAMILY_BOUNDARY_UNION_V1",
+        "busy_horizon": int(plan.busy_horizon),
+        "candidate_ages": list(plan.candidate_ages),
+        "zero_branch": True,
+        "switch_cells": "0; open/exact at every family boundary <= L; all-post after L",
+    })
+    restricted_period_hash = _stable_hash({
+        "Q": int(plan.joint_period),
+        "M": int(plan.block_modulus),
+        "a": int(plan.block_residue),
+        "K": int(plan.family_size),
+        "Pj": list(plan.restricted_periods),
+        "n0": int(n0),
+        "q_step": int(q_step),
+    })
+    component_partition_hash = _stable_hash({
+        "components": [
+            {
+                "period": int(period),
+                "tasks": [specs[index].name for index in members],
+            }
+            for period, members in plan.components
+        ],
+        "construction": "CONNECTED_COMPONENTS_OF_GCD_GT_1_GRAPH",
+    })
+    acnf_hash = _stable_hash({
+        "formula": "max_c(beta_c + sum_j b_j_c(k mod Pj))",
+        "candidate_domain_hash": candidate_domain_hash,
+        "carry_mode": "FIXED_Q_R7_CRT",
+        "positive_part": "EXPLICIT_ZERO_CANDIDATE",
+        "service_binding": service_binding,
+        "endpoint_hash": endpoint_hash,
+    })
+    formula_hash = _stable_hash({
+        "version": "V10_17_CRT_PHASE_FAMILY",
+        "target": target.name,
+        "target_cap": int(_target_cap(target, case.target_classification)),
+        "case": case.as_dict(),
+        "block": block.as_dict(),
+        "service_binding": service_binding,
+        "ahead_set_hash": ahead_set_hash,
+        "runtime_total_order_hash": str(runtime_total_order_hash),
+        "timebase_hash": timebase_hash,
+        "endpoint_hash": endpoint_hash,
+        "prehistory_hash": prehistory_hash,
+        "candidate_domain_hash": candidate_domain_hash,
+        "restricted_period_hash": restricted_period_hash,
+        "component_partition_hash": component_partition_hash,
+        "acnf_hash": acnf_hash,
+    })
+    return {
+        "formula_hash": formula_hash,
+        "ahead_set_hash": ahead_set_hash,
+        "runtime_total_order_hash": str(runtime_total_order_hash),
+        "timebase_hash": timebase_hash,
+        "endpoint_hash": endpoint_hash,
+        "prehistory_hash": prehistory_hash,
+        "candidate_domain_hash": candidate_domain_hash,
+        "restricted_period_hash": restricted_period_hash,
+        "component_partition_hash": component_partition_hash,
+        "acnf_hash": acnf_hash,
+    }
+
+
+def _crt_phase_family_postfix_search_v10_17(
+    target: TaskBound,
+    case: CaseKey,
+    specs: tuple[CarryTaskSpec, ...],
+    block: PhaseBlock,
+    *,
+    n0: int,
+    q_step: int,
+    joint_period: int,
+    runtime_total_order_hash: str,
+    controller_period: int,
+    recurrence_after_deadline_failure: bool,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str | None]:
+    """Exact V10.17 family terminal with a deadline-first finite search.
+
+    A direct D check closes the common case in one exact CRT evaluation.  When
+    W(D)>D, a smaller postfix may still exist, so the theorem's finite candidate
+    recurrence is then evaluated from the target execution cap.  A recurrence
+    hit is never trusted directly: the exact family maximum is recomputed at the
+    final R before a terminal receipt is emitted.
+    """
+
+    try:
+        plan = crt_phase_family_plan(
+            int(target.period), int(q_step), int(n0), specs,
+            int(joint_period), int(block.modulus), int(block.residue),
+        )
+        prehistory_bound, prehistory_details = prehistory_finite_bound(specs)
+    except CarryInEnvelopeUnresolved as exc:
+        return None, [], str(exc)
+
+    if int(plan.streaming_residue_work) > CRT_PHASE_FAMILY_MAX_STREAMING_RESIDUE_WORK:
+        return None, [], (
+            f"CRT_FAMILY_ARITHMETIC_PLAN_EXHAUSTED:{case.id}:{block.id}:"
+            f"streaming_residue_work={plan.streaming_residue_work}:"
+            f"limit={CRT_PHASE_FAMILY_MAX_STREAMING_RESIDUE_WORK}"
+        )
+
+    binding = _crt_phase_family_binding(
+        target, case, specs, block, plan, int(prehistory_bound), prehistory_details,
+        str(runtime_total_order_hash), int(controller_period), int(n0), int(q_step),
+    )
+    deadline = int(target.deadline)
+    target_work = int(_target_cap(target, case.target_classification))
+    rows: list[dict[str, Any]] = []
+
+    def exact_at(horizon: int) -> tuple[int, dict[str, object], int]:
+        family_max, details = exact_crt_phase_family_pre_hi_max(
+            int(target.period), int(q_step), int(n0), specs,
+            int(joint_period), int(block.modulus), int(block.residue), int(horizon),
+        )
+        return int(family_max), details, int(target_work) + int(family_max)
+
+    # Probe D first.  When it already post-fixes the family this is itself the
+    # final direct evaluation and no candidate recurrence is necessary.
+    try:
+        deadline_max, deadline_details, deadline_workload = exact_at(deadline)
+    except CarryInEnvelopeUnresolved as exc:
+        return None, rows, f"CRT_FAMILY_BINDING_INVALID:{case.id}:{block.id}:{exc}"
+    rows.append({
+        "R": int(deadline),
+        "W": int(deadline_workload),
+        "family_max": int(deadline_max),
+        "postfixed": bool(deadline_workload <= deadline),
+        "stage": "DEADLINE_DIRECT_PROBE",
+    })
+
+    final_R: int | None = None
+    family_max: int | None = None
+    details: dict[str, object] | None = None
+    direct_workload: int | None = None
+    candidate_strategy: str
+    if int(deadline_workload) <= int(deadline):
+        final_R = int(deadline)
+        family_max = int(deadline_max)
+        details = deadline_details
+        direct_workload = int(deadline_workload)
+        candidate_strategy = "DIRECT_DEADLINE_POSTFIX"
+    else:
+        if not recurrence_after_deadline_failure:
+            return None, rows, (
+                f"CRT_PHASE_FAMILY_POSTFIX_FAIL:{case.id}:{block.id}:"
+                f"W={deadline_workload}:D={deadline}"
+            )
+        candidate_strategy = "FINITE_RECURRENCE_AFTER_DEADLINE_PROBE"
+        R = max(1, min(deadline, target_work))
+        while R < deadline:
+            try:
+                candidate_max, candidate_details, workload = exact_at(int(R))
+            except CarryInEnvelopeUnresolved as exc:
+                return None, rows, f"CRT_FAMILY_BINDING_INVALID:{case.id}:{block.id}:{exc}"
+            rows.append({
+                "R": int(R),
+                "W": int(workload),
+                "family_max": int(candidate_max),
+                "postfixed": bool(workload <= R),
+                "stage": "CANDIDATE_RECURRENCE",
+            })
+            if int(workload) <= int(R):
+                # Normative V10.17 direct recheck at the final recurrence R.
+                try:
+                    direct_max, direct_details, rechecked_workload = exact_at(int(R))
+                except CarryInEnvelopeUnresolved as exc:
+                    return None, rows, f"CRT_FAMILY_BINDING_INVALID:{case.id}:{block.id}:{exc}"
+                if int(rechecked_workload) > int(R):
+                    return None, rows, (
+                        f"CRT_PHASE_FAMILY_DIRECT_POSTFIX_RECHECK_FAILED:{case.id}:"
+                        f"{block.id}:R={R}:W={rechecked_workload}"
+                    )
+                final_R = int(R)
+                family_max = int(direct_max)
+                details = direct_details
+                direct_workload = int(rechecked_workload)
+                break
+            next_R = max(int(R) + 1, int(workload))
+            R = deadline if next_R > deadline else int(next_R)
+
+    if final_R is None or family_max is None or details is None or direct_workload is None:
+        return None, rows, (
+            f"CRT_PHASE_FAMILY_POSTFIX_FAIL:{case.id}:{block.id}:"
+            f"W={deadline_workload}:D={deadline}"
+        )
+
+    component_maxima_hash = _stable_hash({
+        "component_maxima": list(details["component_maxima"]),
+        "component_argmax": list(details["component_argmax"]),
+        "winning_candidate": details["winning_candidate"],
+        "R": int(final_R),
+    })
+    receipts: list[dict[str, Any]] = []
+    for spec, cap_row in zip(specs, prehistory_details["job_caps"]):
+        receipts.append({
+            "obligation_id": f"PREHISTORY_JOB_CAP::{target.name},{spec.name}",
+            "status": "PASS",
+            "target": target.name,
+            "task": spec.name,
+            "job_cap": int(cap_row[1]),
+            "cap_hash": binding["prehistory_hash"],
+        })
+    receipts.extend((
+        {
+            "obligation_id": f"PREHISTORY_FINITE_BOUND::{target.name},{block.id}",
+            "status": "PASS",
+            "H_pre": int(prehistory_bound),
+            "production_busy_horizon": int(plan.production_busy_horizon),
+            "canonical_busy_horizon": int(plan.busy_horizon),
+            "proof": "V10_17_U_HIST_LT_1_LINEAR_ARRIVAL_BOUND",
+            **dict(prehistory_details),
+            "prehistory_hash": binding["prehistory_hash"],
+        },
+        {
+            "obligation_id": f"COMMON_TIMEBASE_EXACT::{target.name},{binding['formula_hash']}",
+            "status": "PASS",
+            "timebase_hash": binding["timebase_hash"],
+            "unit": "INTEGER_RUNTIME_TICK",
+            "rounding": "NONE",
+            "formula_hash": binding["formula_hash"],
+        },
+        {
+            "obligation_id": f"C_AMC_SEM_SWITCH_ENDPOINT_BINDING::{target.name},{binding['formula_hash']}",
+            "status": "PASS",
+            "switch_endpoint_hash": binding["endpoint_hash"],
+            "hi_release_at_switch": "post_switch_cap",
+            "lo_release_at_switch": "pre_switch_cap",
+            "future_interval": "half_open_[0,R)",
+            "formula_hash": binding["formula_hash"],
+        },
+        {
+            "obligation_id": f"R7_CANONICAL_GRAMMAR_BOUND::{target.name},{case.id},{binding['formula_hash']}",
+            "status": "PASS",
+            "formula_hash": binding["formula_hash"],
+            "candidate_domain_hash": binding["candidate_domain_hash"],
+            "grammar": "V10_17_R7_COMMON_FAMILY_BOUNDARY_UNION_V1",
+            "positive_part_zero_candidate": True,
+            "switch_open_gap_cells_included": True,
+        },
+        {
+            "obligation_id": f"AHEAD_SET_FORMULA_COHERENCE::{target.name},{binding['formula_hash']}",
+            "status": "PASS",
+            "ahead_tasks": [spec.name for spec in specs],
+            "ahead_set_hash": binding["ahead_set_hash"],
+            "runtime_total_order_hash": binding["runtime_total_order_hash"],
+            "formula_hash": binding["formula_hash"],
+        },
+        {
+            "obligation_id": f"CRT_PHASE_FAMILY_DOMAIN::{case.id},{block.id}",
+            "status": "PASS",
+            **block.as_dict(),
+            "Q": int(plan.joint_period),
+            "K": int(plan.family_size),
+            "q_parameterization": "q=(a+M*k) mod Q",
+        },
+        {
+            "obligation_id": f"CRT_PHASE_FAMILY_RESTRICTED_PERIOD_IDENTITY::{case.id},{block.id}",
+            "status": "PASS",
+            "K": int(plan.family_size),
+            "restricted_periods": list(plan.restricted_periods),
+            "restricted_period_hash": binding["restricted_period_hash"],
+            "lcm_Pj_equals_K": True,
+        },
+        {
+            "obligation_id": f"CRT_PHASE_FAMILY_CANDIDATE_DOMAIN_EQUIVALENT::{case.id},{block.id}",
+            "status": "PASS",
+            "candidate_domain_hash": binding["candidate_domain_hash"],
+            "candidate_count": int(plan.candidate_count),
+            "construction": "COMPLETE_FAMILY_RELEASE_BOUNDARY_UNION_WITH_EXACT_AND_OPEN_SWITCH_CELLS",
+            "production_R7_equality_basis": "FIXED_PHASE_SINGLE_SWITCH_RECURRENCE_BOUNDARY_INVARIANCE",
+        },
+        {
+            "obligation_id": f"CRT_PHASE_FAMILY_ACNF_SOUND::{target.name},{case.id},{block.id},{binding['formula_hash']}",
+            "status": "PASS",
+            "formula_hash": binding["formula_hash"],
+            "acnf_hash": binding["acnf_hash"],
+            "candidate_domain_hash": binding["candidate_domain_hash"],
+            "equality_not_relaxation": True,
+            "carry_mode": "FIXED_Q_R7_CRT",
+        },
+        {
+            "obligation_id": f"CRT_PHASE_FAMILY_COMPONENT_PARTITION::{case.id},{block.id}",
+            "status": "PASS",
+            "K": int(plan.family_size),
+            "restricted_periods": list(plan.restricted_periods),
+            "constant_tasks": [
+                spec.name for spec, period in zip(specs, plan.restricted_periods)
+                if int(period) == 1
+            ],
+            "components": [
+                {
+                    "period": int(period),
+                    "tasks": [specs[index].name for index in members],
+                }
+                for period, members in plan.components
+            ],
+            "component_periods_pairwise_coprime": True,
+            "component_period_product_equals_K": True,
+            "component_partition_hash": binding["component_partition_hash"],
+        },
+        {
+            "obligation_id": f"CRT_PHASE_FAMILY_MAX_EXACT::{case.id},{block.id},R={final_R},{binding['formula_hash']}",
+            "status": "PASS",
+            "R": int(final_R),
+            "family_max": int(family_max),
+            "formula_hash": binding["formula_hash"],
+            "acnf_hash": binding["acnf_hash"],
+            "candidate_domain_hash": binding["candidate_domain_hash"],
+            "component_partition_hash": binding["component_partition_hash"],
+            "component_maxima_hash": component_maxima_hash,
+            "component_maxima": list(details["component_maxima"]),
+            "component_argmax": list(details["component_argmax"]),
+            "winning_candidate": details["winning_candidate"],
+            "witness_k": int(details["witness_k"]),
+            "witness_q": int(details["witness_q"]),
+            "witness_reevaluation": int(details["witness_reevaluation"]),
+            "witness_equals_family_max": int(details["witness_reevaluation"]) == int(family_max),
+            "complete_local_residue_enumeration": True,
+            "global_q_enumerated": False,
+            "streaming_residue_work": int(plan.streaming_residue_work),
+        },
+        {
+            "obligation_id": f"CRT_PHASE_FAMILY_DIRECT_POSTFIX::{case.id},{block.id}",
+            "status": "PASS",
+            **block.as_dict(),
+            "Q": int(plan.joint_period),
+            "K": int(plan.family_size),
+            "R_B": int(final_R),
+            "W_B_R_B": int(direct_workload),
+            "formula_hash": binding["formula_hash"],
+            "acnf_hash": binding["acnf_hash"],
+            "candidate_domain_hash": binding["candidate_domain_hash"],
+            "restricted_period_hash": binding["restricted_period_hash"],
+            "component_partition_hash": binding["component_partition_hash"],
+            "component_maxima_hash": component_maxima_hash,
+            "winning_candidate": details["winning_candidate"],
+            "k_star": int(details["witness_k"]),
+            "q_star": int(details["witness_q"]),
+            "witness_reevaluation": int(details["witness_reevaluation"]),
+            "carry_mode": "FIXED_Q_R7_CRT",
+            "candidate_strategy": candidate_strategy,
+            "direct_recheck": True,
+            "W_le_R_le_D": int(direct_workload) <= int(final_R) <= deadline,
+        },
+    ))
+    return {
+        **block.as_dict(),
+        "terminal_type": "CRT_PHASE_FAMILY",
+        "R": int(final_R),
+        "W": int(direct_workload),
+        "formula_hash": binding["formula_hash"],
+        "candidate_steps": len(rows),
+        "family_size": int(plan.family_size),
+        "component_periods": list(plan.component_periods),
+        "streaming_residue_work": int(plan.streaming_residue_work),
+        "receipts": receipts,
+    }, rows, None
+
+def _phase_block_postfix_search_v10_17(
     model: BoundModel,
     target: TaskBound,
     hp_tasks: tuple[TaskBound, ...],
@@ -1370,7 +1782,7 @@ def _phase_block_postfix_search_v10_16(
     protected_response_by_task: dict[str, int],
     case: CaseKey,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str | None]:
-    """V10.16 adaptive PRE_HI phase-block terminal without global-q enumeration.
+    """V10.17 mixed PRE_HI terminal: V10.16 lifted blocks plus exact CRT families.
 
     Numeric search stays deliberately compact.  Formula/hash receipts are
     materialized only for final PASS leaves; failed internal nodes never build
@@ -1382,6 +1794,14 @@ def _phase_block_postfix_search_v10_16(
         return None, [], f"V10_16_PHASE_BLOCK_NOT_APPLICABLE:{case.id}"
 
     specs = _carry_task_specs(hp_tasks, path)
+    runtime_total_order_hash = _stable_hash([
+        {
+            "task": task.name,
+            "priority": int(task.priority),
+            "criticality": task.criticality,
+        }
+        for task in model.tasks
+    ])
     completion_bounds: tuple[int, ...] | None = None
     if hp_tasks and all(task.name in protected_response_by_task for task in hp_tasks):
         candidate = tuple(int(protected_response_by_task[task.name]) for task in hp_tasks)
@@ -1517,6 +1937,7 @@ def _phase_block_postfix_search_v10_16(
             })
             passed[block.id] = {
                 **block.as_dict(),
+                "terminal_type": "LIFTED_BLOCK",
                 "R": int(R),
                 "W": int(final_workload),
                 "formula_hash": binding["formula_hash"],
@@ -1528,32 +1949,113 @@ def _phase_block_postfix_search_v10_16(
             })
             continue
 
-        block_attempts.append({
-            **block.as_dict(), "status": "FAILED_BLOCK",
-            "W_at_D": int(workload_at_deadline),
-            "projection_sizes": [int(p.phase_count) for p in projections],
-            "candidate_steps": int(candidate_steps),
-        })
+        # V10.17 family compression is a peer terminal, not a last-resort
+        # escape from the structural budget.  Once the cheap lifted block fails,
+        # try the exact family at R=D.  A family failure only means this block is
+        # too coarse for a common postfix; if a legal split exists the exact
+        # partition is refined and proof search continues.
         active_leaf_count = len(passed) + len(pending) + 1
+        mathematical_candidates = {
+            prime
+            for projection in projections
+            if int(projection.phase_count) > 1
+            for prime in _small_prime_factors(int(projection.phase_count))
+            if int(joint_period) // int(block.modulus) % int(prime) == 0
+        }
         factor = _phase_block_split_factor(
             block, projections, specs, joint_period=int(joint_period),
             current_leaf_count=int(active_leaf_count),
         )
+        crt_rows: list[dict[str, Any]] = []
+        crt_failure: str | None = None
+        family_size = int(joint_period) // int(block.modulus)
+        crt_plan: CRTPhaseFamilyPlan | None = None
+        if mathematical_candidates:
+            try:
+                crt_plan = crt_phase_family_plan(
+                    int(target.period), int(q_step), int(n0), specs,
+                    int(joint_period), int(block.modulus), int(block.residue),
+                )
+            except CarryInEnvelopeUnresolved as exc:
+                crt_failure = str(exc)
+        try_crt_family = bool(
+            crt_plan is not None
+            and (
+                int(block.depth) == 0
+                or int(crt_plan.streaming_residue_work)
+                <= CRT_PHASE_FAMILY_EAGER_STREAMING_RESIDUE_WORK
+            )
+        )
+        if try_crt_family:
+            crt_terminal, crt_rows, crt_failure = _crt_phase_family_postfix_search_v10_17(
+                target, case, specs, block,
+                n0=int(n0), q_step=int(q_step), joint_period=int(joint_period),
+                runtime_total_order_hash=str(runtime_total_order_hash),
+                controller_period=int(model.agent_period),
+                recurrence_after_deadline_failure=bool(
+                    int(block.depth) > 0
+                    and crt_plan is not None
+                    and int(crt_plan.streaming_residue_work)
+                    <= CRT_PHASE_FAMILY_EAGER_STREAMING_RESIDUE_WORK
+                ),
+            )
+            if crt_terminal is not None:
+                leaf_receipts.extend(crt_terminal.pop("receipts"))
+                passed[block.id] = crt_terminal
+                block_attempts.append({
+                    **block.as_dict(),
+                    "status": "PASS_CRT_PHASE_FAMILY",
+                    "R": int(crt_terminal["R"]),
+                    "W": int(crt_terminal["W"]),
+                    "projection_sizes": [int(p.phase_count) for p in projections],
+                    "lifted_W_at_D": int(workload_at_deadline),
+                    "crt_candidate_path": crt_rows,
+                    "family_size": int(crt_terminal["family_size"]),
+                    "crt_activation": "ROOT_OR_EAGER_STREAMING_PLAN",
+                    "component_periods": list(crt_terminal["component_periods"]),
+                    "streaming_residue_work": int(crt_terminal["streaming_residue_work"]),
+                    "structural_leaf_count": int(active_leaf_count),
+                })
+                continue
+
         if factor is None:
-            mathematical_candidates = {
-                prime
-                for projection in projections
-                if int(projection.phase_count) > 1
-                for prime in _small_prime_factors(int(projection.phase_count))
-                if int(joint_period) // int(block.modulus) % int(prime) == 0
-            }
-            reason = (
-                "STRUCTURAL_LEAF_BUDGET_EXHAUSTED"
-                if mathematical_candidates else "NO_LEGAL_SPLIT"
+            block_attempts.append({
+                **block.as_dict(),
+                "status": "FAILED_BLOCK",
+                "W_at_D": int(workload_at_deadline),
+                "projection_sizes": [int(p.phase_count) for p in projections],
+                "candidate_steps": int(candidate_steps),
+                "crt_failure": crt_failure,
+                "crt_candidate_path": crt_rows,
+                "crt_attempted": bool(try_crt_family),
+                "family_size": int(family_size),
+                "structural_leaf_count": int(active_leaf_count),
+            })
+            terminal_reason = str(
+                crt_failure
+                or (
+                    "STRUCTURAL_LEAF_BUDGET_EXHAUSTED"
+                    if mathematical_candidates else "NO_LEGAL_SPLIT"
+                )
             )
             return None, block_attempts, (
-                f"PHASE_BLOCK_REFINEMENT_INSUFFICIENT:{case.id}:{block.id}:{reason}"
+                f"PHASE_BLOCK_REFINEMENT_INSUFFICIENT:{case.id}:{block.id}:"
+                f"{terminal_reason}"
             )
+
+        block_attempts.append({
+            **block.as_dict(),
+            "status": "FAILED_BLOCK",
+            "W_at_D": int(workload_at_deadline),
+            "projection_sizes": [int(p.phase_count) for p in projections],
+            "candidate_steps": int(candidate_steps),
+            "crt_failure": crt_failure,
+            "crt_candidate_path": crt_rows,
+            "crt_attempted": bool(try_crt_family),
+            "family_size": int(family_size),
+            "split_factor": int(factor),
+            "structural_leaf_count": int(active_leaf_count),
+        })
         try:
             children = _phase_block_children(block, int(factor), int(joint_period))
         except PCSSCUnresolved as exc:
@@ -1589,7 +2091,7 @@ def _phase_block_postfix_search_v10_16(
     maximum_response = max(int(cert["R"]) for cert in leaf_certs)
     if maximum_response <= 0 or maximum_response > deadline:
         return None, block_attempts, (
-            f"V10_16_PHASE_BLOCK_RCERT_INVALID:{case.id}:R={maximum_response}:D={deadline}"
+            f"V10_17_MIXED_PHASE_TERMINAL_RCERT_INVALID:{case.id}:R={maximum_response}:D={deadline}"
         )
     worst = max(leaf_certs, key=lambda cert: (int(cert["R"]), str(cert["block_id"])))
     try:
@@ -1604,12 +2106,15 @@ def _phase_block_postfix_search_v10_16(
             "block_id": cert["block_id"],
             "M": cert["M"],
             "a": cert["a"],
+            "terminal_type": cert["terminal_type"],
             "R": cert["R"],
             "W": cert["W"],
             "formula_hash": cert["formula_hash"],
         }
         for cert in sorted(leaf_certs, key=lambda row: (int(row["M"]), int(row["a"])))
     ])
+    lifted_count = sum(1 for cert in leaf_certs if cert["terminal_type"] == "LIFTED_BLOCK")
+    crt_count = sum(1 for cert in leaf_certs if cert["terminal_type"] == "CRT_PHASE_FAMILY")
     phase_receipts = [{
         "obligation_id": f"PHASE_BLOCK_ROOT_DOMAIN::{case.id}",
         "status": "PASS",
@@ -1625,29 +2130,44 @@ def _phase_block_postfix_search_v10_16(
             "split_factors": "prime factors of current task-local projection periods",
         },
     }, *split_receipts, *leaf_receipts, {
-        "obligation_id": f"PHASE_BLOCK_LEAF_COVERAGE::{case.id}",
+        "obligation_id": f"MIXED_PHASE_TERMINAL_COVER::{case.id}",
         "status": "PASS",
         "case_id": case.id,
         "Q": int(joint_period),
-        "leaf_count": len(final_leaves),
-        "leaf_digest_sha256": leaf_digest,
+        "terminal_count": len(final_leaves),
+        "lifted_block_terminal_count": int(lifted_count),
+        "crt_phase_family_terminal_count": int(crt_count),
+        "terminal_digest_sha256": leaf_digest,
         "verified_by_legal_split_induction": True,
+        "terminal_domains_pairwise_disjoint": True,
+        "terminal_domains_union_Z_Q": True,
     }, {
-        "obligation_id": f"ALL_PHASE_BLOCKS_POSTFIX::{case.id}",
+        "obligation_id": f"ALL_MIXED_PHASE_TERMINALS_POSTFIX::{case.id}",
         "status": "PASS",
         "case_id": case.id,
-        "leaf_count": len(final_leaves),
+        "terminal_count": len(final_leaves),
         "R_case": int(maximum_response),
         "uniform_R_case_is_common_postfix": False,
     }, {
-        "obligation_id": f"PHASE_BLOCK_RESPONSE_CERTIFICATE::{case.id}",
+        "obligation_id": f"MIXED_PHASE_TERMINAL_RESPONSE_CERTIFICATE::{case.id}",
         "status": "PASS",
         "case_id": case.id,
         "R": int(maximum_response),
         "R_le_D": int(maximum_response) <= deadline,
-        "derivation": "max of all final phase-block completion bounds",
+        "derivation": "max of all final lifted-block / CRT-family terminal completion bounds",
         "not_a_common_block_postfix": True,
     }]
+    if crt_count:
+        phase_receipts.append({
+            "obligation_id": f"CRT_PHASE_FAMILY_RESPONSE_CERTIFICATE::{case.id}",
+            "status": "PASS",
+            "case_id": case.id,
+            "crt_phase_family_terminal_count": int(crt_count),
+            "R": int(maximum_response),
+            "R_le_D": int(maximum_response) <= deadline,
+            "premise": f"MIXED_PHASE_TERMINAL_COVER::{case.id}",
+            "not_a_common_block_postfix": True,
+        })
 
     return {
         **case.as_dict(),
@@ -1658,10 +2178,12 @@ def _phase_block_postfix_search_v10_16(
         "postfixed": True,
         "candidate_path": block_attempts,
         "controller_prefix_receipt": prefix_receipt,
-        "case_theorem_basis": "V10_16_ADAPTIVE_PHASE_BLOCK",
+        "case_theorem_basis": "V10_17_MIXED_PHASE_TERMINAL",
         "phase_block_joint_period": int(joint_period),
         "phase_block_leaf_count": len(final_leaves),
         "phase_block_leaf_digest_sha256": leaf_digest,
+        "lifted_block_terminal_count": int(lifted_count),
+        "crt_phase_family_terminal_count": int(crt_count),
         "worst_phase_block": str(worst["block_id"]),
         "worst_phase_block_final_workload": int(worst["W"]),
         "uniform_R_is_common_postfix": False,
@@ -1709,7 +2231,7 @@ def _case_consistent_postfix_search(
     tested: list[dict[str, Any]] = []
     for case in domain:
         if case.switch.kind == "PRE_HI":
-            cert, path_rows, failure = _phase_block_postfix_search_v10_16(
+            cert, path_rows, failure = _phase_block_postfix_search_v10_17(
                 model, target, hp_tasks, path, protected_response_by_task, case
             )
             if cert is None:
@@ -1717,18 +2239,18 @@ def _case_consistent_postfix_search(
                     "terminal": "CASE_CONSISTENT",
                     **case.as_dict(),
                     "status": "UNRESOLVED",
-                    "refinement_version": "V10_16",
+                    "refinement_version": "V10_17",
                     "refinement_candidate_path": path_rows,
                     "failure": failure,
                 })
                 return None, tested, receipts, (
-                    f"CASE_CONSISTENT_PCSSC_UNRESOLVED:{case.id}:V10_16={failure}"
+                    f"CASE_CONSISTENT_PCSSC_UNRESOLVED:{case.id}:V10_17={failure}"
                 )
             receipts.append({
-                "obligation_id": f"ADAPTIVE_PHASE_BLOCK_REFINEMENT::{target.name},{case.id}",
+                "obligation_id": f"ADAPTIVE_PHASE_FAMILY_REFINEMENT::{target.name},{case.id}",
                 "status": "PASS",
                 "case_id": case.id,
-                "theorem_basis": "V10_16_ADAPTIVE_PHASE_BLOCK_PCSSC",
+                "theorem_basis": "V10_17_MIXED_PHASE_TERMINAL_PCSSC",
                 "phase_block_joint_period": int(cert["phase_block_joint_period"]),
                 "phase_block_leaf_count": int(cert["phase_block_leaf_count"]),
                 "phase_block_leaf_digest_sha256": cert["phase_block_leaf_digest_sha256"],
@@ -1797,7 +2319,7 @@ def _case_consistent_postfix_search(
             "candidate_path": cert["candidate_path"],
             "case_theorem_basis": theorem_basis,
         }
-        if theorem_basis == "V10_16_ADAPTIVE_PHASE_BLOCK":
+        if theorem_basis == "V10_17_MIXED_PHASE_TERMINAL":
             tested_row.update({
                 "phase_block_joint_period": int(cert["phase_block_joint_period"]),
                 "phase_block_leaf_count": int(cert["phase_block_leaf_count"]),
@@ -1810,7 +2332,7 @@ def _case_consistent_postfix_search(
         prefix_receipt = dict(cert["controller_prefix_receipt"])
         prefix_receipt["case_id"] = case.id
         receipts.append(prefix_receipt)
-        if theorem_basis != "V10_16_ADAPTIVE_PHASE_BLOCK":
+        if theorem_basis != "V10_17_MIXED_PHASE_TERMINAL":
             receipts.extend((
                 {
                     "obligation_id": f"CASE_WORKLOAD_DOMINANCE::{target.name},{case.id},R={cert['R']}",
@@ -1847,9 +2369,9 @@ def _case_consistent_postfix_search(
         str(cert["case_id"]) for cert in case_certificates
         if cert.get("case_theorem_basis") == "V10_13_CASE_CONDITIONED_CARRY_FUTURE"
     ]
-    v10_16_cases = [
+    v10_17_cases = [
         str(cert["case_id"]) for cert in case_certificates
-        if cert.get("case_theorem_basis") == "V10_16_ADAPTIVE_PHASE_BLOCK"
+        if cert.get("case_theorem_basis") == "V10_17_MIXED_PHASE_TERMINAL"
     ]
     receipts.extend((
         {
@@ -1871,8 +2393,8 @@ def _case_consistent_postfix_search(
             "uniform_Rcert_is_common_postfix": False,
             "v10_13_conditioned_case_count": len(v10_13_cases),
             "v10_13_conditioned_case_ids": v10_13_cases,
-            "v10_16_adaptive_phase_block_case_count": len(v10_16_cases),
-            "v10_16_adaptive_phase_block_case_ids": v10_16_cases,
+            "v10_17_mixed_phase_terminal_case_count": len(v10_17_cases),
+            "v10_17_mixed_phase_terminal_case_ids": v10_17_cases,
         },
         {
             "obligation_id": f"CASE_CONSISTENT_RESPONSE_CERTIFICATE::{target.name},Rcert={Rcert}",
@@ -1883,25 +2405,32 @@ def _case_consistent_postfix_search(
             "not_a_global_postfix": True,
         },
         {
-            "obligation_id": (
-                f"PCSSC_REFINED_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_16::{target.name}"
-                if v10_16_cases else
-                f"PCSSC_CASE_CONDITIONED_SAFE_PREFIX_COMPLETION_EXPORT_V10_13::{target.name}"
-                if v10_13_cases else
-                f"PCSSC_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_12::{target.name}"
-            ),
+            "obligation_id": f"GUARDED_SAFE_PREFIX_WINDOW_REDUCTION::{target.name},Rcert={Rcert},{domain_hash}",
             "status": "PASS",
             "response_bound": int(Rcert),
+            "canonical_case_domain_hash": domain_hash,
             "premise": f"ALL_CASES_POSTFIX_COVERED::{target.name}",
-            "safe_prefix_completion_contract": True,
+            "guard": "NoHIBadBefore(r_J+Rcert)",
+            "reduction": "every concrete release-entry/switch/classification instance belongs to exactly one canonical case",
+        },
+        {
+            "obligation_id": f"GUARDED_SAFE_PREFIX_COMPLETION_EXPORT::{target.name},Rcert={Rcert},{domain_hash}",
+            "status": "PASS",
+            "response_bound": int(Rcert),
+            "canonical_case_domain_hash": domain_hash,
+            "premise": f"GUARDED_SAFE_PREFIX_WINDOW_REDUCTION::{target.name},Rcert={Rcert},{domain_hash}",
+            "theorem_basis": PCSSC_GUARDED_COMPLETION_THEOREM_V10_17,
+            "source_task_criticality": target.criticality,
+            "conditional_safe_prefix_completion": True,
+            "not_an_unconditional_future_invariant": True,
             "v10_13_conditioned_cases": v10_13_cases,
-            "v10_16_adaptive_phase_block_cases": v10_16_cases,
+            "v10_17_mixed_phase_terminal_cases": v10_17_cases,
         },
         {
             "obligation_id": f"HI_TARGET_SAFE::{target.name}",
             "status": "PASS",
             "route": (
-                "PCSSC_REFINED_CASES_V10_16" if v10_16_cases
+                "PCSSC_MIXED_PHASE_TERMINALS_V10_17" if v10_17_cases
                 else "PCSSC_CASE_CONDITIONED_CARRY_V10_13" if v10_13_cases
                 else "PCSSC_CASE_CONSISTENT"
             ),
@@ -1985,11 +2514,18 @@ def prove_target_pcssc(
     prefix = derive_protected_priority_prefix(model)
     universal_completion = prefix.response_by_task
     certified_completion = dict(certified_completion_by_task or {})
+
+    # V10.17: only unconditional completion sources may tighten a workload
+    # without an explicit prefix-local use proof.  PCSSC exports are guarded
+    # SPComp certificates; they remain available in the strict-priority DAG but
+    # are not consumed by this implementation for carry/future pruning.
     protected_response_by_task = dict(universal_completion)
     completion_source_by_task: dict[str, list[str]] = {
         name: ["UNIVERSAL_RAW_SERVICE_RESPONSE_PREFIX"]
         for name in universal_completion
     }
+    base_available: dict[str, int] = {}
+    conditional_pcssc_available: dict[str, int] = {}
     for name, certificate in certified_completion.items():
         task = model.task_by_name.get(name)
         if task is None or certificate.task != name:
@@ -2017,28 +2553,35 @@ def prove_target_pcssc(
                 f"CERTIFIED_COMPLETION_CERTIFICATE_INVALID:{name}",
                 tuple(receipts), tuple(ledger), (),
             )
-        old = protected_response_by_task.get(name)
-        if old is None or int(certificate.response_bound) < int(old):
-            protected_response_by_task[name] = int(certificate.response_bound)
         completion_source_by_task.setdefault(name, []).append(certificate.source)
+        if certificate.source == BASE_COMPLETION_SOURCE:
+            base_available[name] = int(certificate.response_bound)
+            old = protected_response_by_task.get(name)
+            if old is None or int(certificate.response_bound) < int(old):
+                protected_response_by_task[name] = int(certificate.response_bound)
+        elif certificate.source == PCSSC_COMPLETION_SOURCE:
+            conditional_pcssc_available[name] = int(certificate.response_bound)
+        else:
+            return TargetCertificate(
+                target.name, "UNRESOLVED", None,
+                f"CERTIFIED_COMPLETION_SOURCE_UNKNOWN:{name}:{certificate.source}",
+                tuple(receipts), tuple(ledger), (),
+            )
+
     protected = set(protected_response_by_task)
     hp_names = {task.name for task in hp_tasks}
-    certified_reused = {
-        name: int(certified_completion[name].response_bound)
-        for name in sorted(hp_names & set(certified_completion))
-    }
     base_reused = {
-        name: certified_reused[name]
-        for name in certified_reused
-        if certified_completion[name].source == BASE_COMPLETION_SOURCE
+        name: int(base_available[name])
+        for name in sorted(hp_names & set(base_available))
     }
-    pcssc_reused = {
-        name: certified_reused[name]
-        for name in certified_reused
-        if certified_completion[name].source == PCSSC_COMPLETION_SOURCE
+    pcssc_available = {
+        name: int(conditional_pcssc_available[name])
+        for name in sorted(hp_names & set(conditional_pcssc_available))
     }
-    unprotected_hp_lo = [task.name for task in hp_tasks
-                         if task.criticality == "LO" and task.name not in protected]
+    unprotected_hp_lo = [
+        task.name for task in hp_tasks
+        if task.criticality == "LO" and task.name not in protected
+    ]
     receipts.append({
         "obligation_id": f"CERTIFIED_COMPLETION_PREFIX_SOUND::{target.name}",
         "status": "PASS",
@@ -2046,18 +2589,19 @@ def prove_target_pcssc(
         "target_priority": int(target.priority),
         "certificates": {
             name: certified_completion[name].as_dict()
-            for name in sorted(certified_reused, key=lambda item: model.task_by_name[item].priority)
+            for name in sorted(hp_names & set(certified_completion),
+                               key=lambda item: model.task_by_name[item].priority)
         },
+        "pcssc_completion_semantics": "CONDITIONAL_SAFE_PREFIX_SPCOMP",
     })
     receipts.append({
         "obligation_id": f"REACHABLE_CARRY_IN::{target.name}",
         "status": "PASS",
         "route": "R7_SINGLE_SWITCH_AGGREGATE_BACKLOG_ENVELOPE",
         "universal_protected_priority_prefix": list(prefix.task_names),
-        "base_section4_1_completion_envelopes_reused": base_reused,
-        "pcssc_completion_envelopes_reused": pcssc_reused,
-        "certified_completion_envelopes_reused": certified_reused,
-        "effective_completion_envelopes": {
+        "base_unconditional_completion_envelopes_used": base_reused,
+        "conditional_pcssc_completion_available_not_consumed": pcssc_available,
+        "effective_unconditional_completion_envelopes": {
             task.name: int(protected_response_by_task[task.name])
             for task in hp_tasks if task.name in protected_response_by_task
         },
@@ -2065,6 +2609,8 @@ def prove_target_pcssc(
             task.name: completion_source_by_task[task.name]
             for task in hp_tasks if task.name in completion_source_by_task
         },
+        "prefix_local_completion_use_receipts": [],
+        "conditional_completion_tightening_enabled": False,
         "lo_tasks_without_single_job_completion_envelope": unprotected_hp_lo,
         "handling_of_unprotected_lo": (
             "included in aggregate work-conserving backlog; no per-task R<=T premise required"
@@ -2072,43 +2618,28 @@ def prove_target_pcssc(
     })
     if base_reused:
         ledger.append({
-            "kind": "BASE_SECTION4_1_COMPLETION_ENVELOPE_REUSE",
+            "kind": "BASE_UNCONDITIONAL_COMPLETION_ENVELOPE_REUSE",
             "target": target.name,
             "tasks": base_reused,
             "soundness_basis": (
-                "DYNAMIC_TO_BASE_C_AMC_SEM_TRACE_REFINEMENT plus successful fixed-priority "
-                "Section 4.1 prefix certificate; max(R_LO,R_HI) bounds completion from release"
+                "BASE_UNCONDITIONAL_COMPLETION_EXPORT_V10_17 with task-specific WCRT "
+                "and deployed-to-paper completion correspondence"
             ),
-            "soundness_direction": "TIGHTENS_CARRY_IN_WITH_ALREADY_PROVED_COMPLETION_BOUNDS",
+            "soundness_direction": "TIGHTENS_CARRY_IN_WITH_UNCONDITIONAL_COMPLETION_BOUNDS",
         })
-    if pcssc_reused:
+    if pcssc_available:
         ledger.append({
-            "kind": "CROSS_TARGET_PCSSC_COMPLETION_PROPAGATION",
+            "kind": "CONDITIONAL_PCSSC_COMPLETION_AVAILABLE_NOT_CONSUMED",
             "target": target.name,
-            "tasks": pcssc_reused,
+            "tasks": pcssc_available,
             "theorem_basis_by_task": {
-                name: certified_completion[name].theorem_basis for name in pcssc_reused
+                name: certified_completion[name].theorem_basis for name in pcssc_available
             },
-            "soundness_basis": (
-                "each reused PCSSC certificate carries an explicit pointwise-V10.11 or "
-                "case-consistent-V10.12 safe-prefix completion theorem basis; strict "
-                "fixed-priority forward induction permits only fully proved HP Rcert<=D<=T"
+            "reason": (
+                "V10.17 requires per-case/per-horizon PREFIX_LOCAL_COMPLETION_USE before "
+                "a guarded PCSSC completion certificate may delete carry or releases"
             ),
-            "soundness_direction": "TIGHTENS_CARRY_IN_AND_PROTECTED_PRE_HI_WITH_PROVED_HP_BOUNDS",
-        })
-    for name in sorted(certified_reused, key=lambda item: model.task_by_name[item].priority):
-        certificate = certified_completion[name]
-        receipts.append({
-            "obligation_id": f"CROSS_TARGET_COMPLETION_BOUND_REUSE::{name}::{target.name}",
-            "status": "PASS",
-            "source_task": name,
-            "target_task": target.name,
-            "response_bound": int(certificate.response_bound),
-            "source": certificate.source,
-            "theorem_basis": certificate.theorem_basis,
-            "source_priority": int(certificate.priority),
-            "target_priority": int(target.priority),
-            "acyclic": int(certificate.priority) < int(target.priority),
+            "soundness_direction": "NO_WORKLOAD_TIGHTENING_FROM_CONDITIONAL_CERTIFICATE",
         })
     ledger.append({
         "kind": "R7_SINGLE_SWITCH_AGGREGATE_CARRY_IN",
@@ -2172,7 +2703,7 @@ def prove_target_pcssc(
         "target": target.name,
         "effect": (
             "V10.12 LO-entry aggregate envelopes may choose different theta-compatible "
-            "task phases; PRE_HI canonical cases are handled directly by V10.16"
+            "task phases; PRE_HI canonical cases are handled directly by the V10.17 mixed terminal"
         ),
         "soundness_direction": "ONLY_ADDS_CROSS_TASK_PHASE_COMBINATIONS",
     })
@@ -2198,15 +2729,15 @@ def prove_target_pcssc(
     receipts.extend(case_receipts)
     tested = list(case_tested)
     if case_bound is not None:
-        used_v10_16 = any(
+        used_v10_17 = any(
             str(row.get("obligation_id", "")).startswith(
-                f"PCSSC_REFINED_CASE_SAFE_PREFIX_COMPLETION_EXPORT_V10_16::{target.name}"
+                f"ADAPTIVE_PHASE_FAMILY_REFINEMENT::{target.name},"
             )
             for row in case_receipts
         )
         used_v10_13 = any(
             str(row.get("obligation_id", "")).startswith(
-                f"PCSSC_CASE_CONDITIONED_SAFE_PREFIX_COMPLETION_EXPORT_V10_13::{target.name}"
+                f"CASE_CONDITIONED_CARRY_FUTURE_REFINEMENT::{target.name},"
             )
             for row in case_receipts
         )
@@ -2223,40 +2754,38 @@ def prove_target_pcssc(
                 "event_graph_required": False,
                 "soundness_direction": "REMOVES_ONLY_IMPOSSIBLE_CROSS_PHASE_COMBINATIONS",
             })
-        if used_v10_16:
+        if used_v10_17:
             ledger.append({
-                "kind": "V10_16_ADAPTIVE_PHASE_BLOCK_PCSSC",
+                "kind": "V10_17_MIXED_PHASE_TERMINAL_PCSSC",
                 "target": target.name,
                 "effect": (
-                    "replace global joint-q PRE_HI enumeration by adaptive congruence blocks; "
-                    "lift R7 carry and future counts over complete task-local gcd projections, "
-                    "directly recheck every final block postfix, then aggregate leaf bounds"
+                    "PRE_HI partitions may close by V10.16 lifted blocks or exact V10.17 "
+                    "CRT phase-family terminals; every terminal has a direct postfix and "
+                    "the terminal domains form one exact congruence cover"
                 ),
                 "scope": "generic PRE_HI canonical cases under exact-periodic phase-zero releases",
                 "event_graph_required": False,
                 "global_q_enumerated": False,
-                "soundness_direction": "BLOCK_LIFTING_DOMINATES_EVERY_MEMBER_AND_REFINEMENT_ONLY_PARTITIONS_THE_SAME_DOMAIN",
+                "crt_carry_mode": "FIXED_Q_R7_CRT",
+                "soundness_direction": (
+                    "EXACT_FAMILY_MAX_OR_SOUND_BLOCK_LIFTING_OVER_AN_EXACT_MIXED_DOMAIN_COVER"
+                ),
             })
         return TargetCertificate(
             target.name, "PASS", int(case_bound), None,
             tuple(receipts), tuple(ledger), tuple(tested),
             terminal_route=(
-                TARGET_PROVED_PCSSC_REFINED_CASES_V10_16
-                if used_v10_16 else
+                TARGET_PROVED_PCSSC_MIXED_PHASE_TERMINALS_V10_17
+                if used_v10_17 else
                 TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY
                 if used_v10_13 else TARGET_PROVED_PCSSC_CASE_CONSISTENT
             ),
-            completion_theorem_basis=(
-                PCSSC_REFINED_CASE_COMPLETION_THEOREM_V10_16
-                if used_v10_16 else
-                PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM
-                if used_v10_13 else PCSSC_CASE_COMPLETION_THEOREM
-            ),
+            completion_theorem_basis=PCSSC_GUARDED_COMPLETION_THEOREM_V10_17,
         )
 
     return TargetCertificate(
         target.name, "UNRESOLVED", None,
-        case_failure or point_failure or "CASE_CONSISTENT_PCSSC_UNRESOLVED",
+        case_failure or "CASE_CONSISTENT_PCSSC_UNRESOLVED",
         tuple(receipts), tuple(ledger), tuple(tested),
     )
 

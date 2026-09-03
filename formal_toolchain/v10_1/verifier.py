@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,7 @@ from .constants import (
     FRAMEWORK_REVISION, PRIMARY_CLAIM, PROOF_ROUTE, RESULT_INVALID, RESULT_PROVED, RESULT_UNRESOLVED,
     SCOPE, TARGET_PROVED_BASE, TARGET_PROVED_PCSSC, TARGET_PROVED_PCSSC_CASE_CONSISTENT,
     TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY,
-    TARGET_PROVED_PCSSC_REFINED_CASES_V10_16,
+    TARGET_PROVED_PCSSC_MIXED_PHASE_TERMINALS_V10_17,
 )
 from .completion_certificates import (
     CompletionCertificateError,
@@ -333,6 +334,15 @@ def verify_bundle_v10_1(
         _write(out / "proof_summary.json", summary)
         return summary
 
+    base_refinement_hash = sha256(
+        json.dumps(
+            base_refinement.as_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
     base_sched = run_original_c_amc_sem_schedulability_test(model)
     receipts["base_c_amc_sem"]["section4_1"] = base_sched
     statuses["BASE_C_AMC_SEM_SECTION4_1_CERTIFICATE"] = str(base_sched["status"])
@@ -345,9 +355,9 @@ def verify_bundle_v10_1(
         _write(out / "proof_summary.json", summary)
         return summary
 
-    # V10.12 exports every successful BASE/PCSSC completion bound into one dynamic
-    # priority-ordered certificate map.  Later PCSSC PASS results are appended
-    # to the same map, but only after a fully closed target certificate exists.
+    # V10.17 keeps one strict-priority completion map.  BASE entries are
+    # unconditional; later PCSSC entries carry guarded safe-prefix semantics and
+    # are appended only after a fully closed target certificate exists.
     try:
         certified_completion_by_task = build_base_completion_certificates(
             model,
@@ -375,6 +385,22 @@ def verify_bundle_v10_1(
             name: certificate.as_dict()
             for name, certificate in certified_completion_by_task.items()
         },
+        "base_unconditional_exports": [
+            {
+                "obligation_id": (
+                    f"BASE_UNCONDITIONAL_COMPLETION_EXPORT::{name},"
+                    f"Rbase={certificate.response_bound},{base_refinement_hash}"
+                ),
+                "status": "PASS",
+                "task": name,
+                "response_bound": int(certificate.response_bound),
+                "theorem_basis": certificate.theorem_basis,
+                "base_refine_hash": base_refinement_hash,
+                "task_specific_wcrt_bound": True,
+                "completion_correspondence_bound": True,
+            }
+            for name, certificate in certified_completion_by_task.items()
+        ],
         "pcssc_exports": [],
         "target_prefix_uses": [],
         "controller_macro_rebuilds_due_to_propagation": 0,
@@ -543,7 +569,7 @@ def verify_bundle_v10_1(
                 TARGET_PROVED_PCSSC,
                 TARGET_PROVED_PCSSC_CASE_CONSISTENT,
                 TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY,
-                TARGET_PROVED_PCSSC_REFINED_CASES_V10_16,
+                TARGET_PROVED_PCSSC_MIXED_PHASE_TERMINALS_V10_17,
             }:
                 statuses[f"HI_TARGET_SAFE::{task.name}"] = "UNRESOLVED"
                 unresolved.append(f"{task.name}:PCSSC_PASS_MISSING_VALID_TERMINAL_ROUTE")
@@ -625,7 +651,7 @@ def verify_bundle_v10_1(
         "base_route_status": base_sched["status"],
         "base_hi_route_status": str(base_sched.get("hi_safety_status", "UNRESOLVED")),
         "event_graph_in_pass_dependency": False,
-        "terminal_semantics": "BASE_OR_PCSSC_POINTWISE_OR_CASE_CONSISTENT_WITH_V10_13_LO_ENTRY_AND_V10_16_ADAPTIVE_PRE_HI_PHASE_BLOCK_REFINEMENT",
+        "terminal_semantics": "BASE_OR_PCSSC_CASE_CONSISTENT_WITH_V10_13_LO_ENTRY_AND_V10_17_MIXED_PRE_HI_PHASE_TERMINALS",
     }
     _write(out / "proof_receipts.json", receipts)
     _write(out / "proof_summary.json", summary)

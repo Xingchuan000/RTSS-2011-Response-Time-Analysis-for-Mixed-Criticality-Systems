@@ -82,8 +82,66 @@ class PhaseBlockProjection:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class CRTPhaseFamilyPlan:
+    """Exact V10.17 arithmetic plan for one congruence phase family."""
+
+    joint_period: int
+    block_modulus: int
+    block_residue: int
+    family_size: int
+    restricted_periods: tuple[int, ...]
+    components: tuple[tuple[int, tuple[int, ...]], ...]
+    phase_tables: tuple[tuple[int, ...], ...]
+    candidate_ages: tuple[int, ...]
+    busy_horizon: int
+    production_busy_horizon: int
+    candidate_count: int
+    streaming_residue_work: int
+
+    @property
+    def component_periods(self) -> tuple[int, ...]:
+        return tuple(int(period) for period, _ in self.components)
+
+    @property
+    def residues_per_candidate(self) -> int:
+        return sum(int(period) for period, _ in self.components)
+
+
 class CarryInEnvelopeUnresolved(RuntimeError):
     pass
+
+
+def prehistory_finite_bound(
+    specs: tuple[CarryTaskSpec, ...],
+) -> tuple[int, dict[str, object]]:
+    """V10.17 finite-prehistory sufficient theorem instantiated with max job caps."""
+
+    if not specs:
+        return 0, {
+            "utilization_numerator": 0,
+            "utilization_denominator": 1,
+            "job_cap_sum": 0,
+            "job_caps": (),
+        }
+    caps = tuple(max(int(spec.pre_switch_cap), int(spec.post_switch_cap)) for spec in specs)
+    utilization = sum(
+        (Fraction(int(cap), int(spec.period)) for spec, cap in zip(specs, caps)),
+        Fraction(0, 1),
+    )
+    if utilization >= 1:
+        raise CarryInEnvelopeUnresolved("PREHISTORY_BOUND_UNPROVED")
+    cap_sum = sum(int(value) for value in caps)
+    ratio = Fraction(int(cap_sum), 1) / (Fraction(1, 1) - utilization)
+    bound = (int(ratio.numerator) + int(ratio.denominator) - 1) // int(ratio.denominator)
+    return int(bound), {
+        "utilization_numerator": int(utilization.numerator),
+        "utilization_denominator": int(utilization.denominator),
+        "job_cap_sum": int(cap_sum),
+        "job_caps": tuple(
+            (spec.name, int(cap)) for spec, cap in zip(specs, caps)
+        ),
+    }
 
 
 def _ceil_div(value: int, divisor: int) -> int:
@@ -800,6 +858,521 @@ def phase_block_task_projections(
     )
 
 
+def _connected_period_components(
+    periods: tuple[int, ...],
+) -> tuple[tuple[int, tuple[int, ...]], ...]:
+    """Connected components of the V10.17 gcd dependency graph."""
+
+    remaining = {index for index, period in enumerate(periods) if int(period) > 1}
+    rows: list[tuple[int, tuple[int, ...]]] = []
+    while remaining:
+        seed = min(remaining)
+        remaining.remove(seed)
+        stack = [seed]
+        members: list[int] = []
+        while stack:
+            current = stack.pop()
+            members.append(current)
+            linked = [
+                other
+                for other in sorted(remaining)
+                if gcd(int(periods[current]), int(periods[other])) > 1
+            ]
+            for other in linked:
+                remaining.remove(other)
+                stack.append(other)
+        member_tuple = tuple(sorted(members))
+        component_period = 1
+        for index in member_tuple:
+            component_period = lcm(int(component_period), int(periods[index]))
+        rows.append((int(component_period), member_tuple))
+    rows.sort(key=lambda row: row[1][0])
+    return tuple(rows)
+
+
+def _crt_reconstruct(
+    component_periods: tuple[int, ...], component_residues: tuple[int, ...]
+) -> int:
+    value = 0
+    modulus_so_far = 1
+    for modulus, residue in zip(component_periods, component_residues):
+        m = int(modulus)
+        if m == 1:
+            continue
+        delta = (int(residue) - int(value)) % m
+        inverse = pow(int(modulus_so_far) % m, -1, m)
+        step_count = (delta * inverse) % m
+        value += int(modulus_so_far) * int(step_count)
+        modulus_so_far *= m
+        value %= int(modulus_so_far)
+    return int(value)
+
+
+@lru_cache(maxsize=4096)
+def crt_phase_family_plan(
+    target_period: int,
+    q_step: int,
+    n0: int,
+    specs: tuple[CarryTaskSpec, ...],
+    joint_period: int,
+    block_modulus: int,
+    block_residue: int,
+) -> CRTPhaseFamilyPlan:
+    """Build the exact restricted-period/component plan required by V10.17.
+
+    The candidate domain is the complete family release-boundary union.  For a
+    concrete q, inserting extra family boundaries only adds switch cells inside
+    intervals in which that q has no release, so the fixed-q R7 maximum is
+    unchanged while the candidate set is common to every member of the family.
+    """
+
+    Q = int(joint_period)
+    M = int(block_modulus)
+    a = int(block_residue)
+    if Q <= 0 or M <= 0 or Q % M != 0 or a < 0 or a >= M:
+        raise CarryInEnvelopeUnresolved("CRT_PHASE_FAMILY_DOMAIN_INVALID")
+    K = Q // M
+    projections = phase_block_task_projections(
+        int(target_period), int(q_step), int(n0), specs,
+        block_modulus=M, block_residue=a,
+    )
+    restricted_periods = tuple(int(row.phase_count) for row in projections)
+    restricted_lcm = 1
+    for period in restricted_periods:
+        restricted_lcm = lcm(int(restricted_lcm), int(period))
+    if int(restricted_lcm) != int(K):
+        raise CarryInEnvelopeUnresolved("CRT_PHASE_FAMILY_RESTRICTED_PERIOD_IDENTITY_FAILED")
+
+    components = _connected_period_components(restricted_periods)
+    product = 1
+    for index, (period, _) in enumerate(components):
+        for other_period, _ in components[index + 1:]:
+            if gcd(int(period), int(other_period)) != 1:
+                raise CarryInEnvelopeUnresolved("CRT_PHASE_FAMILY_COMPONENT_NOT_COPRIME")
+        product *= int(period)
+    if int(product) != int(K):
+        raise CarryInEnvelopeUnresolved("CRT_PHASE_FAMILY_COMPONENT_PRODUCT_MISMATCH")
+
+    phase_tables: list[tuple[int, ...]] = []
+    for spec, period in zip(specs, restricted_periods):
+        values: list[int] = []
+        for residue in range(int(period)):
+            q = int(a) + int(M) * int(residue)
+            n = int(n0) + int(q) * int(q_step)
+            values.append((-int(n) * int(target_period)) % int(spec.period))
+        phase_tables.append(tuple(values))
+
+    _, _, production_busy_horizon = _transition_busy_upper(specs)
+    prehistory_bound, _ = prehistory_finite_bound(specs)
+    busy_horizon = min(int(production_busy_horizon), int(prehistory_bound))
+    candidate_ages: set[int] = set()
+    for projection in projections:
+        age = int(projection.first_release_age)
+        stride = int(projection.phase_stride)
+        while age <= int(busy_horizon):
+            candidate_ages.add(int(age))
+            age += int(stride)
+    ordered_ages = tuple(sorted(candidate_ages))
+    # one zero-carry candidate plus, for every L, all-pre, exact/open switch
+    # cells at every family boundary <=L, and the all-post cell beyond L.
+    candidate_count = 1 + sum(2 * (index + 1) + 2 for index in range(len(ordered_ages)))
+    residues_per_candidate = sum(int(period) for period, _ in components)
+    streaming_residue_work = int(candidate_count) * max(1, int(residues_per_candidate))
+    return CRTPhaseFamilyPlan(
+        joint_period=Q,
+        block_modulus=M,
+        block_residue=a,
+        family_size=int(K),
+        restricted_periods=restricted_periods,
+        components=components,
+        phase_tables=tuple(phase_tables),
+        candidate_ages=ordered_ages,
+        busy_horizon=int(busy_horizon),
+        production_busy_horizon=int(production_busy_horizon),
+        candidate_count=int(candidate_count),
+        streaming_residue_work=int(streaming_residue_work),
+    )
+
+
+def _task_r7_candidate_demand(
+    spec: CarryTaskSpec,
+    phase: int,
+    busy_length: int,
+    switch_cell_twice_age: int,
+) -> int:
+    """Exact task demand for one common R7 candidate.
+
+    ``switch_cell_twice_age`` is twice the backward switch age: even values are
+    exact integer endpoints, odd values are open-gap representatives.
+    """
+
+    L = int(busy_length)
+    s2 = int(switch_cell_twice_age)
+    total = _count_releases(int(phase), int(spec.period), -L, 0)
+    if total <= 0:
+        return 0
+    if s2 == 0:
+        return int(total) * int(spec.pre_switch_cap)
+    if s2 > 2 * L:
+        return int(total) * int(spec.post_switch_cap)
+
+    if s2 % 2:
+        # Open gap at age u-1/2: ages >=u are pre-switch, ages <=u-1 post.
+        u = (s2 + 1) // 2
+        newer = 0 if u <= 1 else _count_releases(
+            int(phase), int(spec.period), -(int(u) - 1), 0
+        )
+        older_or_boundary = int(total) - int(newer)
+        return (
+            int(older_or_boundary) * int(spec.pre_switch_cap)
+            + int(newer) * int(spec.post_switch_cap)
+        )
+
+    # Exact switch endpoint at age u.  LO at the switch retains primary/pre;
+    # HI at the switch uses post/high, exactly matching the production R7.
+    u = s2 // 2
+    newer = 0 if u <= 1 else _count_releases(
+        int(phase), int(spec.period), -(int(u) - 1), 0
+    )
+    endpoint = int(((-int(u) - int(phase)) % int(spec.period)) == 0)
+    older = int(total) - int(newer) - int(endpoint)
+    endpoint_cap = (
+        int(spec.pre_switch_cap)
+        if spec.criticality == "LO"
+        else int(spec.post_switch_cap)
+    )
+    return (
+        int(older) * int(spec.pre_switch_cap)
+        + int(newer) * int(spec.post_switch_cap)
+        + int(endpoint) * int(endpoint_cap)
+    )
+
+
+def _iter_crt_r7_candidates(plan: CRTPhaseFamilyPlan):
+    # ZERO expands the positive-part branch B_R7=max(0,raw backlog).
+    yield ("ZERO", 0, 0)
+    ages = plan.candidate_ages
+    for index, length in enumerate(ages):
+        L = int(length)
+        yield ("SWITCH", L, 0)  # switch at zero: all carry releases pre-switch
+        for boundary in ages[: index + 1]:
+            u = int(boundary)
+            yield ("SWITCH", L, 2 * u - 1)  # open gap immediately newer than u
+            yield ("SWITCH", L, 2 * u)      # exact endpoint at u
+        yield ("SWITCH", L, 2 * L + 1)      # switch before oldest release: all post
+
+
+def _fixed_phase_r7_on_common_candidate_domain(
+    specs: tuple[CarryTaskSpec, ...],
+    phases: tuple[int, ...],
+    plan: CRTPhaseFamilyPlan,
+) -> int:
+    best = 0
+    for kind, length, switch2 in _iter_crt_r7_candidates(plan):
+        if kind == "ZERO":
+            value = 0
+        else:
+            value = -int(length) + sum(
+                _task_r7_candidate_demand(spec, phase, int(length), int(switch2))
+                for spec, phase in zip(specs, phases)
+            )
+        if int(value) > int(best):
+            best = int(value)
+    return max(0, int(best))
+
+
+def exact_crt_phase_family_pre_hi_max(
+    target_period: int,
+    q_step: int,
+    n0: int,
+    specs: tuple[CarryTaskSpec, ...],
+    joint_period: int,
+    block_modulus: int,
+    block_residue: int,
+    horizon: int,
+) -> tuple[int, dict[str, object]]:
+    """Exact V10.17 max_q [fixed-q R7(q) + PRE_HI future(R,q)].
+
+    The V10.17 ACNF candidate grammar is evaluated without materializing a
+    candidate-by-residue matrix.  For each busy length, the all-pre component
+    vectors are maintained incrementally.  Moving the common switch through
+    the family release-boundary union updates only the component residues that
+    actually contain a release at that boundary.  Each candidate therefore
+    needs only a scan of the exact CRT component residue vectors.
+
+    This is algebraically identical to enumerating every canonical R7
+    candidate and every component residue, but uses O(sum L_r) working memory
+    instead of O(|C| * sum L_r), and it performs no global-q enumeration.
+    """
+
+    plan = crt_phase_family_plan(
+        int(target_period), int(q_step), int(n0), specs,
+        int(joint_period), int(block_modulus), int(block_residue),
+    )
+    if not specs:
+        return 0, {
+            "family_size": 1,
+            "restricted_periods": (),
+            "component_periods": (),
+            "component_tasks": (),
+            "candidate_count": 1,
+            "residues_per_candidate": 0,
+            "winning_candidate": {"kind": "ZERO", "busy_length": 0, "switch_cell_twice_age": 0},
+            "component_maxima": (),
+            "component_argmax": (),
+            "witness_k": 0,
+            "witness_q": 0,
+            "witness_phases": (),
+            "witness_reevaluation": 0,
+            "witness_r7": 0,
+            "witness_common_domain_r7": 0,
+            "witness_future": 0,
+            "busy_horizon": 0,
+            "production_busy_horizon": 0,
+            "streaming_residue_work": 0,
+        }
+
+    # Exact task-local future tables.  P_j=1 tasks are constants; the others
+    # are accumulated into their gcd-connected CRT component vectors.
+    future_tables: list[tuple[int, ...]] = []
+    for spec, phase_table in zip(specs, plan.phase_tables):
+        values: list[int] = []
+        for phase in phase_table:
+            p = int(phase)
+            if p >= int(horizon):
+                values.append(0)
+            else:
+                jobs = ((int(horizon) - 1 - p) // int(spec.period)) + 1
+                values.append(int(jobs) * int(spec.post_switch_cap))
+        future_tables.append(tuple(values))
+
+    component_index_by_task = [-1] * len(specs)
+    component_future: list[list[int]] = []
+    for component_index, (component_period, member_indices) in enumerate(plan.components):
+        period = int(component_period)
+        row = [0] * period
+        for task_index in member_indices:
+            component_index_by_task[int(task_index)] = int(component_index)
+            local_period = int(plan.restricted_periods[task_index])
+            task_future = future_tables[task_index]
+            for residue in range(period):
+                row[residue] += int(task_future[residue % local_period])
+        component_future.append(row)
+
+    constant_indices = tuple(
+        index for index, period in enumerate(plan.restricted_periods) if int(period) == 1
+    )
+    constant_future = sum(int(future_tables[index][0]) for index in constant_indices)
+
+    # For every family boundary, record the unique task-local residue that has
+    # a release there.  Phase tables enumerate one exact orbit and are injective
+    # over their restricted period, so a task contributes at most one local
+    # residue to a given boundary.
+    phase_to_local = tuple(
+        {int(phase): int(local) for local, phase in enumerate(phase_table)}
+        for phase_table in plan.phase_tables
+    )
+    boundary_updates: dict[int, tuple[tuple[int, int], ...]] = {}
+    for age in plan.candidate_ages:
+        updates: list[tuple[int, int]] = []
+        u = int(age)
+        for task_index, spec in enumerate(specs):
+            local = phase_to_local[task_index].get((-u) % int(spec.period))
+            if local is not None:
+                updates.append((int(task_index), int(local)))
+        boundary_updates[u] = tuple(updates)
+
+    # Working component carry vectors for the all-pre state of the current busy
+    # length.  They are enlarged monotonically as L crosses each family release
+    # boundary.  A switch scan copies only O(sum L_r) integers for that L.
+    base_component_carry = [
+        [0] * int(component_period) for component_period, _ in plan.components
+    ]
+    base_constant_carry = 0
+
+    def apply_release_delta(
+        vectors: list[list[int]],
+        constant_value: int,
+        task_index: int,
+        local_residue: int,
+        delta: int,
+    ) -> int:
+        if int(delta) == 0:
+            return int(constant_value)
+        local_period = int(plan.restricted_periods[task_index])
+        if local_period == 1:
+            return int(constant_value) + int(delta)
+        component_index = int(component_index_by_task[task_index])
+        component_period = int(plan.components[component_index][0])
+        vector = vectors[component_index]
+        for residue in range(int(local_residue), component_period, local_period):
+            vector[residue] += int(delta)
+        return int(constant_value)
+
+    def score_candidate(
+        vectors: list[list[int]],
+        constant_carry: int,
+        beta: int,
+    ) -> tuple[int, tuple[int, ...], tuple[int, ...]]:
+        total = int(beta) + int(constant_carry) + int(constant_future)
+        maxima: list[int] = []
+        argmax: list[int] = []
+        for carry_vector, future_vector in zip(vectors, component_future):
+            local_best: int | None = None
+            local_argmax = 0
+            for residue in range(len(carry_vector)):
+                value = int(carry_vector[residue]) + int(future_vector[residue])
+                if local_best is None or int(value) > int(local_best):
+                    local_best = int(value)
+                    local_argmax = int(residue)
+            if local_best is None:
+                raise CarryInEnvelopeUnresolved("CRT_PHASE_FAMILY_COMPONENT_EMPTY")
+            total += int(local_best)
+            maxima.append(int(local_best))
+            argmax.append(int(local_argmax))
+        return int(total), tuple(maxima), tuple(argmax)
+
+    # Positive-part zero branch: carry is identically zero while future remains
+    # exact and task-additive over the same q.
+    zero_vectors = [[0] * len(row) for row in component_future]
+    best_value, best_component_maxima, best_component_argmax = score_candidate(
+        zero_vectors, 0, 0
+    )
+    best_candidate = ("ZERO", 0, 0)
+
+    ages = plan.candidate_ages
+    for length_index, length_value in enumerate(ages):
+        length = int(length_value)
+        # Crossing L admits exactly the releases at this new family boundary.
+        for task_index, local_residue in boundary_updates[length]:
+            base_constant_carry = apply_release_delta(
+                base_component_carry,
+                int(base_constant_carry),
+                int(task_index),
+                int(local_residue),
+                int(specs[task_index].pre_switch_cap),
+            )
+
+        state_vectors = [list(row) for row in base_component_carry]
+        state_constant = int(base_constant_carry)
+
+        # switch at zero: every carry release in [-L,0) is pre-switch.
+        value, maxima, argmax = score_candidate(state_vectors, state_constant, -length)
+        if int(value) > int(best_value):
+            best_value = int(value)
+            best_component_maxima = maxima
+            best_component_argmax = argmax
+            best_candidate = ("SWITCH", int(length), 0)
+
+        # Move the one common switch from zero towards the oldest release.
+        # Before processing boundary u the state is the open cell immediately
+        # newer than u.  At exact u, HI endpoints use post/high while LO
+        # endpoints remain pre/primary.  Moving past u then changes LO endpoints
+        # to post, yielding the next open-cell state.
+        for boundary_index in range(length_index + 1):
+            boundary = int(ages[boundary_index])
+
+            value, maxima, argmax = score_candidate(
+                state_vectors, state_constant, -length
+            )
+            if int(value) > int(best_value):
+                best_value = int(value)
+                best_component_maxima = maxima
+                best_component_argmax = argmax
+                best_candidate = ("SWITCH", int(length), 2 * int(boundary) - 1)
+
+            for task_index, local_residue in boundary_updates[boundary]:
+                spec = specs[task_index]
+                if spec.criticality == "HI":
+                    state_constant = apply_release_delta(
+                        state_vectors,
+                        int(state_constant),
+                        int(task_index),
+                        int(local_residue),
+                        int(spec.post_switch_cap) - int(spec.pre_switch_cap),
+                    )
+
+            value, maxima, argmax = score_candidate(
+                state_vectors, state_constant, -length
+            )
+            if int(value) > int(best_value):
+                best_value = int(value)
+                best_component_maxima = maxima
+                best_component_argmax = argmax
+                best_candidate = ("SWITCH", int(length), 2 * int(boundary))
+
+            for task_index, local_residue in boundary_updates[boundary]:
+                spec = specs[task_index]
+                if spec.criticality == "LO":
+                    state_constant = apply_release_delta(
+                        state_vectors,
+                        int(state_constant),
+                        int(task_index),
+                        int(local_residue),
+                        int(spec.post_switch_cap) - int(spec.pre_switch_cap),
+                    )
+
+        # Switch before the oldest release: all releases in the busy suffix are
+        # post-switch.  This is the canonical final open cell for this L.
+        value, maxima, argmax = score_candidate(state_vectors, state_constant, -length)
+        if int(value) > int(best_value):
+            best_value = int(value)
+            best_component_maxima = maxima
+            best_component_argmax = argmax
+            best_candidate = ("SWITCH", int(length), 2 * int(length) + 1)
+
+    component_periods = plan.component_periods
+    witness_k = _crt_reconstruct(component_periods, best_component_argmax)
+    if witness_k < 0 or witness_k >= int(plan.family_size):
+        raise CarryInEnvelopeUnresolved("CRT_PHASE_FAMILY_WITNESS_OUT_OF_RANGE")
+    witness_q = (
+        int(plan.block_residue) + int(plan.block_modulus) * int(witness_k)
+    ) % int(plan.joint_period)
+    witness_phases = target_release_joint_phases_at_q(
+        int(target_period), specs, n0=int(n0), q_step=int(q_step), q=int(witness_q)
+    )
+    witness_r7, _ = fixed_phase_single_switch_backlog(specs, witness_phases)
+    witness_common_r7 = _fixed_phase_r7_on_common_candidate_domain(
+        specs, witness_phases, plan
+    )
+    if int(witness_r7) != int(witness_common_r7):
+        raise CarryInEnvelopeUnresolved("CRT_PHASE_FAMILY_ACNF_WITNESS_MISMATCH")
+    witness_future = fixed_phase_post_switch_future_work(
+        specs, witness_phases, int(horizon)
+    )
+    witness_reevaluation = int(witness_r7) + int(witness_future)
+    if int(witness_reevaluation) != int(best_value):
+        raise CarryInEnvelopeUnresolved("CRT_PHASE_FAMILY_WITNESS_REEVALUATION_MISMATCH")
+
+    return int(best_value), {
+        "family_size": int(plan.family_size),
+        "restricted_periods": tuple(int(value) for value in plan.restricted_periods),
+        "component_periods": tuple(int(value) for value in component_periods),
+        "component_tasks": tuple(
+            tuple(specs[index].name for index in members)
+            for _, members in plan.components
+        ),
+        "candidate_count": int(plan.candidate_count),
+        "residues_per_candidate": int(plan.residues_per_candidate),
+        "winning_candidate": {
+            "kind": best_candidate[0],
+            "busy_length": int(best_candidate[1]),
+            "switch_cell_twice_age": int(best_candidate[2]),
+        },
+        "component_maxima": tuple(int(value) for value in best_component_maxima),
+        "component_argmax": tuple(int(value) for value in best_component_argmax),
+        "witness_k": int(witness_k),
+        "witness_q": int(witness_q),
+        "witness_phases": tuple(int(value) for value in witness_phases),
+        "witness_reevaluation": int(witness_reevaluation),
+        "witness_r7": int(witness_r7),
+        "witness_common_domain_r7": int(witness_common_r7),
+        "witness_future": int(witness_future),
+        "busy_horizon": int(plan.busy_horizon),
+        "production_busy_horizon": int(plan.production_busy_horizon),
+        "streaming_residue_work": int(plan.streaming_residue_work),
+    }
+
 def phase_block_r7_carry_upper(
     specs: tuple[CarryTaskSpec, ...],
     projections: tuple[PhaseBlockProjection, ...],
@@ -1013,7 +1586,11 @@ def phase_relaxed_single_switch_carry(
 __all__ = [
     "CarryInEnvelopeUnresolved",
     "CarryTaskSpec",
+    "CRTPhaseFamilyPlan",
     "PhaseBlockProjection",
+    "crt_phase_family_plan",
+    "exact_crt_phase_family_pre_hi_max",
+    "prehistory_finite_bound",
     "phase_block_task_projection",
     "phase_block_task_projections",
     "phase_block_r7_carry_upper",

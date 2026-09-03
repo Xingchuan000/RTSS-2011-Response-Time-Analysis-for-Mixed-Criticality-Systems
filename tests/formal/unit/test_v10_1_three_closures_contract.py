@@ -37,7 +37,7 @@ def test_switch_endpoint_and_arrival_correlation_rules_are_explicit():
     assert "compatible_release_phases" in text
     assert "P0_RELEASE_DOMAIN_EXACT_PERIODIC_PHASE_ZERO" in text
     assert "release_generator_source_hash" in text
-    assert "V10_16_ADAPTIVE_PHASE_BLOCK_PCSSC" in text
+    assert "V10_17_MIXED_PHASE_TERMINAL_PCSSC" in text
     assert "POLICY_ARRIVAL_CORRELATION_RELAXATION" in text
 
 

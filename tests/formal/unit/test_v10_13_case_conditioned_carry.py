@@ -16,7 +16,7 @@ from formal_toolchain.v10_1.carry_in_envelope import (
 )
 from formal_toolchain.v10_1 import pcssc
 from formal_toolchain.v10_1.completion_certificates import (
-    PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM,
+    PCSSC_GUARDED_COMPLETION_THEOREM_V10_17,
 )
 from formal_toolchain.v10_1.constants import (
     FRAMEWORK_REVISION,
@@ -194,9 +194,9 @@ def test_v10_13_case_postfix_fallback_can_close_a_v10_12_failed_case(monkeypatch
 
 
 def test_v10_13_identifiers_are_distinct_and_exportable():
-    assert FRAMEWORK_REVISION == "V10.16_ADAPTIVE_PHASE_BLOCK_PCSSC"
+    assert FRAMEWORK_REVISION == "V10.17_CRT_PHASE_FAMILY_TERMINAL"
     assert TARGET_PROVED_PCSSC_CASE_CONDITIONED_CARRY.endswith("V10_13")
-    assert PCSSC_CONDITIONED_CARRY_COMPLETION_THEOREM.endswith("V10_13")
+    assert PCSSC_GUARDED_COMPLETION_THEOREM_V10_17.endswith("V10_17")
 
 
 def test_v10_13_is_not_used_as_a_soundness_error_fallback(monkeypatch):

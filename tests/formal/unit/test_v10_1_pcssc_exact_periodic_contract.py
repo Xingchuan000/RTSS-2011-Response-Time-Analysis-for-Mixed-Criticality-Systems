@@ -27,10 +27,10 @@ def test_exact_periodic_workload_couples_previous_carry_and_future_releases():
     assert '"global_q_enumerated": False' in text
 
 
-def test_periodic_cross_task_phase_relaxation_is_lo_entry_only_and_pre_hi_is_v10_16():
+def test_periodic_cross_task_phase_relaxation_is_lo_entry_only_and_pre_hi_uses_v10_17_mixed_terminal():
     text = (ROOT / "formal_toolchain/v10_1/pcssc.py").read_text(encoding="utf-8")
     assert "FAST_ROUTE_CROSS_TASK_PERIODIC_PHASE_RELAXATION" in text
     assert "V10.12 LO-entry aggregate envelopes may choose different theta-compatible" in text
-    assert "PRE_HI canonical cases are handled directly by V10.16" in text
+    assert "PRE_HI canonical cases are handled directly by the V10.17 mixed terminal" in text
     assert "ONLY_ADDS_CROSS_TASK_PHASE_COMBINATIONS" in text
     assert "PER_TASK_PERIODIC_PHASE_MAX_NOT_REQUIRED_TO_REPRODUCE_FEATURE_HISTORY" in text
