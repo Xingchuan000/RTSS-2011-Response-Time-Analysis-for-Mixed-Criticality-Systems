@@ -8,6 +8,7 @@ from amc_py.dqn import (
     build_mc_stratified_dynamic_experiment_config,
     resolve_experiment_bundle,
 )
+from amc_py.experiments import resolve_ordering
 from scripts.collect_viper_teacher_data import build_parser as build_collect_parser
 from scripts.evaluate_dqn_amc import build_parser as build_evaluate_parser
 from scripts.train_dqn_amc import build_parser as build_train_parser
@@ -37,6 +38,38 @@ def test_same_fixed_taskset_and_scenario_seed_match() -> None:
         eval_bundle.ordered_tasks[0], 0
     )
 
+
+
+def test_c_amc_sem_opa_admission_order_is_used_by_experiment_bundle() -> None:
+    config = build_mc_stratified_dynamic_experiment_config(
+        fixed_taskset_seed=603,
+        require_schedulable=True,
+        sched_method="c_amc_sem",
+        priority_policy="opa",
+        c_amc_sem_xf=0.5,
+    )
+    assert config.workload_provider is not None
+    raw_bundle = config.workload_provider.build(23)
+    expected_opa = resolve_ordering(
+        list(raw_bundle.tasks),
+        method="c_amc_sem",
+        priority_policy="opa",
+        c_amc_sem_xf=0.5,
+    )
+    dm_order = resolve_ordering(
+        list(raw_bundle.tasks),
+        method="c_amc_sem",
+        priority_policy="dm",
+        c_amc_sem_xf=0.5,
+    )
+
+    bundle = resolve_experiment_bundle(config, 23)
+    assert [task.name for task in bundle.ordered_tasks] == [task.name for task in expected_opa]
+    assert [task.name for task in bundle.ordered_tasks] != [task.name for task in dm_order]
+    assert bundle.metadata is not None
+    assert bundle.metadata["resolved_sched_method"] == "c_amc_sem"
+    assert bundle.metadata["resolved_priority_policy"] == "opa"
+    assert bundle.metadata["resolved_c_amc_sem_xf"] == 0.5
 
 def test_all_runtime_cli_parsers_accept_new_workload() -> None:
     train_args = build_train_parser().parse_args(["--workload", "mc_stratified_dynamic"])

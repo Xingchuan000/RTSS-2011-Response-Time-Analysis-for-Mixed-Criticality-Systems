@@ -58,6 +58,11 @@ def test_standalone_generator_writes_manifest_schema(tmp_path: Path) -> None:
         "initial_budget_util_total",
         "initial_budget_util_hi",
         "initial_budget_util_lo",
+        "admission_method",
+        "admission_priority_policy",
+        "c_amc_sem_xf",
+        "admission_schedulable",
+        "admission_min_slack",
         "amc_rtb_schedulable",
         "amc_rtb_min_slack",
         "attempts",
@@ -106,4 +111,40 @@ def test_standalone_generator_can_use_schedulability_gate(tmp_path: Path) -> Non
     with manifest.open("r", encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert len(rows) == 4
-    assert all(row["amc_rtb_schedulable"] == "True" for row in rows)
+    assert all(row["admission_schedulable"] == "True" for row in rows)
+    assert all(row["admission_method"] == "amc_rtb" for row in rows)
+
+
+def test_standalone_generator_can_use_c_amc_sem_opa_gate(tmp_path: Path) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    manifest = tmp_path / "manifest_csem.csv"
+    rejections = tmp_path / "rejections_csem.csv"
+    _run_generator(
+        repo,
+        manifest,
+        rejections,
+        "--num-tasks",
+        "6",
+        "--hi-ratio",
+        "0.5",
+        "--total-util-min",
+        "0.10",
+        "--total-util-max",
+        "0.20",
+        "--max-task-util",
+        "0.10",
+        "--require-schedulable",
+        "--sched-method",
+        "c_amc_sem",
+        "--priority-policy",
+        "opa",
+        "--c-amc-sem-xf",
+        "0.5",
+    )
+
+    with manifest.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 4
+    assert all(row["admission_method"] == "c_amc_sem" for row in rows)
+    assert all(row["admission_priority_policy"] == "opa" for row in rows)
+    assert all(row["admission_schedulable"] == "True" for row in rows)

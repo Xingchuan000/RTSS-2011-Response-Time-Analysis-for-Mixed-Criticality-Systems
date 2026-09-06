@@ -35,5 +35,6 @@
   "require_schedulable": false,
   "max_attempts": 100,
   "sched_method": "amc_rtb",
-  "priority_policy": "dm"
+  "priority_policy": "dm",
+  "c_amc_sem_xf": 0.5
 }

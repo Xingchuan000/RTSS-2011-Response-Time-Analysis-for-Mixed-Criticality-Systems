@@ -41,6 +41,11 @@ MANIFEST_FIELDS = [
     "initial_budget_util_total",
     "initial_budget_util_hi",
     "initial_budget_util_lo",
+    "admission_method",
+    "admission_priority_policy",
+    "c_amc_sem_xf",
+    "admission_schedulable",
+    "admission_min_slack",
     "amc_rtb_schedulable",
     "amc_rtb_min_slack",
     "attempts",
@@ -143,6 +148,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-attempts", type=int, default=defaults.max_attempts)
     parser.add_argument("--sched-method", default=defaults.sched_method)
     parser.add_argument("--priority-policy", default=defaults.priority_policy)
+    parser.add_argument("--c-amc-sem-xf", type=float, default=defaults.c_amc_sem_xf)
     parser.add_argument("--output-manifest", type=Path, required=True)
     parser.add_argument("--output-rejections", type=Path, required=True)
     return parser
@@ -185,14 +191,22 @@ def _config_from_args(args: argparse.Namespace, seed: int) -> MCStratifiedDynami
         max_attempts=args.max_attempts,
         sched_method=args.sched_method,
         priority_policy=args.priority_policy,
+        c_amc_sem_xf=args.c_amc_sem_xf,
     )
 
 
-def _schedulability_fields(tasks: tuple[Any, ...]) -> tuple[bool, float]:
+def _schedulability_fields(
+    tasks: tuple[Any, ...],
+    *,
+    method: str,
+    priority_policy: str,
+    c_amc_sem_xf: float,
+) -> tuple[bool, float]:
     result = evaluate_taskset(
         list(tasks),
-        method="amc_rtb",
-        priority_policy="dm",
+        method=method,
+        priority_policy=priority_policy,
+        c_amc_sem_xf=c_amc_sem_xf,
     )
     if not result.schedulable:
         return False, -1.0
@@ -210,6 +224,11 @@ def _row_from_bundle(
     bundle: Any,
     schedulable: bool,
     min_slack: float,
+    legacy_amc_rtb_schedulable: bool,
+    legacy_amc_rtb_min_slack: float,
+    admission_method: str,
+    admission_priority_policy: str,
+    c_amc_sem_xf: float,
 ) -> dict[str, Any]:
     metadata = bundle.metadata or {}
     return {
@@ -229,8 +248,14 @@ def _row_from_bundle(
         "initial_budget_util_total": metadata["initial_budget_util_total"],
         "initial_budget_util_hi": metadata["initial_budget_util_hi"],
         "initial_budget_util_lo": metadata["initial_budget_util_lo"],
-        "amc_rtb_schedulable": schedulable,
-        "amc_rtb_min_slack": min_slack,
+        "admission_method": admission_method,
+        "admission_priority_policy": admission_priority_policy,
+        "c_amc_sem_xf": c_amc_sem_xf,
+        "admission_schedulable": schedulable,
+        "admission_min_slack": min_slack,
+        # Backward-compatible diagnostic columns retained for old analysis tools.
+        "amc_rtb_schedulable": legacy_amc_rtb_schedulable,
+        "amc_rtb_min_slack": legacy_amc_rtb_min_slack,
         "attempts": bundle.attempts,
         "generator_config_hash": config_hash,
     }
@@ -258,7 +283,18 @@ def main(argv: list[str] | None = None) -> int:
             config_hash = _config_hash(config)
             provider = MCStratifiedDynamicWorkloadProvider(config)
             bundle = provider.build(candidate_seed)
-            schedulable, min_slack = _schedulability_fields(bundle.tasks)
+            schedulable, min_slack = _schedulability_fields(
+                bundle.tasks,
+                method=config.sched_method,
+                priority_policy=config.priority_policy,
+                c_amc_sem_xf=config.c_amc_sem_xf,
+            )
+            legacy_schedulable, legacy_min_slack = _schedulability_fields(
+                bundle.tasks,
+                method="amc_rtb",
+                priority_policy="dm",
+                c_amc_sem_xf=config.c_amc_sem_xf,
+            )
             manifest_rows.append(
                 _row_from_bundle(
                     candidate_seed=candidate_seed,
@@ -266,6 +302,11 @@ def main(argv: list[str] | None = None) -> int:
                     bundle=bundle,
                     schedulable=schedulable,
                     min_slack=min_slack,
+                    legacy_amc_rtb_schedulable=legacy_schedulable,
+                    legacy_amc_rtb_min_slack=legacy_min_slack,
+                    admission_method=config.sched_method,
+                    admission_priority_policy=config.priority_policy,
+                    c_amc_sem_xf=config.c_amc_sem_xf,
                 )
             )
         except (RuntimeError, ValueError) as exc:

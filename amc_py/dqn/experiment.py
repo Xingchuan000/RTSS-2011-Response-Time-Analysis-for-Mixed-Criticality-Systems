@@ -312,6 +312,7 @@ def build_mc_stratified_dynamic_experiment_config(
     max_attempts: int = 100,
     sched_method: str = "amc_rtb",
     priority_policy: str = "dm",
+    c_amc_sem_xf: float = 0.5,
     scenario_seed_offset: int = 100000,
     fixed_taskset_seed: int | None = None,
     check_safety: bool = True,
@@ -363,6 +364,7 @@ def build_mc_stratified_dynamic_experiment_config(
             max_attempts=max_attempts,
             sched_method=sched_method,
             priority_policy=priority_policy,
+            c_amc_sem_xf=c_amc_sem_xf,
         ),
         fixed_taskset_seed=fixed_taskset_seed,
         scenario_seed_offset=scenario_seed_offset,
@@ -425,15 +427,30 @@ def resolve_experiment_bundle(config: ExperimentConfig, seed: int) -> Experiment
 
     if config.workload_provider is not None:
         # provider 分支服务新的 workload 层抽象。
-        # workload provider 只返回“未排序任务集”，优先级解析必须仍由 experiment 层统一负责，
-        # 这样才能保证排序策略不会倒灌回 workload 模块。
+        # workload provider 只返回“未排序任务集”，优先级解析仍由 experiment 层统一负责；
+        # 但必须使用 provider 自己配置的 sched_method / priority_policy。否则会出现
+        # “C-AMC-sem+OPA 通过准入，训练时却又退回 AMC-rtb+DM”的静态/运行时断层。
         workload_bundle = config.workload_provider.build(seed)
+        provider_config = getattr(config.workload_provider, "config", None)
+        priority_method = str(getattr(provider_config, "sched_method", "amc_rtb"))
+        priority_policy = str(getattr(provider_config, "priority_policy", "dm"))
+        c_amc_sem_xf = float(getattr(provider_config, "c_amc_sem_xf", 0.5))
         ordered_tasks = resolve_ordering(
             list(workload_bundle.tasks),
-            method="amc_rtb",
-            priority_policy="dm",
+            method=priority_method,
+            priority_policy=priority_policy,
+            c_amc_sem_xf=c_amc_sem_xf,
         )
         taskset_fingerprint = compute_taskset_fingerprint(ordered_tasks)
+        metadata = dict(workload_bundle.metadata or {})
+        metadata.update(
+            {
+                "resolved_sched_method": priority_method,
+                "resolved_priority_policy": priority_policy,
+                "resolved_c_amc_sem_xf": c_amc_sem_xf,
+                "resolved_priority_order": [task.name for task in ordered_tasks],
+            }
+        )
         return ExperimentBundle(
             ordered_tasks=tuple(ordered_tasks),
             scenario=workload_bundle.scenario,
@@ -442,7 +459,7 @@ def resolve_experiment_bundle(config: ExperimentConfig, seed: int) -> Experiment
             scenario_seed=workload_bundle.scenario_seed,
             taskset_attempts=workload_bundle.attempts,
             taskset_fingerprint=taskset_fingerprint,
-            metadata=workload_bundle.metadata,
+            metadata=metadata,
         )
 
     assert config.taskset_factory is not None

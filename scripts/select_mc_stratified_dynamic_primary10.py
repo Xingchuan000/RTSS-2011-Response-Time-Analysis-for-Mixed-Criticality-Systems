@@ -257,13 +257,16 @@ def _vector_distance(left: Mapping[str, float], right: Mapping[str, float]) -> f
 def _is_accepted_gate(row: Mapping[str, Any], *, require_schedulable: bool) -> bool:
     if _float(row, "baseline_deadline_misses_sum") > 0.0:
         return False
-    if require_schedulable and not str(row.get("amc_rtb_schedulable", "")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "y",
-    }:
-        return False
+    if require_schedulable:
+        # New manifests expose the exact admission gate that generated the
+        # candidate pool.  Fall back to the historical AMC-rtb column only
+        # for older manifests/diagnostic CSVs.
+        raw_schedulable = row.get(
+            "admission_schedulable",
+            row.get("amc_rtb_schedulable", ""),
+        )
+        if str(raw_schedulable).strip().lower() not in {"1", "true", "yes", "y"}:
+            return False
     # Symmetric and intentionally loose action-space gate.
     if "valid_lo_increase_count_mean" in row and _float(row, "valid_lo_increase_count_mean") < 1.0:
         return False

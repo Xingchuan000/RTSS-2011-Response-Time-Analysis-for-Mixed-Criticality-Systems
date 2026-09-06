@@ -97,6 +97,7 @@ class MCStratifiedDynamicWorkloadConfig:
     max_attempts: int = 100
     sched_method: str = "amc_rtb"
     priority_policy: str = "dm"
+    c_amc_sem_xf: float = 0.5
 
     def __post_init__(self) -> None:
         if self.num_tasks < 2:
@@ -153,6 +154,8 @@ class MCStratifiedDynamicWorkloadConfig:
             raise ValueError("log_uniform_period_min_ms must be <= log_uniform_period_max_ms")
         if self.max_attempts <= 0:
             raise ValueError("max_attempts must be > 0")
+        if not (0.0 < float(self.c_amc_sem_xf) <= 1.0):
+            raise ValueError("c_amc_sem_xf must be in (0, 1]")
 
         # This catches configurations for which the Markov parameter ranges
         # could never be legal.  Individual samples are checked again below.
@@ -594,7 +597,7 @@ def generate_mc_stratified_dynamic_workload(
 def generate_schedulable_mc_stratified_dynamic_workload(
     config: MCStratifiedDynamicWorkloadConfig,
 ) -> MCStratifiedDynamicWorkload:
-    """Build the exact requested seed and require AMC-rtb schedulability.
+    """Build the exact requested seed and require the configured schedulability gate.
 
     ``candidate_seed`` is the experiment identity used by generation,
     diagnostics, selection, training, HOUT and later policy extraction.  A
@@ -614,6 +617,7 @@ def generate_schedulable_mc_stratified_dynamic_workload(
         list(workload.tasks),
         method=config.sched_method,
         priority_policy=config.priority_policy,
+        c_amc_sem_xf=config.c_amc_sem_xf,
     )
     if not result.schedulable:
         raise RuntimeError(
@@ -628,6 +632,7 @@ def generate_schedulable_mc_stratified_dynamic_workload(
             "schedulability_checked": True,
             "sched_method": config.sched_method,
             "priority_policy": config.priority_policy,
+            "c_amc_sem_xf": config.c_amc_sem_xf,
             "attempts": 1,
             "effective_taskset_seed": config.seed,
         }

@@ -39,6 +39,7 @@ def test_new_cli_uses_only_mc_stratified_dynamic_prefix() -> None:
     assert config["workload"] == "mc_stratified_dynamic"
     assert config["stratum"] == "S3"
     assert config["mc_stratified_dynamic"]["num_tasks"] == 8
+    assert config["mc_stratified_dynamic"]["c_amc_sem_xf"] == 0.5
     assert len(str(config["generator_config_hash"])) == 64
     assert not hasattr(args, "mc_fairgen_mode")
 

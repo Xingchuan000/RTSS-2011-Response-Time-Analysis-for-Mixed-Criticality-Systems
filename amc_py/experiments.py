@@ -29,6 +29,7 @@ from .amc import (
     compute_amc_rtb_response_time,
 )
 from .generator import generate_taskset, taskset_total_util
+from .c_amc_sem import analyze_c_amc_sem_task, c_amc_sem_sched_test, validate_c_amc_sem_xf
 from .models import Criticality, PriorityAssignmentResult, SchedulabilityResult, Task
 from .priorities import audsley_opa, sort_by_crmpo, sort_by_deadline_monotonic
 from .rta import analyze_classic_hi_budget, analyze_hi_mode, analyze_lo_mode, compute_r_lo
@@ -44,7 +45,7 @@ matplotlib.use("Agg")
 
 MethodFn = Callable[[Sequence[Task]], SchedulabilityResult]
 OpaLowestPriorityTestFn = Callable[[list[Task], int], bool]
-MethodName = Literal["ub_hl", "smc", "smc_no", "amc_rtb", "amc_max", "crmpo_baseline"]
+MethodName = Literal["ub_hl", "smc", "smc_no", "amc_rtb", "amc_max", "c_amc_sem", "crmpo_baseline"]
 PriorityPolicyName = Literal["dm", "crmpo", "opa"]
 
 # 方法与优先级策略兼容矩阵（阶段 2.2）。
@@ -57,6 +58,7 @@ METHOD_POLICY_MATRIX: dict[str, set[str]] = {
     "smc_no": {"dm", "crmpo", "opa"},
     "amc_rtb": {"dm", "crmpo", "opa"},
     "amc_max": {"dm", "crmpo", "opa"},
+    "c_amc_sem": {"dm", "crmpo", "opa"},
     "crmpo_baseline": {"crmpo"},
 }
 
@@ -138,7 +140,7 @@ def _validate_evaluation_inputs(tasks: Sequence[Task], method: str, priority_pol
 
 
 
-def _resolve_method(method: str) -> MethodFn:
+def _resolve_method(method: str, *, c_amc_sem_xf: float = 0.5) -> MethodFn:
     """把 method 字符串映射为具体分析函数。"""
 
     method_map: dict[str, MethodFn] = {
@@ -147,6 +149,9 @@ def _resolve_method(method: str) -> MethodFn:
         "smc_no": smc_no_sched_test,
         "amc_rtb": amc_rtb_sched_test,
         "amc_max": amc_max_sched_test,
+        "c_amc_sem": lambda ordered: c_amc_sem_sched_test(
+            ordered, lo_degradation_ratio=c_amc_sem_xf
+        ),
         "crmpo_baseline": _crmpo_baseline_sched_test_on_ordered,
     }
     try:
@@ -198,7 +203,27 @@ def _amc_max_lowest_priority_task_schedulable(
     return compute_amc_max_response_time(task, prefix) is not None
 
 
-def _resolve_opa_lowest_priority_test(method: str) -> OpaLowestPriorityTestFn:
+def _c_amc_sem_lowest_priority_task_schedulable(
+    trial_order: list[Task],
+    lowest_priority_idx: int,
+    *,
+    lo_degradation_ratio: float = 0.5,
+) -> bool:
+    """C-AMC-sem 下仅判定当前最低优先级候选任务是否可调度。"""
+
+    task = trial_order[lowest_priority_idx]
+    hp_tasks = trial_order[:lowest_priority_idx]
+    analysis = analyze_c_amc_sem_task(
+        task,
+        hp_tasks,
+        lo_degradation_ratio=lo_degradation_ratio,
+    )
+    return analysis.schedulable
+
+
+def _resolve_opa_lowest_priority_test(
+    method: str, *, c_amc_sem_xf: float = 0.5
+) -> OpaLowestPriorityTestFn:
     """解析 OPA 使用的候选最低优先级可行性测试函数。"""
 
     method_map: dict[str, OpaLowestPriorityTestFn] = {
@@ -206,6 +231,9 @@ def _resolve_opa_lowest_priority_test(method: str) -> OpaLowestPriorityTestFn:
         "smc_no": _smc_no_lowest_priority_task_schedulable,
         "amc_rtb": _amc_rtb_lowest_priority_task_schedulable,
         "amc_max": _amc_max_lowest_priority_task_schedulable,
+        "c_amc_sem": lambda order, idx: _c_amc_sem_lowest_priority_task_schedulable(
+            order, idx, lo_degradation_ratio=c_amc_sem_xf
+        ),
     }
     try:
         return method_map[method]
@@ -220,6 +248,8 @@ def _resolve_ordering(
     tasks: Sequence[Task],
     priority_policy: str,
     method: str,
+    *,
+    c_amc_sem_xf: float = 0.5,
 ) -> tuple[list[Task], PriorityAssignmentResult | None]:
     """内部实现：根据优先级策略生成有序任务列表，并附带 OPA 分配结果。
 
@@ -246,7 +276,9 @@ def _resolve_ordering(
 
     # OPA：使用 Audsley 逐层试探最低优先级任务。
     if priority_policy == "opa":
-        lowest_priority_test_fn = _resolve_opa_lowest_priority_test(method)
+        lowest_priority_test_fn = _resolve_opa_lowest_priority_test(
+            method, c_amc_sem_xf=c_amc_sem_xf
+        )
         opa_result = audsley_opa(tasks, lowest_priority_test_fn)
         if not opa_result.success:
             # OPA 失败时仍把 opa_result 返回，便于上层拼装详细错误信息。
@@ -263,6 +295,8 @@ def resolve_ordering(
     tasks: Sequence[Task],
     priority_policy: str,
     method: str,
+    *,
+    c_amc_sem_xf: float = 0.5,
 ) -> list[Task]:
     """公共接口：根据优先级策略返回有序任务列表。
 
@@ -288,7 +322,9 @@ def resolve_ordering(
       调用方可直接用 `str(exc)` 拿到可读错误描述。
     """
 
-    ordered, opa_result = _resolve_ordering(tasks, priority_policy, method)
+    ordered, opa_result = _resolve_ordering(
+        tasks, priority_policy, method, c_amc_sem_xf=c_amc_sem_xf
+    )
 
     # OPA 失败时，公共接口选择以异常显式通知调用方，避免出现“返回空列表但不报错”的歧义。
     # `evaluate_taskset()` 会捕获这个异常并转成不可调度的 SchedulabilityResult。
@@ -299,12 +335,18 @@ def resolve_ordering(
 
 
 
-def evaluate_taskset(tasks: Sequence[Task], method: str, priority_policy: str) -> SchedulabilityResult:
+def evaluate_taskset(
+    tasks: Sequence[Task],
+    method: str,
+    priority_policy: str,
+    *,
+    c_amc_sem_xf: float = 0.5,
+) -> SchedulabilityResult:
     """统一任务集评估入口。
 
     参数：
     - tasks: 原始任务列表。
-    - method: `ub_hl | smc | smc_no | amc_rtb | amc_max | crmpo_baseline`。
+    - method: `ub_hl | smc | smc_no | amc_rtb | amc_max | c_amc_sem | crmpo_baseline`。
     - priority_policy: `dm | crmpo | opa`。
 
     返回：
@@ -316,13 +358,16 @@ def evaluate_taskset(tasks: Sequence[Task], method: str, priority_policy: str) -
     _validate_evaluation_inputs(tasks, method, priority_policy)
 
     # 选择具体分析函数（UB-H&L / SMC / AMC-rtb 等）。
-    method_fn = _resolve_method(method)
+    xf = validate_c_amc_sem_xf(c_amc_sem_xf) if method == "c_amc_sem" else c_amc_sem_xf
+    method_fn = _resolve_method(method, c_amc_sem_xf=xf)
 
     # 通过公共 API `resolve_ordering()` 得到已排序任务列表；
     # OPA 失败会以 RuntimeError 形式抛出，这里捕获后转成 SchedulabilityResult 的失败路径，
     # 保证对外可见的 `evaluate_taskset()` 行为与重构前完全一致。
     try:
-        ordered_tasks = resolve_ordering(tasks, priority_policy, method)
+        ordered_tasks = resolve_ordering(
+            tasks, priority_policy, method, c_amc_sem_xf=xf
+        )
     except RuntimeError as exc:
         return SchedulabilityResult(
             schedulable=False,
@@ -333,7 +378,10 @@ def evaluate_taskset(tasks: Sequence[Task], method: str, priority_policy: str) -
 
     # 真正执行可调度性测试，并把 method/policy 元信息前置到 details 里。
     result = method_fn(ordered_tasks)
-    details = f"method={method}, priority_policy={priority_policy}, {result.details}"
+    xf_detail = f", c_amc_sem_xf={xf}" if method == "c_amc_sem" else ""
+    details = (
+        f"method={method}, priority_policy={priority_policy}{xf_detail}, {result.details}"
+    )
     return SchedulabilityResult(
         schedulable=result.schedulable,
         method=method,
