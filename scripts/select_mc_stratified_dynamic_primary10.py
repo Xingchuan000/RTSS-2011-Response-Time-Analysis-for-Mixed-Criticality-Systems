@@ -25,8 +25,8 @@ from scripts.diagnose_mc_stratified_dynamic_structure import (
 )
 
 
-PRIMARY10_SCHEMA_VERSION = "mc_stratified_dynamic_primary10_v1"
-AUDIT_SCHEMA_VERSION = "mc_stratified_dynamic_selection_audit_v1"
+PRIMARY10_SCHEMA_VERSION = "mc_stratified_dynamic_primary10_v2"
+AUDIT_SCHEMA_VERSION = "mc_stratified_dynamic_selection_audit_v2"
 
 STRATA = ("S1", "S2", "S3", "S4", "S5")
 PERIOD_FAMILIES = ("semi-harmonic", "log-uniform")
@@ -187,7 +187,7 @@ def _percentile(value: float, values: Sequence[float]) -> float:
 def _raw_feature_values(rows: Sequence[Mapping[str, Any]]) -> dict[str, list[float]]:
     return {
         "load": [_float(row, "total_util_lo_mode") for row in rows],
-        "tightness": [-_float(row, "amc_rtb_normalized_slack") for row in rows],
+        "tightness": [-_float(row, "analysis_normalized_slack") for row in rows],
         "autocorr": [
             statistics.fmean(
                 [_float(row, "lo_cost_lag1_autocorr_mean"), _float(row, "hi_cost_lag1_autocorr_mean")]
@@ -258,13 +258,11 @@ def _is_accepted_gate(row: Mapping[str, Any], *, require_schedulable: bool) -> b
     if _float(row, "baseline_deadline_misses_sum") > 0.0:
         return False
     if require_schedulable:
-        # New manifests expose the exact admission gate that generated the
-        # candidate pool.  Fall back to the historical AMC-rtb column only
-        # for older manifests/diagnostic CSVs.
-        raw_schedulable = row.get(
-            "admission_schedulable",
-            row.get("amc_rtb_schedulable", ""),
-        )
+        if str(row.get("admission_method", "")).strip() != "c_amc_sem":
+            return False
+        if str(row.get("admission_priority_policy", "")).strip() != "opa":
+            return False
+        raw_schedulable = row.get("analysis_schedulable", row.get("admission_schedulable", ""))
         if str(raw_schedulable).strip().lower() not in {"1", "true", "yes", "y"}:
             return False
     # Symmetric and intentionally loose action-space gate.
@@ -537,6 +535,11 @@ def write_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "selection_rank_within_stratum_family",
         *SELECTION_FEATURES,
         "total_util_lo_mode",
+        "analysis_normalized_slack",
+        "analysis_priority_order",
+        "admission_method",
+        "admission_priority_policy",
+        "c_amc_sem_xf",
         "amc_rtb_normalized_slack",
         "baseline_lo_quality_qos",
         "valid_lo_increase_count_mean",

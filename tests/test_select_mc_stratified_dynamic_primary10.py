@@ -33,7 +33,12 @@ def _diagnostic_rows() -> list[dict[str, object]]:
                 "valid_lo_decrease_count_mean": 2,
                 "mask_observation_count": 4,
                 "total_util_lo_mode": 0.35 + seed * 0.04,
-                "amc_rtb_normalized_slack": 0.8 - seed * 0.03,
+                "analysis_normalized_slack": 0.8 - seed * 0.03,
+                "analysis_schedulable": True,
+                "admission_method": "c_amc_sem",
+                "admission_priority_policy": "opa",
+                "c_amc_sem_xf": 0.5,
+                "amc_rtb_normalized_slack": 0.9 - seed * 0.02,
                 "lo_cost_lag1_autocorr_mean": 0.1 + seed * 0.03,
                 "hi_cost_lag1_autocorr_mean": 0.2 + seed * 0.02,
                 "stress_duty_empirical_mean": 0.1 + seed * 0.02,
@@ -79,6 +84,15 @@ def test_same_input_is_bitwise_selection_deterministic() -> None:
     assert _selection_signature(first) == _selection_signature(second)
     assert first[2] == second[2]
 
+
+
+def test_legacy_amc_rtb_slack_does_not_affect_selection() -> None:
+    rows = _diagnostic_rows()
+    baseline = select_primary10(rows)
+    changed = copy.deepcopy(rows)
+    for row in changed:
+        row["amc_rtb_normalized_slack"] = 1000.0 - int(row["candidate_seed"]) * 100.0
+    assert _selection_signature(baseline) == _selection_signature(select_primary10(changed))
 
 def test_performance_fields_do_not_change_selection() -> None:
     baseline = select_primary10(_diagnostic_rows())

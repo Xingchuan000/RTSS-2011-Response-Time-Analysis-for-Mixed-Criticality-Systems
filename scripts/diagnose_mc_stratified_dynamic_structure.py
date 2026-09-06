@@ -31,8 +31,8 @@ from amc_py.runtime_models import RuntimeConfig, RuntimeSemantics, SimulationRes
 
 
 MANIFEST_SCHEMA_VERSION = "mc_stratified_dynamic_manifest_v1"
-DIAGNOSTICS_SCHEMA_VERSION = "mc_stratified_dynamic_diagnostics_v2"
-SELECTION_SCHEMA_VERSION = "mc_stratified_dynamic_selection_v2"
+DIAGNOSTICS_SCHEMA_VERSION = "mc_stratified_dynamic_diagnostics_v3"
+SELECTION_SCHEMA_VERSION = "mc_stratified_dynamic_selection_v3"
 
 SCENARIO_SEEDS = tuple(range(200, 206))
 DEFAULT_D1_SCENARIO_SEEDS = tuple(range(200, 202))
@@ -297,8 +297,20 @@ def initial_budgets_for_bundle(tasks: Sequence[Task], metadata: Mapping[str, Any
     return result
 
 
-def static_characterization(bundle: Any, *, priority_policy: str = "dm") -> dict[str, Any]:
-    """Compute D0 metrics from tasks and AMC-rtb only."""
+def static_characterization(
+    bundle: Any,
+    *,
+    analysis_method: str = "c_amc_sem",
+    priority_policy: str = "opa",
+    c_amc_sem_xf: float = XF,
+) -> dict[str, Any]:
+    """Compute D0 metrics under the same analysis/policy as admission.
+
+    V2 screening deliberately separates the authoritative baseline analysis
+    from the legacy AMC-rtb+DM comparator.  The returned ``_ordered_tasks``
+    is therefore the exact order produced by ``analysis_method`` and
+    ``priority_policy`` and is reused by runtime characterization.
+    """
 
     tasks = tuple(bundle.tasks)
     metadata = getattr(bundle, "metadata", None) or {}
@@ -320,17 +332,42 @@ def static_characterization(bundle: Any, *, priority_policy: str = "dm") -> dict
         if task.criticality is Criticality.LO
     )
 
-    schedulability = evaluate_taskset(tasks, method="amc_rtb", priority_policy=priority_policy)
+    analysis = evaluate_taskset(
+        tasks,
+        method=analysis_method,
+        priority_policy=priority_policy,
+        c_amc_sem_xf=c_amc_sem_xf,
+    )
     response_slacks = [
-        float(task.deadline - schedulability.response_times[task.name])
+        float(task.deadline - analysis.response_times[task.name])
         for task in tasks
-        if task.name in schedulability.response_times
+        if task.name in analysis.response_times
     ]
     normalized_slacks = [
-        float(task.deadline - schedulability.response_times[task.name]) / float(task.deadline)
+        float(task.deadline - analysis.response_times[task.name]) / float(task.deadline)
         for task in tasks
-        if task.name in schedulability.response_times
+        if task.name in analysis.response_times
     ]
+
+    legacy_amc_rtb = evaluate_taskset(tasks, method="amc_rtb", priority_policy="dm")
+    legacy_response_slacks = [
+        float(task.deadline - legacy_amc_rtb.response_times[task.name])
+        for task in tasks
+        if task.name in legacy_amc_rtb.response_times
+    ]
+    legacy_normalized_slacks = [
+        float(task.deadline - legacy_amc_rtb.response_times[task.name]) / float(task.deadline)
+        for task in tasks
+        if task.name in legacy_amc_rtb.response_times
+    ]
+    ordered_tasks = tuple(
+        resolve_ordering(
+            tasks,
+            priority_policy,
+            analysis_method,
+            c_amc_sem_xf=c_amc_sem_xf,
+        )
+    )
     return {
         "num_tasks": len(tasks),
         "num_hi_tasks": sum(task.criticality is Criticality.HI for task in tasks),
@@ -344,12 +381,24 @@ def static_characterization(bundle: Any, *, priority_policy: str = "dm") -> dict
         "initial_budget_util_total": initial_total,
         "initial_budget_util_hi": initial_hi,
         "initial_budget_util_lo": initial_lo,
-        "amc_rtb_min_slack": min(response_slacks, default=0.0),
-        "amc_rtb_normalized_slack": min(normalized_slacks, default=0.0),
-        "amc_rtb_schedulable": bool(schedulability.schedulable),
-        "amc_rtb_response_details": schedulability.details,
+        "analysis_method": analysis_method,
+        "analysis_priority_policy": priority_policy,
+        "analysis_c_amc_sem_xf": c_amc_sem_xf,
+        "analysis_min_slack": min(response_slacks, default=-1.0),
+        "analysis_normalized_slack": min(normalized_slacks, default=-1.0),
+        "analysis_schedulable": bool(analysis.schedulable),
+        "analysis_response_details": analysis.details,
+        "analysis_priority_order": json.dumps(
+            [task.name for task in ordered_tasks],
+            ensure_ascii=False,
+        ),
+        # Legacy comparator retained only for audit/MC-context reporting.
+        "amc_rtb_min_slack": min(legacy_response_slacks, default=-1.0),
+        "amc_rtb_normalized_slack": min(legacy_normalized_slacks, default=-1.0),
+        "amc_rtb_schedulable": bool(legacy_amc_rtb.schedulable),
+        "amc_rtb_response_details": legacy_amc_rtb.details,
         "_initial_budgets": budgets,
-        "_ordered_tasks": tuple(resolve_ordering(tasks, priority_policy, "amc_rtb")),
+        "_ordered_tasks": ordered_tasks,
     }
 
 
@@ -1113,7 +1162,7 @@ def deterministic_static_reservoir(rows: Sequence[Mapping[str, Any]], limit: int
         rows,
         key=lambda row: (
             _as_float(row.get("total_util_lo_mode")),
-            _as_float(row.get("amc_rtb_normalized_slack")),
+            _as_float(row.get("analysis_normalized_slack")),
             _as_float(row.get("hi_util_hi_mode")),
             int(row["candidate_seed"]),
         ),
@@ -1255,6 +1304,13 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "initial_budget_util_total",
         "initial_budget_util_hi",
         "initial_budget_util_lo",
+        "analysis_method",
+        "analysis_priority_policy",
+        "analysis_c_amc_sem_xf",
+        "analysis_min_slack",
+        "analysis_normalized_slack",
+        "analysis_schedulable",
+        "analysis_priority_order",
         "amc_rtb_min_slack",
         "amc_rtb_normalized_slack",
         "amc_rtb_schedulable",
@@ -1364,8 +1420,41 @@ def run_cli(args: argparse.Namespace) -> None:
 
     static_entries: list[tuple[dict[str, str], Any, dict[str, Any]]] = []
     for manifest_row in rows:
+        admission_method = str(manifest_row.get("admission_method", "")).strip()
+        admission_policy = str(manifest_row.get("admission_priority_policy", "")).strip()
+        try:
+            admission_xf = float(manifest_row.get("c_amc_sem_xf", XF))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"candidate {manifest_row.get('candidate_seed')} has invalid c_amc_sem_xf"
+            ) from exc
+        if admission_method != "c_amc_sem" or admission_policy != "opa":
+            raise ValueError(
+                "V2 screening requires admission_method=c_amc_sem and "
+                "admission_priority_policy=opa for every candidate"
+            )
+        if abs(admission_xf - XF) > 1e-12:
+            raise ValueError(
+                f"V2 screening runtime XF={XF} but manifest declares {admission_xf}"
+            )
+        if str(manifest_row.get("admission_schedulable", "")).strip().lower() not in {
+            "1", "true", "yes", "y"
+        }:
+            raise ValueError(
+                f"candidate {manifest_row.get('candidate_seed')} is not admission-schedulable"
+            )
         bundle = load_stratified_dynamic_bundle(manifest_row, config)
-        static = static_characterization(bundle)
+        static = static_characterization(
+            bundle,
+            analysis_method=admission_method,
+            priority_policy=admission_policy,
+            c_amc_sem_xf=admission_xf,
+        )
+        if not static["analysis_schedulable"]:
+            raise ValueError(
+                f"candidate {manifest_row.get('candidate_seed')} failed C-AMC-sem+OPA "
+                "recheck during diagnostics"
+            )
         static_entries.append((manifest_row, bundle, static))
     eligible_entries = static_entries
     if args.stage == "D1":

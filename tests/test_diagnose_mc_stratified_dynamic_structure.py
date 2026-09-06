@@ -11,6 +11,7 @@ from scripts.diagnose_mc_stratified_dynamic_structure import (
     MANIFEST_SCHEMA_VERSION,
     lag1_autocorrelation,
     normalized_hamming_distance,
+    static_characterization,
     one_step_competition_probe,
     validate_manifest_rows,
 )
@@ -131,3 +132,30 @@ def test_round_robin_probe_produces_frontier_mask_turnover() -> None:
     assert result["unique_mask_count"] > 1
     assert max(turnover) > 0.0
     assert budgets == {"a": 10, "b": 10}
+
+
+def test_static_characterization_uses_requested_c_amc_sem_opa_order() -> None:
+    from amc_py.workloads.mc_stratified_dynamic import (
+        MCStratifiedDynamicWorkloadConfig,
+        MCStratifiedDynamicWorkloadProvider,
+    )
+
+    config = MCStratifiedDynamicWorkloadConfig(
+        seed=4,
+        require_schedulable=True,
+        sched_method="c_amc_sem",
+        priority_policy="opa",
+        c_amc_sem_xf=0.5,
+    )
+    bundle = MCStratifiedDynamicWorkloadProvider(config).build(4)
+    static = static_characterization(
+        bundle,
+        analysis_method="c_amc_sem",
+        priority_policy="opa",
+        c_amc_sem_xf=0.5,
+    )
+    assert static["analysis_method"] == "c_amc_sem"
+    assert static["analysis_priority_policy"] == "opa"
+    assert static["analysis_schedulable"] is True
+    assert static["analysis_normalized_slack"] >= 0.0
+    assert tuple(task.name for task in static["_ordered_tasks"])
